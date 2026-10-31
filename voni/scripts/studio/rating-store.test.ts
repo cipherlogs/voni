@@ -331,9 +331,29 @@ test("the gold-label export names the session, reviewer and date, but not the bl
   });
 });
 
-test("a missing file and a path outside the evidence root are refused by name", async () => {
-  await withStore(async (store) => {
+test("an A/B pair with two containers is refused, because the format would name the agent side", async () => {
+  await withStore(async (store, evidenceRoot) => {
+    const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from("baseline")]);
+    await writeFile(join(evidenceRoot, "baseline", "call-1.webm"), webm);
     await assert.rejects(
+      store.create({
+        certificate: certificate(["call-1"]),
+        calls: [
+          {
+            ...callInput("call-1", sha256Hex(CALL_WAV)),
+            baseline: { path: "baseline/call-1.webm", sha256: sha256Hex(webm) },
+          },
+        ],
+        reviewer: "owner",
+        seed: 1,
+      }),
+      storeRefusal("ab-format-mismatch", /container|tells the rater/),
+    );
+  });
+});
+
+test("a missing file and a path outside the evidence root are refused by name", async () => {
+  await withStore(async (store) => {    await assert.rejects(
       store.create({
         certificate: certificate(["call-1"]),
         calls: [callInput("call-1", sha256Hex(CALL_WAV))].map((call) => ({

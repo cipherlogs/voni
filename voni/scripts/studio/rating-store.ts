@@ -44,6 +44,7 @@ export type RatingStoreErrorCode =
   | "audio-drift"
   | "evidence-outside-root"
   | "unsupported-audio"
+  | "ab-format-mismatch"
   | "unknown-side"
   | "no-ab-pair"
   | "rating-already-filed"
@@ -258,6 +259,13 @@ export async function openRatingStore(options: OpenRatingStoreOptions): Promise<
         call.baseline === undefined
           ? undefined
           : await readEvidence(call.baseline, `call "${String(call.callId)}" baseline`);
+      if (baseline && baseline.contentType !== audio.contentType) {
+        throw new RatingStoreError(
+          "ab-format-mismatch",
+          `call "${String(call.callId)}" pairs ${audio.contentType} with ${baseline.contentType}; ` +
+            "the A/B sides must share one container, or the format tells the rater which side is the agent",
+        );
+      }
       loaded.push({
         ...call,
         audio: { path: audio.path, sha256: call.audio.sha256 },
