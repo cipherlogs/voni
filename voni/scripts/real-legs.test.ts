@@ -406,56 +406,49 @@ test("a trace line with the wrong subject fails the trace assertion", () => {
   assert.match(checks[0].detail, /demo:jorg/);
 });
 
-test("a subject-less operational row is allowed once a call-scoped row names the subject", () => {
-  const text = [
-    JSON.stringify({
-      schemaVersion: 1,
-      pipeline: "cascade",
+test("every demo trace line must name the subject, operational rows included", () => {
+  const base = { schemaVersion: 1, pipeline: "cascade", callId: "call-1" };
+  const priced = {
+    measured: false,
+    rateTableVersion: "cascade-vendor-rates v1",
+    totalUsd: null,
+    unmeasuredReason: "the STT leg reported no session audio",
+    legs: {},
+  };
+  const lines = (operationalSubject: string | undefined) =>
+    [
+      { ...base, subject: "demo:jorg", type: "greeting.done", turn: null, phase: "connect", atMs: 1 },
+      {
+        ...base,
+        ...(operationalSubject === undefined ? {} : { subject: operationalSubject }),
+        type: "budget.crossing",
+        leg: "llm",
+        phase: "turn",
+        atMs: 2,
+      },
+      { ...base, subject: "demo:jorg", type: "cost.priced", turn: null, phase: "end", atMs: 3, ...priced },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n");
+  const assess = (text: string) =>
+    assessTrace({
+      exists: true,
+      text,
       callId: "call-1",
-      subject: "demo:jorg",
-      type: "greeting.done",
-      turn: null,
-      phase: "connect",
-      atMs: 1,
-    }),
-    JSON.stringify({
-      schemaVersion: 1,
-      pipeline: "cascade",
-      callId: "call-1",
-      type: "budget.crossing",
-      leg: "llm",
-      phase: "turn",
-      atMs: 2,
-    }),
-    JSON.stringify({
-      schemaVersion: 1,
-      pipeline: "cascade",
-      callId: "call-1",
-      subject: "demo:jorg",
-      type: "cost.priced",
-      turn: null,
-      phase: "end",
-      atMs: 3,
-      measured: false,
-      rateTableVersion: null,
-      totalUsd: null,
-      unmeasuredReason: "the STT leg reported no session audio",
-      legs: {},
-    }),
-  ].join("\n");
-  const checks = assessTrace({
-    exists: true,
-    text,
-    callId: "call-1",
-    voice: "jorg",
-    local: true,
-    eventsDir: "/tmp/events",
-    eventsPath: "/tmp/events/call-1.jsonl",
-  });
-  assert.deepEqual(
-    checks.map((entry) => entry.status),
-    ["pass", "pass"],
-  );
+      voice: "jorg",
+      local: true,
+      eventsDir: "/tmp/events",
+      eventsPath: "/tmp/events/call-1.jsonl",
+    });
+
+  const allNamed = assess(lines("demo:jorg"));
+  assert.equal(allNamed[0].status, "pass");
+  assert.match(allNamed[0].detail, /3 lines, every one .*subject "demo:jorg"/);
+
+  const unnamed = assess(lines(undefined));
+  assert.equal(unnamed[0].status, "fail");
+  assert.equal(unnamed[0].code, "trace-binding");
+  assert.match(unnamed[0].detail, /budget\.crossing/);
 });
 
 test("a missing trace is a failure locally and a named skip remotely", () => {

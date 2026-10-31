@@ -1012,27 +1012,24 @@ export function assessTrace(input: {
   }
 
   const subject = `demo:${input.voice}`;
-  // Operational rows (a breaker transition, a budget crossing) carry `leg`
-  // instead of `subject` by design. Every row must name the call; every row
-  // that names a subject must name the demo subject, and at least one must.
+  // Every line of a demo trace names `demo:<voice>`, operational lines
+  // included (ticket 17). A line without a subject is as wrong as one naming
+  // another identity: the trace is the evidence that this call happened.
   const wrongCall = lines.filter((line) => line.callId !== input.callId);
-  const namedSubjects = lines.filter((line) => typeof line.subject === "string");
-  const wrongSubject = namedSubjects.filter((line) => line.subject !== subject);
+  const wrongSubject = lines.filter((line) => line.subject !== subject);
   const bindingOk =
-    wrongCall.length === 0 && namedSubjects.length > 0 && wrongSubject.length === 0;
+    wrongCall.length === 0 && wrongSubject.length === 0 && lines.length > 0;
   const checks: RealLegsCheck[] = [
     bindingOk
       ? passed(
           "trace",
           "trace",
-          `${input.eventsDir}/${input.callId}.jsonl: ${lines.length} lines, every one callId "${input.callId}" and ${namedSubjects.length} with subject "${subject}"`,
+          `${input.eventsDir}/${input.callId}.jsonl: ${lines.length} lines, every one callId "${input.callId}" and subject "${subject}"`,
         )
       : failed(
           "trace",
           "trace-binding",
-          `${wrongCall.length + wrongSubject.length} of ${lines.length} lines do not bind to callId "${input.callId}" and subject "${subject}"${
-            namedSubjects.length === 0 ? " (no line names a subject at all)" : ""
-          }: ${JSON.stringify(wrongCall[0] ?? wrongSubject[0]).slice(0, 240)}`,
+          `${wrongCall.length + wrongSubject.length} of ${lines.length} lines do not bind to callId "${input.callId}" and subject "${subject}": ${JSON.stringify(wrongCall[0] ?? wrongSubject[0]).slice(0, 240)}`,
         ),
   ];
 
