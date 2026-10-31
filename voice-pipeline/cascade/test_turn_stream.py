@@ -612,6 +612,87 @@ class EndCallSignalTest(unittest.TestCase):
         self.assertEqual([closing], stream._tts.spoken)
         self.assertEqual(["end"], ended)
 
+    def _run_caller_request(self, final_text, reply_text, *, locale="en", calls=(), executor=None):
+        ended: list[str] = []
+
+        async def on_end_call() -> None:
+            ended.append("end")
+
+        audio = RecordingAudio()
+        stream = CascadeTurnStream(
+            llm=ScriptedLLM([{"deltas": [reply_text], "calls": calls}]),
+            tts=FakeTTS(),
+            emit_audio=audio,
+            tool_executor=executor,
+            locale_code=locale,
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            on_end_call=on_end_call,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete(final_text, turn_id="t1"))
+            await stream.drain()
+
+        asyncio.run(run())
+        return stream, ended
+
+    def test_a_caller_asking_to_hang_up_ends_the_call_without_a_tool_call(self):
+        stream, ended = self._run_caller_request(
+            "Okay, that's all I needed. Please hang up now.",
+            "Okay, bye!",
+        )
+
+        self.assertEqual(["Okay, bye!"], stream._tts.spoken)
+        self.assertEqual(["end"], ended, "the caller's request is call control")
+
+    def test_a_german_caller_asking_to_hang_up_ends_the_call(self):
+        stream, ended = self._run_caller_request(
+            "Bitte legen Sie jetzt auf.",
+            "Auf Wiederhören!",
+            locale="de",
+        )
+
+        self.assertEqual(["Auf Wiederhören!"], stream._tts.spoken)
+        self.assertEqual(["end"], ended)
+
+    def test_a_negated_hang_up_leaves_the_call_open(self):
+        stream, ended = self._run_caller_request(
+            "Please don't hang up, I have one more question.",
+            "Of course, go ahead.",
+        )
+
+        self.assertEqual([], ended)
+        self.assertEqual(["Of course, go ahead."], stream._tts.spoken)
+
+    def test_an_empty_model_hang_up_still_ends_on_the_callers_request(self):
+        from cascade.meta_llm import MetaToolCall, ToolDenial
+        from cascade.tools import HANG_UP_TOOL, TOOL_CLOSING_LINE_MISSING, DeniedCall
+
+        class DenyingExecutor:
+            async def execute(self, call):
+                return DeniedCall(
+                    name=call.name,
+                    denial=ToolDenial(
+                        name=call.name,
+                        reason="no closing line",
+                        call_id=call.call_id,
+                        code=TOOL_CLOSING_LINE_MISSING,
+                    ),
+                )
+
+        stream, ended = self._run_caller_request(
+            "Hang up now, please.",
+            "Okay, bye!",
+            calls=[MetaToolCall(0, "call_hang_up", HANG_UP_TOOL, "{}")],
+            executor=DenyingExecutor(),
+        )
+
+        self.assertEqual(["Okay, bye!"], stream._tts.spoken)
+        self.assertEqual(["end"], ended)
+
     def test_a_barge_in_during_the_goodbye_keeps_listening_and_never_hangs_up(self):
         closing = "Thanks for calling. Goodbye!"
         gate = asyncio.Event()

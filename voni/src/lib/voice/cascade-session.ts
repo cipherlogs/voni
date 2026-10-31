@@ -45,6 +45,9 @@ export type CascadeCaption = {
  * version by name (voice-pipeline/cascade/token.py), so a half-deployed pair
  * fails loudly instead of running a different body.
  */
+/** The demo's cold-reply cushion: 250 ms, half the phone owner's 500 ms. */
+export const DEMO_PLAYOUT_CUSHION_S = 0.25;
+
 export const CASCADE_PROTOCOL_VERSION = 1;
 
 /**
@@ -369,6 +372,11 @@ export class CascadeSession {
     }
     this.micStop = handle.stop;
     this.playout = this.deps.createPlayout?.(handle.audioCtx) ?? handle.playout ?? null;
+    // The cascade is the browser-only demo (ADR-0012). Start its replies on a
+    // 250 ms cushion instead of the owner's 500 ms phone cushion: the caller
+    // hears the first word 250 ms sooner, and 250 ms is still three times the
+    // 80 ms that broke up on phones. The worklet clamps any raise to 500 ms.
+    this.playout?.setCushion?.(DEMO_PLAYOUT_CUSHION_S);
     // Dev delivered capture: the worklet's output, at the device rate. It is
     // observation only — the tap copies samples after rendering, so it cannot
     // move a sample, a chunk boundary or a playout deadline.

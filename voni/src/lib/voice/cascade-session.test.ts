@@ -61,6 +61,28 @@ test("the config message cannot smuggle a body through an extra key", () => {
   ]);
 });
 
+test("the cascade starts replies on the demo's 250 ms cushion", async () => {
+  const socket = makeSocket();
+  let seen: number | null = null;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({
+        play: () => {},
+        flush: () => {},
+        setCushion: (seconds: number) => {
+          seen = seconds;
+        },
+      }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+
+  assert.equal(seen, 0.25, "the demo does not pay the phone cushion");
+});
+
 test("audio frames encode to base64 data messages", () => {
   const bytes = new Uint8Array([0, 1, 2, 3]).buffer;
   const parsed = JSON.parse(encodeAudioFrame(bytes));

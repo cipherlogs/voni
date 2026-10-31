@@ -151,8 +151,11 @@ function decoded(out: Float32Array): DecodedAudio {
 }
 
 /** Drive the real worklet with `arrivals`; returns every rendered sample and every posted message. */
-function render(arrivals: Arrival[], seconds: number) {
+function render(arrivals: Arrival[], seconds: number, cushionS?: number) {
   const { proc, scope } = load(OUT);
+  if (cushionS !== undefined) {
+    proc.port.onmessage!({ data: { type: "cushion", s: cushionS } });
+  }
   const out = new Float32Array(Math.ceil((seconds * OUT) / QUANTUM) * QUANTUM);
   let seq = 0;
   let next = 0;
@@ -213,6 +216,23 @@ test("target cushion: a reply starts only once the target cushion has arrived", 
   assert.ok(start <= TARGET_CUSHION_S + 0.02, `started at ${start}s, long after the cushion`);
   const buffered = arrivedBy(arrivals, start);
   assert.ok(buffered >= TARGET_CUSHION_S * SRC, `started with only ${buffered / SRC}s buffered`);
+});
+
+test("a lowered cushion starts a browser reply earlier", () => {
+  const { out } = render(healthyTrace(), 2.2, 0.25);
+  const start = firstSound(out);
+
+  assert.ok(start >= 0.25 - CHUNK_S, `started at ${start}s, under the 250 ms cushion`);
+  assert.ok(start <= 0.25 + 0.02, `started at ${start}s, long after the 250 ms cushion`);
+  assert.ok(start < TARGET_CUSHION_S, "the demo did not pay the phone cushion");
+});
+
+test("a cushion message can never raise the owner's 500 ms ceiling", () => {
+  const { out } = render(healthyTrace(), 2.2, 5);
+  const start = firstSound(out);
+
+  assert.ok(start >= TARGET_CUSHION_S - CHUNK_S, `started at ${start}s, under the 500 ms ceiling`);
+  assert.ok(start <= TARGET_CUSHION_S + 0.02, "the ceiling is the owner's 500 ms");
 });
 
 test("target cushion: a jitter trace that would starve the old buffer does not start early", () => {

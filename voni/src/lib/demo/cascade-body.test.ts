@@ -13,7 +13,6 @@ import {
   DEMO_ACCOUNT_SALT,
 } from "./cascade-body";
 import { DEMO_VOICE_IDS, VONI_GREETINGS } from "./voni-agent";
-import { demoLlmOverride } from "./stored-agents";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const BOUNDS = JSON.parse(
@@ -72,18 +71,6 @@ test("every demo voice names its subject and pins its Locale in the one built bo
     );
     assert.notEqual(DEMO_ACCOUNT_SALT, "");
   }
-});
-
-test("the signed body carries the fast model override when the gateway is configured", async () => {
-  const llm = await demoLlmOverride();
-  const { body } = await buildDemoCascadeBody(
-    { voice: "audrey", callId: "call-model-override" },
-    { now: NOW },
-  );
-  // The demo's provisioning path and its cascade body must name the same
-  // model: a body without this override rides Spark (measured 0.7-3.5 s to
-  // first token), and Spark does not call the hang-up tool.
-  assert.deepEqual(body.llm ?? null, llm);
 });
 
 test("the greeting speaks the voice's Locale and a hold return omits it", async () => {
@@ -193,7 +180,6 @@ test("history is a hold-return field: a fresh call, bad roles and over-bound his
 });
 
 test("the demo body carries no tenant fields", async () => {
-  const llm = await demoLlmOverride();
   for (const voice of DEMO_VOICE_IDS) {
     const { body } = await buildDemoCascadeBody(
       { voice, callId: `call-tenant-fields-${voice}` },
@@ -207,7 +193,6 @@ test("the demo body carries no tenant fields", async () => {
       "voice",
       "output",
       "tools",
-      ...(llm ? ["llm"] : []),
       "input",
     ]);
     for (const key of [

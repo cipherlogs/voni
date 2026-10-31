@@ -44,12 +44,14 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from cascade.end_intent import wants_to_end
 from cascade.event_rules import EventRules
 from cascade.meta_llm import MessageHistory, MetaLLMTurn, last_complete_sentence
 from cascade.meta_stt import SpeechComplete, SpeechStart
 from cascade.thresholds import require_bound
 from cascade.tools import (
     CALL_CONTROL_TOOLS,
+    DeniedCall,
     EndCallSignal,
     ToolLoop,
     closing_line_from,
@@ -141,6 +143,8 @@ class CascadeTurnStream:
         #: The text spoken in the current reply, so the browser gets one final
         #: caption after the audio (not only sentence partials).
         self._reply_text = ""
+        #: Whether the caller's final asked to end (call control, not a tool).
+        self._caller_wants_end = False
         self._buffer = ""
         self._failure: BaseException | None = None
         self._records: dict[str, MetaLLMTurn] = {}
@@ -251,6 +255,9 @@ class CascadeTurnStream:
         await asyncio.sleep(0)
         key = state.id.event_id
         self._buffer = ""
+        # The caller's words end the call, not the model's tool choice: Spark
+        # does not call the hang-up tool on a caller request (measured 0/20).
+        self._caller_wants_end = wants_to_end(state.final_text, self._locale_code)
         record = MetaLLMTurn()
         cancelled = False
         try:
@@ -299,6 +306,8 @@ class CascadeTurnStream:
                     await self._say(item.text)
             await self._flush()
             if not record.tool_calls or self._tool_executor is None:
+                if self._caller_wants_end:
+                    await self._request_hangup(state)
                 return record
             outcomes = await execute_turn_calls(self._tool_executor, record, calls)
             signal = next(
@@ -307,8 +316,18 @@ class CascadeTurnStream:
             if signal is not None:
                 await self._finish_end_call(signal, state)
                 return record
+            if self._caller_wants_end and any(
+                isinstance(item, DeniedCall) and item.name in CALL_CONTROL_TOOLS
+                for item in outcomes
+            ):
+                # The model asked to hang up with no closing line; the caller
+                # already asked to end, so the spoken reply is the goodbye.
+                await self._request_hangup(state)
+                return record
             record = await self._continue_after_tools(record, outcomes)
             if not record.tool_calls:
+                if self._caller_wants_end:
+                    await self._request_hangup(state)
                 return record
 
     def _complete(self, record: MetaLLMTurn):
@@ -364,6 +383,16 @@ class CascadeTurnStream:
         spoken = self._reply_text.strip()
         if line and not spoken:
             await self._speak(line, force=True)
+        await self._request_hangup(state)
+
+    async def _request_hangup(self, state: TurnState) -> None:
+        """Close the turn as ``end_call`` and ask the call to drain.
+
+        The spoken reply (the goodbye) is already on the wire; nothing else is
+        synthesized. A barge-in before the hangup is taken withdraws the
+        decision and keeps the call live.
+        """
+        self._stop_speech()
         self._turns.close(turn=state.id, reason="end_call")
         # Armed only after the line played: a barge-in before this point
         # cancels the closing speech and withdraws the end-call decision.

@@ -672,7 +672,23 @@ export type IngressPumpDeps = {
   /** A monotonic millisecond clock (the wall clock is enough at this scale). */
   now: () => number;
   sleep: (ms: number) => Promise<void>;
+  /** The frame carrying the clip's last speech sample was sent at this instant. */
+  onSpeechEnd?: (at: number) => void;
 };
+
+/** A sample quieter than this is silence for the endpointing measurement. */
+export const SPEECH_SAMPLE_FLOOR = 500;
+
+/** Audio-timeline ms of the clip's last speech sample, or null for a silent clip. */
+export function lastSpeechMs(pcm: Uint8Array): number | null {
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  for (let i = (view.byteLength >> 1) - 1; i >= 0; i--) {
+    if (Math.abs(view.getInt16(i * 2, true)) >= SPEECH_SAMPLE_FLOOR) {
+      return (i * 1_000) / INGRESS_SAMPLE_RATE;
+    }
+  }
+  return null;
+}
 
 /**
  * A caller-side microphone, without a microphone: silence between the turns,
@@ -764,6 +780,13 @@ export function createIngressPump(deps: IngressPumpDeps): IngressPump {
       }
       if (pcm.length === 0) return Promise.resolve();
       const startMs = Math.max(queueEndMs, sentMs);
+      const speechEndMs = lastSpeechMs(pcm);
+      if (speechEndMs !== null) {
+        waiters.push({
+          atMs: startMs + speechEndMs,
+          resolve: () => deps.onSpeechEnd?.(deps.now()),
+        });
+      }
       queueEndMs = startMs + pcm.length / BYTES_PER_MS;
       const next = new Uint8Array(queue.length + pcm.length);
       next.set(queue);
@@ -825,8 +848,10 @@ type CallState = {
   closed: boolean;
   configKeys: string[] | null;
   turnLatencies: number[];
+  endpointingMs: number[];
   pendingFinalAt: number | null;
   pendingAudioSeen: boolean;
+  speechEndedAt: number | null;
 };
 
 function defaultConnect(url: string): RealLegsSocket {
@@ -1219,8 +1244,10 @@ export async function runRealLegs(
       closed: false,
       configKeys: null,
       turnLatencies: [],
+      endpointingMs: [],
       pendingFinalAt: null,
       pendingAudioSeen: false,
+      speechEndedAt: null,
     };
     let socket: RealLegsSocket;
     try {
@@ -1238,6 +1265,9 @@ export async function runRealLegs(
       send: (frame) => socket.send(encodeAudioFrame(frame.buffer)),
       now,
       sleep,
+      onSpeechEnd: (at) => {
+        state.speechEndedAt = at;
+      },
     });
     socket.onMessage((raw) => {
       ingress.start();
@@ -1247,7 +1277,7 @@ export async function runRealLegs(
         state.audioBytes += audioFrame.pcm.length;
         if (state.pendingFinalAt !== null && !state.pendingAudioSeen) {
           state.pendingAudioSeen = true;
-          state.turnLatencies.push(Date.now() - state.pendingFinalAt);
+          state.turnLatencies.push(now() - state.pendingFinalAt);
         }
         return;
       }
@@ -1257,8 +1287,12 @@ export async function runRealLegs(
         case "caption":
           state.captions.push({ role: event.role, text: event.text, final: event.final });
           if (event.role === "user" && event.final) {
-            state.pendingFinalAt = Date.now();
+            state.pendingFinalAt = now();
             state.pendingAudioSeen = false;
+            if (state.speechEndedAt !== null) {
+              state.endpointingMs.push(now() - state.speechEndedAt);
+              state.speechEndedAt = null;
+            }
           }
           break;
         case "end":
@@ -1569,7 +1603,7 @@ export async function runRealLegs(
       ? passed(
           "reply gaps",
           "reply-gap",
-          `caller-final → first agent audio (ms): ${state.turnLatencies.join(", ")}`,
+          `caller-final → first agent audio (ms): ${state.turnLatencies.join(", ")}; speech-end → final (ms): ${state.endpointingMs.join(", ")}`,
         )
       : failed("reply gaps", "reply-gap", "no completed caller turn produced a timed reply"),
   );

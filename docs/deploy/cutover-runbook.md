@@ -62,10 +62,10 @@ npm run check:real-legs                                     # needs META_API_KEY
   the call id and `demo:<voice>` and the `cost.priced` row is measured or names
   its reason. It skips by name without the vendor keys, and it must not skip
   for a cutover claim to stand.
-- **Before the run**, confirm `AI_GATEWAY_API_KEY` is set for the app: the
-  signed demo body carries the gateway model override. In the call's end
-  frame, `providers.llm.provider` must be the gateway model, not `spark`
-  (Spark's first token measured 0.7-3.5 s and it ignores `end_call`).
+- **Before the run**, confirm the service has `META_REASONING_EFFORT=minimal`
+  (measured p50 951 ms vs 1648 ms at `low`). In the call's end frame,
+  `providers.llm.provider` must be `spark` and `providers.stt.provider` must be
+  `meta`; no gateway or non-Meta override may appear.
 - **Live hang-up check:** say "please hang up", then assert the call ends with
   `endedBy: "stop"`, one agent goodbye (not two), and `counts.end_call: 1`.
   A call that says goodbye but stays open is the Spark/`end_call` regression.

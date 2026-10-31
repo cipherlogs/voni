@@ -56,11 +56,13 @@ local save and shows a retryable deployment warning on the agent page.
   Jev probabilities in `/api/voice-judge`; without it the route serves the
   offline heuristic (`source: "heuristic"`), so calls work either way. Set by
   hand in `.env.local` (and prod Worker secrets) — never committed.
-- The demo cascade body also carries this gateway as its model override
-  (`DEMO_LLM_MODEL`, default `google/gemini-2.5-flash`, thinking off). The
-  signed body and the provisioning path must name the same model. Without the
-  key the demo runs the pipeline's Standard rung (Spark): slower first token,
-  and Spark needs the `hang_up` call-control name.
+- The live demo is Meta-only: the cascade body carries no LLM override and
+  runs the pipeline's Standard Spark rung, with Meta STT. `AI_GATEWAY_API_KEY`
+  is not used by the demo call. The managed demo provisioning path still has
+  its own (`DEMO_LLM_*`) override; that body is not served by the cascade.
+- Set the service's `META_REASONING_EFFORT=minimal` for the demo: measured p50
+  951 ms to first token vs 1648 ms at `low` in a fast window (the vendor tail
+  still reaches 2-4 s; see `PROGRESS.md`).
 - `VOICE_JUDGE_MODEL` (optional) — defaults to `typesafe-ai/jev`.
 - `VOICE_JUDGE_GATEWAY_URL` (optional) — defaults to the AI Gateway evaluate
   endpoint (`https://ai-gateway.vercel.sh/v1/evaluate`).

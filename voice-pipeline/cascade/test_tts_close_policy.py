@@ -148,6 +148,17 @@ class PlannedReconnectTests(unittest.TestCase):
         self.assertIs(decision.action, CloseAction.PLANNED_RECONNECT)
         self.assertFalse(decision.verdict.opens_breaker)
 
+    def test_a_vendor_close_after_our_cancel_is_a_planned_handover(self):
+        tts, _ = open_session([begin()])
+        asyncio.run(tts.cancel())
+
+        decision = asyncio.run(tts.handle_close(1006))
+
+        self.assertIs(decision.action, CloseAction.PLANNED_RECONNECT)
+        self.assertTrue(tts.needs_reconnect)
+        self.assertEqual(tts.failures, [], "our own cancel is not a vendor failure")
+        self.assertEqual(tts.breaker_opens, [])
+
     def test_a_clean_close_is_not_a_failure(self):
         tts, _ = open_session([begin()])
 
