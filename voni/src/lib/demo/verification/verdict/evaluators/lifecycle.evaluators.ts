@@ -18,6 +18,7 @@
 
 import type { EvaluatorModule, Evaluation, PropertyEvaluator } from "../types";
 import {
+  audioAnswer,
   chimeFacts,
   clockFacts,
   configFacts,
@@ -62,11 +63,15 @@ const l1: PropertyEvaluator = {
   ],
   evaluate(context) {
     try {
-      const facts = ringbackFacts(readMarks(context.evidence));
+      const marks = readMarks(context.evidence);
+      const answer = audioAnswer(marks, analyseWav(readWav(context.evidence).file));
+      const facts = ringbackFacts(marks, answer.answerMs);
       return measured(
         [facts.afterAnswerCount, facts.holdReturnCount],
-        facts.afterAnswerCount > 0 || facts.holdReturnCount > 0 ? ["browser:ringback"] : [],
-        facts.detail,
+        facts.afterAnswerCount > 0 || facts.holdReturnCount > 0
+          ? ["browser:ringback", "browser:first_audible", "wav:delivered"]
+          : ["browser:ringback", "wav:delivered"],
+        `${facts.detail}; ${answer.detail}`,
       );
     } catch (error) {
       return unmeasured(error);
@@ -218,13 +223,15 @@ const l8: PropertyEvaluator = {
   evaluate(context) {
     try {
       readEnd(context.evidence);
-      const facts = clockFacts(readMarks(context.evidence));
+      const marks = readMarks(context.evidence);
+      const answer = audioAnswer(marks, analyseWav(readWav(context.evidence).file));
+      const facts = clockFacts(marks, answer.answerMs);
       return measured(
         [facts.beforeAudioCount],
         facts.beforeAudioCount > 0
-          ? ["browser:talk_clock_start", "browser:first_audible"]
-          : ["browser:talk_clock_start", "browser:first_audible"],
-        facts.detail,
+          ? ["browser:talk_clock_start", "browser:first_audible", "wav:delivered"]
+          : ["browser:talk_clock_start", "browser:first_audible", "wav:delivered"],
+        `${facts.detail}; ${answer.detail}`,
       );
     } catch (error) {
       return unmeasured(error);

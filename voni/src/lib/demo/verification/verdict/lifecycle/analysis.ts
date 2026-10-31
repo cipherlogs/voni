@@ -49,17 +49,64 @@ function namedState(marks: CallMarksArtifact): CallMark | null {
   return null;
 }
 
+/**
+ * The call-clock instant of the first audible agent sample, corroborated by the
+ * delivered WAV.
+ *
+ * The WAV has no absolute time; the client's `first_audible` mark is the anchor
+ * for the worklet's first voiced block. The answer is therefore the mark, but it
+ * is only usable when the delivered audio actually carries a voiced sample. A
+ * missing WAV, a silent WAV or a missing mark fails closed: the property is
+ * unmeasured, never a pass on the client's intent alone.
+ */
+export type AudioAnswer = {
+  readonly answerMs: number;
+  readonly firstVoicedMs: number;
+  readonly detail: string;
+};
+
+export function audioAnswer(
+  marks: CallMarksArtifact,
+  analysis: WavAnalysis,
+): AudioAnswer {
+  if (analysis.firstSpeechMs === null) {
+    throw new LifecycleEvidenceError(
+      "malformed-wav",
+      "the delivered WAV carries no voiced sample; the first audible agent sample has no audio " +
+        "proof, so the answer time cannot be judged from the client's marks alone",
+    );
+  }
+  const audible = optionalMark(marks, "first_audible");
+  if (audible === null) {
+    throw new LifecycleEvidenceError(
+      "malformed-marks",
+      "the delivered WAV has a voiced sample but no first_audible mark places it on the call " +
+        "clock; the answer time cannot be tied to the audio",
+    );
+  }
+  return {
+    answerMs: audible.tMs,
+    firstVoicedMs: analysis.firstSpeechMs,
+    detail:
+      `the delivered WAV's first voiced sample is ${Math.round(analysis.firstSpeechMs)}ms into ` +
+      `the capture, anchored by the first_audible mark at ${Math.round(audible.tMs)}ms`,
+  };
+}
+
 export type RingbackFacts = {
   readonly afterAnswerCount: number;
   readonly holdReturnCount: number;
   readonly detail: string;
 };
 
-/** L1: a ringback loop that outlives the answer, or one revived on return. */
-export function ringbackFacts(marks: CallMarksArtifact): RingbackFacts {
+/**
+ * L1: a ringback loop that outlives the answer, or one revived on return.
+ * `answerMs` comes from {@link audioAnswer}: the delivered audio, never the
+ * client's admission mark standing in for an answer nobody heard.
+ */
+export function ringbackFacts(marks: CallMarksArtifact, answerMs: number): RingbackFacts {
   const starts = marksNamed(marks, "ringback_start");
   const stops = marksNamed(marks, "ringback_stop");
-  const answer = optionalMark(marks, "first_audible") ?? optionalMark(marks, "admitted");
   if (starts.length === 0) {
     return {
       afterAnswerCount: 0,
@@ -68,30 +115,21 @@ export function ringbackFacts(marks: CallMarksArtifact): RingbackFacts {
     };
   }
 
-  const afterAnswerCount =
-    answer === null
-      ? stops.length === 0
-        ? 1
-        : 0
-      : starts.filter((start) => {
-          const stop = stops.find((entry) => entry.tMs >= start.tMs);
-          return stop === undefined || stop.tMs > answer.tMs;
-        }).length;
+  const afterAnswerCount = starts.filter((start) => {
+    const stop = stops.find((entry) => entry.tMs >= start.tMs);
+    return stop === undefined || stop.tMs > answerMs;
+  }).length;
   const firstStart = starts[0]!;
   const holdReturnCount = starts.filter(
-    (start) => start.tMs > firstStart.tMs && (answer === null || start.tMs > answer.tMs),
+    (start) => start.tMs > firstStart.tMs && start.tMs > answerMs,
   ).length;
 
-  const answerText =
-    answer === null
-      ? "no answer mark"
-      : `the answer at ${Math.round(answer.tMs)}ms`;
   return {
     afterAnswerCount,
     holdReturnCount,
     detail:
       `${starts.length} ringback start(s), ${stops.length} stop(s); ` +
-      `${afterAnswerCount} outlived ${answerText}; ` +
+      `${afterAnswerCount} outlived the answer at ${Math.round(answerMs)}ms; ` +
       `${holdReturnCount} started again after the call was live`,
   };
 }
@@ -325,14 +363,17 @@ export type ClockFacts = {
   readonly detail: string;
 };
 
-/** L8: the talk clock starts at or after the first agent audio. */
-export function clockFacts(marks: CallMarksArtifact): ClockFacts {
+/**
+ * L8: the talk clock starts at or after the first agent audio.
+ * `answerMs` is the delivered WAV's first voiced sample on the call clock
+ * ({@link audioAnswer}); the clock is never judged against a mark alone.
+ */
+export function clockFacts(marks: CallMarksArtifact, answerMs: number): ClockFacts {
   const clock = optionalMark(marks, "talk_clock_start");
-  const audible = optionalMark(marks, "first_audible");
-  if (clock === null || audible === null) {
+  if (clock === null) {
     throw new LifecycleEvidenceError(
       "malformed-marks",
-      "L8 needs talk_clock_start and first_audible; one is missing",
+      "L8 needs talk_clock_start; the mark is missing",
     );
   }
   if (clock.detail?.restored === true) {
@@ -342,12 +383,12 @@ export function clockFacts(marks: CallMarksArtifact): ClockFacts {
     );
   }
   return {
-    beforeAudioCount: clock.tMs < audible.tMs ? 1 : 0,
+    beforeAudioCount: clock.tMs < answerMs ? 1 : 0,
     clockAtMs: clock.tMs,
-    audibleAtMs: audible.tMs,
+    audibleAtMs: answerMs,
     detail:
-      `talk clock at ${Math.round(clock.tMs)}ms, first audible at ` +
-      `${Math.round(audible.tMs)}ms (${Math.round(audible.tMs - clock.tMs)}ms apart)`,
+      `talk clock at ${Math.round(clock.tMs)}ms, the delivered WAV's first voiced sample at ` +
+      `${Math.round(answerMs)}ms (${Math.round(answerMs - clock.tMs)}ms apart)`,
   };
 }
 
