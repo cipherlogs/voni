@@ -50,7 +50,7 @@ have is a defect in this map.
 | Machine judges and calibration | two transcript-grounded judges, third-judge/panel escalation, vendor independence, weighted-kappa gate | `voni/src/lib/demo/verification/judges/` — `panel.ts` refuses a judge on the agent's vendor (`AGENT_VENDOR = meta`), scores two judges independently and reconciles a disagreement above one point through a third judge to the panel; `kappa.ts` is the linear weighted-kappa arithmetic; `rubric.ts` hashes the rubric; `calibration.ts` verifies every judge/axis at the frozen `dvJudgeKappaMin` bar and refuses a changed rubric hash; a live judge transport is not landed and is key-gated by `AI_GATEWAY_API_KEY` | 26 |
 | Studio | local-only Record, Rate and Corpus surfaces; never in the deployed build | Record landed in `voni/scripts/studio/`: `take-store.ts` writes one immutable hashed take per landing (`voni/.studio/`, gitignored) on the shared digest in `scenarios/digest.ts`; `dialogues.ts` validates authored prompt cards; `http.ts` serves `record.html` on loopback only and refuses a production environment or host by name; no `src/` file imports it. Rate and Corpus landed in the same process: `rate.ts` builds the blind queue (every failing call ahead of the clean sample, seeded per-session order, A/B sides with a private answer key, seven axes, free text and defect tags), `rating-store.ts` persists attributable sessions and gold labels under `voni/.studio/rating/` and rehashes evidence on every serving, `rate.html` and `corpus.html` are the surfaces, `take-store.ts` retires a take with `retired.json` (never editing the take) and records baseline consent metadata; `selectable()` excludes retired and baseline takes | 23, 24 |
 | Human baseline | three to five consented, hashed reference calls, blind comparison only | prepared, **not captured** (human gate): session plan and owner runbook in `docs/demo-human-baseline.md`; `voni/scripts/studio/baseline.ts` verifies consent references, the 4–6 minute band, rehashed takes, a pinned hash list and non-use as certification input, exposed as `npm run demo:baseline:verify`; `take-store.ts` lists active baseline takes with `baselineTakes()` | 25 |
-| Panel and gold labels | blind sample, seven axes, blind A/B, signature, exit 3 | not landed | 27 |
+| Panel and gold labels | blind sample, seven axes, blind A/B, signature, exit 3 | `voni/src/lib/demo/verification/panel/` — `types.ts` fixes the twelve-call sample (two per Locale plus the two worst remaining failing calls, every failing call mandatory) and the gold-label/signature vocabulary; `verdict.ts` computes H1–H5 and H7 from the panel's gold labels against the contract's frozen bars; `run.ts` merges those verdicts into the run. The local-only orchestration is `voni/scripts/studio/panel/` — `session.ts` builds the blind session (every failing call mandatory), `gold-labels.ts` exports attributable labels and their digest, `signature.ts` signs/verifies and completes H7. `voni/scripts/lib/demo-certificate.ts` is `demo:certificate`; an unsigned certificate is `pending-human` and exits 3 | 27 |
 | CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | not landed | 28 |
 | Streak and cutover | three-clean streak, staging gate, post-flip confirmation, monthly full production | not landed | 29 |
 | CI cadence | fast contract, nightly health, weekly full certification, Locale matrix | not landed | 30 |
@@ -100,6 +100,25 @@ another rubric.
 The one seam is the call boundary. If a proposed change adds a second seam
 inside the call lifecycle or the turn stream, it contradicts ADR 0013 and needs
 a new record before it is built.
+
+**Panel gaps.** The confirmed sample is twelve calls: two per Locale as the
+base, the two worst remaining failing calls in the extra slots, and every
+failing call mandatory (a run with more than two remaining failures grows past
+twelve rather than dropping one). H1's "would you stay" bar is binary while the
+Studio's axis is five-point; a 4 or 5 is a yes and 1–3 is a no, recorded on the
+property's gaps. H2's forty-judgments-per-Locale floor cannot be met by one
+twelve-call session: the first certification reports H2 unverified until panel
+gold labels accumulate across sessions (RR-04), and an under-sampled H2 is a
+failure, never a skip. H5 uses the spec's strict `< 40%` operator, so exactly
+40% fails. The seven rating axes are `stayOnCall`, `soundsHuman`, `turnTaking`,
+`understanding`, `languageNaturalness`, `warmth`, `pacing`, verbatim. The
+signature is a digest attestation over the certificate identity, the panel
+session and the exact gold labels — not a secret-key signature, because the
+repository holds no owner key. `demo:certificate --panel <session-id>
+--reviewer <name>` refuses a different run, a missing or different reviewer, a
+missing or different date, an incomplete panel and an already-signed
+certificate by name; an unsigned certificate is `pending-human` and exits 3,
+never certified.
 
 ## Residual-risk register
 
