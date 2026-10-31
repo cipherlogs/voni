@@ -54,6 +54,7 @@
     "scoreboard:inspect": "node --import tsx scripts/scoreboard-inspect.mts",
     "readiness:pack": "node --import tsx scripts/readiness-pack.mts",
     "parity:check": "node --env-file-if-exists=.env.local --import tsx scripts/parity-check.mts",
+    "cutover:check": "node --env-file-if-exists=.env.local --import tsx scripts/cutover-check.mts",
     "check:real-legs": "node --env-file-if-exists=.env.local --import tsx scripts/real-legs.mts"
   },
   "dependencies": {
