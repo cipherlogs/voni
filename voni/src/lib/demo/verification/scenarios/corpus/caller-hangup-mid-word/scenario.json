@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "name": "caller-hangup-mid-word",
+  "class": "ending",
+  "locale": "en",
+  "heldOut": true,
+  "expectedProperties": [
+    "C1",
+    "C7",
+    "C8",
+    "L11"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "edge": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "56cf12cde18e79ca158afb9100121c0d7d36b109aa51f5ac131bad7437843ad0",
+      "text": "Hi, I just need to check one thing."
+    },
+    {
+      "id": "cutoff",
+      "audio": "takes/cutoff.wav",
+      "sha256": "6d46b8e2e18d12e9f249b942dbade84c4e7097644584e904c6d45e73c5717a4b",
+      "text": "Actually, never mind, I'll call you back tomor-"
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "cutoff",
+      "trigger": {
+        "type": "at-offset",
+        "atMs": 4000
+      }
+    }
+  ]
+}

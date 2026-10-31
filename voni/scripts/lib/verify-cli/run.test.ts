@@ -36,7 +36,7 @@ import { TimingLockHeldError } from "@/lib/demo/timing-lock";
 
 import { parseVerifyArgs, type VerifyRequest } from "./args";
 import { VerifyCliError } from "./errors";
-import type { VerifyPlan } from "./plan";
+import { planVerify, type VerifyPlan } from "./plan";
 import {
   exitForCertificate,
   runVerify,
@@ -349,12 +349,20 @@ test("staging and production refuse by name for every mode", async () => {
   }
 });
 
-test("full and nightly refuse by name while the corpora are incomplete", async () => {
-  for (const flag of ["--full", "--nightly"] as const) {
-    const result = await runVerify(request(["--target", "local", flag]), baseDeps());
-    assert.equal(result.exitCode, 2, flag);
-    assert.equal(result.status, "refused");
-    assert.match(result.refusals.join("\n"), /English corpus holds \d+ of the 40/);
+test("full and nightly plan over the complete corpus and carry no corpus gap", async () => {
+  const contract = await loadContract();
+  const corpus = await loadCorpus({
+    dir: DEFAULT_CORPUS_DIR,
+    knownProperties: new Set(contract.properties.map((property) => property.id)),
+  });
+  assert.equal(
+    corpus.scenarios.filter((scenario) => scenario.locale === "en").length,
+    40,
+    "English holds all forty scenarios",
+  );
+  for (const mode of ["full", "nightly"] as const) {
+    const plan = planVerify({ request: request(["--target", "local", `--${mode}`]), corpus });
+    assert.deepEqual(plan.gaps, [], `${mode} carries no corpus gap`);
   }
 });
 

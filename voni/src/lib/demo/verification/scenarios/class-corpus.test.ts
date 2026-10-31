@@ -142,10 +142,49 @@ test("ticket 20's edge scenarios each produce one R property and no media fault"
   assert.equal(byName.get("resilience-hold-return")?.edge[0]?.kind, "page-freeze");
 });
 
+test("the corpus is 40 English scenarios, and the last three fill golden flow, turn-taking and ending", async () => {
+  const corpus = await load();
+  const english = corpus.scenarios.filter((scenario) => scenario.locale === "en");
+  assert.equal(english.length, 40, "English runs all 40 scenarios the nightly/full plan is defined over");
+
+  assert.deepEqual(namesOf(corpus.scenarios, "golden-flow"), [
+    "golden-flow-booking",
+    "golden-flow-greeting-only",
+    "golden-flow-hello",
+    "golden-flow-substantive",
+  ]);
+  assert.deepEqual(namesOf(corpus.scenarios, "turn-taking"), [
+    "turn-taking-barge",
+    "turn-taking-filler",
+    "turn-taking-filler-cut",
+    "turn-taking-overlap",
+  ]);
+  assert.deepEqual(namesOf(corpus.scenarios, "ending"), [
+    "caller-hangup-mid-word",
+    "ending-caller-silence",
+    "ending-goodbye",
+  ]);
+
+  const byName = new Map(corpus.scenarios.map((scenario) => [scenario.name, scenario]));
+  const booking = byName.get("golden-flow-booking");
+  const overlap = byName.get("turn-taking-overlap");
+  const hangup = byName.get("caller-hangup-mid-word");
+  assert.ok(booking && overlap && hangup, "all three new scenarios landed");
+  assert.deepEqual(booking.expectedProperties, ["L4", "T2", "C1", "C7", "C8", "L9", "L11"]);
+  assert.deepEqual(overlap.expectedProperties, ["T7", "T9", "T10"]);
+  assert.ok(!overlap.expectedProperties.includes("T3"), "barge-in stop is turn-taking-barge's property");
+  assert.deepEqual(hangup.expectedProperties, ["C1", "C7", "C8", "L11"]);
+  assert.equal(booking.heldOut, false);
+  assert.equal(overlap.heldOut, false);
+  assert.equal(hangup.heldOut, true);
+  assert.equal(overlap.script.at(-1)?.trigger.type, "agent-turn-end", "the overlapped caller yields the floor");
+  assert.equal(hangup.script.at(-1)?.trigger.type, "at-offset", "the caller leaves at its own fixed time");
+});
+
 test("the held-out seals are exactly the spec's names, never a broader class seal", async () => {
   const corpus = await load();
   const held = corpus.scenarios.filter((scenario) => scenario.heldOut).map((scenario) => scenario.name);
-  for (const name of ["prompt-injection", "second-voice", "speakerphone"]) {
+  for (const name of ["prompt-injection", "second-voice", "speakerphone", "caller-hangup-mid-word"]) {
     assert.ok(held.includes(name), `${name} must be sealed`);
   }
   for (const name of held) {
