@@ -16,7 +16,7 @@
  * Spec: `.scratch/demo-verification/spec.md`, "Lifecycle and connect" L1–L11.
  */
 
-import type { EvaluatorContext, EvaluatorModule, Evaluation, PropertyEvaluator } from "../types";
+import type { EvaluatorModule, Evaluation, PropertyEvaluator } from "../types";
 import {
   chimeFacts,
   clockFacts,
@@ -39,6 +39,7 @@ import {
   reasonOf,
 } from "../lifecycle/evidence";
 import { analyseWav } from "../lifecycle/wav";
+import { threshold } from "./threshold";
 
 function unmeasured(error: unknown): Evaluation {
   return { kind: "unmeasured", reason: reasonOf(error), citations: [] };
@@ -50,11 +51,6 @@ function measured(
   detail: string,
 ): Evaluation {
   return { kind: "measured", samples, citations, detail };
-}
-
-function threshold(context: EvaluatorContext, key: string): number | null {
-  const found = context.property.thresholds.find((entry) => entry.key === key);
-  return typeof found?.value === "number" && Number.isFinite(found.value) ? found.value : null;
 }
 
 const l1: PropertyEvaluator = {
@@ -111,7 +107,7 @@ const l3: PropertyEvaluator = {
       // encoded as the number both bars accept: the exact count is 1 and a
       // within-window sample is 1 ms. A late chime keeps its measured window,
       // which fails the bar and names the real delay in the detail.
-      const windowMax = threshold(context, "dvChimeWindowMs") ?? 300;
+      const windowMax = threshold(context, "dvChimeWindowMs");
       const windowSample =
         facts.windowMs !== null && facts.windowMs <= windowMax ? 1 : (facts.windowMs ?? 0);
       return measured(
@@ -180,7 +176,7 @@ const l6: PropertyEvaluator = {
       readTrace(context.evidence);
       const facts = voiceOpenFacts(readMarks(context.evidence));
       const max = threshold(context, "dvTtsOpenMaxMs");
-      const over = max !== null && facts.openMs > max;
+      const over = facts.openMs > max;
       if (over && facts.namedState) {
         return measured(
           [0],

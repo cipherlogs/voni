@@ -27,6 +27,7 @@ import {
   type ToolCallRow,
   type ToolResultRow,
 } from "../../tools/evidence";
+import { threshold } from "./threshold";
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -34,14 +35,6 @@ function reasonOf(error: unknown): string {
 
 function ms(value: number): string {
   return `${Math.round(value)}ms`;
-}
-
-function threshold(context: { property: { thresholds: readonly { key: string; value: number }[] } }, key: string): number {
-  const entry = context.property.thresholds.find((item) => item.key === key);
-  if (entry === undefined) {
-    throw new Error(`the contract resolved no "${key}" for this property`);
-  }
-  return entry.value;
 }
 
 function traceOf(evidence: Record<string, unknown>) {
