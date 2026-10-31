@@ -96,6 +96,63 @@ test("a timing property pools its repetitions and passes under every bar", () =>
   assert.match(verdict.detail, /p50 240ms <= 350ms/);
 });
 
+test("one measurement can carry one sample per bar, judged on its own axis", () => {
+  const A: ResolvedThreshold = { source: "budget-record", key: "axis-a", value: 10, unit: "db" };
+  const B: ResolvedThreshold = { source: "budget-record", key: "axis-b", value: 0.05, unit: "ratio" };
+  const property = entry({
+    id: "A9",
+    family: "audio",
+    kind: "deterministic",
+    repetitions: 1,
+    thresholds: [A, B],
+    bar: { text: "axis a <= 10 dB; axis b <= 0.05", numeric: true },
+  });
+  const bars: readonly BarBinding[] = [
+    { key: "axis-a", statistic: "each", comparison: "at-most", sample: 0 },
+    { key: "axis-b", statistic: "each", comparison: "at-most", sample: 1 },
+  ];
+  const passing = judgeProperty(
+    property,
+    evidence("A9", [measurement("A9", "quiet", 1, [5, 0.01])], bars),
+  );
+  assert.equal(passing.status, "PASS");
+  assert.equal(passing.checks.length, 2);
+
+  const failing = judgeProperty(
+    property,
+    evidence("A9", [measurement("A9", "quiet", 1, [5, 0.2])], bars),
+  );
+  assert.equal(failing.status, "FAIL");
+  assert.equal(failing.reason, "below-bar");
+  assert.equal(failing.checks.find((item) => item.key === "axis-a")?.passed, true);
+  assert.equal(failing.checks.find((item) => item.key === "axis-b")?.passed, false);
+  assert.match(failing.detail, /0\.2 > 0\.05/);
+});
+
+test("a bar naming an axis the measurement does not carry fails closed", () => {
+  const A: ResolvedThreshold = { source: "budget-record", key: "axis-a", value: 10, unit: "db" };
+  const B: ResolvedThreshold = { source: "budget-record", key: "axis-b", value: 0.05, unit: "ratio" };
+  const property = entry({
+    id: "A9",
+    family: "audio",
+    kind: "deterministic",
+    repetitions: 1,
+    thresholds: [A, B],
+    bar: { text: "axis a <= 10 dB; axis b <= 0.05", numeric: true },
+  });
+  const bars: readonly BarBinding[] = [
+    { key: "axis-a", statistic: "each", comparison: "at-most", sample: 0 },
+    { key: "axis-b", statistic: "each", comparison: "at-most", sample: 1 },
+  ];
+  const verdict = judgeProperty(
+    property,
+    evidence("A9", [measurement("A9", "quiet", 1, [5])], bars),
+  );
+  assert.equal(verdict.status, "FAIL");
+  assert.equal(verdict.reason, "empty-sample");
+  assert.match(verdict.detail, /axis-b.*sample 1/);
+});
+
 test("a pooled p50 over its bar fails, and the detail names the observed value", () => {
   const measurements = [
     measurement("T1", "golden-flow", 1, [400, 410]),
