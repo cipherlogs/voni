@@ -16,5 +16,6 @@ One record per decision that constrains future work. A record is never rewritten
 | [0010](0010-client-never-alters-the-agents-signal.md) | The client never alters the agent's signal | Browser playback |
 | [0011](0011-owned-cascade-with-meta-muse.md) | An owned cascade: Meta for ear and mind, AssemblyAI for the voice | Tenant path only |
 | [0012](0012-demo-cascade-only.md) | The demo runs only on the cascade; the tenant path stays managed | Demo surface |
+| [0013](0013-demo-readiness-is-a-signed-certificate.md) | Demo readiness is a signed certificate, not a promise of perfection | Demo verification |
 
-ADR-0011 is the standing record for the tenant path only. ADR-0012 records the demo surface split, including the withdrawal of Italian from the demo and its reason.
+ADR-0011 is the standing record for the tenant path only. ADR-0012 records the demo surface split, including the withdrawal of Italian from the demo and its reason. ADR-0013 governs demo readiness: the certificate, the panel as authority, the vendor-independent judge and the staging gate; the risks it accepts are registered in `docs/agents/demo-verification.md`.
