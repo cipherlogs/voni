@@ -232,7 +232,8 @@ class CascadeTurnStream:
         if self._may_request is not None and not self._may_request("llm"):
             return
         self._active = state
-        self._ledger.mark("floor_take")
+        if self._ledger is not None:
+            self._ledger.mark("floor_take")
         self._reply_task = asyncio.ensure_future(self._reply(state))
         self._reply_task.add_done_callback(self._reply_done)
 

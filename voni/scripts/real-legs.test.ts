@@ -1041,6 +1041,7 @@ test("the call's flow passes every assertion against a fake service", async () =
         "context-hidden",
         "identity-config",
         "captions",
+        "reply-gap",
         "audio-frames",
         "end-message",
         "resume-body",
@@ -1094,7 +1095,7 @@ test("the call's flow passes every assertion against a fake service", async () =
     );
     assert.match(checks.find((entry) => entry.code === "trace")?.detail ?? "", /call-real-legs-test/);
     assert.match(checks.find((entry) => entry.code === "cost")?.detail ?? "", /\$0\.000123/);
-    assert.match(formatRealLegsReport(checks), /16 checks, all passed/);
+    assert.match(formatRealLegsReport(checks), /17 checks, all passed/);
   } finally {
     await service.close();
     rmSync(dir, { recursive: true, force: true });
