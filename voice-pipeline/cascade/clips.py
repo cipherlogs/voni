@@ -198,7 +198,7 @@ def clip_plan_for(voice_id: str) -> ClipPlan:
     """One demo voice's plan, or a usage error for a voice outside the demo."""
     if voice_id not in DEMO_VOICE_IDS:
         raise ClipError(
-            f'"{voice_id}" is not a demo subject: clips are the demo voices '
+            f'"{voice_id}" is not a demo subject: clips are the five demo voices '
             f"({', '.join(DEMO_VOICE_IDS)})"
         )
     # The Locale is the catalogue's, not the caller's: the binding table owns it.
