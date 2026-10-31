@@ -140,6 +140,12 @@ export type BrowserRunInput = {
   readonly parityNote?: string | null;
   /** The certificate plan; a diagnose run is one repetition. */
   readonly plan?: { readonly mode: "diagnose" | "fast" | "nightly" | "full" | "cutover"; readonly repetitions: number };
+  /**
+   * Whether this call writes its own certificate. A single-scenario certifying
+   * run issues one; a multi-scenario caller withholds it because the run owns
+   * the one certificate, and the call's attempt is judged with the rest.
+   */
+  readonly certificate?: "issue" | "withhold";
 };
 
 const VONI_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -268,6 +274,9 @@ async function refused(
     runId,
     runDir,
     status: "refused",
+    attempt: null,
+    eligibility: null,
+    pipelineImage: null,
     exitCode: 2,
     verdict: null,
     certificateFile: null,
@@ -644,7 +653,15 @@ export async function runBrowserCertification(
   let certificate: Certificate | null = null;
   let certificateFile: string | null = null;
   let certificationReason: string | null = null;
+  const withholdCertificate = input.certificate === "withhold";
   try {
+    if (withholdCertificate) {
+      throw new BrowserAdapterError(
+        "certificate-refused",
+        "the caller withheld this call's certificate: a multi-scenario run owns the run's " +
+          "one certificate, and this call's attempt is judged with the rest",
+      );
+    }
     const usd = measuredCost(assembled.bundle);
     certificate = buildCertificate({
       contract,
@@ -722,7 +739,9 @@ export async function runBrowserCertification(
     certificate === null
       ? verdict.verdict === "ineligible"
         ? "ineligible"
-        : "not-demo-ready"
+        : verdict.verdict === "certified" && withholdCertificate
+          ? "certified"
+          : "not-demo-ready"
       : certificateVerdict === "certified"
         ? "certified"
         : certificateVerdict === "pending-human"
@@ -781,6 +800,9 @@ export async function runBrowserCertification(
     runId,
     runDir,
     status: runStatus,
+    attempt,
+    eligibility: assembled.eligibility,
+    pipelineImage: preflightAnswer.pipelineBuild,
     exitCode,
     verdict,
     certificateFile,

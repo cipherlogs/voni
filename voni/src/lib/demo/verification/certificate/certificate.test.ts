@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import type { Contract, ContractPropertyEntry } from "../contract";
 import { loadContract } from "../contract";
+import { RUN_SCENARIO } from "../economics";
 import { LOCALES, type Locale } from "../scenarios";
 import {
   judgeRun,
@@ -600,6 +601,86 @@ test("the live 82-property contract appears in full, with every fail-closed gap 
   assert.match(h6?.citations[0] ?? "", /^contract:H6$/);
   assert.equal(certificate.verdict, "not-demo-ready");
   assert.equal(certificate.pass, false);
+});
+
+test("a run-scoped E3 verdict is cited on the run, not forced onto a corpus scenario", () => {
+  const E3: ContractPropertyEntry = {
+    id: "E3",
+    family: "economics",
+    statement: "Run cost stays inside the plan's ceiling",
+    bar: { text: "total <= $10", numeric: true },
+    evidence: "cost",
+    kind: "deterministic",
+    repetitions: 1,
+    thresholds: [
+      { source: "budget-record", key: "dvCostFullRunMaxUsd", value: 10, unit: "usd" },
+    ],
+  };
+  const contract: Contract = {
+    families: [
+      { id: "turn-taking", title: "Turn taking", propertyCount: 1 },
+      { id: "economics", title: "Economics", propertyCount: 1 },
+    ],
+    properties: [T1, E3],
+  };
+  const run = judgeRun({
+    runId: "run-2026-10-31-01",
+    contract,
+    evidence: [
+      ...evidence().filter((entry) => entry.propertyId === "T1"),
+      {
+        propertyId: "E3",
+        bars: [{ key: "dvCostFullRunMaxUsd", statistic: "max", comparison: "at-most" }],
+        measurements: [
+          {
+            propertyId: "E3",
+            scenario: RUN_SCENARIO,
+            repetition: 1,
+            outcome: "measured",
+            samples: [1.25],
+            citations: ["cost:call-hello-en-1"],
+          },
+        ],
+      },
+    ],
+  });
+  const certificate = buildCertificate({
+    ...buildInput(),
+    contract,
+    run,
+  });
+  const e3 = certificate.properties.find((property) => property.propertyId === "E3");
+  assert.equal(e3?.status, "PASS");
+  assert.equal(e3?.scenarios[0]?.scenario, RUN_SCENARIO);
+  assert.equal(e3?.scenarios[0]?.locale, undefined);
+
+  const lying = judgeRun({
+    runId: "run-2026-10-31-01",
+    contract,
+    evidence: [
+      ...evidence().filter((entry) => entry.propertyId === "T1"),
+      {
+        propertyId: "E3",
+        bars: [{ key: "dvCostFullRunMaxUsd", statistic: "max", comparison: "at-most" }],
+        measurements: [
+          {
+            propertyId: "E3",
+            scenario: RUN_SCENARIO,
+            repetition: 1,
+            locale: "en",
+            outcome: "measured",
+            samples: [1.25],
+            citations: ["cost:call-hello-en-1"],
+          },
+        ],
+      },
+    ],
+  });
+  assertRefusal(
+    () => buildCertificate({ ...buildInput(), contract, run: lying }),
+    "locale-mismatch",
+    /run-scoped/,
+  );
 });
 
 test("the certificate's residual-risk copy matches the committed register", () => {
