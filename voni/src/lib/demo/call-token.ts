@@ -40,6 +40,22 @@ export function signDemoCall(key: string, now = Date.now(), tagId: string | null
   return `${payload}.${mac(key, payload)}`;
 }
 
+/**
+ * A fresh token for a call id that already exists. A hold return continues the
+ * same call (same row, same trace, same budgets) but never reuses the old
+ * token: the previous one may already be short-dated or bound to a tag the
+ * visitor no longer holds. Signed fresh, the call id is the only carried part.
+ */
+export function signDemoCallFor(
+  key: string,
+  callId: string,
+  now = Date.now(),
+  tagId: string | null = null,
+): string {
+  const payload = [callId, Math.floor(now / 1000) + CALL_TOKEN_TTL_S, ...(tagId ? [tagId] : [])].join(".");
+  return `${payload}.${mac(key, payload)}`;
+}
+
 export function verifyDemoCall(key: string, token: string, now = Date.now()): DemoCall | null {
   const parts = unseal(key, token, "demo-call");
   if (!parts || parts.length > 3) return null;
@@ -64,9 +80,9 @@ export function verifyTagToken(key: string, token: string, now = Date.now()): { 
 }
 
 /**
- * A re-mint within the same call (hold rejoin, reload continue) keeps the
- * call's token while it is valid: same call id, start and budgets, so the
- * inbox check still sees email sent before the rejoin.
+ * A non-resume re-mint (a reload continue) keeps the call's token while it is
+ * valid and the tag is unchanged: same call id, start and budgets. A hold
+ * return signs fresh instead (`signDemoCallFor`): same call id, new token.
  */
 export function carryDemoCall(key: string, previous: unknown, now = Date.now(), tagId: string | null = null): string {
   const carried = typeof previous === "string" ? verifyDemoCall(key, previous, now) : null;

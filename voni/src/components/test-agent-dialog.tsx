@@ -235,7 +235,6 @@ export function TestAgentDialog({
                   key={config.voiceId}
                   ref={callRef}
                   mode={{ kind: "inline", config, agentId, isDirty }}
-                  engine="managed"
                   presentation="dialog"
                   chromeless
                   // The dialog is the surface; the embedded card drops its

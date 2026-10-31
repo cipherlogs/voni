@@ -327,14 +327,18 @@ test("a carried tag keeps its id, its token and its email", async () => {
 });
 
 test("a hold rejoin keeps the call id and drops the greeting", async () => {
-  const app = harness();
+  // The visitor comes back a little later: the old token is still live, but
+  // the return signs a fresh one for the same call.
+  let now = NOW;
+  const app = harness({ clock: () => now });
   const first = await readJson(await app.handler(mintRequest({ voiceId: "jorg" })));
-  const callId = verifyDemoCall(KEY, String(first.demoCallToken), NOW)?.callId;
+  const callId = verifyDemoCall(KEY, String(first.demoCallToken), now)?.callId;
   assert.ok(callId);
   const history = [
     { role: "user", content: "Wir backen Brot." },
     { role: "assistant", content: "Sehr schön — wo?" },
   ];
+  now = NOW + 30_000;
 
   const second = await readJson(
     await app.handler(
@@ -348,8 +352,8 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
     ),
   );
 
-  assert.equal(second.demoCallToken, first.demoCallToken, "the same call token");
-  assert.equal(verifyDemoCall(KEY, String(second.demoCallToken), NOW)?.callId, callId);
+  assert.notEqual(second.demoCallToken, first.demoCallToken, "a fresh token, never the old one");
+  assert.equal(verifyDemoCall(KEY, String(second.demoCallToken), now)?.callId, callId);
   assert.notEqual(second.callToken, first.callToken, "a fresh single-use call token");
   assert.equal(second.agentId, "demo:jorg");
   assert.equal(second.testTag, first.testTag);
@@ -362,6 +366,39 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
   const freshBody = (firstDelivery.signedBody as { body: Record<string, unknown> }).body;
   assert.equal(freshBody.greeting, VONI_GREETINGS.de);
   assert.equal("history" in freshBody, false, "a fresh call starts blank");
+});
+
+test("a hold return with a changed tag keeps the call id, issues a fresh token and one row", async () => {
+  const app = harness();
+  const first = await readJson(await app.handler(mintRequest({ voiceId: "audrey" })));
+  const callId = verifyDemoCall(KEY, String(first.demoCallToken), NOW)?.callId;
+  assert.ok(callId);
+
+  // The visitor's tag is gone (a cleared store or an expired token): the mint
+  // issues a different tag. That must not silently start a second call.
+  const second = await readJson(
+    await app.handler(
+      mintRequest({
+        voiceId: "audrey",
+        resume: true,
+        callToken: first.demoCallToken,
+      }),
+    ),
+  );
+
+  assert.notEqual(second.testTag, first.testTag, "the tag changed");
+  assert.notEqual(second.demoCallToken, first.demoCallToken, "a fresh demo token");
+  assert.equal(
+    verifyDemoCall(KEY, String(second.demoCallToken), NOW)?.callId,
+    callId,
+    "resume always continues the held call id",
+  );
+  assert.notEqual(second.callToken, first.callToken, "a fresh single-use cascade token");
+  assert.equal(app.deliveries[1].callId, callId, "the delivery names the resumed call");
+
+  // Both mints name the same call, so the insert's conflict rule leaves one row.
+  const recordedIds = new Set(app.recorded.map((row) => row.callId));
+  assert.deepEqual([...recordedIds], [callId], "one call row, never a second call");
 });
 
 test("a rejoin without a valid previous call token is refused, not guessed", async () => {

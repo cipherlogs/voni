@@ -12,9 +12,13 @@ const source = readFileSync(new URL("./test-agent-dialog.tsx", import.meta.url),
 test("the test-call dialog has no engine or Cascade control", () => {
   assert.doesNotMatch(source, /\bCascade\b/, "no Cascade control survives in the dialog");
   assert.doesNotMatch(source, /setEngine/, "no engine state exists to switch");
-  assert.doesNotMatch(source, /engine=\{(?!")/, "the engine is not a variable");
+  assert.doesNotMatch(source, /engine=/, "the dialog never passes an engine prop");
 });
 
-test("a test call always starts managed", () => {
-  assert.match(source, /engine="managed"/, "the dialog pins the managed engine");
+test("a test call is inline, which is managed only", () => {
+  assert.match(
+    source,
+    /mode=\{\{ kind: "inline", config, agentId, isDirty \}\}/,
+    "the dialog opens the inline test call",
+  );
 });

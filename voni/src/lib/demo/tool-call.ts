@@ -23,3 +23,17 @@ export async function demoCallById(callId: string): Promise<DemoCall | null> {
   if (!row) return null;
   return { callId: row.callId, startedAt: row.createdAt.getTime(), tagId: row.tagId ?? null };
 }
+
+/**
+ * Whether this call's code readback passed. The pipeline's `check_code` writes
+ * `codeVerifiedAt`; the browser poll reads it back through the tool route, so
+ * the demo's visible verified state never depends on a browser tool result.
+ */
+export async function demoCallCodeVerified(callId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ codeVerifiedAt: demoCalls.codeVerifiedAt })
+    .from(demoCalls)
+    .where(eq(demoCalls.callId, callId))
+    .limit(1);
+  return Boolean(row?.codeVerifiedAt);
+}
