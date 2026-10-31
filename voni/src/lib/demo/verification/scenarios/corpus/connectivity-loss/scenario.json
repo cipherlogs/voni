@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "name": "connectivity-loss",
+  "class": "connectivity",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "R1",
+    "T7",
+    "A8"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [
+    {
+      "kind": "audio-dropout",
+      "atMs": 1200,
+      "durationMs": 400
+    }
+  ],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "314cbcefae210189eaa4e06828921f500d42a2f7268ffa729d2713ce9d0a74e3",
+      "text": "Hi, is this Voni?"
+    },
+    {
+      "id": "repeat",
+      "audio": "takes/repeat.wav",
+      "sha256": "33b81886728c5945d25d3365773c75f5202dc72713fdc891557691d9784b9da8",
+      "text": "Sorry, you cut out for a second. What did you say?"
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "repeat",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

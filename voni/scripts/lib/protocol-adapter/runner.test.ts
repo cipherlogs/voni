@@ -225,6 +225,16 @@ test("every startup gap is a named refusal with exit 2 and no call", async () =>
         expected: /soundscape:street-corner/,
       },
       {
+        name: "television soundscape",
+        input: probeRunInput({
+          corpusDir: join(root, "corpus-television"),
+          runRoot: join(root, "runs-television"),
+          eventsDir,
+          scenarioName: "soundscape-television",
+        }),
+        expected: /soundscape:television/,
+      },
+      {
         name: "demo inbox",
         input: probeRunInput({
           corpusDir: join(root, "corpus-email"),
@@ -239,6 +249,9 @@ test("every startup gap is a named refusal with exit 2 and no call", async () =>
 
     writeCorpus(join(root, "corpus-street"), [
       { name: "golden-flow-smoke", soundscape: { id: "street-corner" } },
+    ]);
+    writeCorpus(join(root, "corpus-television"), [
+      { name: "soundscape-television", soundscape: { id: "television" } },
     ]);
     writeCorpus(join(root, "corpus-email"), [
       { name: "tools-email-smoke", expectedProperties: ["X4"] },

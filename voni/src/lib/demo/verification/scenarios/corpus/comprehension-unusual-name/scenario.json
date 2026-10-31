@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "comprehension-unusual-name",
+  "class": "comprehension",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "K3",
+    "K8"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "17506b08a66e4ec1c6ea3316866959869668a3d68b1a4e80e5abb11b4c17054d",
+      "text": "Hi, I would like to update my details."
+    },
+    {
+      "id": "name",
+      "audio": "takes/name.wav",
+      "sha256": "b34d42f7f20398f1e2b934ab321c44d4c092aa52bc0565898bb173c2c69a790e",
+      "text": "My name is Amara. A m a r a."
+    },
+    {
+      "id": "spelling",
+      "audio": "takes/spelling.wav",
+      "sha256": "b201bb90006df00d6a4e4b4247d68f85407f701b0b46276e1341c62f785e4f83",
+      "text": "It is A m a r a, not Amara with two r's."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "name",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "spelling",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

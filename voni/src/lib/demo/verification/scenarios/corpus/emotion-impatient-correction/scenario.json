@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "name": "emotion-impatient-correction",
+  "class": "emotion",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "K1",
+    "K3",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "3f99ab6866dc3ef229519efed0ad4af66d98d71270ea6e3c283d08a43c49eaca",
+      "text": "I do not have all day, so listen carefully."
+    },
+    {
+      "id": "name",
+      "audio": "takes/name.wav",
+      "sha256": "09307d52dedc2e240025f01638c0312da65f2dca2e41527e100bcacabd57af87",
+      "text": "My name is Amara. A m a r a. Do not get it wrong."
+    },
+    {
+      "id": "email",
+      "audio": "takes/email.wav",
+      "sha256": "3d85c46967f8775f05c128142ee2f31a8c96c1a6550fc19f6c862d36a70c64e3",
+      "text": "And my email is a dot m a r a at example dot com."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "name",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "email",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
