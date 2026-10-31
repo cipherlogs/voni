@@ -786,7 +786,7 @@ async function startFakeService(options: {
         // them. A turn ends where the caller's speech gives way to silence,
         // which is what the live service's endpointing sees too.
         const pcm = Buffer.from(String(message.data ?? ""), "base64");
-        if (!pcm.some((byte) => byte !== 0)) return;
+        if (!pcm.some((byte: number) => byte !== 0)) return;
         if (speechEndTimer) clearTimeout(speechEndTimer);
         speechEndTimer = setTimeout(() => {
           if (turn < 2) answerTurn();

@@ -22,7 +22,7 @@ import {
   type DeliveryResult,
 } from "./pipeline-delivery";
 import { WALL_CAP_S } from "./talk-clock";
-import { issueTestTag, loadLiveTestTag, tagForMint, type TestTagRow } from "./test-tag-registry";
+import { issueTestTag, loadLiveTestTag, tagForMint } from "./test-tag-registry";
 import { DEMO_VOICE_IDS } from "./voni-agent";
 import { pipelineUrlFromEnv, type PipelineUrlResult } from "@/lib/voice/pipeline-url";
 

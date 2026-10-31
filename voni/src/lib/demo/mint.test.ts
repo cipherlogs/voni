@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createDemoTokenHandler, type MintDeps } from "./mint";
 import { buildDemoCascadeBody } from "./cascade-body";
 import { deliveryMessage, type DeliverCallBodyInput, type DeliveryResult } from "./pipeline-delivery";
-import { CALL_TOKEN_TTL_S, signDemoCall, signTagToken, verifyDemoCall } from "./call-token";
+import { CALL_TOKEN_TTL_S, signDemoCall, verifyDemoCall } from "./call-token";
 import { checkDemoLimits } from "./rate-limit";
 import { DELIVERY_REFUSAL_CODES } from "./pipeline-delivery";
 import type { TestTagRow } from "./test-tag-registry";
