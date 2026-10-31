@@ -1,8 +1,8 @@
-# Studio — Record (ticket 23)
+# Studio — Record, Rate and Corpus (tickets 23–24)
 
-The local-only Record surface where the owner records caller takes. It is a
-script process, not a Next route: nothing under `voni/src/` imports it, so a
-deployed build cannot contain it.
+The local-only Studio where the owner records caller takes, rates a certification
+blind, and browses the corpus. It is a script process, not a Next route: nothing
+under `voni/src/` imports it, so a deployed build cannot contain it.
 
 ## Run it
 
@@ -13,9 +13,12 @@ npm run demo:studio
 ```
 
 Flags passed after `--`: `--port <n>`, `--host <loopback>`, `--root <dir>`,
-`--dialogues <dir>`. Hosts other than `localhost`, `127.0.0.1` and `::1` are
-refused. `NODE_ENV=production`, `VONI_STUDIO_TARGET=production` and
-`STUDIO_TARGET=production` refuse to start (exit 2, `studio-not-local`).
+`--dialogues <dir>`, `--evidence-root <dir>`, `--rating-root <dir>`. Hosts
+other than `localhost`, `127.0.0.1` and `::1` are refused. `NODE_ENV=production`,
+`VONI_STUDIO_TARGET=production` and `STUDIO_TARGET=production` refuse to start
+(exit 2, `studio-not-local`).
+
+The three surfaces are `/` (Record), `/rate` (Rate) and `/corpus` (Corpus).
 
 Takes land in `voni/.studio/` (gitignored): `takes/take-000001/take.json` and
 content-addressed audio in `blobs/<sha256>.<format>`. The audio is hashed on
@@ -58,11 +61,56 @@ No dialogue scripts are committed yet: the spec does not define a caller
 script vocabulary, so the owner authors them. A malformed script is refused by
 file name.
 
+## Rate
+
+Load a certification pack (JSON: `{ certificate, calls }`) with a reviewer and
+an optional seed. `calls` entries carry `callId`, `scenario`, `locale`,
+`transcript`, `timeline`, and `audio` (`path` relative to `--evidence-root`,
+`sha256`); an optional `baseline` adds the blind A/B pair.
+
+- **Blind.** The payload the page receives has no verdict, model/vendor
+  identity, call or scenario id, hash, or answer key. Playback names the pair
+  only `A` and `B`.
+- **Queue.** Every call in a certificate scenario with a failing property is
+  queued; all failing calls come ahead of the clean sample. Each group is
+  shuffled with the session seed, so the order is not the evidence order and is
+  reproducible from the seed.
+- **Seven axes.** `stayOnCall`, `soundsHuman`, `turnTaking`, `understanding`,
+  `languageNaturalness`, `warmth`, `pacing` — each 1–5. A missing or unknown
+  axis is a named refusal.
+- **Free text and defect tags** are stored with the rating. Tags are
+  lowercase kebab-case; the vocabulary is the owner's, and an empty tag is
+  refused.
+- **Attribution.** Every rating names its `sessionId`, `reviewer`, `ratedAt`
+  and the call it judged. The session records the reviewer and date the
+  certificate signature (ticket 27) needs; `/export` returns the gold-label
+  document.
+
+A session is written once under `<root>/rating/sessions/<session-id>/`; a
+rating is written once per item under `ratings/`. Evidence is rehashed on
+creation and again on every serving; a changed file is `audio-drift`, and a
+path outside `--evidence-root` is refused.
+
+## Corpus
+
+Browse every take with its sha256, labels, audio, baseline consent and
+retirement state. **Retire** writes `retired.json` beside the untouched
+`take.json`: the take and its bytes stay readable, but `selectable()` excludes
+it, so a new scenario cannot choose it. A retirement needs a reviewer and a
+reason, and a second retirement is refused.
+
+The **human-baseline capture** form records a participant pseudonym, consent
+reference, consent date, call number, labels and audio (recorded or uploaded).
+The consent block is written into the take at landing; a baseline take without
+complete consent is refused by name. Baseline takes are blind comparison audio,
+never a certification input, so they are never selectable by a scenario.
+
 ## What is deliberately not here
 
-- No Rate or Corpus surface (ticket 24).
-- No take editing, renaming or deletion; promotion into a committed corpus is a
-  deliberate human act, not a Studio button.
+- No take editing, renaming or deletion; retirement is a mark, and promotion
+  into a committed corpus is a deliberate human act.
+- No automatic promotion from a Studio take into `scenarios/corpus/`; the
+  corpus loader verifies committed takes and the Studio never edits it.
 - No network reachability: loopback only, and a non-loopback `Host` is refused
   by name (`studio-not-local`).
 
@@ -71,9 +119,13 @@ file name.
 `npm test` discovers `scripts/studio/*.test.ts`:
 
 - `take-store.test.ts` — hashing against a pinned worked example, label
-  storage, one-shot/dialogue/upload landing, re-record lineage and drift
-  refusal.
+  storage, one-shot/dialogue/upload landing, re-record lineage, drift refusal,
+  retirement without mutation, baseline consent.
+- `rate.test.ts` — blinding, randomized order, queue completeness, the blind
+  A/B pair, the seven axes and attributable ratings.
+- `rating-store.test.ts` — session persistence, evidence hashing and drift,
+  opaque A/B serving, one-rating-per-item and gold-label export.
 - `server.test.ts` — the loopback routes, production-host refusal, label
-  refusal and dialogue loading.
+  refusal, dialogue loading, retirement, baseline consent and the Rate routes.
 - `build-exclusion.test.ts` — no Studio route, no `src/` import, no Next config
   entry, production-environment refusal.
