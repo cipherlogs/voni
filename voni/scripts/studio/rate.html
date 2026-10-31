@@ -246,6 +246,8 @@
         renderTimeline(item.timeline);
         const pair = $("ab-pair");
         const questions = $("ab-questions");
+        $("human-side").value = "";
+        $("preferred-side").value = "";
         if (item.ab) {
           pair.hidden = false;
           questions.hidden = false;
@@ -254,8 +256,6 @@
         } else {
           pair.hidden = true;
           questions.hidden = true;
-          $("human-side").value = "";
-          $("preferred-side").value = "";
         }
         for (const input of document.querySelectorAll('#axes input[type="radio"]')) input.checked = false;
         $("free-text").value = "";
