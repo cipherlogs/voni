@@ -12,6 +12,10 @@
  * Spec: `.scratch/demo-verification/spec.md`, "Targets, runs and cadence".
  */
 
+import {
+  ENGLISH_SCENARIOS as FULL_ENGLISH_SCENARIOS,
+  LOCALE_CORE_SCENARIOS,
+} from "@/lib/demo/verification/cadence";
 import type { CertificateTarget } from "@/lib/demo/verification/certificate";
 import {
   LOCALES,
@@ -24,11 +28,12 @@ import {
 import type { VerifyRequest } from "./args";
 import { refuse } from "./errors";
 
-/** The spec's English corpus size; the fast ten are a subset of it. */
-export const FULL_ENGLISH_SCENARIOS = 40;
-
-/** The spec's Locale core corpus size, per Locale. */
-export const LOCALE_CORE_SCENARIOS = 12;
+/**
+ * The spec's corpus sizes come from the cadence's one source. They are
+ * re-exported here because the CLI's public surface names them; a second
+ * literal would be a drift.
+ */
+export { FULL_ENGLISH_SCENARIOS, LOCALE_CORE_SCENARIOS };
 
 /** One scenario a plan will attempt, with the Locale it speaks. */
 export type PlannedScenario = {
@@ -146,10 +151,38 @@ function fastPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
   }
 }
 
+/** The scenarios the corpus holds for one Locale, in plan order. */
+function availableFor(corpus: Corpus, locale: Locale): Corpus["scenarios"] {
+  return corpus.scenarios
+    .filter((scenario) => scenario.locale === locale)
+    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+}
+
+/**
+ * A per-Locale full run is the spec's cutover shape: every Locale's full set.
+ * Only English has a full set; the other four hold the twelve-scenario core.
+ * A locale-filtered full run therefore refuses by name instead of issuing a
+ * certificate stamped full whose coverage is a core.
+ */
+function assertPerLocaleFull(request: VerifyRequest, corpus: Corpus): void {
+  if (request.mode !== "full" || request.locale === undefined || request.locale === "en") return;
+  const locale = request.locale;
+  const available = availableFor(corpus, locale).length;
+  refuse(
+    "missing-locale-corpus",
+    `the ${LOCALE_TITLE[locale]} per-Locale full corpus is missing: a full certification of ` +
+      `"${locale}" runs all ${FULL_ENGLISH_SCENARIOS} scenarios in that Locale, and the corpus ` +
+      `holds ${available} Locale-core scenario(s). Refusing rather than issuing a certificate ` +
+      "that carries a Locale coverage gap; run English --full or the nightly Locale core",
+  );
+}
+
 function certificationPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
   const repetitions = request.mode === "full" ? 3 : 1;
   const locales: readonly Locale[] =
     request.locale === undefined ? LOCALES : [request.locale];
+
+  assertPerLocaleFull(request, corpus);
 
   const gaps: string[] = [];
   const scenarios: PlannedScenario[] = [];
@@ -157,9 +190,7 @@ function certificationPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
 
   for (const locale of locales) {
     const required = requiredFor(locale);
-    const available = corpus.scenarios
-      .filter((scenario) => scenario.locale === locale)
-      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    const available = availableFor(corpus, locale);
     const title = LOCALE_TITLE[locale];
     if (available.length < required) {
       gaps.push(

@@ -29,10 +29,18 @@ import {
 import { encodeMonoWav } from "@/lib/platform/recording-capture";
 import type { EvidenceSource } from "@/lib/demo/verification/contract";
 import type { LoadedScenario } from "@/lib/demo/verification/scenarios";
-import type { CallEligibilityFact, RunVerdict } from "@/lib/demo/verification/verdict";
+import type { RunVerdict } from "@/lib/demo/verification/verdict";
 import type { ToolLogRow } from "@/lib/demo/tool-log";
 import type { InboxDelivery } from "@/lib/demo/verification/tools/inbox";
 
+import {
+  eligibilityOf,
+  firstRow,
+  parseTrace,
+  turnIds,
+  turnRows,
+  type AdapterErrorFactory,
+} from "../adapter-evidence";
 import { ProtocolAdapterError } from "./errors";
 import type {
   AssembledEvidence,
@@ -106,30 +114,11 @@ export function runDirectory(runRoot: string, runId: string): string {
   return resolve(runRoot, requireSafeId(runId, "run id"));
 }
 
-function parseTrace(text: string, file: string): Record<string, unknown>[] {
-  const rows: Record<string, unknown>[] = [];
-  for (const [index, line] of text.split("\n").entries()) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch (error) {
-      throw new ProtocolAdapterError(
-        "trace-malformed",
-        `${file} line ${index + 1} is not JSON: ${(error as Error).message}`,
-      );
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new ProtocolAdapterError(
-        "trace-malformed",
-        `${file} line ${index + 1} is not a JSON object`,
-      );
-    }
-    rows.push(parsed as Record<string, unknown>);
-  }
-  return rows;
-}
+const protocolError: AdapterErrorFactory = (code, message) =>
+  new ProtocolAdapterError(
+    code as ConstructorParameters<typeof ProtocolAdapterError>[0],
+    message,
+  );
 
 function readJsonFile(file: string, what: string): Record<string, unknown> {
   let bytes: Buffer;
@@ -157,68 +146,6 @@ function readJsonFile(file: string, what: string): Record<string, unknown> {
     );
   }
   return parsed as Record<string, unknown>;
-}
-
-function stringField(row: Record<string, unknown>, field: string): string | null {
-  const value = row[field];
-  return typeof value === "string" && value.trim() !== "" ? value : null;
-}
-
-function turnRows(rows: readonly Record<string, unknown>[]): Record<string, unknown>[] {
-  return rows.filter((row) => typeof row.turn === "string" && row.turn.trim() !== "");
-}
-
-function turnIds(rows: readonly Record<string, unknown>[]): string[] {
-  const seen = new Set<string>();
-  const ids: string[] = [];
-  for (const row of rows) {
-    const turn = stringField(row, "turn");
-    if (turn !== null && !seen.has(turn)) {
-      seen.add(turn);
-      ids.push(turn);
-    }
-  }
-  return ids;
-}
-
-function firstRow(
-  rows: readonly Record<string, unknown>[],
-  type: string,
-): Record<string, unknown> | null {
-  return rows.find((row) => row.type === type) ?? null;
-}
-
-function eligibilityOf(
-  call: ProtocolCallResult,
-  scenario: string,
-  end: Record<string, unknown> | null,
-  rows: readonly Record<string, unknown>[],
-): CallEligibilityFact {
-  const fallback = firstRow(rows, "provider_fallback");
-  const budgetRow = firstRow(rows, "budget.stopped");
-  const budget = end?.budget;
-  const budgetRecord =
-    budget !== null && typeof budget === "object" && !Array.isArray(budget)
-      ? (budget as Record<string, unknown>)
-      : null;
-  const budgetStop =
-    budgetRecord !== null
-      ? String(budgetRecord.reasons ?? budgetRecord.reason ?? "budget ceiling")
-      : budgetRow !== null
-        ? String(budgetRow.reason ?? budgetRow.spend ?? "budget.stopped")
-        : end?.endedBy === "budget"
-          ? "budget ceiling"
-          : null;
-  const providerFallback =
-    fallback !== null
-      ? `${String(fallback.leg ?? "vendor")} at ${String(fallback.phase ?? "turn")}`
-      : null;
-  return {
-    callId: call.callId,
-    scenario,
-    providerFallback,
-    budgetStop,
-  };
 }
 
 /** Read the trace and end document, copy the evidence, and build the bundle. */
@@ -257,7 +184,7 @@ export async function assembleEvidence(input: {
       `no trace at ${traceSource}; the service writes one JSONL per call and the run has no evidence without it: ${(error as Error).message}`,
     );
   }
-  const rows = parseTrace(traceText, traceSource);
+  const rows = parseTrace(traceText, traceSource, protocolError);
   if (rows.length === 0) {
     throw new ProtocolAdapterError(
       "trace-missing",
@@ -384,7 +311,12 @@ export async function assembleEvidence(input: {
     ...(priced === null ? {} : { cost: priced }),
   };
 
-  const eligibility = eligibilityOf(input.call, input.scenario.name, end, rows);
+  const eligibility = eligibilityOf({
+    callId: input.call.callId,
+    scenario: input.scenario.name,
+    end,
+    rows,
+  });
 
   const record: ProtocolCallRecord = {
     callId: input.call.callId,

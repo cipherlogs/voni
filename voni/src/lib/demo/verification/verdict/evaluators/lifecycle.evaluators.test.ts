@@ -743,6 +743,50 @@ test("L1–L11 fail closed when the browser marks are missing", async () => {
   }
 });
 
+test("L1 and L8 fail closed when the delivered WAV is absent", async () => {
+  const clean = cleanCall();
+  const noWav: EvidenceBundle = { ...clean.evidence, wav: undefined };
+  for (const id of ["L1", "L8"]) {
+    const { verdict } = await judged(id, noWav, "golden-flow-hello");
+    assert.equal(verdict.status, "FAIL", `${id} must fail closed without the delivered audio`);
+    assert.ok(
+      verdict.reason === "unmeasured" || verdict.reason === "missing-evidence",
+      `${id}: ${verdict.reason}`,
+    );
+  }
+});
+
+test("L1 never reads admission as the answer when the first voiced sample is unmarked", async () => {
+  const clean = cleanCall();
+  const noAudible = withMarks(
+    clean.evidence,
+    marksOf(
+      clean.marks.marks.filter((entry) => (entry as { name: string }).name !== "first_audible"),
+      8_000,
+    ),
+  );
+  const { verdict } = await judged("L1", noAudible, "golden-flow-hello");
+  assert.equal(verdict.status, "FAIL", "a ringback judged against intent alone is not a pass");
+});
+
+test("L8 fails when the talk clock starts before the delivered WAV's first voiced sample", async () => {
+  const clean = cleanCall();
+  const early = withMarks(
+    clean.evidence,
+    marksOf(
+      clean.marks.marks.map((entry) =>
+        (entry as { name: string }).name === "talk_clock_start"
+          ? mark("talk_clock_start", 100)
+          : entry,
+      ),
+      8_000,
+    ),
+  );
+  const { verdict, measurement } = await judged("L8", early, "golden-flow-hello");
+  assert.equal(verdict.status, "FAIL", "a clock that starts before any audible sample fails");
+  assert.match(measurement, /first voiced sample/i);
+});
+
 test("L6 accepts a long voice open only when the visitor sees a named unavailable state", async () => {
   const clean = cleanCall();
   const slow = withMarks(

@@ -789,7 +789,7 @@ const BUDGETS = {
     gate: "contract/E3",
     source:
       "demo-verification owner amendment 2026-10-31: nightly-health run ceiling <= $15 " +
-      "(88 calls x $0.15 = $13.20)",
+      "(91 calls x $0.15 = $13.65)",
   },
   dvCostFullRunMaxUsd: {
     value: 45,
@@ -797,7 +797,7 @@ const BUDGETS = {
     gate: "contract/E3",
     source:
       "demo-verification owner amendment 2026-10-31: full-certification run ceiling <= $45 " +
-      "(264 calls x $0.15 = $39.60)",
+      "(273 calls x $0.15 = $40.95)",
   },
   dvBudgetStopMaxCount: {
     value: 0,

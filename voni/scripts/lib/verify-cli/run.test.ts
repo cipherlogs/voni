@@ -20,6 +20,7 @@ import {
   validateCertificate,
   type PanelSignature,
 } from "@/lib/demo/verification/certificate";
+import { ENGLISH_SCENARIOS } from "@/lib/demo/verification/cadence";
 import { loadContract, type Contract } from "@/lib/demo/verification/contract";
 import type { PanelJudgementInput } from "@/lib/demo/verification/panel";
 import {
@@ -182,6 +183,30 @@ test("a clean fast run is a scoped-pass and exit 1: it is not a certificate", as
   assert.equal(result.calls, 10);
   assert.equal(result.certificate, null, "a fast run never writes a certificate");
   assert.match(result.detail, /scoped-pass|not a certificate/);
+  assert.deepEqual(result.failedPropertyIds, [], "the artifact carries the zero-failure evidence");
+  assert.equal(result.ineligible, false);
+});
+
+test("the economics run gate, not the fast module, reds a fast run over its ceiling", async () => {
+  const overCost = { ...COST_ROW, totalUsd: 0.3 };
+  const result = await fastResult({
+    runScenario: async (input) => ({
+      refusal: null,
+      attempt: {
+        scenario: input.scenario,
+        repetition: 1,
+        locale: input.locale,
+        target: input.target,
+        evidence: { ...EVIDENCE, cost: overCost },
+      },
+      eligibility: { callId: `${input.scenario}#${input.repetition}`, scenario: input.scenario },
+      pipelineImage: "pipeline-test",
+    }),
+  });
+  // Ten calls x $0.30 = $3.00, over E3's fast ceiling of $2.
+  assert.equal(result.status, "not-demo-ready");
+  assert.equal(result.exitCode, 1);
+  assert.match(result.unrun.join("\n"), /E3|run ceiling|3\.00/);
 });
 
 test("a failing fast run is not-demo-ready and exit 1", async () => {
@@ -197,6 +222,7 @@ test("a failing fast run is not-demo-ready and exit 1", async () => {
   const result = await fastResult({ loadEvaluators: async () => failing });
   assert.equal(result.status, "not-demo-ready");
   assert.equal(result.exitCode, 1);
+  assert.ok(result.failedPropertyIds.includes("T3"), "the report names the failed property");
   assert.ok(result.unrun.some((line) => line.includes("T3")), result.unrun.join("\n"));
 });
 
@@ -357,8 +383,8 @@ test("full and nightly plan over the complete corpus and carry no corpus gap", a
   });
   assert.equal(
     corpus.scenarios.filter((scenario) => scenario.locale === "en").length,
-    40,
-    "English holds all forty scenarios",
+    ENGLISH_SCENARIOS,
+    "English holds every scenario the plan is defined over",
   );
   for (const mode of ["full", "nightly"] as const) {
     const plan = planVerify({ request: request(["--target", "local", `--${mode}`]), corpus });

@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "name": "mispronounced-email",
+  "class": "comprehension",
+  "locale": "en",
+  "heldOut": true,
+  "expectedProperties": [
+    "K1",
+    "K8"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "edge": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "020a11e0559e5b1a7a395d2c840c75bc4ed2494e4c3c750385b378dc9d4e6af4",
+      "text": "Hi, could you send the details to my email?"
+    },
+    {
+      "id": "email",
+      "audio": "takes/email.wav",
+      "sha256": "ea3d9ee7e89dfc0f04f027f68110e63bd2b182be67ead3f9928fd0bc16b8770d",
+      "text": "It is s i o b h a n at example dot com. Nobody ever spells it right."
+    },
+    {
+      "id": "confirm",
+      "audio": "takes/confirm.wav",
+      "sha256": "fdfc05556a9d66fef88fd85448e901fd929bc9a9dc2086d88210a2823eb3ae6d",
+      "text": "Yes, s i o b h a n at example dot com."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "email",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "confirm",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

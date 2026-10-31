@@ -7,21 +7,32 @@
  * "clean scoped-pass" from "not-demo-ready", so this reader checks the report's
  * status and call count and exits 0 only for the expected clean state:
  *
- *   fast      10 calls, status "scoped-pass"      (never a certificate)
- *   nightly   88 calls, status "health-clean"     (a report, never a pass)
- *   full      264 calls, status "certified" or "pending-human"; a certificate
- *             must exist. pending-human prints a warning and is not a pass.
+ *   fast      the fast contract's calls, status "scoped-pass"  (never a certificate)
+ *   nightly   the nightly plan's calls, status "health-clean"  (a report, never a pass)
+ *   full      the full plan's calls, status "certified" or "pending-human";
+ *             a certificate must exist. pending-human prints a warning and is
+ *             not a pass.
+ *
+ * The call counts are the cadence's one source; this reader imports them
+ * instead of restating a number.
  *
  * Any refusal, not-demo-ready, ineligible, short call count or missing
  * certificate fails. The workflow's required wrapper separately fails on a
  * skipped, cancelled or artifact-less job.
  *
- *   node scripts/demo-gate-report.mjs <fast|nightly|full> <report.json>
+ *   node --import tsx scripts/demo-gate-report.mjs <fast|nightly|full> <report.json>
  */
 
 import { readFileSync, appendFileSync } from "node:fs";
 
-const EXPECTED_CALLS = { fast: 10, nightly: 88, full: 264 };
+import {
+  FAST_CALLS,
+  FULL_CALLS,
+  NIGHTLY_CALLS,
+} from "../src/lib/demo/verification/cadence.ts";
+
+// The counts are the cadence's one source; this reader never restates them.
+const EXPECTED_CALLS = { fast: FAST_CALLS, nightly: NIGHTLY_CALLS, full: FULL_CALLS };
 const EXPECTED_STATUS = {
   fast: ["scoped-pass"],
   nightly: ["health-clean"],
@@ -48,17 +59,30 @@ try {
 
 const expectedCalls = EXPECTED_CALLS[mode];
 if (report.mode !== mode) fail(`the report is a "${report.mode}" run, not "${mode}"`);
+if (report.exitCode === 2 || report.status === "refused") {
+  fail(`the ${mode} run refused: ${(report.refusals ?? []).join("; ")}`);
+}
 if (report.calls !== expectedCalls) {
   fail(`the ${mode} run made ${report.calls} calls; the plan is ${expectedCalls}`);
+}
+
+// The gate reads the artifact, not the exit code. `demo:verify` exits 1 for a
+// clean fast scoped-pass and for a property failure alike, so a green needs
+// the verdict's own evidence: a zero failed-property list and an eligible run.
+if (!Array.isArray(report.failedPropertyIds)) {
+  fail(`the ${mode} report carries no failed-property list; a gate cannot green on prose`);
+}
+if (report.failedPropertyIds.length > 0) {
+  fail(`the ${mode} run failed ${report.failedPropertyIds.join(", ")}; a property failure is red`);
+}
+if (report.ineligible === true) {
+  fail(`the ${mode} run is ineligible; a contaminated call can never green`);
 }
 if (!EXPECTED_STATUS[mode].includes(report.status)) {
   fail(
     `the ${mode} run reports "${report.status}" (exit ${report.exitCode}); ` +
       `expected ${EXPECTED_STATUS[mode].join(" or ")}`,
   );
-}
-if (report.exitCode === 2 || report.status === "refused") {
-  fail(`the ${mode} run refused: ${(report.refusals ?? []).join("; ")}`);
 }
 if (mode === "full" && !report.certificate) {
   fail("the full run produced no certificate; a panel-signed claim needs one");

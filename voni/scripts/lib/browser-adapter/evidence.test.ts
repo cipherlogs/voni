@@ -64,20 +64,33 @@ test("the assembled bundle carries the delivered WAV, marks, trace and end docum
 
     const copied = readFileSync(record.files.marks, "utf8");
     assert.equal(copied, readFileSync(call.marksPath as string, "utf8"));
-    assert.ok(record.evidenceGaps.length === 0, "the priced row is present");
+    assert.deepEqual(
+      record.evidenceGaps.filter((gap) => !/visitor transcript/.test(gap)),
+      [],
+      "the priced row is present; only the named no-caption gap remains",
+    );
   } finally {
     removeTree(root);
   }
 });
 
-test("the visitor's captions travel in the browser evidence", async () => {
+test("the visitor's captions become the evidence transcript, timed by the turn marks", async () => {
   const root = tempRoot();
   try {
     const scenario = await scenarioAt(root);
     const eventsDir = join(root, "events");
     const capturesDir = join(root, "captures");
     const call = {
-      ...fakeBrowserCall({ scenario, eventsDir, capturesDir, runDir: root }),
+      ...fakeBrowserCall({
+        scenario,
+        eventsDir,
+        capturesDir,
+        runDir: root,
+        turnMarks: [
+          { atMs: 1_800, role: "caller" },
+          { atMs: 2_600, role: "agent" },
+        ],
+      }),
       captions: [
         { role: "caller" as const, text: "Hi, is this Voni?" },
         { role: "agent" as const, text: "Speaking." },
@@ -91,6 +104,65 @@ test("the visitor's captions travel in the browser evidence", async () => {
       callDir: join(root, "call"),
     });
     assert.deepEqual(assembled.bundle.browser.captions, call.captions);
+    assert.deepEqual(assembled.bundle.trace.transcript, [
+      { role: "caller", text: "Hi, is this Voni?", atMs: 1_800, final: true, turn: null },
+      { role: "agent", text: "Speaking.", atMs: 2_600, final: true, turn: null },
+    ]);
+    assert.equal(assembled.bundle.trace.transcriptGap, null);
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a call with no rendered caption withholds the transcript and names the gap", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await scenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = fakeBrowserCall({ scenario, eventsDir, capturesDir, runDir: root });
+    const { assembled } = await assembleBrowserEvidence({
+      call,
+      scenario,
+      target: "local",
+      eventsDir,
+      callDir: join(root, "call"),
+    });
+    assert.equal(assembled.bundle.trace.transcript, null);
+    assert.match(assembled.bundle.trace.transcriptGap ?? "", /no visitor transcript/);
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a caption count that disagrees with the turn marks is withheld, never guessed", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await scenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = {
+      ...fakeBrowserCall({
+        scenario,
+        eventsDir,
+        capturesDir,
+        runDir: root,
+        turnMarks: [{ atMs: 1_800, role: "caller" }],
+      }),
+      captions: [
+        { role: "caller" as const, text: "Hi, is this Voni?" },
+        { role: "agent" as const, text: "Speaking." },
+      ],
+    };
+    const { assembled } = await assembleBrowserEvidence({
+      call,
+      scenario,
+      target: "local",
+      eventsDir,
+      callDir: join(root, "call"),
+    });
+    assert.equal(assembled.bundle.trace.transcript, null);
+    assert.match(assembled.bundle.trace.transcriptGap ?? "", /without guessing a time/);
   } finally {
     removeTree(root);
   }

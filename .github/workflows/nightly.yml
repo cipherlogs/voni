@@ -125,10 +125,10 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------
-  # Ticket 30: demo nightly health. English 40 x 1 plus the Locale core 12 x 1
-  # on each of es, fr, de and pt = 88 calls. The gate reads
+  # Ticket 30: demo nightly health. English 43 x 1 plus the Locale core 12 x 1
+  # on each of es, fr, de and pt = 91 calls. The gate reads
   # dvCostNightlyRunMaxUsd ($15) before the first call; at the frozen $0.15
-  # per-call cap the plan is $13.20. A clean report is "health-clean" and
+  # per-call cap the plan is $13.65. A clean report is "health-clean" and
   # still exits 1 (it is not a certificate), so demo-gate-report.mjs is the
   # gate. Missing keys are a named skip and the required wrapper fails: this
   # night is never green without evidence.
@@ -178,7 +178,7 @@ jobs:
       - run: npm ci
       - name: Chromium
         run: npx playwright install --with-deps chromium
-      - name: Nightly health (English 40 x 1 + Locale core 12 x 1 x 4)
+      - name: Nightly health (English 43 x 1 + Locale core 12 x 1 x 4)
         env:
           META_API_KEY: ${{ secrets.META_API_KEY }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
@@ -190,7 +190,7 @@ jobs:
           set -e
           cat "$RUNNER_TEMP/demo-nightly.json" || true
           cat "$RUNNER_TEMP/demo-nightly.err" >&2 || true
-          node scripts/demo-gate-report.mjs nightly "$RUNNER_TEMP/demo-nightly.json"
+          node --import tsx scripts/demo-gate-report.mjs nightly "$RUNNER_TEMP/demo-nightly.json"
       - name: Nightly run artifacts (never committed)
         if: always()
         uses: actions/upload-artifact@v4

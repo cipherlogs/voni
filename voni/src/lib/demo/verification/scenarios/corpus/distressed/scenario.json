@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "name": "distressed",
+  "class": "emotion",
+  "locale": "en",
+  "heldOut": true,
+  "expectedProperties": [
+    "C4",
+    "C5",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "edge": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "d1031f97e35f7df210002e7d3e6868b35778a744a5c56cf7f77145bf99c0b939",
+      "text": "I am sorry, I am a bit all over the place. I lost my confirmation email."
+    },
+    {
+      "id": "distress",
+      "audio": "takes/distress.wav",
+      "sha256": "7a2f1504d33961386a90b8a15efed764a24b328e0aaa13ff9a087b0f0979815b",
+      "text": "I just need to know that someone can help me sort this out."
+    },
+    {
+      "id": "settle",
+      "audio": "takes/settle.wav",
+      "sha256": "288355005a9c8ae92fe9afe5d31e5e0e255ba3345a11e9ac1640d500c2e6bda3",
+      "text": "Thank you. That helps."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "distress",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "settle",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

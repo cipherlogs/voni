@@ -181,6 +181,14 @@ export type VerifyResult = {
   readonly refusals: readonly string[];
   readonly unrun: readonly string[];
   readonly detail: string;
+  /**
+   * The property ids the run measured as failures, from the verdict itself.
+   * A CI gate reads this, never prose: zero ids is the evidence a property
+   * gate needs, and one id reds the run whatever the exit code says.
+   */
+  readonly failedPropertyIds: readonly string[];
+  /** A fallback-contaminated or otherwise ineligible run can never green. */
+  readonly ineligible: boolean;
 };
 
 function emptyResult(
@@ -203,6 +211,8 @@ function emptyResult(
     refusals: [],
     unrun: [],
     detail: "",
+    failedPropertyIds: [],
+    ineligible: false,
   };
 }
 
@@ -489,15 +499,22 @@ async function fastRun(
 ): Promise<VerifyResult> {
   const collected = await collectCalls(request, plan, deps);
   const endedAt = (deps.now ?? (() => new Date()))().toISOString();
-  const evidence = await evaluateScenarios({
+  // E3 is run-scoped and has one owner: the economics run gate. The fast
+  // module reports what it measured; it never holds a second verdict path.
+  const scoped = scopeRunToCeiling({
     contract,
-    evaluators,
-    attempts: [...collected.attempts],
+    evidence: await evaluateScenarios({
+      contract,
+      evaluators,
+      attempts: [...collected.attempts],
+    }),
+    kind: "fast",
+    calls: [...collected.costs],
   });
   const verdict = judgeRun({
     runId: (deps.newRunId ?? defaultRunId)(),
-    contract,
-    evidence,
+    contract: scoped.contract,
+    evidence: scoped.evidence,
     calls: [...collected.eligibility],
   });
   const calls = collected.attempts.map((attempt) => {
@@ -511,7 +528,7 @@ async function fastRun(
     return { scenario: attempt.scenario, costUsd };
   });
   const report = judgeFastRun({
-    contract,
+    contract: scoped.contract,
     corpus,
     verdict,
     calls,
@@ -528,6 +545,8 @@ async function fastRun(
   return {
     ...emptyResult(request, status, 1),
     calls: collected.attempts.length,
+    failedPropertyIds: report.failedPropertyIds,
+    ineligible: report.verdict === "ineligible",
     detail:
       `${report.scopeNote} ${report.economy.detail}. A scoped-pass is not a certificate; ` +
       "exit 0 is reserved for a signed full certification",
@@ -585,6 +604,8 @@ async function certificationRun(
     return {
       ...emptyResult(request, status, 1),
       calls: collected.attempts.length,
+      failedPropertyIds: verdict.failedPropertyIds,
+      ineligible: verdict.verdict === "ineligible",
       detail:
         `${verdict.detail}. Nightly health is a report, not a certificate: exit 0 requires a ` +
         "signed full certification",
@@ -622,6 +643,8 @@ async function certificationRun(
     ),
     runId: certificate.runId,
     calls: collected.attempts.length,
+    failedPropertyIds: judged.failedPropertyIds,
+    ineligible: judged.verdict === "ineligible",
     certificate,
     certificatePath: fileURLToPath(certificateFile(certificate.runId)),
     certificateVerdict: certificate.verdict,

@@ -308,8 +308,10 @@ const MEASURED: readonly FamilyId[] = [
   "tools",
   "audio",
   "resilience",
+  // E3 is run-scoped: the economics run gate judges the fast run's ceiling.
+  "economics",
 ];
-const OUT_OF_SCOPE: readonly FamilyId[] = ["comprehension", "economics", "human", "security"];
+const OUT_OF_SCOPE: readonly FamilyId[] = ["comprehension", "human", "security"];
 
 test("the fast scope names every family it does not measure out of scope", async () => {
   const contract = await CONTRACT;
@@ -474,7 +476,7 @@ test("ten calls at one repetition fit the fast plan; a missing call is refused b
   );
 });
 
-test("a run over the fast cost ceiling is not-demo-ready", async () => {
+test("the fast report measures cost but leaves the E3 verdict to the run gate", async () => {
   const contract = await CONTRACT;
   const report = judgeFastRun({
     contract,
@@ -485,9 +487,10 @@ test("a run over the fast cost ceiling is not-demo-ready", async () => {
     endedAt: "2026-10-31T10:02:00.000Z",
   });
   assert.equal(report.economy.measuredUsd, 3);
-  assert.equal(report.economy.withinCeiling, false);
-  assert.equal(report.verdict, "not-demo-ready");
+  assert.equal(report.economy.withinCeiling, false, "the over-ceiling cost is reported");
   assert.match(report.economy.detail, /3.*2|2.*3/);
+  // The economics run gate owns E3. This module never holds a second path.
+  assert.equal(report.verdict, "scoped-pass");
 });
 
 test("an unmeasured call cost fails closed; it never fits a ceiling", async () => {
@@ -504,24 +507,45 @@ test("an unmeasured call cost fails closed; it never fits a ceiling", async () =
   });
   assert.equal(report.economy.measuredUsd, null);
   assert.equal(report.economy.withinCeiling, false);
-  assert.equal(report.verdict, "not-demo-ready");
   assert.match(report.economy.detail, /tools-email-send/);
+  // The run gate settles the unmeasured total and reds E3; this module reports
+  // the measurement and does not own the verdict.
+  assert.ok(report.gaps.includes(report.economy.detail));
 });
 
-test("wall-clock time is measured, and the unset numeric ceiling is a named gap", async () => {
+test("wall-clock time is measured, and the gap derives from the bound the run was given", async () => {
   const contract = await CONTRACT;
-  const report = judgeFastRun({
+  const base = {
     contract,
     corpus: await corpus(),
     verdict: verdictFor(contract),
     calls: calls(),
     startedAt: "2026-10-31T10:00:00.000Z",
     endedAt: "2026-10-31T10:04:00.000Z",
-  });
-  assert.equal(report.timing.elapsedMs, 240_000);
+  };
+
+  const unbounded = judgeFastRun(base);
+  assert.equal(unbounded.timing.elapsedMs, 240_000);
+  assert.equal(unbounded.timing.ceilingMs, null);
+  assert.equal(unbounded.timing.withinCeiling, null, "an unmeasured bound is never within");
   assert.ok(
-    report.gaps.some((gap) => /wall-clock ceiling is unset/.test(gap)),
-    "no made-up runtime number: the unset ceiling is recorded",
+    unbounded.gaps.some((gap) => /measured 240000ms/.test(gap) && /no wall-clock bound/.test(gap)),
+    unbounded.gaps.join("\n"),
+  );
+  assert.ok(
+    unbounded.gaps.every((gap) => !/ceiling is unset/.test(gap)),
+    "the old permanent literal is gone",
+  );
+
+  const within = judgeFastRun({ ...base, wallClockCeilingMs: 300_000 });
+  assert.equal(within.timing.withinCeiling, true);
+  assert.deepEqual(within.gaps, [], "a within-bound run carries no wall-clock gap");
+
+  const over = judgeFastRun({ ...base, wallClockCeilingMs: 120_000 });
+  assert.equal(over.timing.withinCeiling, false);
+  assert.ok(
+    over.gaps.some((gap) => /240000ms/.test(gap) && /120000ms/.test(gap) && /over/.test(gap)),
+    over.gaps.join("\n"),
   );
 });
 

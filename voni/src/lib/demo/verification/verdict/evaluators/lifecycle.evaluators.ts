@@ -16,8 +16,9 @@
  * Spec: `.scratch/demo-verification/spec.md`, "Lifecycle and connect" L1–L11.
  */
 
-import type { EvaluatorContext, EvaluatorModule, Evaluation, PropertyEvaluator } from "../types";
+import type { EvaluatorModule, Evaluation, PropertyEvaluator } from "../types";
 import {
+  audioAnswer,
   chimeFacts,
   clockFacts,
   configFacts,
@@ -39,6 +40,7 @@ import {
   reasonOf,
 } from "../lifecycle/evidence";
 import { analyseWav } from "../lifecycle/wav";
+import { threshold } from "./threshold";
 
 function unmeasured(error: unknown): Evaluation {
   return { kind: "unmeasured", reason: reasonOf(error), citations: [] };
@@ -52,11 +54,6 @@ function measured(
   return { kind: "measured", samples, citations, detail };
 }
 
-function threshold(context: EvaluatorContext, key: string): number | null {
-  const found = context.property.thresholds.find((entry) => entry.key === key);
-  return typeof found?.value === "number" && Number.isFinite(found.value) ? found.value : null;
-}
-
 const l1: PropertyEvaluator = {
   propertyId: "L1",
   source: "lifecycle.evaluators.ts",
@@ -66,11 +63,15 @@ const l1: PropertyEvaluator = {
   ],
   evaluate(context) {
     try {
-      const facts = ringbackFacts(readMarks(context.evidence));
+      const marks = readMarks(context.evidence);
+      const answer = audioAnswer(marks, analyseWav(readWav(context.evidence).file));
+      const facts = ringbackFacts(marks, answer.answerMs);
       return measured(
         [facts.afterAnswerCount, facts.holdReturnCount],
-        facts.afterAnswerCount > 0 || facts.holdReturnCount > 0 ? ["browser:ringback"] : [],
-        facts.detail,
+        facts.afterAnswerCount > 0 || facts.holdReturnCount > 0
+          ? ["browser:ringback", "browser:first_audible", "wav:delivered"]
+          : ["browser:ringback", "wav:delivered"],
+        `${facts.detail}; ${answer.detail}`,
       );
     } catch (error) {
       return unmeasured(error);
@@ -111,7 +112,7 @@ const l3: PropertyEvaluator = {
       // encoded as the number both bars accept: the exact count is 1 and a
       // within-window sample is 1 ms. A late chime keeps its measured window,
       // which fails the bar and names the real delay in the detail.
-      const windowMax = threshold(context, "dvChimeWindowMs") ?? 300;
+      const windowMax = threshold(context, "dvChimeWindowMs");
       const windowSample =
         facts.windowMs !== null && facts.windowMs <= windowMax ? 1 : (facts.windowMs ?? 0);
       return measured(
@@ -180,7 +181,7 @@ const l6: PropertyEvaluator = {
       readTrace(context.evidence);
       const facts = voiceOpenFacts(readMarks(context.evidence));
       const max = threshold(context, "dvTtsOpenMaxMs");
-      const over = max !== null && facts.openMs > max;
+      const over = facts.openMs > max;
       if (over && facts.namedState) {
         return measured(
           [0],
@@ -222,13 +223,15 @@ const l8: PropertyEvaluator = {
   evaluate(context) {
     try {
       readEnd(context.evidence);
-      const facts = clockFacts(readMarks(context.evidence));
+      const marks = readMarks(context.evidence);
+      const answer = audioAnswer(marks, analyseWav(readWav(context.evidence).file));
+      const facts = clockFacts(marks, answer.answerMs);
       return measured(
         [facts.beforeAudioCount],
         facts.beforeAudioCount > 0
-          ? ["browser:talk_clock_start", "browser:first_audible"]
-          : ["browser:talk_clock_start", "browser:first_audible"],
-        facts.detail,
+          ? ["browser:talk_clock_start", "browser:first_audible", "wav:delivered"]
+          : ["browser:talk_clock_start", "browser:first_audible", "wav:delivered"],
+        `${facts.detail}; ${answer.detail}`,
       );
     } catch (error) {
       return unmeasured(error);

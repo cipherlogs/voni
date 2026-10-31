@@ -86,6 +86,48 @@ test("the English corpus holds four soundscape, nine connectivity and three meta
   ]);
 });
 
+test("the English class shape is documented, including the census deviations (RR-08)", async () => {
+  const corpus = await load();
+  const shape: Record<string, number> = {};
+  for (const scenario of corpus.scenarios) {
+    if (scenario.locale !== "en") continue;
+    shape[scenario.class] = (shape[scenario.class] ?? 0) + 1;
+  }
+  // The committed shape, not the spec's census: the six resilience-edge
+  // scenarios (R2–R7) are filed under connectivity, and there is no English
+  // locale class. The spec census and this table are named apart in RR-08.
+  assert.deepEqual(shape, {
+    comprehension: 6,
+    connectivity: 9,
+    emotion: 7,
+    ending: 3,
+    "golden-flow": 4,
+    "meta-security": 3,
+    soundscape: 4,
+    tools: 3,
+    "turn-taking": 4,
+  });
+  assert.equal(
+    namesOf(corpus.scenarios, "locale").length,
+    0,
+    "no English scenario is Locale class",
+  );
+  assert.equal(
+    corpus.scenarios.filter((scenario) => scenario.class === "locale").length,
+    0,
+    "no scenario uses the spec's locale class at all; the Locale core is classed by behaviour",
+  );
+  assert.equal(
+    corpus.scenarios.filter((scenario) => scenario.locale !== "en").length,
+    48,
+    "the Locale core is the 48 non-English scenarios, classed by behaviour (RR-08)",
+  );
+  const byName = new Map(corpus.scenarios.map((scenario) => [scenario.name, scenario]));
+  for (const name of EDGE_CONNECTIVITY) {
+    assert.equal(byName.get(name)?.class, "connectivity", `${name} is the documented fold into connectivity`);
+  }
+});
+
 test("the new scenarios cite the S, R and audio properties they exist to feed", async () => {
   const corpus = await load();
   const byName = new Map(corpus.scenarios.map((scenario) => [scenario.name, scenario]));
@@ -142,10 +184,24 @@ test("ticket 20's edge scenarios each produce one R property and no media fault"
   assert.equal(byName.get("resilience-hold-return")?.edge[0]?.kind, "page-freeze");
 });
 
-test("the corpus is 40 English scenarios, and the last three fill golden flow, turn-taking and ending", async () => {
+test("the corpus is 43 English scenarios, and the closing six fill golden flow, turn-taking, ending and the seal", async () => {
   const corpus = await load();
   const english = corpus.scenarios.filter((scenario) => scenario.locale === "en");
-  assert.equal(english.length, 40, "English runs all 40 scenarios the nightly/full plan is defined over");
+  assert.equal(
+    english.length,
+    43,
+    "English runs the spec's 40 plus the three sealed held-out scenarios the plan is defined over",
+  );
+  assert.equal(
+    english.filter((scenario) => scenario.class === "emotion").length,
+    7,
+    "five ticket-13 emotion scenarios plus the sealed sarcastic and distressed",
+  );
+  assert.equal(
+    english.filter((scenario) => scenario.class === "comprehension").length,
+    6,
+    "five ticket-13 comprehension scenarios plus the sealed mispronounced-email",
+  );
 
   assert.deepEqual(namesOf(corpus.scenarios, "golden-flow"), [
     "golden-flow-booking",
@@ -181,12 +237,15 @@ test("the corpus is 40 English scenarios, and the last three fill golden flow, t
   assert.equal(hangup.script.at(-1)?.trigger.type, "at-offset", "the caller leaves at its own fixed time");
 });
 
-test("the held-out seals are exactly the spec's names, never a broader class seal", async () => {
+test("the held-out seals are exactly the spec's eight names, never a broader class seal", async () => {
   const corpus = await load();
-  const held = corpus.scenarios.filter((scenario) => scenario.heldOut).map((scenario) => scenario.name);
-  for (const name of ["prompt-injection", "second-voice", "speakerphone", "caller-hangup-mid-word"]) {
-    assert.ok(held.includes(name), `${name} must be sealed`);
+  const held = new Set(
+    corpus.scenarios.filter((scenario) => scenario.heldOut).map((scenario) => scenario.name),
+  );
+  for (const name of HELD_OUT_SCENARIOS) {
+    assert.ok(held.has(name), `${name} must be sealed (all eight names are committed)`);
   }
+  assert.deepEqual([...held].sort(), [...HELD_OUT_SCENARIOS].sort());
   for (const name of held) {
     assert.ok((HELD_OUT_SCENARIOS as readonly string[]).includes(name), `${name} is a sealed name`);
   }
