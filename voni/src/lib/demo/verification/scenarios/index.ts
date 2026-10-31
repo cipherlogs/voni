@@ -42,6 +42,8 @@ export {
 
 export { SCENARIO_REFUSAL_EXIT_CODE, ScenarioError, type ScenarioErrorCode } from "./errors";
 
+export { scenarioFacts, type ScenarioFacts, type ScenarioTakeFact } from "./facts";
+
 export { parseScenario, parseCorpusManifest, type ParseScenarioOptions } from "./parse";
 
 export { assertTriggersResolved, evaluateTriggers } from "./triggers";

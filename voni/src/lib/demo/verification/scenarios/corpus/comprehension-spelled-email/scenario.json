@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "comprehension-spelled-email",
+  "class": "comprehension",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "K1",
+    "K8"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "8e1b97d2295437aa7b138380eba3f3beb5b96082eda1c5c244e17016e5aee643",
+      "text": "Hi, I would like the pricing guide emailed to me."
+    },
+    {
+      "id": "email",
+      "audio": "takes/email.wav",
+      "sha256": "0e6d1eda2163df1a07f01ecd3f116a1ad780b4b531eaae9f5d4e75083d6eecf6",
+      "text": "My email is j dot c h a n at example dot com."
+    },
+    {
+      "id": "correction",
+      "audio": "takes/correction.wav",
+      "sha256": "36742e90fcb44fe26d97de5e1492291f634ff60aa2606b91895fe0c1e4c08c4b",
+      "text": "Sorry, no. J dot c h e n at example dot com."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "email",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "correction",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

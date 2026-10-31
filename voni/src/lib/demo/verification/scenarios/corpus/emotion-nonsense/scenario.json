@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "emotion-nonsense",
+  "class": "emotion",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "C3",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "e63bbeea3b533d452662aa93b3dfbc6e755eada37298cb6823f0ef3db4ad7591",
+      "text": "Hi, my appointment is purple, can you fix the moon?"
+    },
+    {
+      "id": "nonsense",
+      "audio": "takes/nonsense.wav",
+      "sha256": "d3cfde8f712f3bfc6213f17eae97180ce9fa8db9e60d9c6ccf3efdb816db4c78",
+      "text": "The glibberflax is under the Tuesday, so please rotate the mailbox."
+    },
+    {
+      "id": "pivot",
+      "audio": "takes/pivot.wav",
+      "sha256": "62f2ac8e4cbfc972e04bb9203fdd72f9bd683f7fff8aa6fe12c8723669265fad",
+      "text": "Okay. I actually just need the opening hours."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "nonsense",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "pivot",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
