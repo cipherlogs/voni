@@ -39,7 +39,7 @@ function deps(handler: (url: URL) => Response | Promise<Response>): { deps: Inbo
   return {
     calls,
     deps: {
-      fetch: async (input, init) => {
+      fetch: async (input, init: RequestInit | undefined) => {
         const url = new URL(String(input));
         calls.push({ url: url.toString(), method: init?.method ?? "GET" });
         return handler(url);
@@ -49,7 +49,7 @@ function deps(handler: (url: URL) => Response | Promise<Response>): { deps: Inbo
 }
 
 function gmail(handler: (url: URL) => Response | Promise<Response> | null): InboxDeps["fetch"] {
-  return async (input, init) => {
+  return async (input) => {
     const url = new URL(String(input));
     if (url.hostname === "oauth2.googleapis.com") {
       return json({ access_token: "access-token", expires_in: 3600 });

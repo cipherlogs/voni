@@ -515,6 +515,21 @@ test("X9 counts a spoken address and a credential-shaped secret", async () => {
   assert.match(verdict.detail, /turn:0:t2/);
 });
 
+test("X9 refuses audio that no agent caption covers, because un-scanned speech is not clean", async () => {
+  const rows = [
+    ...BASE_ROWS,
+    row("turn.first_audio", { turn: "0:t9", atMs: 3_100, phase: "turn", seq: 2 }),
+  ];
+  const verdict = await verdictOf("X9", {
+    trace: traceEvidence({ rows }),
+    tool: toolEvidence(),
+    wav: WAV,
+  });
+  assert.equal(verdict.status, "FAIL");
+  assert.equal(verdict.reason, "unmeasured");
+  assert.match(verdict.detail, /0:t9/);
+});
+
 test("X9 with no transcript or delivered audio fails closed, because silence cannot be proven safe", async () => {
   const noTranscript = await verdictOf("X9", {
     trace: traceEvidence({ transcript: null }),
