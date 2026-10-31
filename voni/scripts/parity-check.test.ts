@@ -198,62 +198,28 @@ test("tampering changes the body bytes and leaves the signed envelope intact", (
   }));
 });
 
-test("every service refusal the check can meet has a stable name", () => {
+test("a refusal is named by the service's machine-readable header, never its prose", () => {
   const cases: Array<[number, string, string]> = [
-    [
-      400,
-      'the body served for call "c" hashes to "b", which does not match the signed envelope\'s body hash "a"; the call is refused before any vendor socket opens',
-      "BodyHashMismatch",
-    ],
-    [
-      400,
-      'envelope for call "c" is not signed by the service secret; it is refused before any vendor socket opens',
-      "EnvelopeSignatureMismatch",
-    ],
-    [
-      400,
-      'envelope for call "c" expired at 2 ms; the service saw 3 ms, so the call is refused at connect',
-      "EnvelopeExpired",
-    ],
-    [
-      400,
-      'envelope was minted for call "other" but the token names call "c"; an envelope is never replayed onto another call',
-      "EnvelopeCallMismatch",
-    ],
-    [
-      400,
-      "unknown envelope version 9; this verifier understands 1 and 2 only",
-      "UnknownEnvelopeVersion",
-    ],
-    [
-      400,
-      'envelope field "kind" must be "demo" or "tenant", got "admin"; a call is never routed on a guessed kind',
-      "UnknownSubjectKind",
-    ],
-    [
-      400,
-      'envelope field "body_hash": must be 64 lowercase hex characters',
-      "MalformedEnvelope",
-    ],
-    [
-      400,
-      'envelope field "call_id" must be a non-empty string',
-      "EnvelopeIdentityError",
-    ],
-    [400, "call body must be JSON", "CallBodyMalformed"],
-    [400, 'unknown call body field "callid"', "CallBodyMalformed"],
-    [
-      503,
-      "the signed-body channel is closed: set VOICE_PIPELINE_ENVELOPE_SECRET in the service host's environment so a delivered body can be verified",
-      "ChannelClosed",
-    ],
-    [503, "the service is draining (deploy) and accepts no new call; live calls continue", "Draining"],
+    [400, "envelope_refused", "envelope_refused"],
+    [400, "malformed_body", "malformed_body"],
+    [400, "duplicate_call_token", "duplicate_call_token"],
+    [503, "envelope_secret_missing", "envelope_secret_missing"],
+    [503, "draining", "draining"],
+    [400, "ENVELOPE_REFUSED", "envelope_refused"],
   ];
-  for (const [status, detail, name] of cases) {
-    assert.equal(refusalName(status, detail), name, detail);
+  for (const [status, header, name] of cases) {
+    assert.equal(refusalName(status, header), name, header);
   }
+  assert.equal(refusalName(202, null), "Accepted");
   assert.equal(refusalName(400, "something nobody wrote down"), null);
-  assert.equal(refusalName(500, "internal error"), null);
+  assert.equal(refusalName(400, ""), null);
+  assert.equal(refusalName(500, null), null);
+  // Prose that happens to match an old substring is no longer a refusal name:
+  // only the header is the machine-readable source.
+  assert.equal(
+    refusalName(400, "does not match the signed envelope's body hash"),
+    null,
+  );
 });
 
 test("a routing view is only read when it is a real switch", () => {
@@ -466,7 +432,7 @@ type FakeService = {
 };
 
 async function startCallBodyService(
-  options: { forceStatus?: number; forceDetail?: string } = {},
+  options: { forceStatus?: number; forceDetail?: string; forceCode?: string } = {},
 ): Promise<FakeService> {
   const service: FakeService = { url: "", seen: [], upgrades: 0, close: async () => {} };
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -482,7 +448,10 @@ async function startCallBodyService(
       const seen = verifyPayload(payload);
       service.seen.push(seen);
       if (options.forceStatus !== undefined) {
-        response.writeHead(options.forceStatus, { "content-type": "application/json" });
+        response.writeHead(options.forceStatus, {
+          "content-type": "application/json",
+          ...(options.forceCode ? { "x-cascade-refusal": options.forceCode } : {}),
+        });
         response.end(JSON.stringify({ detail: options.forceDetail ?? "refused" }));
         return;
       }
@@ -498,7 +467,10 @@ async function startCallBodyService(
         );
         return;
       }
-      response.writeHead(400, { "content-type": "application/json" });
+      response.writeHead(400, {
+        "content-type": "application/json",
+        "x-cascade-refusal": "envelope_refused",
+      });
       response.end(JSON.stringify({ detail: seen.problems[0] ?? "refused" }));
     });
   });
@@ -621,7 +593,7 @@ test("one run signs a throwaway body the service accepts, and a tampered one it 
 
     assert.match(result.stdout, /signed body/);
     assert.match(result.stdout, new RegExp(service.seen[0].bodyHash ?? "no-hash"));
-    assert.match(result.stdout, /BodyHashMismatch/);
+    assert.match(result.stdout, /envelope_refused/);
     assert.match(result.stdout, /mode "demo"/);
     assert.match(result.stdout, /11 checks, all passed/);
     assert.equal(service.upgrades, 0, "no WebSocket may be opened");
@@ -768,6 +740,7 @@ test("no routing store configured is unreadable, never a silent off", async () =
 test("a service that refuses the accepted body fails by name", async () => {
   const service = await startCallBodyService({
     forceStatus: 503,
+    forceCode: "envelope_secret_missing",
     forceDetail:
       "the signed-body channel is closed: set VOICE_PIPELINE_ENVELOPE_SECRET in the service host's environment so a delivered body can be verified",
   });
@@ -778,7 +751,7 @@ test("a service that refuses the accepted body fails by name", async () => {
     });
     assert.equal(result.status, 1);
     assert.match(result.stdout, /signed-body-refused/);
-    assert.match(result.stdout, /ChannelClosed/);
+    assert.match(result.stdout, /envelope_secret_missing/);
   } finally {
     await service.close();
   }
@@ -787,7 +760,10 @@ test("a service that refuses the accepted body fails by name", async () => {
 test("a refusal the check has never seen is a failure, not a pass", async () => {
   const service = await startCallBodyService({
     forceStatus: 400,
-    forceDetail: "this refusal is not in any envelope module",
+    // Prose that used to be classified by substring: with no header it is
+    // still unrecognised, because the header is the machine-readable source.
+    forceDetail:
+      'the body served for call "c" does not match the signed envelope\'s body hash "a"',
   });
   try {
     const sqlite = routingStore("demo");
@@ -820,7 +796,7 @@ test("--json reports the same evidence for automation", async () => {
     assert.ok(report.checks.every((check) => check.ok));
     assert.equal(report.accepted.agentId, `demo:${VOICE}`);
     assert.equal(report.accepted.bodyHash, service.seen[0].bodyHash);
-    assert.deepEqual(report.refusal, { status: 400, name: "BodyHashMismatch" });
+    assert.deepEqual(report.refusal, { status: 400, name: "envelope_refused" });
     assert.equal(report.routing.mode, "demo");
     assert.match(report.routing.store, /^sqlite /);
   } finally {

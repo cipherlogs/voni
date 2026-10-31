@@ -23,6 +23,7 @@ import {
   CALL_BODY_PATH,
   ENVELOPE_SECRET_ENV,
   PIPELINE_URL_ENV,
+  REFUSAL_HEADER,
   ROUTING_SWITCH_PATH,
   SERVICE_URL_ENV,
   THRESHOLDS_PATH,
@@ -166,7 +167,14 @@ async function resolveOptions(flags: Map<string, string>): Promise<Options> {
   };
 }
 
-type DeliverResult = { status: number; detail: string; body: Record<string, unknown> };
+type DeliverResult = {
+  status: number;
+  /** The service's machine-readable refusal (`X-Cascade-Refusal`), or null. */
+  refusal: string | null;
+  /** The human-readable detail; printed as context, never classified. */
+  detail: string;
+  body: Record<string, unknown>;
+};
 
 async function postCallBody(
   serviceBase: string,
@@ -195,7 +203,12 @@ async function postCallBody(
     body = {};
   }
   const detail = typeof body.detail === "string" ? body.detail : "";
-  return { status: response.status, detail, body };
+  return {
+    status: response.status,
+    refusal: response.headers.get(REFUSAL_HEADER),
+    detail,
+    body,
+  };
 }
 
 function serviceBaseOf(cited: Cited): string {
@@ -412,7 +425,7 @@ export async function main(argv: string[]): Promise<number> {
     fail(report, "signed body", named.code ?? "deliver-failed", named.message);
     return finish();
   }
-  const acceptedName = refusalName(accepted.status, accepted.detail);
+  const acceptedName = refusalName(accepted.status, accepted.refusal);
   if (accepted.status !== 202) {
     fail(
       report,
@@ -477,13 +490,13 @@ export async function main(argv: string[]): Promise<number> {
     fail(report, "tampered body", named.code ?? "deliver-failed", named.message);
     return finish();
   }
-  const refusal = refusalName(refused.status, refused.detail);
-  if (refused.status !== 400 || refusal !== "BodyHashMismatch") {
+  const refusal = refusalName(refused.status, refused.refusal);
+  if (refused.status !== 400 || refusal !== "envelope_refused") {
     fail(
       report,
       "tampered body",
       "tamper-not-refused",
-      `POST ${base}${CALL_BODY_PATH} → ${refused.status} ${refusal ?? "unrecognised refusal"}: ${refused.detail || "(no detail)"}; a tampered body must be refused as BodyHashMismatch`,
+      `POST ${base}${CALL_BODY_PATH} → ${refused.status} ${refusal ?? "unrecognised refusal"}: ${refused.detail || "(no detail)"}; a tampered body must be refused with X-Cascade-Refusal: envelope_refused`,
     );
     return finish();
   }
@@ -491,7 +504,7 @@ export async function main(argv: string[]): Promise<number> {
     report,
     "tampered body",
     "tampered-body",
-    `POST ${base}${CALL_BODY_PATH} → 400 BodyHashMismatch; signed ${signed.acceptedHash}, tampered ${tamperedHash}`,
+    `POST ${base}${CALL_BODY_PATH} → 400 envelope_refused; signed ${signed.acceptedHash}, tampered ${tamperedHash}`,
   );
   report.refusal = { status: refused.status, name: refusal };
 
