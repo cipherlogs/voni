@@ -454,7 +454,7 @@
         }
       }
 
-      function takeSummary(take) {
+      function takeSummary(take, supersededBy) {
         const article = el("article", "take");
         const top = el("div", "top");
         const id = el("span", "id");
@@ -499,10 +499,18 @@
         article.append(audio);
 
         const row = el("div", "row");
-        const rerecord = el("button");
-        rerecord.type = "button";
-        rerecord.textContent = "Re-record this take";
-        rerecord.addEventListener("click", () => beginReRecord(take));
+        const replacement = supersededBy.get(take.takeId);
+        if (replacement) {
+          const superseded = el("span", "chip");
+          superseded.textContent = `superseded by ${replacement}`;
+          row.append(superseded);
+        } else {
+          const rerecord = el("button");
+          rerecord.type = "button";
+          rerecord.textContent = "Re-record this take";
+          rerecord.addEventListener("click", () => beginReRecord(take));
+          row.append(rerecord);
+        }
         const copy = el("button");
         copy.type = "button";
         copy.textContent = "Copy hash";
@@ -511,7 +519,7 @@
           copy.textContent = "Copied";
           setTimeout(() => { copy.textContent = "Copy hash"; }, 1200);
         });
-        row.append(rerecord, copy);
+        row.append(copy);
         if (take.supersedes) {
           const superseded = el("span", "chip");
           superseded.textContent = `supersedes ${take.supersedes}`;
@@ -528,8 +536,10 @@
           if (!response.ok) throw new Error(body.message || body.error);
           const takes = body.takes || [];
           $("takes-count").textContent = `${takes.length} take${takes.length === 1 ? "" : "s"}`;
+          const supersededBy = new Map();
+          for (const take of takes) if (take.supersedes) supersededBy.set(take.supersedes, take.takeId);
           const list = $("takes");
-          list.replaceChildren(...takes.map(takeSummary));
+          list.replaceChildren(...takes.map((take) => takeSummary(take, supersededBy)));
         } catch (error) {
           setStatus(`Could not read takes: ${error.message}`, "bad");
         }

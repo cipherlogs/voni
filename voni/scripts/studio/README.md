@@ -32,7 +32,9 @@ earlier record and hash stay readable.
 - **Upload** — choose an existing WAV, WebM, Ogg, MP3 or M4A file; it lands like
   any recorded take.
 - **Re-record** — from the takes list, "Re-record this take" loads its prompt and
-  labels. Saving creates a new take; the old one is untouched.
+  labels. Saving creates a new take; the old one is untouched. The chain is
+  linear: a superseded take shows "superseded by take-00000N" instead of a
+  re-record button, so the latest take is the one in use.
 
 Every take requires the three labels (`intent`, `emotion`, `accent`) supplied
 by the owner. There is no default and no inferred value: a missing label is a
