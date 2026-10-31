@@ -54,6 +54,7 @@ import { demoUnavailableMessage } from "@/lib/voice/cascade-failure-view";
 import { createDemoFloor, DEMO_FLOOR_TICK_MS } from "@/lib/voice/demo-floor";
 import type { Floor } from "@/lib/voice/floor";
 import { startDemoCall } from "@/lib/voice/demo-start";
+import { createCallMarks, type CallMarks } from "@/lib/voice/call-marks";
 import { boundedResumeHistory } from "@/lib/voice/resume-history";
 import { FILLER_POOL, isEndCallRequest, requestVoiceJudge } from "@/lib/voice/jev-judges";
 import { callRecognition } from "@/lib/voice/recognition";
@@ -437,6 +438,12 @@ export function VoiceCall({
   /** Per-call sound player (lazy: Audio only exists in the browser). */
   const soundsRef = useRef<CallSounds | null>(null);
   const sounds = () => (soundsRef.current ??= new CallSounds());
+  /**
+   * Dev-only call marks for the current demo call (`?delivercapture=1` or the
+   * E2E test build). Null means the stream is off; the recorder is never
+   * constructed, so production traffic cannot write one.
+   */
+  const marksRef = useRef<CallMarks | null>(null);
   /** Connected chime fires once per call; reset every time we dial. */
   const connectedChimeRef = useRef(false);
   /**
@@ -449,6 +456,9 @@ export function VoiceCall({
   const playConnectedChime = useCallback(() => {
     if (connectedChimeRef.current) return;
     connectedChimeRef.current = true;
+    // One mark per chime: a second bell (a regression) must be visible as a
+    // second mark, so the recorder never deduplicates.
+    marksRef.current?.mark("chime");
     sounds().stopRingback();
     sounds().play("connected");
   }, []);
@@ -1093,6 +1103,7 @@ export function VoiceCall({
     () => () => {
       void sessionRef.current?.stop();
       sessionRef.current = null;
+      marksRef.current = null;
       soundsRef.current?.stopAll();
       if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     },
@@ -1116,6 +1127,9 @@ export function VoiceCall({
   const start = useCallback(async () => {
     if (startingRef.current) return;
     startingRef.current = true;
+    // A fresh start owns a fresh marks recorder (the demo branch builds one);
+    // an inline call has none, and a stale demo recorder must never mark it.
+    marksRef.current = null;
     // A restart never inherits the old transport: detach and stop it first,
     // so its late socket callbacks (stale error banner, ghost audio) die
     // with explicitStop instead of painting over the fresh session.
@@ -1215,6 +1229,14 @@ export function VoiceCall({
       // states as managed (connecting/listening/speaking/ended) so every
       // indicator, timer, caption, and the countdown below works unchanged.
       let cascadeEnded = false;
+      // Browser call evidence: the same flag as the delivered WAV, so the two
+      // artifacts of one call share a call id. `null` means no marks exist.
+      const marks = createCallMarks(
+        window.location.search,
+        process.env.NODE_ENV === "production",
+      );
+      marksRef.current = marks;
+      marks?.mark("start_requested");
       // The demo's guardrail words follow the picked voice's Locale (the same
       // per-Locale recognition layer the managed path uses); hidden notes stay
       // model-directed English, while the service speaks its Locale's hold and
@@ -1226,6 +1248,7 @@ export function VoiceCall({
             timingsRef.current?.mark(
               caption.role === "user" ? "firstUserTurn" : "firstAgentTurn",
             );
+            marks?.mark("turn", { role: caption.role, index: turnsRef.current.length });
             if (caption.role === "agent") {
               speakingRef.current = false;
               setFiller(null);
@@ -1363,11 +1386,11 @@ export function VoiceCall({
           overheardRef.current = false;
           setCallState("ended");
         },
-      });
+      }, { marks });
       sessionRef.current = cascade;
       // The same dev flag as the managed path: a W0 delivered capture must be
       // written on the cascade path too, or the two captures cannot compare.
-      cascade.setDeliveredCapture(callDebugFlags().deliverCapture);
+      cascade.setDeliveredCapture(callDebugFlags().deliverCapture, marks?.callId);
       setCallState("connecting");
       try {
         // One mint through the one door, then the real cascade client. The
@@ -1382,6 +1405,10 @@ export function VoiceCall({
           // body; a fresh call starts blank. The bound lives in the pipeline
           // registry, not in this component (ticket 13).
           history: preserving ? boundedResumeHistory(turnsRef.current) : undefined,
+        }, {
+          // Name the mint before the socket and mic events, so the stream
+          // shows the real order rather than a post-hoc guess.
+          onMinted: () => marks?.mark("mint_done"),
         });
         callTokenRef.current = minted.demoCallToken;
         if (minted.tagToken) saveTagToken(minted.tagToken);
@@ -1389,14 +1416,26 @@ export function VoiceCall({
         if (!preserving) setTagCarried(minted.tagCarried === true);
         // A refusal may have landed before the mic resolved: never paint
         // "listening" over a call that already ended.
-        if (!cascadeEnded) setCallState("listening");
+        if (!cascadeEnded) {
+          setCallState("listening");
+          // The mark names the paint, not the state change: schedule it for
+          // the frame that actually shows the connected card.
+          if (marks) {
+            const markPainted = () => marks.mark("connected_painted");
+            if (typeof requestAnimationFrame === "function") requestAnimationFrame(markPainted);
+            else markPainted();
+          }
+        }
       } catch (e) {
         // The demo mint's 429 is the countdown; every other refusal keeps its
         // own line. Either way no managed session is opened.
         const retryAfter = e instanceof RateLimitError ? e.retryAfterSeconds : undefined;
         if (retryAfter !== undefined) setRetryIn(retryAfter);
+        const message = e instanceof Error ? e.message : "Could not start the call.";
+        marks?.mark("start_failed", { message });
+        void marks?.finish();
         setError({
-          message: e instanceof Error ? e.message : "Could not start the call.",
+          message,
           ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
         });
         setCallState("ended");

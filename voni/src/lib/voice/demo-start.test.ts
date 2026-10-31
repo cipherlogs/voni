@@ -149,6 +149,32 @@ test("the real cascade client opens the minted URL and sends identity only", asy
   await session.stop();
 });
 
+test("the mint is named before the socket and microphone events", async () => {
+  const order: string[] = [];
+  const session = {
+    async start() {
+      order.push("start");
+    },
+    async stop() {},
+  };
+  await startDemoCall(
+    session,
+    { voiceId: "audrey", resume: false },
+    {
+      mint: async () => {
+        order.push("mint");
+        return minted(1);
+      },
+      onMinted: () => order.push("minted"),
+    },
+  );
+  assert.deepEqual(
+    order,
+    ["mint", "minted", "start"],
+    "the stream must show the mint before any socket or mic event",
+  );
+});
+
 test("a hold return mints a fresh call token for the same call and carries history", async () => {
   const mints: Array<{ voiceId: string; opts?: unknown }> = [];
   const session = recordingSession();
