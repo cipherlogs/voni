@@ -14,6 +14,8 @@ import { agentUpdatePayload } from "@/lib/agents/provision";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { toRestTool } from "@/lib/tools/definitions";
 import { DEMO_VOICE_TOOLS } from "./demo-tools";
+import BOUNDS from "@/lib/voice/cascade-bounds.json";
+import type { ResumeMessage } from "@/lib/voice/resume-history";
 
 export type { LlmOverride } from "@/lib/agents/body";
 
@@ -244,6 +246,66 @@ export function demoAgentProfile(opts?: {
 }
 
 /** The exact remote body a demo agent runs. Pure: fingerprint + tests pin it. */
+/**
+ * The hold return's bounded recent turns are part of the demo body, so the
+ * one builder validates them before anything is hashed or signed. These
+ * refusals are named: a fresh call carrying history, an unknown role, a blank
+ * line, an over-bound list, or a malformed registry bound never reaches the
+ * wire as a guessed shape.
+ */
+export class InvalidResumeHistory extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = new.target.name;
+  }
+}
+
+/** The registry's bound, refused by name when it is not a positive whole number. */
+export function resumeHistoryBound(
+  bounds: { resumeHistoryTurns?: unknown } = BOUNDS,
+): number {
+  const bound = bounds.resumeHistoryTurns;
+  if (!Number.isInteger(bound) || (bound as number) <= 0) {
+    throw new InvalidResumeHistory(
+      `cascade bounds field "resumeHistoryTurns" must be a positive whole number, got ${String(bound)}`,
+    );
+  }
+  return bound as number;
+}
+
+/** Settled user/assistant turns only, no blank lines, never more than the bound. */
+export function validateResumeHistory(history: unknown): ResumeMessage[] {
+  if (!Array.isArray(history)) {
+    throw new InvalidResumeHistory('demo body field "history" must be an array of turns');
+  }
+  const bound = resumeHistoryBound();
+  if (history.length > bound) {
+    throw new InvalidResumeHistory(
+      `demo body field "history" carries ${history.length} turns; the bound is ${bound}`,
+    );
+  }
+  return history.map((message, index) => {
+    if (typeof message !== "object" || message === null) {
+      throw new InvalidResumeHistory(`demo body history[${index}] must be an object`);
+    }
+    const { role, content } = message as { role?: unknown; content?: unknown };
+    if (role !== "user" && role !== "assistant") {
+      throw new InvalidResumeHistory(
+        `demo body history[${index}].role must be "user" or "assistant", got ${JSON.stringify(role)}`,
+      );
+    }
+    if (typeof content !== "string" || content.trim() === "") {
+      throw new InvalidResumeHistory(
+        `demo body history[${index}].content must be a non-empty string`,
+      );
+    }
+    return { role, content };
+  });
+}
+
+/** The demo body: the one builder's output, plus a resumed call's history. */
+export type DemoAgentBody = StoredAgentBody & { history?: ResumeMessage[] };
+
 export function buildDemoAgentBody(
   voiceId: string,
   opts?: {
@@ -251,10 +313,22 @@ export function buildDemoAgentBody(
     llm?: LlmOverride[];
     variant?: DemoAgentVariant;
     turnWindows?: DemoTurnWindows;
+    /**
+     * A hold return's bounded recent turns (ticket 13). Only a resumed body may
+     * carry them; the builder validates and appends them, so no caller ever
+     * amends the body after it is built.
+     */
+    history?: readonly ResumeMessage[];
   },
-): StoredAgentBody {
+): DemoAgentBody {
   const resume = opts?.resume === true;
   const variant = opts?.variant ?? "production";
+  if (opts?.history !== undefined && !resume) {
+    throw new InvalidResumeHistory(
+      'demo body field "history" belongs to a hold return; a fresh call starts blank',
+    );
+  }
+  const history = opts?.history === undefined ? undefined : validateResumeHistory(opts.history);
   // The experiment's windows are demo-only session mechanics: they reach the
   // builder as a turn-taking input, never as a profile field (ticket 65 deleted
   // the explicit preset variant and the tenant's old object).
@@ -262,7 +336,7 @@ export function buildDemoAgentBody(
     variant === "turn-window"
       ? opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS
       : undefined;
-  return buildStoredAgent({
+  const body = buildStoredAgent({
     name: demoAgentName(voiceId, resume, variant),
     config: voniConfig(voiceId),
     profile: demoAgentProfile({
@@ -271,6 +345,8 @@ export function buildDemoAgentBody(
     }),
     ...(turnTaking ? { turnTaking } : {}),
   });
+  // Appended here, in the one builder, never by a later caller.
+  return history === undefined ? body : { ...body, history };
 }
 
 export type DemoAgentProvisionPlan = {
