@@ -23,6 +23,7 @@ import {
 import { loadContract, type Contract } from "@/lib/demo/verification/contract";
 import {
   DEFAULT_CORPUS_DIR,
+  FAST_CONTRACT_SCENARIOS,
   LOCALES,
   ScenarioError,
   loadCorpus,
@@ -333,8 +334,7 @@ test("full and nightly refuse by name while the corpora are incomplete", async (
     const result = await runVerify(request(["--target", "local", flag]), baseDeps());
     assert.equal(result.exitCode, 2, flag);
     assert.equal(result.status, "refused");
-    assert.match(result.refusals.join("\n"), /of the 40 scenarios/);
-    assert.match(result.refusals.join("\n"), /\(es\) corpus holds 0 of the 12/);
+    assert.match(result.refusals.join("\n"), /English corpus holds 30 of the 40/);
   }
 });
 
@@ -545,5 +545,11 @@ test("the committed corpus is still the source the fast plan reads", async () =>
     dir: DEFAULT_CORPUS_DIR,
     knownProperties: new Set(contract.properties.map((property) => property.id)),
   });
-  assert.equal(corpus.version, 1);
+  assert.ok(Number.isInteger(corpus.version) && corpus.version >= 1);
+  for (const name of FAST_CONTRACT_SCENARIOS) {
+    assert.ok(
+      corpus.scenarios.some((scenario) => scenario.name === name),
+      `${name} is in the committed corpus`,
+    );
+  }
 });

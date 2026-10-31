@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-barge-clause-de",
+  "class": "turn-taking",
+  "locale": "de",
+  "heldOut": false,
+  "expectedProperties": [
+    "T3",
+    "T6",
+    "T7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "4b881a014b514a0ec8e5ad46d4c04e4d087af04e2da3ccddaf6ed174d2c07c52",
+      "text": "Hallo, ich brauche Hilfe bei der Rechnung."
+    },
+    {
+      "id": "barge",
+      "audio": "takes/barge.wav",
+      "sha256": "76b6dc4dc6d918a0b71dcbdbb99b0d96bdd809339e6eb168f528df7cfca630c3",
+      "text": "Entschuldigung, warten Sie, bevor Sie weitermachen."
+    },
+    {
+      "id": "resume",
+      "audio": "takes/resume.wav",
+      "sha256": "5d269c282b8ddac50541bbe272afd8dd9a240ec47f120d65eb816f2abd5048c7",
+      "text": "Gut, machen Sie bitte weiter."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "barge",
+      "trigger": {
+        "type": "agent-speech-start",
+        "delayMs": 120
+      }
+    },
+    {
+      "take": "resume",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

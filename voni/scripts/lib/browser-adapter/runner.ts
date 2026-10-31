@@ -57,6 +57,15 @@ import {
   type ScenarioAttempt,
 } from "@/lib/demo/verification/verdict";
 import type { CardTarget } from "@/lib/demo/verification/cards";
+import { readDemoCallTag, readDemoToolLog } from "@/lib/demo/tool-log-store";
+import {
+  countThreadReplies,
+  findTaggedMessage,
+} from "@/lib/demo/verification/tools/inbox";
+import {
+  collectToolEvidence,
+  type ToolEvidenceCollection,
+} from "../protocol-adapter/tool-evidence";
 
 import { runPlaywrightBrowserCall } from "./call";
 import { BrowserAdapterError } from "./errors";
@@ -114,6 +123,8 @@ export type BrowserRunInput = {
   readonly vendorBuildsPath?: string;
   readonly soundscapes?: Readonly<Record<string, Uint8Array>>;
   readonly modules?: Readonly<Record<string, readonly string[]>>;
+  /** Injected by tests; production reads the app DB and the real inbox. */
+  readonly toolEvidence?: ToolEvidenceCollection;
   readonly repoRoot?: string;
   readonly runId?: string;
   readonly timeoutMs?: number;
@@ -495,6 +506,24 @@ export async function runBrowserCertification(
   }
 
   const callDir = join(callIdDir, requireSafeId(call.callId ?? "unresolved", "call id"));
+  const toolEvidence =
+    input.toolEvidence ??
+    (call.callId === null
+      ? {
+          log: [],
+          delivery: null,
+          gap: "the browser call has no call id, so the demo tool log cannot be read",
+        }
+      : await collectToolEvidence({
+          callId: call.callId,
+          env,
+          deps: {
+            readLog: readDemoToolLog,
+            readTag: readDemoCallTag,
+            findTaggedMessage,
+            countThreadReplies,
+          },
+        }));
   let assembled;
   let callRecord;
   try {
@@ -504,6 +533,7 @@ export async function runBrowserCertification(
       target: input.target,
       eventsDir: input.eventsDir ?? defaultEventsDir(env),
       callDir,
+      toolEvidence,
     }));
   } catch (error) {
     const refusedError =

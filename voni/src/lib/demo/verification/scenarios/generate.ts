@@ -20,7 +20,7 @@ import { dirname, resolve, sep } from "node:path";
 
 import { sha256Hex } from "./digest";
 import { ScenarioError } from "./errors";
-import type { ScenarioDocument, ScenarioTake } from "./types";
+import { LOCALES, type Locale, type ScenarioDocument, type ScenarioTake } from "./types";
 
 /** A take whose digest has not been recorded yet. It is never a valid commit. */
 export const UNHASHED_TAKE_SHA256 = "0".repeat(64);
@@ -301,9 +301,18 @@ export async function synthesizeCartesia(input: {
   readonly text: string;
   readonly apiKey: string;
   readonly fetch?: typeof globalThis.fetch;
+  /** The Locale the words are spoken in; omitted keeps the English caller voice. */
+  readonly language?: Locale;
 }): Promise<Uint8Array> {
   if (input.apiKey.trim() === "") {
     throw new ScenarioError("tts-failed", "CARTESIA_API_KEY is not set; no take is synthesized");
+  }
+  const language = input.language ?? CALLER_VOICE.language;
+  if (!(LOCALES as readonly string[]).includes(language)) {
+    throw new ScenarioError(
+      "tts-failed",
+      `"${String(language)}" is not a caller Locale; known: ${LOCALES.join(", ")}`,
+    );
   }
   const request = input.fetch ?? globalThis.fetch;
   const response = await request(CARTESIA_TTS_URL, {
@@ -322,7 +331,7 @@ export async function synthesizeCartesia(input: {
         encoding: "pcm_s16le",
         sample_rate: TAKE_SAMPLE_RATE,
       },
-      language: CALLER_VOICE.language,
+      language,
     }),
   });
   if (!response.ok) {

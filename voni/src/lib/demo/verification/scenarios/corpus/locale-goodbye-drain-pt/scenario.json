@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-goodbye-drain-pt",
+  "class": "ending",
+  "locale": "pt",
+  "heldOut": false,
+  "expectedProperties": [
+    "C7",
+    "C8",
+    "L11",
+    "L9"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "544870ea835a9fe6ae414651f319125ed6ace3177f77a57910c82cc45ab5c895",
+      "text": "Olá, só liguei para confirmar a consulta."
+    },
+    {
+      "id": "bye",
+      "audio": "takes/bye.wav",
+      "sha256": "8c0be734ef282a590fe0a578881a01769a419c267c03522626bcdaaf8769c2a0",
+      "text": "Perfeito, muito obrigado. Adeus."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "bye",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

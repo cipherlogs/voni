@@ -13,6 +13,8 @@
  */
 
 import type { CodeFingerprint } from "@/lib/demo/scoreboard";
+import type { ToolLogRow } from "@/lib/demo/tool-log";
+import type { InboxDelivery } from "@/lib/demo/verification/tools/inbox";
 import type { CardTarget, DefectCard, DefectCardErrorCode } from "@/lib/demo/verification/cards";
 import type {
   Corpus,
@@ -138,6 +140,16 @@ export type ProtocolCallResult = {
     readonly frames: number;
     readonly bytes: number;
   };
+  /**
+   * The service's captions, in call time. The bridge, the continuation and the
+   * X9 leak scan read them; a call with none still runs and fails closed.
+   */
+  readonly captions: readonly {
+    readonly role: "caller" | "agent";
+    readonly text: string;
+    readonly atMs: number;
+    readonly final: boolean;
+  }[];
   /** How the call ended, in the transport's words. */
   readonly endedBy: "end" | "end_call" | "closed" | "fault-call-drop" | "timeout";
   /** A named transport problem that did not prevent evidence assembly. */
@@ -184,6 +196,15 @@ export type ProtocolEvidenceBundle = {
     readonly file: string;
     readonly rows: readonly Record<string, unknown>[];
     readonly lineCount: number;
+    /** The service's captions; null when the call produced none. */
+    readonly transcript: readonly {
+      readonly role: "caller" | "agent";
+      readonly text: string;
+      readonly atMs: number;
+      readonly final: boolean;
+    }[] | null;
+    /** Why the transcript is absent, named rather than guessed. */
+    readonly transcriptGap: string | null;
   };
   /** Omitted when no agent audio arrived; a missing source fails closed. */
   readonly wav?: {
@@ -198,6 +219,12 @@ export type ProtocolEvidenceBundle = {
   readonly tool: {
     readonly calls: readonly Record<string, unknown>[];
     readonly results: readonly Record<string, unknown>[];
+    /** The demo tool log's redacted fact rows, when the app database was read. */
+    readonly log?: readonly ToolLogRow[];
+    /** The real inbox's delivery record, when it could be re-read. */
+    readonly delivery?: InboxDelivery;
+    /** Why the log or delivery is absent, named for the verdict. */
+    readonly gap?: string;
   };
   /** The call's own priced row, read verbatim. The runner never recomputes cost. */
   readonly cost?: Record<string, unknown>;

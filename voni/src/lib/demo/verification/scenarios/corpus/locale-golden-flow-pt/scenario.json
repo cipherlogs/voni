@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-golden-flow-pt",
+  "class": "golden-flow",
+  "locale": "pt",
+  "heldOut": false,
+  "expectedProperties": [
+    "K5",
+    "T1",
+    "T2"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "ceee30ffbf6d72373044bcc5e9e72edd8528b27a8b8ad30003ab4762c2e36a16",
+      "text": "Olá, boa tarde. Queria saber o horário de funcionamento."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "2b665d3b5ed1a478cacad4f9fe4493db051c94489eaa98d0c1c21c635b5720b0",
+      "text": "Perfeito. E quanto custa a primeira consulta?"
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

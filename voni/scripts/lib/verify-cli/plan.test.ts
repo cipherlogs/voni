@@ -112,12 +112,13 @@ test("full certification plans 40 English x3 plus 12 per Locale x3, and names th
   assert.equal(plan.calls, (40 + 12 * 4) * 3);
   assert.equal(plan.repetitions, 3);
   assert.ok(
-    plan.gaps.some((gap) => /English corpus holds 28 of the 40/.test(gap)),
+    plan.gaps.some((gap) => /English corpus holds 30 of the 40/.test(gap)),
     plan.gaps.join("\n"),
   );
+  // The Locale core landed (twelve per Locale), so only English is short.
   for (const locale of ["es", "fr", "de", "pt"] as const) {
     assert.ok(
-      plan.gaps.some((gap) => gap.includes(`(${locale}) corpus holds 0 of the 12`)),
+      plan.gaps.every((gap) => !gap.includes(`(${locale}) corpus`)),
       plan.gaps.join("\n"),
     );
   }
@@ -137,7 +138,7 @@ test("nightly health plans one repetition, and a Locale filter narrows the plan"
     corpus,
   });
   assert.equal(german.calls, 12 * 3);
-  assert.ok(german.gaps.every((gap) => gap.includes("de") || gap.includes("German")));
+  assert.deepEqual(german.gaps, [], "the German core is complete");
   const english = planVerify({
     request: { mode: "nightly", target: "local", locale: "en", json: false, help: false },
     corpus,

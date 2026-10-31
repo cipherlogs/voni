@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-backchannel-es",
+  "class": "turn-taking",
+  "locale": "es",
+  "heldOut": false,
+  "expectedProperties": [
+    "T4"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "3a5971cdba05320b8354732265acdb9b2d0f3dc8a689cc90ceb0ef84904036ef",
+      "text": "Hola, quiero cambiar mi cita."
+    },
+    {
+      "id": "back",
+      "audio": "takes/back.wav",
+      "sha256": "2ecc0f6fda0a7191b7d02b8b1ee6f9838d8479204a6557f17568d89f2c00e0f7",
+      "text": "Ajá, claro."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "8e6d603463d47d546dd890813e0436a845402c93c40030380923f87424fa2c0b",
+      "text": "Sí, mejor el jueves por la mañana."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "back",
+      "trigger": {
+        "type": "agent-speech-start",
+        "delayMs": 200
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

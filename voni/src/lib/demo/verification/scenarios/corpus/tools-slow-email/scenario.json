@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "name": "tools-slow-email",
+  "class": "tools",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "X1",
+    "X2",
+    "X3",
+    "X5",
+    "X6",
+    "X9",
+    "X10"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "9fd47315615bd21199730afeb2b5ce49a8f83aa53d154e87204998600dec45f1",
+      "text": "Hi, it's me again. I emailed you last week from my personal Gmail, and I've just sent another one. Can you check whether it arrived?"
+    },
+    {
+      "id": "wait",
+      "audio": "takes/wait.wav",
+      "sha256": "37cd877b65f362d711a1705ec5b60d73ffc0a52d126ebb049cfd40172f2c0da3",
+      "text": "Take your time. Just tell me what you find."
+    },
+    {
+      "id": "send",
+      "audio": "takes/send.wav",
+      "sha256": "d5009f10bdcb3f785072142428d7c9573cc70bdcc4703355a1c90902fd170152",
+      "text": "While you're there, can you send me the reply as well?"
+    }
+  ],
+  "script": [
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "wait",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "send",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

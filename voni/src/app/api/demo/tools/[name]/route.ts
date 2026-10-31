@@ -5,6 +5,7 @@ import { runCheckCode, runSendReply } from "@/lib/demo/reply";
 import { loadLiveTestTag } from "@/lib/demo/test-tag-registry";
 import { demoCallById, demoCallCodeVerified } from "@/lib/demo/tool-call";
 import { resolveDemoToolCall } from "@/lib/demo/tool-credential";
+import { recordDemoToolCallSafely } from "@/lib/demo/tool-log-store";
 import { websiteReadyInstructions } from "@/lib/demo/voni-agent";
 import { runWebsiteRead } from "@/lib/demo/website-read";
 
@@ -34,6 +35,7 @@ export async function POST(
     const data = !site || site.status === "reading" ? { status: site?.status ?? "none" } : { status: site.status, instructions: websiteReadyInstructions(site) };
     return Response.json({ ok: true, data }, { headers: { "Cache-Control": "no-store" } });
   }
+  const started = performance.now();
   let result =
     name === CHECK_EMAIL_TOOL
       ? await runCheckEmail(call, args)
@@ -44,6 +46,18 @@ export async function POST(
           : await executeDemoTool(name, args, {
               testTag: call.tagId ? (await loadLiveTestTag(call.tagId))?.tag : null,
             });
+  // Both credentials pass through the same one dispatch; the log records which
+  // answered, and its reader keeps only the pipeline's model-requested calls.
+  if (name !== WEBSITE_POLL) {
+    await recordDemoToolCallSafely({
+      callId: auth.call.callId,
+      toolCallId: auth.toolCallId,
+      toolName: name,
+      credential: auth.credential,
+      result,
+      latencyMs: performance.now() - started,
+    });
+  }
   // The pipeline owns `check_code`; the browser's poll is how the visible
   // verified state rises. Only the check_email response carries the fact.
   if (name === CHECK_EMAIL_TOOL) {

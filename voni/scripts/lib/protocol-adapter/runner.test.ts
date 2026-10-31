@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { parseReplayCommand } from "@/lib/demo/verification/cards";
+import { loadContract } from "@/lib/demo/verification/contract";
 import { loadCorpus } from "@/lib/demo/verification/scenarios";
 import { runProtocolDiagnosis, runReplayCommand } from "./runner";
 import {
@@ -167,6 +168,13 @@ test("every startup gap is a named refusal with exit 2 and no call", async () =>
   try {
     writeCorpus(corpus(root), GOLDEN_AND_DELIBERATE);
     const eventsDir = join(root, "events");
+    const live = await loadContract();
+    const x4 = live.properties.find((property) => property.id === "X4");
+    assert.ok(x4 !== undefined);
+    const emailContract = {
+      families: [{ id: "tools" as const, title: "tools", propertyCount: 1 }],
+      properties: [x4],
+    };
 
     const cases: {
       readonly name: string;
@@ -234,6 +242,20 @@ test("every startup gap is a named refusal with exit 2 and no call", async () =>
         }),
         expected: /soundscape:television/,
       },
+      {
+        name: "demo inbox",
+        input: {
+          ...probeRunInput({
+            corpusDir: join(root, "corpus-email"),
+            runRoot: join(root, "runs-inbox"),
+            eventsDir,
+            scenarioName: "tools-email-smoke",
+            env: { ...FAKE_KEYS, GOOGLE_CLIENT_ID: "" },
+          }),
+          contract: emailContract,
+        },
+        expected: /demo-inbox/,
+      },
     ];
 
     writeCorpus(join(root, "corpus-street"), [
@@ -241,6 +263,9 @@ test("every startup gap is a named refusal with exit 2 and no call", async () =>
     ]);
     writeCorpus(join(root, "corpus-television"), [
       { name: "soundscape-television", soundscape: { id: "television" } },
+    ]);
+    writeCorpus(join(root, "corpus-email"), [
+      { name: "tools-email-smoke", expectedProperties: ["X4"] },
     ]);
 
     for (const entry of cases) {

@@ -102,6 +102,7 @@ const ENGLISH_MARKERS = new Set([
   "need",
   "please",
   "sorry",
+  "sure",
   "thank",
   "thanks",
   "that",

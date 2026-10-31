@@ -11,6 +11,8 @@
  */
 
 import type { CodeFingerprint } from "@/lib/demo/scoreboard";
+import type { ToolLogRow } from "@/lib/demo/tool-log";
+import type { InboxDelivery } from "@/lib/demo/verification/tools/inbox";
 import type { CardTarget, DefectCard } from "@/lib/demo/verification/cards";
 import type {
   Corpus,
@@ -169,6 +171,13 @@ export type BrowserEvidenceBundle = {
     readonly file: string;
     readonly rows: readonly Record<string, unknown>[];
     readonly lineCount: number;
+    /**
+     * The browser adapter's marks carry no caption text (call-marks.ts keeps
+     * text out of production evidence), so the spoken transcript is absent
+     * here and every caption-reading X property fails closed by name.
+     */
+    readonly transcript: null;
+    readonly transcriptGap: string;
   };
   /** The worklet's rendered output: the certifying adapter always has it. */
   readonly wav: {
@@ -183,6 +192,12 @@ export type BrowserEvidenceBundle = {
   readonly tool: {
     readonly calls: readonly Record<string, unknown>[];
     readonly results: readonly Record<string, unknown>[];
+    /** The demo tool log's redacted fact rows, when the app database was read. */
+    readonly log?: readonly ToolLogRow[];
+    /** The real inbox's delivery record, when it could be re-read. */
+    readonly delivery?: InboxDelivery;
+    /** Why the log or delivery is absent, named for the verdict. */
+    readonly gap?: string;
   };
   /** The call's own priced row, read verbatim. The runner never recomputes cost. */
   readonly cost?: Record<string, unknown>;

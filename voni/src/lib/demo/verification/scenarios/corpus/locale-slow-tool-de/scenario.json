@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-slow-tool-de",
+  "class": "tools",
+  "locale": "de",
+  "heldOut": false,
+  "expectedProperties": [
+    "X1",
+    "X2",
+    "X3"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "52b04155bdd1f71db34e4e97547b7555399d6efbe7ab02dedbdd93325b6b392c",
+      "text": "Hallo, bitte schicken Sie mir das Angebot per E-Mail."
+    },
+    {
+      "id": "confirm",
+      "audio": "takes/confirm.wav",
+      "sha256": "ba0a91c94dca97a3e73bb35bcc2019cf4b25a767b0f48c3e79d53448c1553e3d",
+      "text": "Ja, an meine übliche Adresse."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "confirm",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

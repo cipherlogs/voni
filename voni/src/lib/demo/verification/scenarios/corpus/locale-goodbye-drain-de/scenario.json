@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-goodbye-drain-de",
+  "class": "ending",
+  "locale": "de",
+  "heldOut": false,
+  "expectedProperties": [
+    "C7",
+    "C8",
+    "L11",
+    "L9"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "3fb4f673a477b03d47edb3429d204b99bd7b6ebd683ecf0a38f612bbe17d0826",
+      "text": "Hallo, ich wollte nur den Termin bestätigen."
+    },
+    {
+      "id": "bye",
+      "audio": "takes/bye.wav",
+      "sha256": "b5aa787deeb6c284553358b693d94a13b4172744b8c217ecb7adc609bc9d993d",
+      "text": "Perfekt, vielen Dank. Auf Wiederhören."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "bye",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
