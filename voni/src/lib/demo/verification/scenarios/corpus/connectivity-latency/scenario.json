@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "name": "connectivity-latency",
+  "class": "connectivity",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "R1",
+    "T7",
+    "A6"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [
+    {
+      "kind": "endpoint-latency",
+      "atMs": 600,
+      "durationMs": 350
+    }
+  ],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "95e5dd79955c97ea1e5e93c82bc2672633135a0b208cd2f96a69ef7caef773e3",
+      "text": "Hi, is this Voni?"
+    },
+    {
+      "id": "repeat",
+      "audio": "takes/repeat.wav",
+      "sha256": "b19ccfed4ef39a1219317a6ceef9bcb28872db32c7a304e5a6422f615fc45106",
+      "text": "You're a bit behind. Can you repeat the last part?"
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "repeat",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

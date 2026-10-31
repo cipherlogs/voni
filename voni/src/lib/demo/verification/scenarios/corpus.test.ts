@@ -17,10 +17,11 @@ import {
 } from "./index";
 
 /**
- * The committed English fast corpus as data: ten scenarios, twenty real TTS
- * takes, one Locale, and no held-out name. The trigger plans are resolved
- * against a canonical agent timeline, so a script that can never fire is a
- * test failure rather than a run that silently speaks less than it claims.
+ * The committed English corpus as data: the fast ten are ten scenarios with
+ * twenty real TTS takes, one Locale and no held-out name; the larger class and
+ * Locale corpora are separate tickets. The trigger plans are resolved against a
+ * canonical agent timeline, so a script that can never fire is a test failure
+ * rather than a run that silently speaks less than it claims.
  *
  * A copied corpus with one changed byte proves the loader's drift refusal on
  * the committed bytes, not only on a synthetic fixture.
@@ -72,16 +73,21 @@ test("the committed fast corpus keeps its ten English scenarios and twenty recor
   const byName = new Map(corpus.scenarios.map((scenario) => [scenario.name, scenario]));
   const fast = FAST_CONTRACT_SCENARIOS.map((name) => {
     const scenario = byName.get(name);
-    assert.ok(scenario, `the fast corpus is missing ${name}`);
+    assert.ok(scenario, `${name} is missing from the committed corpus`);
     return scenario;
   });
+  assert.deepEqual(
+    fast.map((scenario) => scenario.name),
+    [...FAST_CONTRACT_SCENARIOS],
+  );
+  assert.equal(fast.length, 10);
   assert.equal(
     fast.reduce((sum, scenario) => sum + scenario.takes.length, 0),
     20,
     "every caller line is its own committed take",
   );
 
-  for (const scenario of corpus.scenarios) {
+  for (const scenario of fast) {
     assert.equal(scenario.locale, "en");
     assert.equal(scenario.heldOut, false);
     assert.ok(!(HELD_OUT_SCENARIOS as readonly string[]).includes(scenario.name));
@@ -100,7 +106,7 @@ test("the committed fast corpus keeps its ten English scenarios and twenty recor
   }
 });
 
-test("every fast script resolves against the same canonical timeline", async () => {
+test("every committed script resolves against the same canonical timeline", async () => {
   const corpus = await load();
   for (const scenario of corpus.scenarios) {
     const plan = evaluateTriggers(scenario.script, TIMELINE);
@@ -111,16 +117,19 @@ test("every fast script resolves against the same canonical timeline", async () 
   }
 });
 
-test("only the connectivity scenario injects a deterministic fault", async () => {
+test("the connectivity scenarios inject deterministic faults and no other scenario does", async () => {
   const corpus = await load();
+  const expected: Record<string, unknown[]> = {
+    "connectivity-jitter": [{ kind: "network-jitter", atMs: 900, durationMs: 600 }],
+    "connectivity-loss": [{ kind: "audio-dropout", atMs: 1_200, durationMs: 400 }],
+    "connectivity-latency": [{ kind: "endpoint-latency", atMs: 600, durationMs: 350 }],
+  };
   for (const scenario of corpus.scenarios) {
-    if (scenario.name === "connectivity-jitter") {
-      assert.deepEqual(scenario.faults, [
-        { kind: "network-jitter", atMs: 900, durationMs: 600 },
-      ]);
-    } else {
-      assert.deepEqual(scenario.faults, [], `${scenario.name} carries an undeclared fault`);
-    }
+    assert.deepEqual(
+      scenario.faults,
+      expected[scenario.name] ?? [],
+      `${scenario.name} carries an undeclared fault`,
+    );
   }
 });
 

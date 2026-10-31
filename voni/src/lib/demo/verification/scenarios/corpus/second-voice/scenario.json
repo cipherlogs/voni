@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "second-voice",
+  "class": "soundscape",
+  "locale": "en",
+  "heldOut": true,
+  "expectedProperties": [
+    "A4",
+    "T10",
+    "T7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "66b5b9748afa7c5ea62b107eda2d6e43cb763d8e9f3237b4efb21fad42a5b768",
+      "text": "Hi, it's me and my partner in the room. Can you hear us both?"
+    },
+    {
+      "id": "who",
+      "audio": "takes/who.wav",
+      "sha256": "a6e7006b9f36f0cb0c3ae1aabb6ac4ceeb5fdbf272474ede1d40b4fa83cf9c54",
+      "text": "That was my partner, not me. Who are you answering?"
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "who",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
