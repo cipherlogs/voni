@@ -91,6 +91,26 @@ rating is written once per item under `ratings/`. Evidence is rehashed on
 creation and again on every serving; a changed file is `audio-drift`, and a
 path outside `--evidence-root` is refused.
 
+### Panel sample and the owner's signature (ticket 27)
+
+`POST /api/rate/sessions` with `"panel": true` builds the panel sample instead
+of the plain Rate sample: twelve calls total, two per Locale as the base, the
+two worst remaining failing calls in the extra slots, and every failing call
+mandatory (a run with more than two remaining failures grows past twelve rather
+than dropping one). A missing Locale, a Locale with fewer than two calls, a
+failing call with no evidence, a duplicate call, or a run with fewer than
+twelve calls is a named refusal. The seven axes are `stayOnCall`, `soundsHuman`,
+`turnTaking`, `understanding`, `languageNaturalness`, `warmth`, `pacing`,
+verbatim.
+
+After the owner rates the blind session,
+`npm run demo:certificate -- --panel <session-id> --reviewer <name>` exports the
+gold labels, signs the certificate, completes H7 and writes the certificate
+back. Signing refuses a different run or target, a missing or different
+reviewer, a missing or different date, an incomplete panel and an already-signed
+certificate by name. `npm run demo:certificate -- --certificate <path>` reports
+an unsigned certificate as `pending-human` and exits 3; it is never a pass.
+
 ## Corpus
 
 Browse every take with its sha256, labels, audio, baseline consent and

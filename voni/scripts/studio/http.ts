@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import { loadDialogues } from "./dialogues";
 import { RATING_AXES, RatingError, type RatingSubmission } from "./rate";
+import { PanelError } from "../../src/lib/demo/verification/panel/errors";
 import {
   RATING_ROOT_DIR,
   RatingStoreError,
@@ -52,7 +53,7 @@ const RATE_RATINGS_ROUTE = /^\/api\/rate\/sessions\/(rating-[0-9a-f]{64})\/ratin
 const RATE_EXPORT_ROUTE = /^\/api\/rate\/sessions\/(rating-[0-9a-f]{64})\/export$/;
 const BODY_FIELDS = ["mode", "audioBase64", "labels", "prompt", "upload", "supersedes", "recordedAt", "baseline"] as const;
 const RETIRE_BODY_FIELDS = ["reviewer", "reason", "retiredAt"] as const;
-const RATE_SESSION_BODY_FIELDS = ["reviewer", "certificate", "calls", "seed", "cleanPerLocale"] as const;
+const RATE_SESSION_BODY_FIELDS = ["reviewer", "certificate", "calls", "seed", "cleanPerLocale", "panel"] as const;
 const RATING_BODY_FIELDS = ["itemId", "axes", "freeText", "defectTags", "humanSide", "preferredSide"] as const;
 
 /**
@@ -196,6 +197,7 @@ function parseRateSessionBody(raw: unknown): {
   calls: Parameters<RatingStore["create"]>[0]["calls"];
   seed?: number;
   cleanPerLocale?: number;
+  panel?: boolean;
 } {
   const body = asObject(raw, "a rating session body");
   refuseUnknownFields(body, RATE_SESSION_BODY_FIELDS, "a rating session body");
@@ -211,12 +213,16 @@ function parseRateSessionBody(raw: unknown): {
   if (body.cleanPerLocale !== undefined && typeof body.cleanPerLocale !== "number") {
     throw new StudioError("invalid-body", "a rating session's cleanPerLocale must be a number");
   }
+  if (body.panel !== undefined && typeof body.panel !== "boolean") {
+    throw new StudioError("invalid-body", "a rating session's panel flag must be a boolean");
+  }
   return {
     reviewer: body.reviewer as string,
     certificate: body.certificate as Parameters<RatingStore["create"]>[0]["certificate"],
     calls: body.calls as Parameters<RatingStore["create"]>[0]["calls"],
     ...(typeof body.seed === "number" ? { seed: body.seed } : {}),
     ...(typeof body.cleanPerLocale === "number" ? { cleanPerLocale: body.cleanPerLocale } : {}),
+    ...(body.panel === true ? { panel: true } : {}),
   };
 }
 
@@ -488,6 +494,10 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
     void handle(request, response).catch((error: unknown) => {
       if (error instanceof RatingError) {
         sendJson(response, ratingStatusFor(error), { error: error.code, message: error.message });
+        return;
+      }
+      if (error instanceof PanelError) {
+        sendJson(response, 400, { error: error.code, message: error.message });
         return;
       }
       if (error instanceof RatingStoreError) {

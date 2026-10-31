@@ -84,6 +84,13 @@ export type RatingSessionInput = {
   readonly createdAt: string;
   /** Clean calls sampled per Locale; every failing call is always queued. */
   readonly cleanPerLocale?: number;
+  /**
+   * A minimum queue size. When the mandatory failing calls plus the per-Locale
+   * clean sample are fewer than this, the remaining clean calls are drawn in
+   * seeded order until the queue reaches it. 0 means no top-up (ticket 24's
+   * default behaviour); ticket 27's panel asks for 12.
+   */
+  readonly sampleSize?: number;
 };
 
 /** The private answer key for one item's A/B pair. */
@@ -118,6 +125,8 @@ export type RatingSession = {
   readonly target: Certificate["target"];
   readonly seed: number;
   readonly cleanPerLocale: number;
+  /** The minimum queue size; 0 when the session was not top-up sampled. */
+  readonly sampleSize?: number;
   readonly queue: readonly QueueItem[];
 };
 
@@ -180,6 +189,8 @@ export type RatingErrorCode =
   | "invalid-seed"
   | "invalid-created-at"
   | "invalid-clean-sample"
+  | "invalid-sample-size"
+  | "sample-shortfall"
   | "invalid-session"
   | "duplicate-call"
   | "unknown-call"
@@ -351,7 +362,7 @@ function parseCall(raw: unknown): RatingCallInput {
 }
 
 /** The scenarios whose certificate verdict is a failure. */
-function failingScenarios(certificate: Certificate): Set<string> {
+export function certificateFailingScenarios(certificate: Certificate): Set<string> {
   const failing = new Set<string>();
   for (const property of certificate.properties ?? []) {
     const scenarios = property.scenarios ?? [];
@@ -367,6 +378,23 @@ function failingScenarios(certificate: Certificate): Set<string> {
     }
   }
   return failing;
+}
+
+/**
+ * How badly a scenario failed, used only to order the panel's mandatory
+ * failing calls: a scenario with more failed property rows is "worse" than a
+ * scenario with one. The score never decides inclusion — every failing call is
+ * mandatory — only the order the two worst are named in.
+ */
+function scenarioSeverity(certificate: Certificate): Map<string, number> {
+  const severity = new Map<string, number>();
+  for (const property of certificate.properties ?? []) {
+    for (const scenario of property.scenarios ?? []) {
+      if (scenario.status !== "FAIL") continue;
+      severity.set(scenario.scenario, (severity.get(scenario.scenario) ?? 0) + 1);
+    }
+  }
+  return severity;
 }
 
 /** Every call the certificate's coverage rows name; the queue may not invent one. */
@@ -398,6 +426,14 @@ function parseCleanPerLocale(value: unknown): number {
   if (value === undefined) return 2;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 50) {
     throw new RatingError("invalid-clean-sample", `cleanPerLocale must be an integer 0–50, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function parseSampleSize(value: unknown): number {
+  if (value === undefined) return 0;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 100) {
+    throw new RatingError("invalid-sample-size", `sampleSize must be an integer 0–100, got ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -453,6 +489,7 @@ export function buildRatingSession(input: RatingSessionInput): RatingSession {
   const seed = parseSeed(input.seed);
   const createdAt = parseCreatedAt(input.createdAt);
   const cleanPerLocale = parseCleanPerLocale(input.cleanPerLocale);
+  const sampleSize = parseSampleSize(input.sampleSize);
   const certificate = input.certificate;
   if (typeof certificate !== "object" || certificate === null) {
     throw new RatingError("invalid-session", "a rating session needs the certificate it samples");
@@ -485,7 +522,7 @@ export function buildRatingSession(input: RatingSessionInput): RatingSession {
     }
   }
 
-  const failing = failingScenarios(certificate);
+  const failing = certificateFailingScenarios(certificate);
   const failingCalls = calls.filter((call) => failing.has(call.scenario));
   if (failing.size > 0 && failingCalls.length === 0) {
     throw new RatingError(
@@ -497,9 +534,73 @@ export function buildRatingSession(input: RatingSessionInput): RatingSession {
 
   const cleanCalls = calls.filter((call) => !failing.has(call.scenario));
   const random = seededRandom(seed);
-  const failingOrder = shuffle(failingCalls, random);
-  const cleanOrder = shuffle(cleanSample(cleanCalls, cleanPerLocale, random), random);
+  const severity = scenarioSeverity(certificate);
+  const failingOrder =
+    sampleSize > 0
+      ? [...failingCalls].sort(
+          (left, right) =>
+            (severity.get(right.scenario) ?? 0) - (severity.get(left.scenario) ?? 0) ||
+            left.callId.localeCompare(right.callId),
+        )
+      : shuffle(failingCalls, random);
+
+  // Ticket 27's panel: two calls per Locale are the base of the twelve, with
+  // failing calls counted toward a Locale's two. The extra slots go to the
+  // worst remaining failing calls first (all of them are already in
+  // `failingOrder`, which the queue places ahead of the clean sample), then to
+  // the remaining calls in seeded, severity-first order. A run with more than
+  // two failures grows past twelve rather than dropping one.
+  let perLocaleClean: RatingCallInput[];
+  if (sampleSize > 0) {
+    const failingByLocale = new Map<Locale, number>();
+    for (const call of failingCalls) {
+      failingByLocale.set(call.locale, (failingByLocale.get(call.locale) ?? 0) + 1);
+    }
+    const cleanByLocale = new Map<Locale, RatingCallInput[]>();
+    for (const call of cleanCalls) {
+      const group = cleanByLocale.get(call.locale);
+      if (group) group.push(call);
+      else cleanByLocale.set(call.locale, [call]);
+    }
+    perLocaleClean = [];
+    for (const locale of [...cleanByLocale.keys()].sort()) {
+      const wanted = Math.max(
+        0,
+        cleanPerLocale - (failingByLocale.get(locale) ?? 0),
+      );
+      perLocaleClean.push(
+        ...shuffle(cleanByLocale.get(locale)!, random).slice(0, wanted),
+      );
+    }
+  } else {
+    perLocaleClean = cleanSample(cleanCalls, cleanPerLocale, random);
+  }
+
+  const selected = new Set(perLocaleClean.map((call) => call.callId));
+  const topUpCount = Math.max(0, sampleSize - failingCalls.length - perLocaleClean.length);
+  const remaining = cleanCalls.filter((call) => !selected.has(call.callId));
+  const remainingOrder = shuffle(remaining, random);
+  const topUp =
+    topUpCount === 0
+      ? []
+      : sampleSize > 0
+        ? remainingOrder
+            .slice()
+            .sort(
+              (left, right) =>
+                (severity.get(right.scenario) ?? 0) - (severity.get(left.scenario) ?? 0),
+            )
+            .slice(0, topUpCount)
+        : remainingOrder.slice(0, topUpCount);
+  const cleanOrder = shuffle([...perLocaleClean, ...topUp], random);
   const ordered = [...failingOrder, ...cleanOrder];
+  if (sampleSize > 0 && ordered.length < sampleSize) {
+    throw new RatingError(
+      "sample-shortfall",
+      `the session asks for ${sampleSize} calls but only ${ordered.length} are eligible; ` +
+        "the panel refuses to certify an under-sampled run",
+    );
+  }
   if (ordered.length === 0) {
     throw new RatingError(
       "empty-queue",
@@ -541,6 +642,7 @@ export function buildRatingSession(input: RatingSessionInput): RatingSession {
       reviewer,
       seed,
       createdAt,
+      ...(sampleSize === 0 ? {} : { sampleSize }),
       queue: queue.map((item) => ({ itemId: item.itemId, callId: item.callId, failing: item.failing })),
     }),
   )}`;
@@ -555,6 +657,7 @@ export function buildRatingSession(input: RatingSessionInput): RatingSession {
     target: certificate.target,
     seed,
     cleanPerLocale,
+    ...(sampleSize === 0 ? {} : { sampleSize }),
     queue,
   };
 }

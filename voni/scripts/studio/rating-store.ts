@@ -25,6 +25,7 @@ import {
   type RatingSession,
   type RatingSubmission,
 } from "./rate";
+import { buildPanelSession } from "./panel/session";
 import { contentTypeFor, sniffAudioFormat } from "./take-store";
 
 export const RATING_ROOT_DIR = "rating";
@@ -75,6 +76,11 @@ export type CreateRatingSessionInput = {
   readonly reviewer: string;
   readonly seed?: number;
   readonly cleanPerLocale?: number;
+  /**
+   * Build ticket 27's panel sample instead of the plain Rate sample: twelve
+   * calls, two per Locale, every failing call mandatory.
+   */
+  readonly panel?: boolean;
   readonly createdAt?: string;
 };
 
@@ -281,14 +287,23 @@ export async function openRatingStore(options: OpenRatingStoreOptions): Promise<
     const seed = input.seed ?? randomInt(0, 0x100000000);
     const createdAt = input.createdAt ?? now().toISOString();
     const calls = await loadCalls(input.calls ?? []);
-    const session = buildRatingSession({
-      certificate: input.certificate,
-      calls,
-      reviewer: input.reviewer,
-      seed,
-      createdAt,
-      ...(input.cleanPerLocale === undefined ? {} : { cleanPerLocale: input.cleanPerLocale }),
-    });
+    const session =
+      input.panel === true
+        ? buildPanelSession({
+            certificate: input.certificate,
+            calls,
+            reviewer: input.reviewer,
+            seed,
+            createdAt,
+          }).session
+        : buildRatingSession({
+            certificate: input.certificate,
+            calls,
+            reviewer: input.reviewer,
+            seed,
+            createdAt,
+            ...(input.cleanPerLocale === undefined ? {} : { cleanPerLocale: input.cleanPerLocale }),
+          });
     const dir = sessionDir(session.sessionId);
     await mkdirp(join(dir, RATING_RATINGS_DIR));
     await writeNew(join(dir, RATING_SESSION_FILE), `${JSON.stringify(session, null, 2)}\n`);
