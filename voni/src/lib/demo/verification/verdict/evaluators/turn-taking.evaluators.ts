@@ -227,7 +227,7 @@ const t2: PropertyEvaluator = {
 // ── T3: barge-in stop ──────────────────────────────────────────────────────
 
 /** A caller begins over the agent only after the agent was already sounding. */
-const BARGE_MIN_LEAD_MS = 200;
+const BARGE_MIN_LEAD_MS = 50;
 
 function barges(
   call: AudioCall,
