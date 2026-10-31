@@ -491,7 +491,7 @@ test("with no production evaluators, the real contract fails all 82 properties a
     const result = await runProtocolDiagnosis({
       ...base,
       contract: undefined,
-      evaluators: undefined,
+      evaluators: [],
     });
 
     assert.equal(result.status, "findings");
