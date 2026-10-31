@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -162,12 +162,10 @@ test("no app source reads a build-time public pipeline URL", () => {
   assert.match(envDoc, new RegExp(PIPELINE_URL_ENV));
 });
 
-test("the hidden cascade page supplies the URL from the server, not the build", () => {
-  const page = readFileSync(
-    join(APP_ROOT, "src/app/e2e/cascade/page.tsx"),
-    "utf8",
+test("there is no hidden cascade page with its own pipeline URL", () => {
+  assert.equal(
+    existsSync(join(APP_ROOT, "src/app/e2e/cascade/page.tsx")),
+    false,
+    "the demo is the cascade's only client; the mint delivers its URL",
   );
-  assert.match(page, /pipelineUrlFromEnv/);
-  assert.match(page, /cascadeUrl=/);
-  assert.doesNotMatch(page, /NEXT_PUBLIC_VOICE_PIPELINE_URL/);
 });

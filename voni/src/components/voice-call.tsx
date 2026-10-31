@@ -49,7 +49,7 @@ import {
 } from "@/lib/voice/session";
 import { CallTimings } from "@/lib/voice/call-timings";
 import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
-import { CascadeSession, CASCADE_PROTOCOL_VERSION, decideCascadeFallback } from "@/lib/voice/cascade-session";
+import { CascadeSession } from "@/lib/voice/cascade-session";
 import { demoUnavailableMessage } from "@/lib/voice/cascade-failure-view";
 import { startDemoCall } from "@/lib/voice/demo-start";
 import { boundedResumeHistory } from "@/lib/voice/resume-history";
@@ -364,8 +364,6 @@ export function VoiceCall({
   onPendingChange,
   presentation = "card",
   chromeless = false,
-  engine = "managed",
-  cascadeUrl,
   ref,
 }: {
   mode: Mode;
@@ -376,17 +374,6 @@ export function VoiceCall({
   /** ai-05 dialog host: the host header owns the call buttons and the host
       footer owns status, so the card renders identity + transcript only. */
   chromeless?: boolean;
-  /**
-   * Voice engine. "managed" is the AssemblyAI session; "cascade" drives the
-   * Python pipeline service. Demo mode is always cascade (ticket 10); all UI
-   * states are shared so indicators work unchanged.
-   */
-  engine?: "managed" | "cascade";
-  /**
-   * The inline cascade test call's service URL (ticket 08). Demo calls never
-   * read this: the mint delivers the pipeline URL.
-   */
-  cascadeUrl?: string;
   ref?: React.Ref<VoiceCallHandle>;
 }) {
   const isDemo = mode.kind === "demo";
@@ -408,12 +395,6 @@ export function VoiceCall({
   const [turns, setTurns] = useState<Transcript[]>([]);
   const [error, setError] = useState<VoiceError | null>(null);
   const [retryIn, setRetryIn] = useState<number | null>(null);
-  /**
-   * The visible reason a cascade connect was routed to managed (ticket 140
-   * AC5). It survives the fallback's own start, unlike `error`, which a fresh
-   * transport clears.
-   */
-  const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [toolActive, setToolActive] = useState(false);
   /** For the inbox poll: Voni's own tool call is in flight, so its result speaks. */
   const toolActiveRef = useRef(false);
@@ -445,17 +426,6 @@ export function VoiceCall({
 
   const sessionRef = useRef<VoiceSession | CascadeSession | null>(null);
   const startingRef = useRef(false);
-  /**
-   * Ticket 140 AC5: a refused cascade connect — draining, routed-managed
-   * (`managed`) or unavailable — continues on the managed path once.
-   * `engineOverride` is the transport this call actually uses;
-   * `cascadeFellBack` is the single-retry guard, and `pendingFallback` carries
-   * a failure that arrived while the cascade start was still awaiting the mic.
-   */
-  const engineOverrideRef = useRef<"managed" | "cascade" | null>(null);
-  const cascadeFellBackRef = useRef(false);
-  const fallbackStartRef = useRef(false);
-  const pendingFallbackRef = useRef<string | null>(null);
   /** Per-call sound player (lazy: Audio only exists in the browser). */
   const soundsRef = useRef<CallSounds | null>(null);
   const sounds = () => (soundsRef.current ??= new CallSounds());
@@ -585,25 +555,6 @@ export function VoiceCall({
    * (never during render, never in a dedicated sync effect).
    */
   const startRef = useRef<() => void>(() => {});
-
-  /**
-   * Route this call from a refused cascade connect to managed, once. A failure
-   * that lands while the cascade start is still awaiting the mic is queued and
-   * spent at the end of that start, so it is never dropped.
-   */
-  const requestManagedFallback = useCallback((reason: string) => {
-    // The demo has no managed fallback (demo-cascade ticket 11): no managed
-    // token request, no managed socket, whatever asks.
-    if (modeKind === "demo") return;
-    if (startingRef.current) {
-      pendingFallbackRef.current = reason;
-      return;
-    }
-    fallbackStartRef.current = true;
-    engineOverrideRef.current = "managed";
-    setFallbackReason(reason);
-    void startRef.current();
-  }, [modeKind]);
 
   // Synchronous pending mirror for the host footer: the onPendingChange
   // effect below only runs after paint, so the click handler also notifies
@@ -1122,18 +1073,6 @@ export function VoiceCall({
   const start = useCallback(async () => {
     if (startingRef.current) return;
     startingRef.current = true;
-    // A cascade connect that was routed to managed is one call, not a new one:
-    // keep its transport override and visible reason. Every other start is a
-    // fresh attempt and may try cascade again.
-    const fallbackStart = fallbackStartRef.current;
-    fallbackStartRef.current = false;
-    if (!fallbackStart) {
-      engineOverrideRef.current = null;
-      cascadeFellBackRef.current = false;
-      pendingFallbackRef.current = null;
-      setFallbackReason(null);
-    }
-    const activeEngine = engineOverrideRef.current ?? engine;
     // A restart never inherits the old transport: detach and stop it first,
     // so its late socket callbacks (stale error banner, ghost audio) die
     // with explicitStop instead of painting over the fresh session.
@@ -1226,14 +1165,12 @@ export function VoiceCall({
       new CustomEvent("voni:voice-preempt", { detail: { owner: "voice-call" } }),
     );
 
-    // The demo is cascade-only (demo-cascade ticket 10); the inline test call
-    // keeps its explicit engine toggle. Demo never reaches the managed branch.
-    if (modeKind === "demo" || (activeEngine === "cascade" && modeKind === "inline")) {
+    // The demo is the cascade's only client (demo-cascade ticket 10). The
+    // inline test call is managed only and never reaches this branch.
+    if (modeKind === "demo") {
       // Cascade slice: Python pipeline service over WebSocket. Same UI
       // states as managed (connecting/listening/speaking/ended) so every
       // indicator, timer, caption, and the countdown below works unchanged.
-      // Tools are not executed on the cascade path yet — the agent answers
-      // from knowledge, so tool-heavy agents should stay on managed.
       let cascadeEnded = false;
       // The demo's guardrail words follow the picked voice's Locale (the same
       // per-Locale recognition layer the managed path uses); hidden notes stay
@@ -1364,35 +1301,8 @@ export function VoiceCall({
           // protocol mismatch — ends in the visitor-facing unavailable state.
           // The copy is vendor-free and distinct per cause; no managed token
           // request and no managed socket follows.
-          if (modeKind === "demo") {
-            cascadeEnded = true;
-            setError({ message: demoUnavailableMessage(failure.code) });
-            setCallState("ended");
-            return;
-          }
-          // Ticket 140 AC5: a refused cascade connect is not a dead end for
-          // the inline test call. A draining deploy, a routed-managed verdict
-          // (`managed`) and an unavailable service are all pre-accept
-          // failures; spend the single managed retry with the reason visible.
-          // A second failure is surfaced as a typed DrainingError that no
-          // longer offers a retry. A protocol mismatch is never retried: the
-          // decision surfaces it, because a managed call would hide a
-          // half-deployed pair.
-          //
-          // Post-accept managed/draining errors never reach here: the session
-          // surfaces those on `onError`, because the call already started.
           cascadeEnded = true;
-          const decision = decideCascadeFallback({
-            failure: failure.code,
-            message: failure.message,
-            alreadyFellBack: cascadeFellBackRef.current,
-          });
-          if (decision.action === "retry-managed") {
-            cascadeFellBackRef.current = true;
-            requestManagedFallback(decision.reason);
-            return;
-          }
-          setError({ message: decision.error.message });
+          setError({ message: demoUnavailableMessage(failure.code) });
           setCallState("ended");
         },
         onEnd: () => {
@@ -1408,45 +1318,23 @@ export function VoiceCall({
       cascade.setDeliveredCapture(callDebugFlags().deliverCapture);
       setCallState("connecting");
       try {
-        if (modeKind === "demo") {
-          // One mint through the one door, then the real cascade client. The
-          // minted demo call token is the tool/judge credential; the cascade
-          // config below sends only the minted cascade token.
-          const minted = await startDemoCall(cascade, {
-            voiceId,
-            resume: preserving,
-            callToken: callTokenRef.current ?? undefined,
-            tagToken: loadTagToken(),
-            // A hold return carries the recent settled turns in the signed
-            // body; a fresh call starts blank. The bound lives in the pipeline
-            // registry, not in this component (ticket 13).
-            history: preserving ? boundedResumeHistory(turnsRef.current) : undefined,
-          });
-          callTokenRef.current = minted.demoCallToken;
-          if (minted.tagToken) saveTagToken(minted.tagToken);
-          setTestTag(minted.testTag ?? null);
-          if (!preserving) setTagCarried(minted.tagCarried === true);
-        } else {
-          // The URL is server configuration, delivered to this prop (ticket 08):
-          // the browser never reads a pipeline environment variable, and a
-          // missing URL is a refusal, never a localhost guess.
-          if (!cascadeUrl) throw new Error("The call service is not configured.");
-          await cascade.start(
-            {
-              serviceUrl: cascadeUrl,
-              // Identity only (ticket 65): the app assembles the stored body,
-              // fingerprints it and signs the envelope; the browser never sends
-              // a prompt, a tool list or a pipeline. The cascade call token is
-              // minted alongside that body (M17) — until this build has one, the
-              // service refuses the call by name instead of running a
-              // client-assembled body.
-              callToken: callTokenRef.current ?? "",
-              agentId: inlineAgentId ?? "",
-              protocolVersion: CASCADE_PROTOCOL_VERSION,
-            },
-            "voice-call",
-          );
-        }
+        // One mint through the one door, then the real cascade client. The
+        // minted demo call token is the tool/judge credential; the cascade
+        // config sends only the minted cascade token and identity.
+        const minted = await startDemoCall(cascade, {
+          voiceId,
+          resume: preserving,
+          callToken: callTokenRef.current ?? undefined,
+          tagToken: loadTagToken(),
+          // A hold return carries the recent settled turns in the signed
+          // body; a fresh call starts blank. The bound lives in the pipeline
+          // registry, not in this component (ticket 13).
+          history: preserving ? boundedResumeHistory(turnsRef.current) : undefined,
+        });
+        callTokenRef.current = minted.demoCallToken;
+        if (minted.tagToken) saveTagToken(minted.tagToken);
+        setTestTag(minted.testTag ?? null);
+        if (!preserving) setTagCarried(minted.tagCarried === true);
         // A refusal may have landed before the mic resolved: never paint
         // "listening" over a call that already ended.
         if (!cascadeEnded) setCallState("listening");
@@ -1465,19 +1353,10 @@ export function VoiceCall({
         setStarting(false);
         notifyPending({ ...pendingRef.current, starting: false });
       }
-      // Inline only: a refusal that arrived before the mic resolved was queued
-      // rather than dropped. The demo never queues a managed retry (ticket 10).
-      if (modeKind !== "demo") {
-        const pendingFallback = pendingFallbackRef.current;
-        if (pendingFallback) {
-          pendingFallbackRef.current = null;
-          requestManagedFallback(pendingFallback);
-        }
-      }
       return;
     }
 
-    // The managed session: the inline agent's language picker is authoritative
+    // The managed session: the inline test call's language picker is authoritative
     // (automatic → English scaffolding). The demo never reaches this branch.
     const session = new VoiceSession({
       onStateChange: (next) => {
@@ -1680,13 +1559,12 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, engine, cascadeUrl, setCallState, setReturnPending, enterHold, setEmailTest, setTestTag, playConnectedChime, requestManagedFallback, speak, closeCall]);
+  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, setCallState, setReturnPending, enterHold, setEmailTest, setTestTag, playConnectedChime, speak, closeCall]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
     setHangingUp(true);
     notifyPending({ ...pendingRef.current, hangingUp: true });
-    setFallbackReason(null);
     // Leaving hold behind: the call is over, never to be resumed.
     clearCallMemory();
     resumeIdRef.current = null;
@@ -2331,15 +2209,6 @@ export function VoiceCall({
           {statusText}
         </p>
       ) : null}
-      {fallbackReason ? (
-        <p
-          role="status"
-          className="text-muted-foreground mt-1 max-w-xs text-center text-xs leading-snug"
-        >
-          {fallbackReason}
-        </p>
-      ) : null}
-
       {/* Primary action. Chromeless ai-05 hosts render these in their own
           header/footer instead. */}
       {chromeless ? null : (
