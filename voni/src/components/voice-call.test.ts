@@ -536,6 +536,40 @@ test("a post-accept managed or draining refusal never re-routes the call", () =>
   assert.doesNotMatch(receive, /requestManagedFallback|decideCascadeFallback|retry-managed/);
 });
 
+test("the demo restores the silence check-in as hidden cascade context", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const effect = call.slice(
+    call.indexOf("const floor = createDemoFloor({"),
+    call.indexOf("cascadeFloorRef.current = floor"),
+  );
+
+  // The check-in is the configured note, sent through speak() (hidden context
+  // on the cascade) and never appended to the transcript.
+  assert.match(
+    effect,
+    /speak: \(instructions\) => speak\(instructions, \{ key: "silence", droppable: true \}\)/,
+  );
+  assert.match(
+    effect,
+    /settled: \(\) =>\s*!speakingRef\.current &&\s*!mutedRef\.current &&\s*!holdingRef\.current &&\s*!closingRef\.current &&\s*!returnPendingRef\.current/,
+    "never over the agent, while muted, on hold, closing or waiting on a return",
+  );
+  assert.match(
+    effect,
+    /allowed: \(\) =>\s*!mutedRef\.current && !holdingRef\.current && !closingRef\.current && !returnPendingRef\.current/,
+  );
+  assert.match(call, /setInterval\(\(\) => floor\.tick\(\), DEMO_FLOOR_TICK_MS\)/);
+
+  // The cascade feeds the same floor events the managed session does.
+  assert.match(call, /cascadeFloorRef\.current\?\.callerWords\(\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.callerSpeechStarted\(\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.callerTurnDone\(\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.replyStarted\(\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.replyDone\(false\)/);
+  assert.match(call, /cascadeFloorRef\.current\?\.replyDone\(true\)/);
+  assert.doesNotMatch(call, /setTurns\([^)]*SILENCE_CHECK_IN/);
+});
+
 test("no inline cascade surface remains: the demo is the cascade's only client", () => {
   const call = readRepo("components/voice-call.tsx");
   const dialog = readRepo("components/test-agent-dialog.tsx");

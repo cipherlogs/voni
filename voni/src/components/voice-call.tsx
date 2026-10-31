@@ -51,6 +51,8 @@ import { CallTimings } from "@/lib/voice/call-timings";
 import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
 import { CascadeSession } from "@/lib/voice/cascade-session";
 import { demoUnavailableMessage } from "@/lib/voice/cascade-failure-view";
+import { createDemoFloor, DEMO_FLOOR_TICK_MS } from "@/lib/voice/demo-floor";
+import type { Floor } from "@/lib/voice/floor";
 import { startDemoCall } from "@/lib/voice/demo-start";
 import { boundedResumeHistory } from "@/lib/voice/resume-history";
 import { FILLER_POOL, isEndCallRequest, requestVoiceJudge } from "@/lib/voice/jev-judges";
@@ -426,6 +428,12 @@ export function VoiceCall({
 
   const sessionRef = useRef<VoiceSession | CascadeSession | null>(null);
   const startingRef = useRef(false);
+  /**
+   * The cascade's silence floor (ticket 12): the service owns the turn
+   * boundary, so the browser feeds the managed Floor's events and the
+   * check-in leaves as hidden context, never a caption.
+   */
+  const cascadeFloorRef = useRef<Floor | null>(null);
   /** Per-call sound player (lazy: Audio only exists in the browser). */
   const soundsRef = useRef<CallSounds | null>(null);
   const sounds = () => (soundsRef.current ??= new CallSounds());
@@ -799,6 +807,32 @@ export function VoiceCall({
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
+
+  // Demo silence check-in (ticket 12): the managed path's Floor rule, kept
+  // transport-neutrally. After the configured quiet on a free floor, one note
+  // goes out through `speak()` — hidden context on the cascade, never a
+  // caption. Mute, hold, a pending return and a close all stop the clock.
+  useEffect(() => {
+    if (!isDemo || !connected) return;
+    const floor = createDemoFloor({
+      speak: (instructions) => speak(instructions, { key: "silence", droppable: true }),
+      settled: () =>
+        !speakingRef.current &&
+        !mutedRef.current &&
+        !holdingRef.current &&
+        !closingRef.current &&
+        !returnPendingRef.current,
+      toolBusy: () => toolActiveRef.current,
+      allowed: () =>
+        !mutedRef.current && !holdingRef.current && !closingRef.current && !returnPendingRef.current,
+    });
+    cascadeFloorRef.current = floor;
+    const id = setInterval(() => floor.tick(), DEMO_FLOOR_TICK_MS);
+    return () => {
+      clearInterval(id);
+      if (cascadeFloorRef.current === floor) cascadeFloorRef.current = null;
+    };
+  }, [isDemo, connected, speak]);
 
   // Demo email test: from the invite (or from the start, when a callback
   // carried its tag over) the call's Test tag is re-checked here rather than
@@ -1187,6 +1221,12 @@ export function VoiceCall({
               speakingRef.current = false;
               setFiller(null);
               setCallState("listening");
+              cascadeFloorRef.current?.replyDone(false);
+            } else {
+              // The caller's final words: they held the floor, and the
+              // service's answer window follows before quiet can count.
+              cascadeFloorRef.current?.callerSpeechStarted();
+              cascadeFloorRef.current?.callerTurnDone();
             }
             // A final that resolves an overheard partial keeps its mark in
             // history: speech the agent talked over still registered. The
@@ -1267,6 +1307,7 @@ export function VoiceCall({
             // LLM-authored so they stream instantly at zero STT cost.
             if (caption.role === "user") {
               timingsRef.current?.mark("firstPartial");
+              cascadeFloorRef.current?.callerWords();
               const line = userCaption(caption.text, speakingRef.current);
               if (line) {
                 overheardRef.current = line.overheard === true;
@@ -1277,6 +1318,7 @@ export function VoiceCall({
         },
         onAudio: () => {
           speakingRef.current = true;
+          cascadeFloorRef.current?.replyStarted();
           setCallState("speaking");
         },
         // The connected chime waits for the first audible sample, not this
@@ -1285,6 +1327,7 @@ export function VoiceCall({
         onInterrupted: () => {
           speakingRef.current = false;
           overheardRef.current = false;
+          cascadeFloorRef.current?.replyDone(true);
           setFiller(null);
           setCallState("listening");
         },
