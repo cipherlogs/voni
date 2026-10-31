@@ -101,6 +101,7 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
+from cascade.breaker import LEGS
 from cascade.cost import CallCost, LegCost as PricedLeg, RateTable, cost_call
 from cascade.counter import limit_amount
 from cascade.eligibility import EligibilityDecision
@@ -1347,6 +1348,7 @@ class CallLifecycle:
                 # turn-level failures (a turn bug, an interrupted reply) and
                 # surfaces only the ones that end the call.
                 self._event_failure = _leg_failure(error)
+                self._emit_protocol_error(self._event_failure)
                 stop_reasons.append("error")
                 failure_event.set()
 
@@ -2025,6 +2027,7 @@ class CallLifecycle:
         exists: there is nothing to drain, only sockets to close, so the same
         path serves both failures instead of a second copy.
         """
+        self._emit_protocol_error(failure)
         drain = await self._close_all(
             opened, event_task=None, drain_stream=False
         )
@@ -2076,6 +2079,34 @@ class CallLifecycle:
                 f"the {name} event could not be written; the call continues"
             )
             return None
+
+    def _emit_protocol_error(self, failure: CallFailure | None) -> None:
+        """One provider protocol failure, named by leg, code and error class.
+
+        Only a failure the provider itself classified carries a leg, so only
+        that failure becomes a ``protocol.error`` row: a browser-socket failure
+        has no provider to name and stays on the end message, where its stage
+        is already reported. Emitting the row at the moment the failure is
+        classified keeps its timestamp honest.
+        """
+        trigger = None if failure is None else failure.trigger
+        if not isinstance(trigger, Mapping):
+            return
+        leg = trigger.get("leg")
+        if leg not in LEGS:
+            return
+        failure_class = str(trigger.get("class") or failure.name)
+        reason = str(trigger.get("reason") or "").strip()
+        phase = "connect" if failure.stage in ("open", "greeting") else "turn"
+        self._emit_operational(
+            "protocol.error",
+            lambda events: events.protocol_error(
+                leg=leg,
+                code=trigger.get("code"),
+                reason=f"{failure_class}: {reason}" if reason else failure_class,
+                phase=phase,
+            ),
+        )
 
     def deploy_draining(self, reason: str) -> dict[str, Any] | None:
         """Announce a deploy drain for this live call, once.

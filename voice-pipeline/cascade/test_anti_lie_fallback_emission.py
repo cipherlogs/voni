@@ -12,6 +12,7 @@ missing-event refusal makes the no-event test fail. Neither proof is described
 here instead of executed — the red logs are attached to the ticket.
 """
 
+import re
 import unittest
 from pathlib import Path
 
@@ -227,10 +228,19 @@ class OneEmitterTests(unittest.TestCase):
         mirror_end = source.index(")", mirror_start) + 1
         without_mirror = source[:mirror_start] + source[mirror_end:]
 
+        # The turn ledger names the type once as a dedupe key and delegates to
+        # the one emitter, so the definition, the emitter and that key are three
+        # mentions but still one place that writes a fallback line.
         self.assertEqual(
             without_mirror.count("FALLBACK_EVENT_TYPE"),
+            3,
+            "the definition, the one emitter and the turn ledger's dedupe key",
+        )
+        self.assertEqual(
+            # A prose mention in the module docstring is not a call site.
+            len(re.findall(r"(?<!`)emit_fallback\(", without_mirror)),
             2,
-            "one definition and one emission site; a second emitter is a review failure",
+            "the definition plus one call site; a second emitter is a review failure",
         )
 
 

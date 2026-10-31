@@ -590,6 +590,7 @@ async def handle_browser_call(
                 on_interrupted=browser.interrupted,
                 on_turn_billed=on_turn_billed,
                 on_end_call=on_end_call,
+                turn_events=events.turns if events is not None else None,
                 history=body.history,
                 ack_lines=(
                     ack_lines_for(body.language_code)

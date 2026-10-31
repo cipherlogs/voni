@@ -357,14 +357,22 @@ class FallbackEmissionTests(unittest.TestCase):
 
         source = (Path(__file__).with_name("events.py")).read_text(encoding="utf8")
         # The cascade-only mirror names this type too; it is not an emitter, so
-        # count the identifier outside that tuple.
+        # count the identifier outside that tuple. The turn ledger names it once
+        # as a dedupe key and delegates to the one emitter below, so it is not a
+        # second emission site: the call-site count is what proves that.
         mirror_start = source.index("CASCADE_ONLY_EVENT_TYPES = (")
         mirror_end = source.index(")", mirror_start) + 1
         without_mirror = source[:mirror_start] + source[mirror_end:]
         self.assertEqual(
             without_mirror.count("FALLBACK_EVENT_TYPE"),
+            3,
+            "the definition, the one emitter and the ledger's dedupe key",
+        )
+        self.assertEqual(
+            # A prose mention in the module docstring is not a call site.
+            len(re.findall(r"(?<!`)emit_fallback\(", without_mirror)),
             2,
-            "one definition and one emission site; a second emitter is a review failure",
+            "the definition plus one call site; a second emitter is a review failure",
         )
 
     def test_a_managed_writer_cannot_emit_a_provider_fallback(self):
