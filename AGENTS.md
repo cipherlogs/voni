@@ -7,6 +7,7 @@
 - For cross-agent continuity, read `docs/agents/progress.md`.
 - For voice-copilot work, read `docs/agents/voice.md`.
 - For demo scoreboard, eval, gate, matrix, live-call, or readiness-pack work, read `docs/agents/demo-scoreboard.md`.
+- For demo verification work (the `demo:verify` contract, certificate, defect cards, panel or residual risks), read `docs/agents/demo-verification.md` — its subsystem map and residual-risk register — with `docs/adr/0013-demo-readiness-is-a-signed-certificate.md`.
 - For the remaining Meta cascade human gates (feasibility, German, audition, readiness, rollback, signatures, decommission), read `docs/agents/meta-cascade-human-gates.md`.
 - For the turn-window latency experiment, read `docs/demo-latency-ladder.md`.
 - For multi-worktree implementation, run `scripts/worktree-create.sh <name>` (disk-backed root; `WORKTREE_ROOT` overrides). Use `scripts/worktree-setup.sh` only to repair an existing worktree.
