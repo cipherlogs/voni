@@ -96,14 +96,16 @@ export class DeliveredCapture {
   private readonly sampleRate: number;
   private readonly write: CaptureWrite;
   private readonly now: () => Date;
+  private readonly callId: string | null;
   private samples = 0;
   private finished = false;
   private outcome: CaptureResult | null = null;
 
-  constructor(opts: { sampleRate: number; write: CaptureWrite; now?: () => Date }) {
+  constructor(opts: { sampleRate: number; write: CaptureWrite; now?: () => Date; callId?: string }) {
     this.sampleRate = opts.sampleRate;
     this.write = opts.write;
     this.now = opts.now ?? (() => new Date());
+    this.callId = opts.callId ?? null;
   }
 
   /** One block exactly as the worklet emitted it. */
@@ -139,7 +141,7 @@ export class DeliveredCapture {
       at += block.length;
     }
     const bytes = encodeWavPcm16(all, this.sampleRate);
-    const name = captureName(this.now());
+    const name = captureName(this.now(), this.callId);
     try {
       await this.write(name, bytes);
     } catch {
@@ -165,20 +167,28 @@ export class DeliveredCapture {
   }
 }
 
-/** UTC, filename-safe: delivered-20261029-140506.wav */
-export function captureName(date: Date): string {
+/**
+ * UTC, filename-safe: `delivered-<callId>-20261029-140506.wav`. The call id
+ * is optional so an older caller keeps the established name, and it is only
+ * used when it is a bare file-name component — never a path.
+ */
+export function captureName(date: Date, callId?: string | null): string {
   const stamp = date
     .toISOString()
     .replace(/\.\d+Z$/, "")
     .replace(/[-:]/g, "")
     .replace("T", "-");
-  return `delivered-${stamp}.wav`;
+  const id =
+    callId && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(callId) && !callId.includes("..")
+      ? callId
+      : null;
+  return id ? `delivered-${id}-${stamp}.wav` : `delivered-${stamp}.wav`;
 }
 
 /** Enable the worklet tap and feed every rendered block into a capture. */
 export function attachDeliveredCapture(
   playout: Pick<WorkletPlayout, "tap" | "onTap">,
-  opts: { sampleRate: number; write: CaptureWrite; now?: () => Date },
+  opts: { sampleRate: number; write: CaptureWrite; now?: () => Date; callId?: string },
 ): DeliveredCapture {
   const capture = new DeliveredCapture(opts);
   playout.onTap = (samples) => capture.push(samples);

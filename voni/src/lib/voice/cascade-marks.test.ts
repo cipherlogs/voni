@@ -1,0 +1,313 @@
+/**
+ * The cascade client's half of the browser call evidence stream: admission,
+ * refusal, end receipt, teardown and the delivered capture, all named in the
+ * same marks artifact the landing page posts.
+ */
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { CallMarks, type CallMarksArtifact } from "./call-marks";
+import { CascadeSession, type CascadeCallConfig } from "./cascade-session";
+import type { Playout } from "./playout";
+
+const CONFIG: CascadeCallConfig = {
+  serviceUrl: "ws://127.0.0.1:8766/v1/browser-call",
+  callToken: "call-token-05",
+  agentId: "demo:audrey",
+  protocolVersion: 1,
+};
+
+const T0 = Date.UTC(2026, 9, 31, 15, 10, 0);
+
+type FakeSocket = {
+  sent: string[];
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: string }) => void) | null;
+  onerror: (() => void) | null;
+  onclose: (() => void) | null;
+  closed: boolean;
+  readyState: number;
+  OPEN: number;
+  send(message: string): void;
+  close(): void;
+};
+
+function makeSocket(): FakeSocket {
+  const socket: FakeSocket = {
+    sent: [],
+    onopen: null,
+    onmessage: null,
+    onerror: null,
+    onclose: null,
+    closed: false,
+    readyState: 0,
+    OPEN: 1,
+    send(message: string) {
+      socket.sent.push(message);
+    },
+    close() {
+      socket.closed = true;
+    },
+  };
+  return socket;
+}
+
+function makePlayout() {
+  const playout = {
+    onFirstAudible: undefined as (() => void) | undefined,
+    play() {},
+    flush() {},
+    settled: () => true,
+  };
+  return playout as Playout & { onFirstAudible?: () => void };
+}
+
+/** A playout with the worklet's tap accessor, plus a way to emit a block. */
+function makeTappablePlayout() {
+  let collector: ((samples: Float32Array) => void) | undefined;
+  const playout = {
+    onFirstAudible: undefined as (() => void) | undefined,
+    play() {},
+    flush() {},
+    settled: () => true,
+    tap: async () => ({ ended: true }),
+    get onTap() {
+      return collector;
+    },
+    set onTap(fn: ((samples: Float32Array) => void) | undefined) {
+      collector = fn;
+    },
+  };
+  return {
+    playout: playout as unknown as Playout,
+    emit: (samples: Float32Array) => collector?.(samples),
+  };
+}
+
+function recorder(opts: { now?: () => number } = {}) {
+  const posted: CallMarksArtifact[] = [];
+  const marks = new CallMarks({
+    callId: "call-marks-05",
+    now: opts.now ?? (() => T0),
+    post: async (artifact) => {
+      posted.push(artifact);
+    },
+  });
+  return { marks, posted };
+}
+
+async function settleMarks(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+test("a cascade call names every lifecycle mark in order", async () => {
+  const socket = makeSocket();
+  const playout = makePlayout();
+  const { marks, posted } = recorder();
+
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {},
+        audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+        playout,
+      }),
+      marks,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  socket.onmessage?.({
+    data: JSON.stringify({ type: "caption", role: "agent", text: "Hi.", final: true }),
+  });
+  playout.onFirstAudible?.();
+  socket.onmessage?.({ data: JSON.stringify({ type: "end_call" }) });
+  await settleMarks();
+
+  assert.equal(posted.length, 1, "one marks artifact per call");
+  assert.deepEqual(
+    posted[0]!.marks.map((mark) => mark.name),
+    [
+      "microphone_acquired",
+      "socket_open",
+      "config_sent",
+      "admitted",
+      "first_audible",
+      "end_call_received",
+      "teardown",
+    ],
+  );
+  assert.deepEqual(
+    posted[0]!.marks.find((mark) => mark.name === "admitted")!.detail,
+    { via: "caption" },
+    "admission is in the marks so connected can be compared with first audio",
+  );
+  const relative = posted[0]!.marks.map((mark) => mark.tMs);
+  assert.deepEqual(relative, [...relative].sort((a, b) => a - b), "call-relative time never goes backwards");
+});
+
+test("a refused connect is in the marks by name and never admitted", async () => {
+  const socket = makeSocket();
+  const { marks, posted } = recorder();
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => makePlayout(),
+      marks,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  socket.onmessage?.({
+    data: JSON.stringify({ type: "error", code: "draining", message: "Draining for deploy." }),
+  });
+  await settleMarks();
+
+  const names = posted[0]!.marks.map((mark) => mark.name);
+  assert.ok(names.includes("refused"), "a refusal is named");
+  assert.equal(names.includes("admitted"), false, "a refused call was never admitted");
+  assert.deepEqual(
+    posted[0]!.marks.find((mark) => mark.name === "refused")!.detail,
+    { code: "draining" },
+  );
+  assert.equal(names.at(-1), "teardown");
+});
+
+test("only the first accepting frame is admitted; later frames do not repeat it", async () => {
+  const socket = makeSocket();
+  const { marks, posted } = recorder();
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => makePlayout(),
+      marks,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  socket.onmessage?.({ data: JSON.stringify({ type: "interrupted" }) });
+  socket.onmessage?.({
+    data: JSON.stringify({ type: "caption", role: "user", text: "Hello.", final: true }),
+  });
+  await session.stop();
+  await settleMarks();
+
+  assert.equal(
+    posted[0]!.marks.filter((mark) => mark.name === "admitted").length,
+    1,
+    "admission is one mark",
+  );
+});
+
+test("the production end message and teardown are both marked", async () => {
+  const socket = makeSocket();
+  const { marks, posted } = recorder();
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => makePlayout(),
+      marks,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  socket.onmessage?.({
+    data: JSON.stringify({ type: "end", turns: 2, metrics: { costUsd: 0.02 }, protocolVersion: 1 }),
+  });
+  await settleMarks();
+
+  const names = posted[0]!.marks.map((mark) => mark.name);
+  assert.ok(names.includes("end_received"));
+  assert.deepEqual(
+    posted[0]!.marks.find((mark) => mark.name === "end_received")!.detail,
+    { turns: 2 },
+  );
+  assert.equal(names.at(-1), "teardown", "teardown follows the end receipt");
+});
+
+test("the delivered WAV and the marks artifact share the call id", async () => {
+  const socket = makeSocket();
+  const written: { name: string; bytes: Uint8Array }[] = [];
+  const { marks, posted } = recorder();
+  const { playout, emit } = makeTappablePlayout();
+
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {},
+        audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+        playout,
+      }),
+      writeCapture: (name, bytes) => {
+        written.push({ name, bytes });
+      },
+      captureNow: () => new Date(Date.UTC(2026, 9, 29, 14, 5, 6)),
+      marks,
+    },
+  );
+  session.setDeliveredCapture(true, "call-marks-05");
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  socket.onmessage?.({
+    data: JSON.stringify({ type: "caption", role: "agent", text: "Hi.", final: true }),
+  });
+  emit(new Float32Array([0.25, -0.25]));
+  await session.stop();
+  await settleMarks();
+
+  assert.equal(written.length, 1);
+  assert.equal(written[0]!.name, "delivered-call-marks-05-20261029-140506.wav");
+  const captureMark = posted[0]!.marks.find((mark) => mark.name === "delivered_capture");
+  assert.ok(captureMark, "the capture outcome is in the marks");
+  assert.deepEqual(captureMark!.detail, {
+    complete: true,
+    reason: "",
+    name: written[0]!.name,
+    samples: 2,
+    bytes: written[0]!.bytes.length,
+  });
+  assert.equal(posted[0]!.callId, "call-marks-05");
+  assert.ok(written[0]!.name.includes(posted[0]!.callId), "the WAV name carries the same call id");
+});
+
+test("a hanging marks writer never blocks hang-up", async () => {
+  const socket = makeSocket();
+  const marks = new CallMarks({
+    callId: "call-hanging",
+    now: () => T0,
+    post: () => new Promise(() => {}),
+  });
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => makePlayout(),
+      marks,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+
+  const started = Date.now();
+  await session.stop();
+  assert.ok(Date.now() - started < 1000, "teardown never waits on the marks sink");
+  assert.equal(socket.closed, true, "the call still tore down");
+});

@@ -161,6 +161,35 @@ test("the production early return cannot short-circuit the browser E2E capture f
   );
 });
 
+test("the browser call marks are gated by the capture flag and wired to the cascade", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const demo = call.slice(
+    call.indexOf('if (modeKind === "demo") {'),
+    call.indexOf("const session = new VoiceSession({"),
+  );
+
+  // The recorder exists only through the gated factory; a production build
+  // without the capture flag gets `null` and writes nothing.
+  assert.match(
+    demo,
+    /const marks = createCallMarks\(\s*window\.location\.search,\s*process\.env\.NODE_ENV === "production",\s*\)/,
+    "the one capture flag decides whether marks exist",
+  );
+  assert.doesNotMatch(demo, /new CallMarks\(/, "no ungated recorder construction");
+  assert.match(demo, /marks\?\.mark\("start_requested"\)/);
+  assert.match(demo, /onMinted: \(\) => marks\?\.mark\("mint_done"\)/);
+  assert.match(
+    demo,
+    /setDeliveredCapture\(callDebugFlags\(\)\.deliverCapture, marks\?\.callId\)/,
+    "the WAV and the marks share one call id",
+  );
+  assert.match(demo, /new CascadeSession\(\{[\s\S]*?\}, \{ marks \}\)/, "the session emits the transport marks");
+  assert.match(demo, /mark\("turn", \{ role: caption\.role, index: turnsRef\.current\.length \}\)/);
+  assert.match(demo, /marks\.mark\("connected_painted"\)/);
+  assert.match(demo, /marks\?\.mark\("start_failed"/);
+  assert.match(call, /marksRef\.current\?\.mark\("chime"\)/, "the chime is a mark");
+});
+
 test("the contact chip has one render site, gated on the invite, the inbox and the call tag", () => {
   const call = readRepo("components/voice-call.tsx");
   assert.equal((call.match(/<DemoAddressChip\b/g) ?? []).length, 1, "one chip, never a second");
