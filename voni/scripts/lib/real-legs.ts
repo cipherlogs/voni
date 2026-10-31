@@ -78,6 +78,15 @@ export const DEFAULT_VOICE = "jorg";
  */
 export const COST_PRODUCER = "cascade.cost.cost_call";
 
+/** The caller's explicit end request, per Locale used by the demo roster. */
+export const HANGUP_LINES: Readonly<Record<string, string>> = Object.freeze({
+  en: "Okay, that's all I needed. Please hang up now.",
+  de: "Okay, das war alles. Bitte legen Sie jetzt auf.",
+  es: "Vale, eso es todo. Puedes colgar ya.",
+  fr: "D'accord, c'est tout. Vous pouvez raccrocher.",
+  pt: "Tudo bem, é isso. Pode desligar agora.",
+});
+
 export const REAL_LEGS_USAGE = `usage: npm run ${REAL_LEGS_COMMAND} -- [options]
 
   --base-url URL      the pipeline's HTTP(S) base (default: VOICE_PIPELINE_URL,
@@ -93,6 +102,7 @@ export const REAL_LEGS_USAGE = `usage: npm run ${REAL_LEGS_COMMAND} -- [options]
   --timeout-ms N      per-wait bound (default: 120000)
   --with-resume       also prove the hold return (default)
   --no-resume         skip the hold-return phase
+  --no-hangup         skip the caller hang-up phase
   --json              print one machine-readable report
   --help, -h          this text
 
@@ -149,6 +159,8 @@ export type RealLegsOptions = {
   timeoutMs: number;
   /** Prove the hold return after the call's turns (default true). */
   withResume: boolean;
+  /** Prove the service ends the call on the caller's request (default true). */
+  withHangup: boolean;
   json: boolean;
   help: boolean;
 };
@@ -171,7 +183,12 @@ export function parseRealLegsArgs(argv: readonly string[]): RealLegsOptions {
       flags.set(flag, "");
       continue;
     }
-    if (flag === "--with-resume" || flag === "--no-resume") {
+    if (
+      flag === "--with-resume" ||
+      flag === "--no-resume" ||
+      flag === "--with-hangup" ||
+      flag === "--no-hangup"
+    ) {
       flags.set(flag, "");
       continue;
     }
@@ -209,6 +226,7 @@ export function parseRealLegsArgs(argv: readonly string[]): RealLegsOptions {
     eventsDir: flags.get("--events-dir"),
     timeoutMs,
     withResume: !flags.has("--no-resume"),
+    withHangup: !flags.has("--no-hangup"),
     json: flags.has("--json"),
     help: flags.has("--help"),
   };
@@ -532,6 +550,8 @@ export function decodeWavPcm(bytes: Uint8Array): Uint8Array {
 export type LoadCallerAudioInput = {
   audioPath?: string;
   voice: string;
+  /** The line to synthesize when no clip is present (default: the caller line). */
+  text?: string;
   env: RealLegsEnvironment;
   fetchImpl: typeof fetch;
 };
@@ -543,21 +563,25 @@ export type LoadCallerAudioInput = {
  */
 export async function loadCallerAudio(input: LoadCallerAudioInput): Promise<CallerAudio> {
   const path = input.audioPath ?? defaultCallerClip();
-  if (existsSync(path)) {
-    if (input.audioPath === undefined && path.toLowerCase().endsWith(".wav")) {
-      // The committed clip is already the service's input format; no external
-      // tool is needed for the common run.
-      return { pcm: decodeWavPcm(readFileSync(path)), source: `committed caller clip ${path}` };
+  // An explicit text is a different line, not the committed clip: it must be
+  // synthesized even when the default clip exists (the hang-up turn).
+  if (input.text === undefined) {
+    if (existsSync(path)) {
+      if (input.audioPath === undefined && path.toLowerCase().endsWith(".wav")) {
+        // The committed clip is already the service's input format; no
+        // external tool is needed for the common run.
+        return { pcm: decodeWavPcm(readFileSync(path)), source: `committed caller clip ${path}` };
+      }
+      // An explicit clip may be any format ffmpeg reads; it is transcoded to
+      // the wire's one format rather than refused for its container.
+      return { pcm: transcodeToPcm(path), source: `caller clip ${path} (ffmpeg)` };
     }
-    // An explicit clip may be any format ffmpeg reads; it is transcoded to the
-    // wire's one format rather than refused for its container.
-    return { pcm: transcodeToPcm(path), source: `caller clip ${path} (ffmpeg)` };
-  }
-  if (input.audioPath !== undefined) {
-    throw new RealLegsError(
-      "audio-missing",
-      `--audio "${input.audioPath}" does not exist, and no synthesized fallback replaces an explicit clip`,
-    );
+    if (input.audioPath !== undefined) {
+      throw new RealLegsError(
+        "audio-missing",
+        `--audio "${input.audioPath}" does not exist, and no synthesized fallback replaces an explicit clip`,
+      );
+    }
   }
 
   const apiKey = input.env.ASSEMBLYAI_API_KEY?.trim() ?? "";
@@ -568,7 +592,7 @@ export async function loadCallerAudio(input: LoadCallerAudioInput): Promise<Call
     );
   }
   const language = getVoice(input.voice)?.languageCode ?? "en";
-  const text = CALLER_LINES[language] ?? CALLER_LINES.en;
+  const text = input.text ?? CALLER_LINES[language] ?? CALLER_LINES.en;
   const vendorVoice = `aai-${input.voice}`;
   let response: Response;
   try {
@@ -1310,7 +1334,9 @@ export async function runRealLegs(
       }
     });
     socket.onError((message) => {
-      state.error = message;
+      // The service closes the socket after its one end frame; that close is
+      // not a failure of a call that already ended.
+      if (state.end === null) state.error = message;
     });
     socket.onClose(() => {
       state.closed = true;
@@ -1550,9 +1576,77 @@ export async function runRealLegs(
           ),
     );
 
+    if (options.withHangup) {
+      const locale = getVoice(options.voice)?.languageCode ?? "en";
+      try {
+        const hangupAudio = await loadAudio({
+          voice: options.voice,
+          text: HANGUP_LINES[locale] ?? HANGUP_LINES.en,
+          env,
+          fetchImpl,
+        });
+        const userFinalsBeforeHangup = countUserFinals(state);
+        const captionsBeforeHangup = state.captions.length;
+        await ingress.say(hangupAudio.pcm);
+        await waitFor(
+          state,
+          () => countUserFinals(state) > userFinalsBeforeHangup,
+          options.timeoutMs,
+          sleep,
+          "hang-up turn",
+        );
+        // The service, not this harness, must end the call: no `stop` frame is
+        // sent before this wait. That is the whole point of the check.
+        await waitFor(
+          state,
+          () => state.end !== null,
+          Math.min(options.timeoutMs, 20_000),
+          sleep,
+          "hang-up end",
+        );
+        const hangupEnd = state.end ?? {};
+        const counts =
+          (hangupEnd.metrics as { counts?: Record<string, number> } | undefined)?.counts ??
+          {};
+        const goodbyeLines = state.captions
+          .slice(captionsBeforeHangup)
+          .filter((caption) => caption.role === "agent" && caption.text.trim() !== "")
+          .map((caption) => caption.text);
+        const endError = (hangupEnd as { error?: unknown }).error;
+        const ok =
+          hangupEnd.endedBy === "stop" &&
+          (counts.end_call ?? 0) >= 1 &&
+          goodbyeLines.length > 0 &&
+          endError === undefined;
+        checks.push(
+          ok
+            ? passed(
+                "hang-up",
+                "hangup",
+                `the caller's end request ended call "${callId}" (endedBy "${String(hangupEnd.endedBy)}", end_call ${counts.end_call ?? 0}); the agent's last line was ${JSON.stringify(goodbyeLines.at(-1) ?? "").slice(0, 120)}`,
+              )
+            : failed(
+                "hang-up",
+                "hangup",
+                `the caller asked to end but the service did not end the call: endedBy=${JSON.stringify(hangupEnd.endedBy)}, end_call=${counts.end_call ?? 0}, agentLines=${goodbyeLines.length}, callerFinal=${JSON.stringify(state.captions.filter((caption) => caption.role === "user" && caption.final).at(-1)?.text ?? "")}, endError=${JSON.stringify(endError)}`,
+              ),
+        );
+      } catch (error) {
+        checks.push(
+          failed(
+            "hang-up",
+            (error as RealLegsError).code ?? "hangup-failed",
+            `${(error as Error).name}: ${(error as Error).message}; callerFinal=${JSON.stringify(state.captions.filter((caption) => caption.role === "user" && caption.final).at(-1)?.text ?? "")}`,
+          ),
+        );
+      }
+    }
+
     await ingress.stop();
-    socket.send(JSON.stringify({ type: "stop" }));
-    await waitFor(state, () => state.end !== null, options.timeoutMs, sleep, "end message");
+    if (state.end === null) {
+      socket.send(JSON.stringify({ type: "stop" }));
+      await waitFor(state, () => state.end !== null, options.timeoutMs, sleep, "end message");
+    }
   } catch (error) {
     checks.push(
       failed(

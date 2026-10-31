@@ -148,11 +148,18 @@ test("every documented flag is accepted", () => {
   assert.equal(options.timeoutMs, 5000);
   assert.equal(options.json, true);
   assert.equal(options.withResume, true, "the hold-return phase runs by default");
+  assert.equal(options.withHangup, true, "the caller hang-up phase runs by default");
 });
 
 test("--with-resume is explicit and --no-resume is the named opt-out", () => {
   assert.equal(parseRealLegsArgs(["--with-resume"]).withResume, true);
   assert.equal(parseRealLegsArgs(["--no-resume"]).withResume, false);
+});
+
+test("the caller hang-up phase runs by default and has a named opt-out", () => {
+  assert.equal(parseRealLegsArgs([]).withHangup, true);
+  assert.equal(parseRealLegsArgs(["--with-hangup"]).withHangup, true);
+  assert.equal(parseRealLegsArgs(["--no-hangup"]).withHangup, false);
 });
 
 test("an unknown flag, a missing value and a bad timeout are named usage errors", () => {
@@ -1007,6 +1014,7 @@ async function runAgainstFake(
       voice: "jorg",
       timeoutMs: 15_000,
       withResume: true,
+      withHangup: false,
       json: false,
       help: false,
       eventsDir: dir,

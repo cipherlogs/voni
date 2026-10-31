@@ -66,9 +66,11 @@ npm run check:real-legs                                     # needs META_API_KEY
   (measured p50 951 ms vs 1648 ms at `low`). In the call's end frame,
   `providers.llm.provider` must be `spark` and `providers.stt.provider` must be
   `meta`; no gateway or non-Meta override may appear.
-- **Live hang-up check:** say "please hang up", then assert the call ends with
-  `endedBy: "stop"`, one agent goodbye (not two), and `counts.end_call: 1`.
-  A call that says goodbye but stays open is the Spark/`end_call` regression.
+- **Live hang-up check:** `check:real-legs` now includes it by default: the
+  harness synthesizes the caller's end request and waits for the service's own
+  end frame. Assert `endedBy: "stop"`, one agent goodbye, and
+  `counts.end_call: 1`. A call that says goodbye but stays open is the
+  Spark/call-control regression. `--no-hangup` skips the phase.
 - The cutover is **not done** until `check:real-legs` passes against the
   deployed service and ADR-0012 is in place (ticket 25 acceptance).
 
