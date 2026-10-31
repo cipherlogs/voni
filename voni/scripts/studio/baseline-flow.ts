@@ -55,13 +55,38 @@ export const BASELINE_CALLS = [
     call: 1 as const,
     title: "Scripted booking",
     instruction:
-      "Read the booking prompt card at a natural pace: a caller booking a table or a viewing. Speak for four to six minutes.",
+      "Read the booking card below as talking points, not verbatim. Pause two to four seconds between beats as if the other person is answering. Speak for four to six minutes.",
+    card: [
+      "Hi, I'd like to book a table for a birthday dinner.",
+      "Six people, Friday the 13th, around 7:30.",
+      "Do you have a set menu for groups?",
+      "One guest is vegetarian and one has a nut allergy — how do you handle that?",
+      "Could we have a quiet corner? One guest is hard of hearing.",
+      "Is there parking nearby?",
+      "Is there a deposit or a card hold for six?",
+      "Actually, could we make it 8 o'clock instead?",
+      "If two people drop out, is the deposit still the same?",
+      "The name is Alex.",
+      "How does the confirmation arrive? I'd rather not give a card over the phone.",
+      "Can you do a candle or a small cake, and what does it cost?",
+      "Let me repeat it back: Friday, 8pm, six people, quiet corner, one vegetarian, one nut allergy.",
+      "Thank you — I'll wait for the confirmation.",
+    ],
   },
   {
     call: 2 as const,
     title: "Unscripted service problem",
     instruction:
-      "Describe a real service problem in your own words. No script. Speak for four to six minutes.",
+      "Describe a real service problem in your own words. Use the beats below as a reminder, not a script. Speak for four to six minutes.",
+    card: [
+      "What happened, and when.",
+      "What you have already tried.",
+      "How it affected you.",
+      "What you actually want — a refund, a rebooking, a replacement.",
+      "Answer their questions naturally.",
+      "Push back once if the first offer is weak.",
+      "Agree the next step and end the call.",
+    ],
   },
 ] as const;
 
