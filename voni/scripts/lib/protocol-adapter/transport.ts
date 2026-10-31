@@ -501,11 +501,16 @@ export async function runProtocolCall(
 
   // The scenario's call-drop is evidence, not a harness failure: close at the
   // fault point and record the way the call ended.
-  if (dropAt !== null && !dropped) {
+  if (dropAt !== null && !dropped && state.end === null && !state.closed) {
     await waitUntil(dropAt).catch(() => {});
-    dropped = true;
-    running = false;
-    socket.close();
+    // The pump may have dropped the call at the frame due at `dropAt`. Only
+    // close here when the call reached the fault point without doing so; a
+    // graceful end before the fault is not a drop.
+    if (!dropped && state.end === null) {
+      dropped = true;
+      running = false;
+      socket.close();
+    }
   }
 
   // Wait for the service's graceful end. A call-drop or a close is an ending

@@ -219,3 +219,58 @@ test("a call-drop fault closes the call at its point and records that ending", a
     removeTree(root);
   }
 });
+
+test("a graceful end before the call-drop point is not reported as a drop", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv11-transport-early-end-"));
+  const previous = process.env.VOICE_PIPELINE_ENVELOPE_SECRET;
+  process.env.VOICE_PIPELINE_ENVELOPE_SECRET = "test-envelope";
+  try {
+    const scenario = await loadedScenario(root, [{ kind: "call-drop", atMs: 5_000 }]);
+    const script = socketScript({ endAtFrame: 40 });
+    let t = 0;
+    const result = await runProtocolCall(
+      {
+        scenario,
+        callId: "11111111-1111-4111-8111-111111111111",
+        target: {
+          httpBase: "http://127.0.0.1:8767",
+          wsUrl: "ws://127.0.0.1:8767/v1/browser-call",
+          local: true,
+        },
+        targetLabel: "local",
+        soundscapePcm: null,
+        timeoutMs: 5_000,
+        env: process.env,
+      },
+      {
+        fetchImpl: (async (_url: string, init?: RequestInit) => {
+          const body = JSON.parse(String(init?.body)) as {
+            signed_body: { envelope: { call_id: string; agent_id: string; body_hash: string } };
+          };
+          const envelope = body.signed_body.envelope;
+          return new Response(
+            JSON.stringify({
+              status: "accepted",
+              call_id: envelope.call_id,
+              agent_id: envelope.agent_id,
+              body_hash: envelope.body_hash,
+            }),
+            { status: 202 },
+          );
+        }) as typeof fetch,
+        connect: () => script.socket,
+        now: () => t,
+        sleep: async (ms) => {
+          t += ms;
+        },
+      },
+    );
+
+    assert.equal(result.endedBy, "end");
+    assert.match(result.faultsApplied[0]?.observed ?? "", /ended before the fault point/);
+  } finally {
+    if (previous === undefined) delete process.env.VOICE_PIPELINE_ENVELOPE_SECRET;
+    else process.env.VOICE_PIPELINE_ENVELOPE_SECRET = previous;
+    removeTree(root);
+  }
+});

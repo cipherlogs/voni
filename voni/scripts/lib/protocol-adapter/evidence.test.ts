@@ -7,9 +7,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { ProtocolAdapterError } from "./errors";
+import { DEFAULT_RUN_ROOT } from "./types";
 import { runProtocolDiagnosis } from "./runner";
 import {
   fakeCall,
@@ -235,3 +236,10 @@ function inputCallId(result: { call: { callId: string } | null }): string {
   assert.ok(callId !== undefined);
   return callId;
 }
+
+
+test("the default run root is the gitignored voni/.demo-runs path", () => {
+  assert.equal(DEFAULT_RUN_ROOT, ".demo-runs");
+  const gitignore = readFileSync(resolve(process.cwd(), "..", ".gitignore"), "utf8");
+  assert.match(gitignore, /^voni\/\.demo-runs\/$/m);
+});
