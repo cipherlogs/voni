@@ -500,7 +500,8 @@ async function fastRun(
   const collected = await collectCalls(request, plan, deps);
   const endedAt = (deps.now ?? (() => new Date()))().toISOString();
   // E3 is run-scoped and has one owner: the economics run gate. The fast
-  // module reports what it measured; it never holds a second verdict path.
+  // module presents that owner's total and boolean verbatim and narrows the
+  // scoped verdict with them; it never re-sums cost or re-resolves the ceiling.
   const scoped = scopeRunToCeiling({
     contract,
     evidence: await evaluateScenarios({

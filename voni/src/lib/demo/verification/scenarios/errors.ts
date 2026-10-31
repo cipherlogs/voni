@@ -48,6 +48,7 @@ export type ScenarioErrorCode =
   | "fast-ceiling-unset"
   | "fast-verdict-incomplete"
   | "fast-run-incomplete"
+  | "fast-ceiling-unsettled"
   | "missing-locale-scenario"
   | "locale-scenario-mismatch"
   | "locale-coverage-gap"

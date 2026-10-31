@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadContract, type Contract } from "../contract";
-import { settleRunCeiling, type RunCeilingCheck, type RunCostRow } from "../economics";
+import {
+  preflightRunCeiling,
+  settleRunCeiling,
+  type RunCeilingCheck,
+  type RunCostRow,
+} from "../economics";
 import {
   DEFAULT_CORPUS_DIR,
   FAST_CONTRACT_REPETITIONS,
@@ -532,6 +537,55 @@ test("an unmeasured call cost fails closed; it never fits a ceiling", async () =
   assert.match(report.economy.detail, /tools-email-send/);
   assert.ok(report.gaps.includes(report.economy.detail));
   assert.equal(report.verdict, "not-demo-ready");
+});
+
+test("a preflight projection is refused by name; only the settled fast check can report a total", async () => {
+  const contract = await CONTRACT;
+  const loaded = await corpus();
+  const projected = preflightRunCeiling({ kind: "fast", contract, plannedCalls: 10 });
+  assert.equal(projected.phase, "before");
+  assert.equal(projected.passed, true, "the fixture is a passing projection");
+  assert.equal(projected.usd, 1.5);
+
+  assertRefusal(
+    () =>
+      judgeFastRun({
+        contract,
+        corpus: loaded,
+        verdict: verdictFor(contract),
+        calls: calls(),
+        ceiling: projected,
+        startedAt: "2026-10-31T10:00:00.000Z",
+        endedAt: "2026-10-31T10:01:00.000Z",
+      }),
+    "fast-ceiling-unsettled",
+    /phase "before".*projection/,
+  );
+
+  const nightly = settleRunCeiling({
+    kind: "nightly",
+    contract,
+    calls: FAST_CONTRACT_SCENARIOS.map((scenario) => ({
+      callId: scenario,
+      scenario,
+      cost: priced(0.012),
+    })),
+  });
+  assert.equal(nightly.phase, "end");
+  assertRefusal(
+    () =>
+      judgeFastRun({
+        contract,
+        corpus: loaded,
+        verdict: verdictFor(contract),
+        calls: calls(),
+        ceiling: nightly,
+        startedAt: "2026-10-31T10:00:00.000Z",
+        endedAt: "2026-10-31T10:01:00.000Z",
+      }),
+    "fast-ceiling-unsettled",
+    /kind "nightly"/,
+  );
 });
 
 test("wall-clock time is measured and reported; the spec's missing bar is a named gap, never a bound", async () => {

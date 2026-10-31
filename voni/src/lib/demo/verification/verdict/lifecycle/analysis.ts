@@ -50,6 +50,9 @@ function namedState(marks: CallMarksArtifact): CallMark | null {
 }
 
 /**
+ * Evidence-integrity tolerance, not a verdict bar: it decides only whether two
+ * records name one event.
+ *
  * How far the client's `first_audible` mark may sit from the delivered WAV's
  * own first voiced sample before the two are treated as different events.
  *
@@ -61,7 +64,7 @@ function namedState(marks: CallMarksArtifact): CallMark | null {
  * second is generous for one event told twice — scheduling, a slow frame, a
  * resampled block — and far too tight to hide two different events.
  */
-const FIRST_AUDIBLE_AGREEMENT_MS = 250;
+export const FIRST_AUDIBLE_AGREEMENT_MS = 250;
 
 /**
  * The call-clock instant of the first audible agent sample, measured from the
@@ -81,8 +84,6 @@ export type AudioAnswer = {
   readonly answerMs: number;
   /** The same sample's offset from the start of the capture. */
   readonly firstVoicedMs: number;
-  /** The call-clock instant the capture began (the tap follows this mark). */
-  readonly captureStartMs: number;
   readonly detail: string;
 };
 
@@ -129,7 +130,6 @@ export function audioAnswer(
   return {
     answerMs,
     firstVoicedMs: analysis.firstSpeechMs,
-    captureStartMs: capture.tMs,
     detail:
       `the delivered WAV's first voiced sample is ${Math.round(analysis.firstSpeechMs)}ms into ` +
       `the capture that starts at ${Math.round(capture.tMs)}ms, so the answer is at ` +

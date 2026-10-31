@@ -122,11 +122,13 @@ ten scenarios' expected properties plus the run-scoped E3; every other property
 is reported `OUT-OF-SCOPE`, grouped by family (comprehension, human, security
 today), and a `scoped-pass` carries `certifiable: false`. E3's
 `dvCostFastRunMaxUsd` is judged by the economics run gate, not by a second
-verdict path in `fast.ts`; the wall-clock number is measured and compared only
-when the run was given a bound, and the gap names the measurement and the
-missing bound instead of a permanent literal. The corpus is recorded through
-`npm run corpus:takes` and a changed take refuses by name unless
-`--retake <scenario>/<take>` moves the manifest version deliberately.
+verdict path in `fast.ts`; `fast.ts` presents that gate's settled total and
+boolean verbatim, and refuses a preflight projection by name. The wall-clock
+number is measured and reported, and the gap names the measurement and the
+spec's missing bar instead of inventing one or printing a permanent literal. The
+corpus is recorded through `npm run corpus:takes` and a changed take refuses by
+name unless `--retake <scenario>/<take>` moves the manifest version
+deliberately.
 
 The Locale core is twelve behaviours (`golden-flow`, `golden-returning`,
 `backchannel`, `barge-clause`, `filler`, `nonsense`, `angry`, `television`,
@@ -483,6 +485,11 @@ fails closed; none may be relabelled as a pass.
 - **The television bed is absent.** `soundscape-television` names a real id and
   the adapters refuse it by name; there is no committed PCM bed and no
   substitute of `quiet-room` (digital silence). Owner: engineer.
+- **A per-Locale full set exists only for English.** The es, fr, de and pt
+  corpora hold the twelve-behaviour core, not the full set, so
+  `--full --locale <es|fr|de|pt>` refuses by name instead of issuing a full
+  certificate whose Locale coverage is a core. Owner: engineer (the missing
+  Locale scenarios are a corpus build, not a harness shortcut).
 - **`voni/evidence/vendor-builds.json` is absent.** No engineer has recorded
   authentic STT/TTS/LLM build ids, so every live `demo:verify` run (fast,
   nightly or full) refuses at preflight with exit 2 before a vendor opens

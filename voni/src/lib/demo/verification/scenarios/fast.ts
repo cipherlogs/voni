@@ -434,9 +434,11 @@ function parseTime(value: string, name: string): number {
  * duplicate call is refused by name. Cost and its ceiling are not judged here:
  * `ceiling` is the economics owner's settled fast-run check
  * (`settleRunCeiling`), and this module presents its total and its boolean
- * verbatim. A run over the ceiling therefore cannot read `scoped-pass`. The
- * wall-clock time is measured and reported; the spec sets no wall-clock bar, so
- * no ceiling is invented or compared.
+ * verbatim. A check from another phase or run kind is refused by name, so a
+ * preflight projection can never be presented as a measured total. A run over
+ * the ceiling therefore cannot read `scoped-pass`. The wall-clock time is
+ * measured and reported; the spec sets no wall-clock bar, so no ceiling is
+ * invented or compared.
  */
 export function judgeFastRun(input: {
   readonly contract: Contract;
@@ -448,6 +450,23 @@ export function judgeFastRun(input: {
   readonly startedAt: string;
   readonly endedAt: string;
 }): FastRunReport {
+  const ceiling = input.ceiling;
+  if (ceiling.phase !== "end") {
+    throw new ScenarioError(
+      "fast-ceiling-unsettled",
+      `the fast run's ceiling check is phase "${ceiling.phase}", a projection of planned calls ` +
+        "rather than a settled total; a fast report presents the economics owner's measured " +
+        "check, never a preflight projection",
+    );
+  }
+  if (ceiling.kind !== "fast") {
+    throw new ScenarioError(
+      "fast-ceiling-unsettled",
+      `the fast run's ceiling check is kind "${ceiling.kind}", but this report is the fast ` +
+        "contract; a report is bounded by the ceiling its own plan names",
+    );
+  }
+
   const plan = fastRunPlan(input.corpus);
   const scoped = scopeFastVerdict({
     contract: input.contract,
