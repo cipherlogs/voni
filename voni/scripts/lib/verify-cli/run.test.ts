@@ -97,18 +97,30 @@ function passingEvaluators(contract: Contract): PropertyEvaluator[] {
           comparison: "at-most" as const,
         }))
       : [],
-    evaluate: () =>
-      property.bar.numeric
-        ? { kind: "measured", samples: [0], citations: [`test:${property.id}`] }
-        : { kind: "measured", passed: true, citations: [`test:${property.id}`] },
+    evaluate: () => {
+      if (!property.bar.numeric) {
+        return { kind: "measured", passed: true, citations: [`test:${property.id}`] };
+      }
+      // Every at-most bar passes at the smallest declared budget, including a
+      // negative one (an audio level).
+      const floor = Math.min(0, ...property.thresholds.map((threshold) => threshold.value));
+      return { kind: "measured", samples: [floor], citations: [`test:${property.id}`] };
+    },
   }));
 }
 
-/** The fast plan is one repetition; clone the base contract to match it. */
+/**
+ * The fast plan is one repetition. The clone also clears K8's recorded
+ * `unresolved` flag, so the scope can be clean: this suite tests dispatch, not
+ * the contract's held-open word-error bar.
+ */
 function oneRepetitionContract(contract: Contract): Contract {
   return {
     families: contract.families,
-    properties: contract.properties.map((property) => ({ ...property, repetitions: 1 })),
+    properties: contract.properties.map(({ unresolved: _unresolved, ...property }) => ({
+      ...property,
+      repetitions: 1,
+    })),
   };
 }
 
