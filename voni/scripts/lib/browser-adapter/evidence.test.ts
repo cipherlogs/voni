@@ -70,6 +70,32 @@ test("the assembled bundle carries the delivered WAV, marks, trace and end docum
   }
 });
 
+test("the visitor's captions travel in the browser evidence", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await scenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = {
+      ...fakeBrowserCall({ scenario, eventsDir, capturesDir, runDir: root }),
+      captions: [
+        { role: "caller" as const, text: "Hi, is this Voni?" },
+        { role: "agent" as const, text: "Speaking." },
+      ],
+    };
+    const { assembled } = await assembleBrowserEvidence({
+      call,
+      scenario,
+      target: "local",
+      eventsDir,
+      callDir: join(root, "call"),
+    });
+    assert.deepEqual(assembled.bundle.browser.captions, call.captions);
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("a WAV that is not mono 16-bit PCM is refused by name", () => {
   const root = tempRoot();
   try {

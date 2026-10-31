@@ -530,6 +530,10 @@ export async function runBrowserCertification(
     repetition: 1,
     locale: scenario.locale,
     target: input.target,
+    // The scenario declares what it measures; an evaluator for a property it
+    // never cites is not run against this call. The authored caller words are
+    // ground truth for an exactness bar, not a measurement.
+    expectedProperties: scenario.expectedProperties,
     evidence: assembled.bundle,
     facts: scenarioFacts(scenario),
   };

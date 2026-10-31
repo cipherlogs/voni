@@ -12,6 +12,7 @@
     "id": "quiet-room"
   },
   "faults": [],
+  "holdOpenMs": 32000,
   "takes": [
     {
       "id": "hello",

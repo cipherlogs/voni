@@ -241,6 +241,7 @@ export function parseScenario(raw: unknown, options: ParseScenarioOptions): Scen
       "expectedProperties",
       "soundscape",
       "faults",
+      "holdOpenMs",
       "edge",
       "takes",
       "script",
@@ -365,6 +366,17 @@ export function parseScenario(raw: unknown, options: ParseScenarioOptions): Scen
     script.push({ take: takeId, trigger: parseTrigger(step.trigger, `${what}.trigger`) });
   }
 
+  const holdOpenMs =
+    record.holdOpenMs === undefined
+      ? undefined
+      : count(record.holdOpenMs, `scenario "${name}" holdOpenMs`, { positive: true });
+  if (holdOpenMs !== undefined && holdOpenMs > 120_000) {
+    throw new ScenarioError(
+      "malformed-scenario",
+      `scenario "${name}" holdOpenMs ${holdOpenMs} exceeds the harness's 120 s call bound`,
+    );
+  }
+
   let faults: Fault[] = [];
   if (record.faults === undefined) {
     throw new ScenarioError("missing-field", `scenario "${name}" requires faults (an empty list is valid)`);
@@ -393,6 +405,7 @@ export function parseScenario(raw: unknown, options: ParseScenarioOptions): Scen
     expectedProperties,
     soundscape: parseSoundscape(record.soundscape),
     faults,
+    ...(holdOpenMs === undefined ? {} : { holdOpenMs }),
     edge,
     takes,
     script,

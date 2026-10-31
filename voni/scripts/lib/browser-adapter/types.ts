@@ -148,6 +148,8 @@ export type SyntheticMicReport = {
     readonly take: string;
     readonly atMs: number;
     readonly durationMs: number;
+    /** Wall-clock start, set by the harness; absent from an older report. */
+    readonly epochMs?: number;
   }[];
   /** The browser's audio context rate, when the page reported it. */
   readonly sampleRate: number | null;
@@ -181,6 +183,11 @@ export type BrowserCallResult = {
   readonly capturePath: string | null;
   /** How the call ended, in the harness's words. */
   readonly endedBy: "caller-hangup" | "agent-end" | "call-drop" | "timeout";
+  /** The visitor's transcript, read from the page before teardown. */
+  readonly captions?: readonly {
+    readonly role: "caller" | "agent";
+    readonly text: string;
+  }[];
   /** A named harness problem that did not stop evidence assembly. */
   readonly error: string | null;
   readonly tracePath: string | null;
@@ -259,6 +266,11 @@ export type BrowserEvidenceBundle = {
   readonly browser: {
     readonly file: string;
     readonly marks: CallMarksArtifact;
+    /** The visitor's transcript, read from the page at teardown. */
+    readonly captions?: readonly {
+      readonly role: "caller" | "agent";
+      readonly text: string;
+    }[];
     readonly capture: {
       readonly file: string;
       readonly name: string;
