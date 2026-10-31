@@ -58,5 +58,6 @@ reaudition-runs/
 # next dev --experimental-https (dev:phone) self-signed cert + private key
 /certificates
 
-# playwright run output
+# playwright run output (HTML report and result bundles; regenerated per run)
+/playwright-report/
 /test-results/
