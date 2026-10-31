@@ -57,6 +57,7 @@ from cascade.call import (
 )
 from cascade.cost import RateTable
 from cascade.events import OperationalEvents
+from cascade.hedge import HedgedLLM
 from cascade.meta_llm import MetaLLM, construct_byo_model
 from cascade.meta_stt import MetaStreamingSTT
 from cascade.reconnect import ReconnectBudget
@@ -567,8 +568,15 @@ async def handle_browser_call(
             async def on_end_call() -> None:
                 require_lifecycle().request_end("end_call")
 
+            # One bounded hedge for the demo's bursty first token. It is the
+            # same Meta model and the same signed body, not a fallback: the
+            # first stream wins and the loser is cancelled. Tenant calls never
+            # reach the cascade (ADR-0012), and the kind is a signed claim.
+            model = legs.model
+            if verified.subject_kind == "demo" and model is not None:
+                model = HedgedLLM(model, ledger=ledger)
             stream = CascadeTurnStream(
-                llm=legs.model,
+                llm=model,
                 tts=legs.voice,
                 tools=body.tools,
                 emit_audio=emit_audio,

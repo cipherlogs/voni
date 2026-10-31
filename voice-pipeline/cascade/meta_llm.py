@@ -65,7 +65,7 @@ import json
 import os
 import re
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit
@@ -798,6 +798,16 @@ class MetaLLMTurn:
         without an identity, so that turn closes with a hold line instead.
         """
         return [denial for denial in self.rejected_tool_calls if denial.correctable]
+
+    def adopt(self, other: "MetaLLMTurn") -> None:
+        """Take another completion's facts, in place.
+
+        A hedged turn may be served by the second request; the caller holds a
+        reference to the first record, so the winner's content, tool calls and
+        usage are copied onto it before the turn is billed.
+        """
+        for descriptor in fields(self):
+            setattr(self, descriptor.name, getattr(other, descriptor.name))
 
     def close(self) -> None:
         """Finalise the record; safe to call more than once."""

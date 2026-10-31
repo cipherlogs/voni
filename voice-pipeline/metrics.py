@@ -63,6 +63,8 @@ COUNTERS = (
     "prefetch_started",
     "prefetch_cancelled",
     "prefetch_used",
+    "hedge_started",
+    "hedge_won",
     "tool_denied",
     "end_call",
     "overheard",

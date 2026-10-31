@@ -1716,6 +1716,8 @@ export async function runRealLegs(
   const endCost = recordFrom(end.cost);
   const endTurns = typeof end.turns === "number" ? end.turns : 0;
   const gaps = (end.metrics as { gaps_ms?: unknown } | undefined)?.gaps_ms;
+  const endCounts =
+    (end.metrics as { counts?: Record<string, number> } | undefined)?.counts ?? {};
   const endOk =
     end.callId === callId &&
     endTurns >= 2 &&
@@ -1726,7 +1728,7 @@ export async function runRealLegs(
       ? passed(
           "end message",
           "end-message",
-          `callId "${callId}" ended after ${endTurns} turns; cost ${endCost?.measured === true ? `measured $${String(endCost.totalUsd)}` : `unmeasured (${String(endCost?.unmeasuredReason ?? "")})`}; gaps ${JSON.stringify(gaps)}`,
+          `callId "${callId}" ended after ${endTurns} turns; cost ${endCost?.measured === true ? `measured $${String(endCost.totalUsd)}` : `unmeasured (${String(endCost?.unmeasuredReason ?? "")})`}; gaps ${JSON.stringify(gaps)}; hedge ${endCounts.hedge_started ?? 0}/${endCounts.hedge_won ?? 0}`,
         )
       : failed(
           "end message",
