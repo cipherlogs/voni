@@ -185,6 +185,29 @@ test("a golden scenario runs once, writes a certificate bound to one call id, an
   }
 });
 
+test("a caller that owns the run's one certificate withholds this call's, and keeps its attempt", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), GOLDEN);
+    const result = await runBrowserCertification(
+      input(root, {
+        certificate: "withhold",
+        plan: { mode: "full", repetitions: 3 },
+      }),
+    );
+    assert.equal(result.certificateFile, null, "no per-call certificate is written");
+    assert.equal(result.attempt?.scenario, "golden-flow-smoke");
+    assert.equal(result.attempt?.repetition, 1);
+    assert.ok(result.attempt?.evidence.ledger, "the attempt carries the judged evidence");
+    const record = runJson(result);
+    assert.equal(record.certification, "withheld");
+    assert.match(String(record.certificationReason), /withheld/);
+    assert.equal(existsSync(join(result.runDir, "certificate.json")), false);
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("a deliberately failing scenario is a card, not a certificate pass", async () => {
   const root = tempRoot();
   try {

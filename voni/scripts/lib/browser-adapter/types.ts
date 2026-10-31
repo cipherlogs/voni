@@ -324,6 +324,18 @@ export type BrowserRunResult = {
   readonly runId: string;
   readonly runDir: string;
   readonly status: BrowserRunStatus;
+  /**
+   * The one attempt this call produced, for a caller that judges several calls
+   * together (a multi-scenario certification run owns the run's one
+   * certificate). Null on a refusal.
+   */
+  readonly attempt: import("@/lib/demo/verification/verdict").ScenarioAttempt | null;
+  /** The call's own eligibility facts, so a multi-scenario judge keeps them. */
+  readonly eligibility:
+    | import("@/lib/demo/verification/verdict").CallEligibilityFact
+    | null;
+  /** The pipeline build the run served; a run certificate records it. */
+  readonly pipelineImage: string | null;
   /** 0 certified, 1 not-demo-ready, 2 a named refusal, 3 pending the human panel. */
   readonly exitCode: 0 | 1 | 2 | 3;
   readonly verdict: RunVerdict | null;

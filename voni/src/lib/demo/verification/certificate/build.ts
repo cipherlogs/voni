@@ -14,6 +14,7 @@
  */
 
 import { FAMILIES } from "../contract";
+import { RUN_SCENARIO } from "../economics";
 import { LOCALES, type Locale } from "../scenarios";
 import type { RunVerdict } from "../verdict";
 import { CertificateError } from "./errors";
@@ -274,16 +275,25 @@ function buildProperties(
     }
     const scenarioRows: CertificateScenarioVerdict[] = property.scenarios.map((scenario) => {
       const known = scenarios.get(scenario.scenario);
-      if (known === undefined) {
+      const locale =
+        scenario.locale === undefined ? undefined : certificateLocale(scenario.locale);
+      // A run-scoped property (E3's run ceiling) is judged on the run, not on a
+      // call: its synthetic scenario has no corpus row and no Locale. Every
+      // other scenario must be one the corpus pins.
+      if (scenario.scenario === RUN_SCENARIO) {
+        if (locale !== undefined) {
+          refuse(
+            "locale-mismatch",
+            `${property.propertyId} is run-scoped, but its verdict records Locale "${locale}"`,
+          );
+        }
+      } else if (known === undefined) {
         refuse(
           "unknown-scenario",
           `${property.propertyId} was judged on scenario "${scenario.scenario}", which is not in ` +
             "the corpus the certificate pins",
         );
-      }
-      const locale =
-        scenario.locale === undefined ? undefined : certificateLocale(scenario.locale);
-      if (locale !== undefined && locale !== known.locale) {
+      } else if (locale !== undefined && locale !== known.locale) {
         refuse(
           "locale-mismatch",
           `${property.propertyId} scenario "${scenario.scenario}" declares Locale ` +

@@ -279,6 +279,8 @@ export function probeRunInput(input: {
   readonly elapsedBudgetS?: number | null;
   readonly parityVerdict?: BrowserRunInput["parityVerdict"];
   readonly parityRunDir?: BrowserRunInput["parityRunDir"];
+  readonly certificate?: BrowserRunInput["certificate"];
+  readonly plan?: BrowserRunInput["plan"];
 }): BrowserRunInput {
   return {
     scenarioName: input.scenarioName ?? "golden-flow-smoke",
@@ -302,5 +304,7 @@ export function probeRunInput(input: {
     stackProbe: input.stackProbe ?? fakeStackProbe(),
     ...(input.parityVerdict === undefined ? {} : { parityVerdict: input.parityVerdict }),
     ...(input.parityRunDir === undefined ? {} : { parityRunDir: input.parityRunDir }),
+    ...(input.certificate === undefined ? {} : { certificate: input.certificate }),
+    ...(input.plan === undefined ? {} : { plan: input.plan }),
   };
 }
