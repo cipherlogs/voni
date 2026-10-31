@@ -106,6 +106,18 @@ test("the committed fast corpus keeps its ten English scenarios and twenty recor
   }
 });
 
+test("the greeting-only scenario holds the line open for the waiting bar", async () => {
+  const corpus = await load();
+  const greeting = corpus.scenarios.find((entry) => entry.name === "golden-flow-greeting-only");
+  assert.ok(greeting);
+  assert.equal(greeting.holdOpenMs, 32_000);
+  for (const scenario of corpus.scenarios) {
+    if (scenario.name !== "golden-flow-greeting-only") {
+      assert.equal(scenario.holdOpenMs, undefined, `${scenario.name} declares an unneeded hold`);
+    }
+  }
+});
+
 test("every committed script resolves against the same canonical timeline", async () => {
   const corpus = await load();
   for (const scenario of corpus.scenarios) {

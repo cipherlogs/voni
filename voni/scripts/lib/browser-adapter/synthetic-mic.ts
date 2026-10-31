@@ -25,9 +25,15 @@ export type SyntheticMicTake = {
 
 export type SyntheticMicPlay = {
   readonly id: string;
-  /** Call-relative start, in milliseconds. */
+  /** Call-relative start on the microphone's own clock, in milliseconds. */
   readonly atMs: number;
   readonly durationMs: number;
+  /**
+   * Wall-clock start (epoch ms). The microphone's origin is its own audio
+   * context, not the marks artifact's; this is the one field that ties caller
+   * speech to the delivered audio and the browser marks.
+   */
+  readonly epochMs: number;
 };
 
 /** The shape the init script installs on the page. */
@@ -51,7 +57,7 @@ function syntheticMicBootstrap(input: {
     ctx: AudioContext | null;
     bus: GainNode | null;
     keepAlive: ConstantSourceNode | null;
-    played: { id: string; atMs: number; durationMs: number }[];
+    played: { id: string; atMs: number; durationMs: number; epochMs: number }[];
     callOrigin: number;
     acquired: boolean;
   } = { ctx: null, bus: null, keepAlive: null, played: [], callOrigin: 0, acquired: false };
@@ -111,6 +117,7 @@ function syntheticMicBootstrap(input: {
           id,
           atMs: performance.now() - state.callOrigin + Math.max(0, delayMs),
           durationMs: (samples.length / take.sampleRate) * 1000,
+          epochMs: Date.now() + Math.max(0, delayMs),
         };
         state.played.push(play);
         return play;

@@ -460,6 +460,7 @@ export async function assembleBrowserEvidence(input: {
     browser: {
       file: marksFile,
       marks,
+      ...(input.call.captions === undefined ? {} : { captions: input.call.captions }),
       capture: {
         file: wavFile,
         name: captureName,

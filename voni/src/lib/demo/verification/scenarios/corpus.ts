@@ -87,6 +87,7 @@ function scenarioFingerprint(document: ScenarioDocument, takes: readonly LoadedT
     expectedProperties: document.expectedProperties,
     soundscape: document.soundscape,
     faults: document.faults,
+    ...(document.holdOpenMs === undefined ? {} : { holdOpenMs: document.holdOpenMs }),
     takes: [...takes]
       .sort((left, right) => byCodepoint(left.id, right.id))
       .map((take) => ({

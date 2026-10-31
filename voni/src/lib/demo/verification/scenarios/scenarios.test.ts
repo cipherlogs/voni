@@ -81,6 +81,18 @@ test("the parser reads one scenario definition: takes, triggers, soundscape, pro
   ]);
 });
 
+test("a scenario may declare how long the line is held open, and no longer than the call bound", async () => {
+  const parsed = await parse({ holdOpenMs: 32_000 });
+  assert.equal(parsed.holdOpenMs, 32_000);
+  for (const value of [0, -1, 120_001]) {
+    assertRefusal(
+      () => parseScenario(scenario({ holdOpenMs: value }), { knownProperties: new Set(["L1", "T1"]) }),
+      value === 120_001 ? "malformed-scenario" : "missing-field",
+      /holdOpenMs/,
+    );
+  }
+});
+
 test("the refusal exit code is the spec's exit 2", () => {
   assert.equal(SCENARIO_REFUSAL_EXIT_CODE, 2);
 });

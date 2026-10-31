@@ -383,3 +383,41 @@ test("a directory with no family module yields no evaluators and fails closed", 
   assert.deepEqual(await loadEvaluatorModules(empty), []);
   assert.deepEqual(await loadEvaluatorModules(join(empty, "not-there")), []);
 });
+
+test("a scenario's declared properties bound the evaluators it runs", async () => {
+  const contract: Contract = {
+    families: [
+      { id: "turn-taking", title: "probe", propertyCount: 1 },
+      { id: "conduct", title: "probe", propertyCount: 1 },
+    ],
+    properties: [T1, C9],
+  };
+  const other: PropertyEvaluator = {
+    propertyId: "C9",
+    bars: [],
+    source: "probe.evaluators.ts",
+    evaluate: () => ({ kind: "measured", passed: true }),
+  };
+  const evidence = await evaluateScenarios({
+    contract,
+    evaluators: [evaluator(), other],
+    attempts: [
+      {
+        scenario: "declared",
+        repetition: 1,
+        expectedProperties: ["T1"],
+        evidence: { ledger: { end: { type: "end" } } },
+      },
+    ],
+  });
+  assert.deepEqual(
+    evidence.filter((entry) => entry.measurements.length > 0).map((entry) => entry.propertyId),
+    ["T1"],
+    "C9 was not run against a scenario that never cites it",
+  );
+  assert.equal(
+    evidence.find((entry) => entry.propertyId === "C9")?.measurements.length,
+    0,
+    "an uncited property carries no measurement and fails closed upstream",
+  );
+});

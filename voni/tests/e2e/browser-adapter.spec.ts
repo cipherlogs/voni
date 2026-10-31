@@ -57,6 +57,7 @@ type Invocation = {
       | { type: "at-offset"; atMs: number };
   }[];
   faults: readonly { kind: string; atMs: number; durationMs?: number }[];
+  holdOpenMs: number | null;
 };
 
 type TimelineEntry = { atMs: number; type: AgentTimelineEvent["type"] };
@@ -82,6 +83,7 @@ type Report = {
       take: string;
       atMs: number;
       durationMs: number;
+      epochMs: number;
     }[];
     sampleRate: number | null;
   };
@@ -94,6 +96,7 @@ type Report = {
   };
   marksPath: string | null;
   capturePath: string | null;
+  captions: readonly { role: "caller" | "agent"; text: string }[];
   endedBy: "caller-hangup" | "agent-end" | "call-drop" | "timeout";
   error: string | null;
   tracePath: string | null;
@@ -444,6 +447,13 @@ test("a certifying browser call on the real stack", async ({ page }) => {
         await waitForEvent(page, "agent-turn-end", start.index + 1, 30_000);
       }
     }
+    // A scenario may declare that the line must stay open (the
+    // greeting-only wait): the harness holds the call there instead of
+    // hanging up as soon as the agent finishes. The hold is a scenario fact,
+    // never an evaluator's guess.
+    if (spec.holdOpenMs !== null && spec.holdOpenMs > 0) {
+      await page.waitForTimeout(spec.holdOpenMs);
+    }
     const ended = await readTimeline(page);
     if (ended.events.some((event) => event.type === "call-end")) {
       endedBy = "agent-end";
@@ -469,6 +479,25 @@ test("a certifying browser call on the real stack", async ({ page }) => {
 
   const timeline = await readTimeline(page);
   events.push(...timeline.events);
+
+  // The visitor's transcript: each final caller/agent line the page rendered.
+  // It is observation only, read before the page is torn down; a line the UI
+  // never painted cannot be invented here.
+  const captions = await page
+    .evaluate(() => {
+      const region = document.querySelector('[aria-label="Call transcript"]');
+      if (region === null) return [];
+      const rows: { role: "caller" | "agent"; text: string }[] = [];
+      for (const item of region.querySelectorAll('[data-slot="message-scroller-item"]')) {
+        const spans = item.querySelectorAll(":scope > span");
+        const label = spans[0]?.textContent?.trim() ?? "";
+        const text = spans[1]?.textContent?.trim() ?? "";
+        if (text === "") continue;
+        rows.push({ role: label === "You" ? "caller" : "agent", text });
+      }
+      return rows;
+    })
+    .catch(() => [] as { role: "caller" | "agent"; text: string }[]);
 
   // Read the marks artifact to bind the report's call id. A missing marks file
   // is reported, not invented: the runner refuses it by name.
@@ -531,11 +560,14 @@ test("a certifying browser call on the real stack", async ({ page }) => {
       method: "getUserMedia",
       installedAt: mic?.installedAt ?? 0,
       installedBeforeAppCode,
-      takesPlayed: spoken.map((entry) => ({
+      takesPlayed: spoken.map((entry, index) => ({
         step: entry.step,
         take: entry.take,
         atMs: entry.atMs,
-        durationMs: spec.takes.find((take) => take.id === entry.take)?.durationMs ?? 0,
+        durationMs: mic?.played[index]?.durationMs ??
+          spec.takes.find((take) => take.id === entry.take)?.durationMs ??
+          0,
+        epochMs: mic?.played[index]?.epochMs ?? 0,
       })),
       sampleRate: mic?.sampleRate ?? null,
     },
@@ -546,6 +578,7 @@ test("a certifying browser call on the real stack", async ({ page }) => {
       markCount,
       captureName: captureName ?? (captureResponse?.path ? basename(captureResponse.path) : null),
     },
+    captions,
     marksPath: marksResponse?.path ?? null,
     capturePath: captureResponse?.path ?? null,
     endedBy,

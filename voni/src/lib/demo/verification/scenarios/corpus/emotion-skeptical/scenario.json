@@ -5,7 +5,8 @@
   "locale": "en",
   "heldOut": false,
   "expectedProperties": [
-    "K7"
+    "K7",
+    "C9"
   ],
   "soundscape": {
     "id": "quiet-room"

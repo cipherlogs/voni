@@ -6,7 +6,8 @@
   "heldOut": false,
   "expectedProperties": [
     "C3",
-    "K7"
+    "K7",
+    "C5"
   ],
   "soundscape": {
     "id": "quiet-room"
