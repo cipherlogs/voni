@@ -38,8 +38,8 @@ have is a defect in this map.
 | Unit | Owns | Where | Ticket |
 | --- | --- | --- | --- |
 | Ground truth | the persisted `end` message, the turn-level ledger, the delivered WAV, the client marks | pipeline trace and priced row exist (`voice-pipeline/cascade/events.py`, `voice-pipeline/cascade/cost.py`); turns, end message and browser marks not landed | 03, 04, 05 |
-| Contract registry | 82 property ids in ten families, each with a bar, one evidence source and its threshold key | not landed | 06 |
-| Frozen budget record | the single threshold source; the drift test that fails a hand-edited number | not landed | 06 |
+| Contract registry | 82 property ids in ten families, each with a bar, one evidence source and its threshold key | `voni/src/lib/demo/verification/contract/` — one `families/*.family.ts` per family, discovered by `loader.ts`; `contractDocument()` is the machine-readable form | 06 |
+| Frozen budget record | the single threshold source; the drift test that fails a hand-edited number | `voni/src/lib/demo/scoreboard-budgets.ts` + `.json` (the contract's `dv*` keys; cascade-owned keys still come from `voice-pipeline/cascade/thresholds.json`), `voni/src/lib/demo/verification/contract/bars.ts` + `contract-bars.json`, moved only with `npm run contract:bars -- --write` | 06 |
 | Verdict and statistics | pooling, per-scenario tails, fail-closed unknowns, ineligibility | not landed | 07 |
 | Certificate | schema, builder, validator, target binding, residual-risk ids, panel signature | not landed | 08 |
 | Defect cards | one card per failed property with turn, excerpt, bar and replay command | not landed | 09 |
@@ -53,6 +53,13 @@ have is a defect in this map.
 | CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | not landed | 28 |
 | Streak and cutover | three-clean streak, staging gate, post-flip confirmation, monthly full production | not landed | 29 |
 | CI cadence | fast contract, nightly health, weekly full certification, Locale matrix | not landed | 30 |
+
+An **unresolved** property is a recorded gap with no owning evaluator. Today
+that is H6 (judge agreement with gold labels): it is wired to the `judge`
+evidence source and the registry marks it unresolved, so the verdict engine
+reports it unverified and the run fails closed until ticket 26 or 27 claims it.
+The registry also records K8's missing word-error number as a gap; ticket 13
+must add that bar to a frozen record before K8 can pass.
 
 The one seam is the call boundary. If a proposed change adds a second seam
 inside the call lifecycle or the turn stream, it contradicts ADR 0013 and needs
