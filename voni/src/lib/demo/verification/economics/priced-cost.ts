@@ -1,0 +1,183 @@
+/**
+ * The call's priced row, read verbatim.
+ *
+ * Cost is evidence the pipeline produced: `cascade/cost.py` prices the units
+ * the vendors reported and `cascade.call.CostSummary` writes one `cost.priced`
+ * row per call. The harness reads that row — its `measured`, `totalUsd`,
+ * `rateTableVersion` and leg breakdown — and never multiplies a unit by a rate
+ * of its own. A row that says it is unmeasured stays unmeasured: no leg is a
+ * zero, no total is a partial sum.
+ *
+ * Spec: `.scratch/demo-verification/spec.md`, "Ground truth comes first".
+ */
+
+export const PRICED_COST_ERROR_CODES = ["malformed-cost", "missing-total"] as const;
+
+export type PricedCostErrorCode = (typeof PRICED_COST_ERROR_CODES)[number];
+
+export class PricedCostError extends Error {
+  readonly code: PricedCostErrorCode;
+
+  constructor(code: PricedCostErrorCode, message: string) {
+    super(message);
+    this.name = "PricedCostError";
+    this.code = code;
+  }
+}
+
+/** One leg of the priced row, exactly as the pipeline wrote it. */
+export type PricedLeg = {
+  readonly leg: string;
+  readonly measured: boolean;
+  readonly amountUsd: number | null;
+  readonly unit: string;
+  readonly quantity: number | null;
+  /** The vendor's own words for an unmeasured leg; empty when measured. */
+  readonly reasons: readonly string[];
+};
+
+/** The call's own cost facts. A null total is unmeasured, never a zero. */
+export type PricedCost = {
+  readonly measured: boolean;
+  readonly totalUsd: number | null;
+  readonly rateTableVersion: string | null;
+  readonly legs: readonly PricedLeg[];
+  readonly unmeasuredReason: string | null;
+};
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function objectOf(value: unknown, what: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new PricedCostError("malformed-cost", `${what} is not an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function amountOf(value: unknown, what: string): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new PricedCostError(
+      "malformed-cost",
+      `${what} must be a finite, non-negative amount or null, got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
+}
+
+function legOf(name: string, raw: unknown): PricedLeg {
+  const record = objectOf(raw, `cost leg "${name}"`);
+  if (typeof record.measured !== "boolean") {
+    throw new PricedCostError(
+      "malformed-cost",
+      `cost leg "${name}" does not say whether it was measured`,
+    );
+  }
+  const measured = record.measured;
+  const amount = amountOf(record.amountUsd, `cost leg "${name}".amountUsd`);
+  if (measured && amount === null) {
+    throw new PricedCostError(
+      "malformed-cost",
+      `cost leg "${name}" claims to be measured but carries no priced amount; ` +
+        "an unmeasured leg must say so instead",
+    );
+  }
+  if (!measured && amount !== null) {
+    throw new PricedCostError(
+      "malformed-cost",
+      `cost leg "${name}" is unmeasured but carries an amount; a partial price is not a cost`,
+    );
+  }
+  const quantity = record.quantity;
+  if (
+    quantity !== null &&
+    quantity !== undefined &&
+    (typeof quantity !== "number" || !Number.isFinite(quantity) || quantity < 0)
+  ) {
+    throw new PricedCostError(
+      "malformed-cost",
+      `cost leg "${name}".quantity must be a finite, non-negative number or null`,
+    );
+  }
+  const source = text(record.source);
+  return {
+    leg: name,
+    measured,
+    amountUsd: amount,
+    unit: text(record.unit) || "unknown",
+    quantity: typeof quantity === "number" ? quantity : null,
+    reasons: source === "" ? [] : [source],
+  };
+}
+
+/**
+ * Read one `cost.priced` row. A measured row must cite the rate table that
+ * priced it and carry a finite non-negative total; an unmeasured row must keep
+ * `totalUsd: null` and name why.
+ */
+export function readPricedRow(row: unknown): PricedCost {
+  const record = objectOf(row, "the priced cost row");
+  if (typeof record.measured !== "boolean") {
+    throw new PricedCostError(
+      "malformed-cost",
+      "the priced cost row does not say whether it was measured",
+    );
+  }
+  const measured = record.measured;
+  const rateTableVersion = text(record.rateTableVersion);
+  const totalUsd = amountOf(record.totalUsd, "the priced cost row's totalUsd");
+
+  if (measured && rateTableVersion === "") {
+    throw new PricedCostError(
+      "malformed-cost",
+      "a measured cost row must cite the rate table that priced it",
+    );
+  }
+  if (measured && totalUsd === null) {
+    throw new PricedCostError(
+      "missing-total",
+      "a measured cost row carries no total; a total is never inferred from legs",
+    );
+  }
+  if (!measured && totalUsd !== null) {
+    throw new PricedCostError(
+      "malformed-cost",
+      "an unmeasured cost row carries a total; a zero would claim a price the table never gave",
+    );
+  }
+
+  const legsRecord = objectOf(record.legs, "the priced cost row's legs");
+  const legs = Object.entries(legsRecord).map(([name, raw]) => legOf(name, raw));
+  if (legs.length === 0) {
+    throw new PricedCostError(
+      "malformed-cost",
+      "the priced cost row names no legs; a call with no measured leg has no cost",
+    );
+  }
+
+  const unmeasuredReason = text(record.unmeasuredReason);
+  return {
+    measured,
+    totalUsd,
+    rateTableVersion: rateTableVersion === "" ? null : rateTableVersion,
+    legs,
+    unmeasuredReason: measured ? null : unmeasuredReason || "the cost claim is incomplete",
+  };
+}
+
+function usd(amount: number): string {
+  return `$${amount.toFixed(6)}`;
+}
+
+/** `stt $0.003100; llm $0.027000; tts unmeasured (reason)` — never a bare total. */
+export function legBreakdown(cost: PricedCost): string {
+  return cost.legs
+    .map((leg) =>
+      leg.measured && leg.amountUsd !== null
+        ? `${leg.leg} ${usd(leg.amountUsd)}`
+        : `${leg.leg} unmeasured (${leg.reasons[0] ?? "no source recorded"})`,
+    )
+    .join("; ");
+}
