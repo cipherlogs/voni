@@ -19,6 +19,7 @@
 import { acquireMicStream, startAudioGraph } from "./mic-capture";
 import { releaseMic } from "./mic-owner";
 import type { Playout, WorkletPlayout } from "./playout";
+import type { CallMarks } from "./call-marks";
 import {
   attachDeliveredCapture,
   finishDeliveredCapture,
@@ -249,6 +250,11 @@ export type CascadeDeps = {
   writeCapture?: CaptureWrite;
   /** Capture clock, injectable for a deterministic filename. */
   captureNow?: () => Date;
+  /**
+   * Dev-only call marks (`?delivercapture=1`), the same recorder the landing
+   * page posts on teardown. Absent means the stream is off.
+   */
+  marks?: CallMarks | null;
 };
 
 /** The worklet handle `out` is a `WorkletPlayout`; a test playout may not be. */
@@ -309,8 +315,11 @@ export class CascadeSession {
   private deliveredCaptureOn = false;
   private deliveredCapture: DeliveredCapture | null = null;
   private captureOutcome: CaptureResult | null = null;
+  private captureCallId: string | null = null;
+  private teardownMarked = false;
   private readonly writeCapture: CaptureWrite;
   private readonly captureNow: (() => Date) | undefined;
+  private readonly marks: CallMarks | null;
 
   constructor(
     private handlers: CascadeHandlers = {},
@@ -318,6 +327,7 @@ export class CascadeSession {
   ) {
     this.writeCapture = deps.writeCapture ?? postDeliveredCapture;
     this.captureNow = deps.captureNow;
+    this.marks = deps.marks ?? null;
   }
 
   /**
@@ -331,10 +341,12 @@ export class CascadeSession {
     this.accepted = false;
     this.connectFailureReported = false;
     this.highestPlayedSeq = 0;
+    this.teardownMarked = false;
     const socketFactory = this.deps.socketFactory ?? ((url: string) => new WebSocket(url));
     const ws = socketFactory(config.serviceUrl);
     this.ws = ws;
     ws.onopen = () => {
+      this.marks?.mark("socket_open");
       this.sendConfig(config);
     };
     ws.onmessage = (event: MessageEvent) => {
@@ -371,6 +383,7 @@ export class CascadeSession {
       return;
     }
     this.micStop = handle.stop;
+    this.marks?.mark("microphone_acquired");
     this.playout = this.deps.createPlayout?.(handle.audioCtx) ?? handle.playout ?? null;
     // The cascade is the browser-only demo (ADR-0012). Start its replies on a
     // 250 ms cushion instead of the owner's 500 ms phone cushion: the caller
@@ -385,10 +398,20 @@ export class CascadeSession {
         sampleRate: handle.audioCtx?.sampleRate ?? DEFAULT_OUTPUT_SAMPLE_RATE,
         write: this.writeCapture,
         ...(this.captureNow === undefined ? {} : { now: this.captureNow }),
+        ...(this.captureCallId === null ? {} : { callId: this.captureCallId }),
       });
+    } else if (this.deliveredCaptureOn) {
+      // The capture flag is on but this playout cannot be tapped: a named gap,
+      // never a silent absence when the artifact is read.
+      this.marks?.mark("delivered_capture", { complete: false, reason: "not-tappable" });
     }
     // Chime trigger: the worklet's first audible sample, not the queued frame.
-    if (this.playout) this.playout.onFirstAudible = () => this.handlers.onFirstAudible?.();
+    if (this.playout) {
+      this.playout.onFirstAudible = () => {
+        this.marks?.mark("first_audible");
+        this.handlers.onFirstAudible?.();
+      };
+    }
     this.started = true;
     // Socket may already be open (fake sockets, fast localhost): flush config now.
     if (ws.readyState === ws.OPEN) this.sendConfig(config);
@@ -397,10 +420,13 @@ export class CascadeSession {
   /**
    * Dev delivered capture (`?delivercapture=1`): set before `start`. Taps the
    * playout worklet's rendered output and writes one WAV on hang-up. The flag
-   * parser is inert in a production build, so this never runs there.
+   * parser is inert in a production build, so this never runs there. The call
+   * id is the same one the marks artifact carries, so the WAV and the marks
+   * can be paired without matching timestamps by hand.
    */
-  setDeliveredCapture(on: boolean): void {
+  setDeliveredCapture(on: boolean, callId?: string): void {
     this.deliveredCaptureOn = on;
+    this.captureCallId = on ? (callId ?? null) : null;
   }
 
   /**
@@ -430,6 +456,7 @@ export class CascadeSession {
     if (this.configSent || !this.started) return;
     this.configSent = true;
     this.send(buildConfigMessage(config));
+    this.marks?.mark("config_sent");
   }
 
   /** Dispatch one raw server frame. Public so the socket layer stays thin. */
@@ -437,7 +464,7 @@ export class CascadeSession {
     if (!raw) return;
     const audio = decodeAudioMessage(raw);
     if (audio) {
-      this.accepted = true;
+      this.admit("audio");
       if (audio.seq !== undefined) {
         if (audio.seq <= this.highestPlayedSeq) {
           // The call-level contract: an audio frame that is not newer is never
@@ -456,7 +483,7 @@ export class CascadeSession {
     }
     const event = parseServerMessage(raw);
     if (!event) return;
-    if (event.kind !== "error") this.accepted = true;
+    if (event.kind !== "error") this.admit(event.kind);
     switch (event.kind) {
       case "caption":
         if (event.role === "user") this.endCallArmed = false;
@@ -468,10 +495,12 @@ export class CascadeSession {
         this.handlers.onInterrupted?.();
         break;
       case "end_call":
+        this.marks?.mark("end_call_received");
         this.endCallArmed = true;
         this.drainThenStop();
         break;
       case "end":
+        this.marks?.mark("end_received", { turns: event.turns });
         // The service reports the version it spoke (ticket 138). A half-
         // deployed pair fails loudly here too, not only at connect.
         if (
@@ -511,6 +540,13 @@ export class CascadeSession {
         if (event.code === "protocol_version") this.abort();
         break;
     }
+  }
+
+  /** The service accepted the call: the first non-error frame is the admission. */
+  private admit(via: string): void {
+    if (this.accepted) return;
+    this.accepted = true;
+    this.marks?.mark("admitted", { via });
   }
 
   /**
@@ -580,6 +616,7 @@ export class CascadeSession {
           isTappable(playout) ? playout : null,
           capture,
         );
+        this.marks?.mark("delivered_capture", { ...this.captureOutcome });
       } catch {
         /* capture is dev instrumentation */
       }
@@ -587,9 +624,15 @@ export class CascadeSession {
   }
 
   private teardown(): void {
+    if (!this.teardownMarked) {
+      this.teardownMarked = true;
+      this.marks?.mark("teardown");
+    }
     // A socket drop or the end message can land without an awaited stop;
-    // start the capture close before the playout reference goes away.
-    void this.closeCapture();
+    // start the capture close before the playout reference goes away. The one
+    // marks artifact posts once the capture outcome is known, and is never
+    // awaited: a slow or dead sink cannot hold up a hang-up.
+    void this.closeCapture().then(() => void this.marks?.finish());
     try {
       this.micStop?.();
     } catch {
@@ -621,6 +664,7 @@ export class CascadeSession {
   private failConnect(cause: CascadeConnectFailure, message: string): void {
     if (this.connectFailureReported || this.ended) return;
     this.connectFailureReported = true;
+    this.marks?.mark("refused", { code: cause });
     const error = new DrainingError(cause, message);
     this.abort();
     if (this.handlers.onConnectFailure) this.handlers.onConnectFailure(error);

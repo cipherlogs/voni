@@ -42,6 +42,11 @@ export type DemoStartInput = {
 export type DemoStartDeps = {
   /** Injected for tests; the mint fetcher otherwise. */
   mint?: DemoMintFetcher;
+  /**
+   * Called between the mint and the socket start, so a mark can name the mint
+   * before any socket or microphone event lands.
+   */
+  onMinted?: (minted: DemoMint) => void;
 };
 
 /**
@@ -76,6 +81,7 @@ export async function startDemoCall(
       ? { history: input.history }
       : {}),
   });
+  deps.onMinted?.(minted);
   await call.start(demoCascadeConfig(minted), "voice-call");
   return minted;
 }

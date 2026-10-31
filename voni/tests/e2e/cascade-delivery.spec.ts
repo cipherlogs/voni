@@ -15,6 +15,7 @@ import {
 } from "./cascade-fake-server";
 import { SCOREBOARD_BUDGETS } from "../../src/lib/demo/scoreboard-budgets";
 import { DEMO_UNAVAILABLE_MESSAGES } from "../../src/lib/voice/cascade-failure-view";
+import type { CallMarksArtifact } from "../../src/lib/voice/call-marks";
 
 /**
  * Seam 2 (demo-cascade ticket 16): the landing demo, against a fake pipeline.
@@ -231,6 +232,7 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
   page,
 }, testInfo) => {
   const captures: { name: string; bytes: Buffer }[] = [];
+  const markPostings: CallMarksArtifact[] = [];
   const vendorRequests: string[] = [];
   const managedSockets: string[] = [];
   const voiceTokenRequests: string[] = [];
@@ -251,6 +253,11 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
       const name = new URL(route.request().url()).searchParams.get("name") ?? "delivered.wav";
       captures.push({ name, bytes });
     }
+    await route.fulfill({ json: { path: "captured-by-the-e2e-harness" } });
+  });
+  await page.route("**/api/dev/call-marks**", async (route) => {
+    const artifact = route.request().postDataJSON() as CallMarksArtifact;
+    markPostings.push(artifact);
     await route.fulfill({ json: { path: "captured-by-the-e2e-harness" } });
   });
   const mintRequests = await mockDemoMint(page);
@@ -457,6 +464,75 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
     "the chime is not delayed to the end of the reply",
   ).toBeLessThan(3000);
 
+  // ── Browser call evidence: one marks artifact beside the WAV ────────────
+  // The real landing page posts what the visitor experienced; the harness
+  // saves it, so the call's marks and WAV can be compared without guessing.
+  await expect
+    .poll(() => markPostings.length, { message: "the call marks were written", timeout: 10_000 })
+    .toBe(1);
+  const marks = markPostings[0]!;
+  const markNames = marks.marks.map((mark) => mark.name);
+  for (const required of [
+    "start_requested",
+    "mint_done",
+    "microphone_acquired",
+    "config_sent",
+    "socket_open",
+    "admitted",
+    "connected_painted",
+    "first_audible",
+    "chime",
+    "turn",
+    "end_call_received",
+    "teardown",
+    "delivered_capture",
+  ]) {
+    expect(markNames, `the marks name ${required}`).toContain(required);
+  }
+  const at = (name: string) => markNames.findIndex((mark) => mark === name);
+  expect(markNames[0]).toBe("start_requested");
+  expect(at("mint_done")).toBeGreaterThan(at("start_requested"));
+  expect(at("microphone_acquired")).toBeGreaterThan(at("mint_done"));
+  expect(at("config_sent")).toBeGreaterThan(at("socket_open"));
+  expect(at("admitted")).toBeGreaterThan(at("config_sent"));
+  // Ticket 05 records the comparison; it does not fix the demo. The reported
+  // bug is that "connected" can paint before the pipeline admits the call, so
+  // this run records which side of admission the paint landed on instead of
+  // asserting either order. An L2 evaluator (ticket 18) judges it.
+  const connectedBeforeAdmission = at("connected_painted") < at("admitted");
+  expect(at("connected_painted")).toBeGreaterThanOrEqual(0);
+  expect(at("first_audible")).toBeGreaterThan(at("admitted"));
+  expect(at("chime")).toBeGreaterThan(at("first_audible"));
+  expect(at("end_call_received")).toBeGreaterThan(at("chime"));
+  expect(at("teardown")).toBeGreaterThan(at("end_call_received"));
+
+  // L3: one chime mark for the one real chime request.
+  expect(markNames.filter((name) => name === "chime")).toHaveLength(1);
+  expect(sounds, "the chime was actually requested once").toHaveLength(1);
+
+  // Every final turn is marked, and a mark is never a silent internal.
+  const finalTurns = script.filter(
+    (entry) => entry.frame.type === "caption" && entry.frame.final === true,
+  ).length;
+  expect(markNames.filter((name) => name === "turn")).toHaveLength(finalTurns);
+
+  // Wall clock and call-relative time on every mark, monotonic.
+  for (const mark of marks.marks) {
+    expect(Number.isNaN(Date.parse(mark.at)), `${mark.name} has a wall clock`).toBe(false);
+    expect(mark.epochMs).toBe(Date.parse(mark.at));
+    expect(mark.tMs).toBeGreaterThanOrEqual(0);
+  }
+  const relative = marks.marks.map((mark) => mark.tMs);
+  expect(relative).toEqual([...relative].sort((a, b) => a - b));
+
+  // The marks and the WAV share one call id, and the capture mark names it.
+  expect(marks.callId.length).toBeGreaterThan(0);
+  expect(capture.name, "the WAV name carries the marks call id").toContain(marks.callId);
+  const captureMark = marks.marks.find((mark) => mark.name === "delivered_capture");
+  expect(captureMark, "the capture outcome is in the marks").toBeTruthy();
+  expect(captureMark!.detail?.name).toBe(capture.name);
+  expect(captureMark!.detail?.complete).toBe(true);
+
   // ── The goodbye drains before hang-up ───────────────────────────────────
   const endCallAt = fake.endCallAt();
   expect(endCallAt, "the service sent end_call").not.toBeNull();
@@ -481,6 +557,10 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
   mkdirSync(dir, { recursive: true });
   const wavPath = resolve(dir, "browser-delivered.wav");
   writeFileSync(wavPath, capture.bytes);
+  writeFileSync(
+    resolve(dir, "browser-call-marks.json"),
+    `${JSON.stringify(marks, null, 2)}\n`,
+  );
   const sidecar = {
     kind: "browser-delivery",
     schemaVersion: 1,
@@ -497,6 +577,9 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
     capture: {
       file: "browser-delivered.wav",
       name: capture.name,
+      /** The same call id the browser marks artifact carries. */
+      callId: marks.callId,
+      marksFile: "browser-call-marks.json",
       bytes: capture.bytes.byteLength,
       samples: wav.samples.length,
       sampleRate: wav.sampleRate,
@@ -519,6 +602,14 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
       peakSampleStep: peakSampleStep(wav.samples),
       connectedChimeMs: sounds[0]!.at - firstAudioAt!,
       goodbyeDrainMs: drainMs,
+      marks: {
+        callId: marks.callId,
+        connectedPaintedMs: marks.marks.find((mark) => mark.name === "connected_painted")?.tMs ?? null,
+        admittedMs: marks.marks.find((mark) => mark.name === "admitted")?.tMs ?? null,
+        /** The reported L2 symptom, measured rather than asserted here. */
+        connectedBeforeAdmission,
+        chimeMarks: markNames.filter((name) => name === "chime").length,
+      },
     },
     /** One leg only: this run never observed a reference or platform capture. */
     legs: ["delivered"],
