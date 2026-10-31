@@ -72,6 +72,7 @@ from cascade.token import (
     PROTOCOL_VERSION,
     CallTokenRegistry,
     ClientConfigError,
+    DuplicateCallToken,
     StoredBodyChannel,
 )
 from cascade.usage import UsageMeter
@@ -91,17 +92,44 @@ def events_dir() -> Path:
     return Path(configured) if configured else DEFAULT_EVENTS_DIR
 
 
-def operational_events_for(call_id: str, subject: str) -> OperationalEvents:
-    """One call's operational events, through the one envelope and file stream."""
+def operational_events_for(
+    call_id: str, subject: str, *, kind: str | None = None
+) -> OperationalEvents:
+    """One call's operational events, through the one envelope and file stream.
+
+    ``kind`` is the signed envelope's verified subject kind. A demo call's
+    stream refuses any line whose subject is not ``demo:<voice>``; a tenant
+    call keeps its existing subject behaviour. The file is keyed by ``call_id``
+    (never the subject), so one call — including a hold return — has one trace.
+    """
     writer = EventWriter(pipeline="cascade", call_id=call_id)
     sink = CallEventLog(events_dir(), call_id=call_id)
     return OperationalEvents(
-        EventStream(writer, sink=sink), subject=subject, now=time.time
+        EventStream(writer, sink=sink, subject_kind=kind), subject=subject, now=time.time
     )
 
 
 #: The signed-body message's own field names; the app may say nothing else.
 CALL_BODY_FIELDS = ("call_token", "call_id", "signed_body")
+
+#: The machine-readable refusal the app branches on (demo-cascade ticket 07).
+#: Additive: the status code and the ``detail`` body are unchanged, so a client
+#: that ignores this header behaves exactly as it did before.
+CALL_BODY_REFUSAL_HEADER = "X-Cascade-Refusal"
+REFUSAL_DRAINING = "draining"
+REFUSAL_ENVELOPE_KEY_MISSING = "envelope_secret_missing"
+REFUSAL_MALFORMED_BODY = "malformed_body"
+REFUSAL_ENVELOPE_REFUSED = "envelope_refused"
+REFUSAL_DUPLICATE_CALL = "duplicate_call_token"
+
+
+def call_body_refusal(status_code: int, code: str, detail: str) -> HTTPException:
+    """One refusal shape: the existing status and ``detail``, plus its name."""
+    return HTTPException(
+        status_code=status_code,
+        detail=detail,
+        headers={CALL_BODY_REFUSAL_HEADER: code},
+    )
 
 
 def create_app(
@@ -218,17 +246,19 @@ def create_app(
     async def call_body(request: Request) -> dict[str, Any]:
         # A draining instance finishes live calls; it starts none.
         if drain_state.draining:
-            raise HTTPException(
-                status_code=503,
-                detail=(
+            raise call_body_refusal(
+                503,
+                REFUSAL_DRAINING,
+                (
                     f"the service is draining ({drain_state.reason}) and "
                     "accepts no new call; live calls continue"
                 ),
             )
         if body_channel is None:
-            raise HTTPException(
-                status_code=503,
-                detail=(
+            raise call_body_refusal(
+                503,
+                REFUSAL_ENVELOPE_KEY_MISSING,
+                (
                     "the signed-body channel is closed: set "
                     "VOICE_PIPELINE_ENVELOPE_SECRET in the service host's "
                     "environment so a delivered body can be verified"
@@ -237,24 +267,29 @@ def create_app(
         try:
             payload = await request.json()
         except Exception:
-            raise HTTPException(status_code=400, detail="call body must be JSON")
+            raise call_body_refusal(
+                400, REFUSAL_MALFORMED_BODY, "call body must be JSON"
+            )
         if not isinstance(payload, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=f"call body must be an object, got {type(payload).__name__}",
+            raise call_body_refusal(
+                400,
+                REFUSAL_MALFORMED_BODY,
+                f"call body must be an object, got {type(payload).__name__}",
             )
 
         unknown = sorted(set(payload) - set(CALL_BODY_FIELDS))
         if unknown:
-            raise HTTPException(
-                status_code=400,
-                detail=f'unknown call body field "{unknown[0]}"',
+            raise call_body_refusal(
+                400,
+                REFUSAL_MALFORMED_BODY,
+                f'unknown call body field "{unknown[0]}"',
             )
         missing = [field for field in CALL_BODY_FIELDS if field not in payload]
         if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f'call body field "{missing[0]}" is missing',
+            raise call_body_refusal(
+                400,
+                REFUSAL_MALFORMED_BODY,
+                f'call body field "{missing[0]}" is missing',
             )
 
         try:
@@ -263,8 +298,12 @@ def create_app(
                 call_id=payload["call_id"],
                 message=payload["signed_body"],
             )
+        except DuplicateCallToken as exc:
+            raise call_body_refusal(
+                400, REFUSAL_DUPLICATE_CALL, str(exc)
+            )
         except (EnvelopeError, ClientConfigError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise call_body_refusal(400, REFUSAL_ENVELOPE_REFUSED, str(exc))
 
         return {
             "status": "accepted",
@@ -344,8 +383,8 @@ def main() -> None:
         loop="asyncio",
         # The drain already spent the recorded bound waiting for live calls;
         # past it the process stops rather than asking a call to wait longer.
-        # That exit is the deployment policy (Fly's kill_timeout is the same
-        # bound), not the drain terminating a call.
+        # That exit is the deployment policy (the Northflank grace period is the
+        # same 30 s bound), not the drain terminating a call.
         timeout_graceful_shutdown=0,
     )
     server = DrainAwareServer(config)

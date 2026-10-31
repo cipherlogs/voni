@@ -45,6 +45,9 @@ export type CascadeCaption = {
  * version by name (voice-pipeline/cascade/token.py), so a half-deployed pair
  * fails loudly instead of running a different body.
  */
+/** The demo's cold-reply cushion: 250 ms, half the phone owner's 500 ms. */
+export const DEMO_PLAYOUT_CUSHION_S = 0.25;
+
 export const CASCADE_PROTOCOL_VERSION = 1;
 
 /**
@@ -60,84 +63,30 @@ export type CascadeCallConfig = {
 };
 
 /** Why a cascade connect never opened the call. */
-export type CascadeConnectFailure = "draining" | "managed" | "unavailable";
+export type CascadeConnectFailure = "draining" | "managed" | "unavailable" | "protocol";
 
 /**
- * A cascade *connect* failure, typed so the app can route the call instead of
- * painting a dead-end error.
+ * A cascade *connect* failure, typed so the app can name the refusal.
  *
  * `draining` is the service's own refusal during a deploy (ticket 140: a
  * draining instance accepts no new call); `managed` is the service's routing
  * verdict that this call belongs on the managed engine (routing defaults to
  * `off`, so it is the common refusal); `unavailable` is the socket failing or
- * closing before the service accepted the call.
+ * closing before the service accepted the call; `protocol` is the service
+ * refusing an unknown or missing protocol version before any call exists.
  *
- * The retry verdict is deliberately absent here: `retryManaged` is decided by
- * `decideCascadeFallback` alone (the app knows whether the one managed retry
- * is still unspent), so a session reports only *why* the connect failed.
+ * There is no retry verdict: the demo is the cascade's only client and has no
+ * managed fallback (demo-cascade spec), so a refused connect is visitor-facing
+ * and final.
  */
 export class DrainingError extends Error {
   constructor(
     readonly code: CascadeConnectFailure,
     message: string,
-    readonly retryManaged?: boolean,
   ) {
     super(message);
     this.name = "DrainingError";
   }
-}
-
-/** The decision's error: a typed cause plus the retry verdict it owns. */
-export type CascadeFallbackError = DrainingError & { readonly retryManaged: boolean };
-
-export type CascadeFallbackDecision =
-  | { readonly action: "retry-managed"; readonly reason: string; readonly error: CascadeFallbackError }
-  | { readonly action: "surface"; readonly error: CascadeFallbackError };
-
-const FALLBACK_REASONS: Record<CascadeConnectFailure, string> = {
-  draining:
-    "The voice service is draining for a deploy; continuing this call on the managed path.",
-  managed:
-    "The voice service routes this call to the managed engine; continuing this call on the managed path.",
-  unavailable:
-    "The voice service is unavailable; continuing this call on the managed path.",
-};
-
-const SURFACE_MESSAGES: Record<CascadeConnectFailure, string> = {
-  draining: "The voice service is draining for a deploy and cannot take this call.",
-  managed: "The voice service routes this call to the managed engine and cannot take it.",
-  unavailable: "The voice service is unavailable and cannot take this call.",
-};
-
-/**
- * The one fallback decision (ticket 140 AC5), pure and browser-free: a cascade
- * connect that fails to a draining, routed-managed or unavailable service is
- * retried once on the managed path, with a visible reason. The second failure
- * is surfaced as a typed `DrainingError` with `retryManaged: false` — never
- * another retry, so a dead service cannot loop the caller through two
- * transports forever.
- *
- * This function is the single source of `retryManaged`: the session reports a
- * bare cause, and only the decision knows whether the retry was already spent.
- */
-export function decideCascadeFallback(input: {
-  failure: CascadeConnectFailure;
-  message?: string;
-  alreadyFellBack: boolean;
-}): CascadeFallbackDecision {
-  const retryManaged = !input.alreadyFellBack;
-  // Attach the verdict to the typed cause so a caller can inspect either the
-  // decision or the error; the class itself never guesses it.
-  const error: CascadeFallbackError = Object.assign(
-    new DrainingError(input.failure, input.message ?? SURFACE_MESSAGES[input.failure]),
-    { retryManaged },
-  );
-  if (!retryManaged) return { action: "surface", error };
-  return {
-    action: "retry-managed",
-    reason: FALLBACK_REASONS[input.failure],
-    error,
-  };
 }
 
 export type CascadeHandlers = {
@@ -152,8 +101,8 @@ export type CascadeHandlers = {
   /**
    * The call never opened: the service refused it as draining or as a routed-
    * managed call, or the socket failed/closed first. Fires once with the bare
-   * cause; the app decides the one managed retry. The session is already torn
-   * down (socket closed, microphone released).
+   * cause; the demo has no managed retry. The session is already torn down
+   * (socket closed, microphone released).
    */
   onConnectFailure?: (error: DrainingError) => void;
 };
@@ -339,7 +288,7 @@ export class CascadeSession {
   private inputMuted = false;
   /** The service accepted the call: any valid server frame arrived. */
   private accepted = false;
-  /** The connect failure was already reported (one report, one fallback). */
+  /** The connect failure was already reported (one report per connect). */
   private connectFailureReported = false;
   /**
    * The highest call-level audio `seq` already played. The receiving contract
@@ -423,6 +372,11 @@ export class CascadeSession {
     }
     this.micStop = handle.stop;
     this.playout = this.deps.createPlayout?.(handle.audioCtx) ?? handle.playout ?? null;
+    // The cascade is the browser-only demo (ADR-0012). Start its replies on a
+    // 250 ms cushion instead of the owner's 500 ms phone cushion: the caller
+    // hears the first word 250 ms sooner, and 250 ms is still three times the
+    // 80 ms that broke up on phones. The worklet clamps any raise to 500 ms.
+    this.playout?.setCushion?.(DEMO_PLAYOUT_CUSHION_S);
     // Dev delivered capture: the worklet's output, at the device rate. It is
     // observation only — the tap copies samples after rendering, so it cannot
     // move a sample, a chunk boundary or a playout deadline.
@@ -533,13 +487,22 @@ export class CascadeSession {
         break;
       case "error":
         // A named refusal before the service accepted the call means the call
-        // never opened: `draining` (a deploy) and `managed` (routing sent this
+        // never opened: `draining` (a deploy), `managed` (routing sent this
         // call to the managed engine — routing defaults to `off`, so this is
-        // the common path) are connect failures the app can route. Once
-        // accepted they are ordinary call errors: the call already started, so
-        // a retry would double-dial it. Surface those, never re-route them.
-        if (!this.accepted && (event.code === "draining" || event.code === "managed")) {
-          this.failConnect(event.code, event.message);
+        // the common path) and `protocol_version` (a half-deployed pair) are
+        // connect failures the app surfaces. Once accepted they are ordinary
+        // call errors: the call already started, so a retry would double-dial
+        // it. Surface those, never re-route them.
+        if (
+          !this.accepted &&
+          (event.code === "draining" ||
+            event.code === "managed" ||
+            event.code === "protocol_version")
+        ) {
+          this.failConnect(
+            event.code === "protocol_version" ? "protocol" : event.code,
+            event.message,
+          );
           break;
         }
         this.handlers.onError?.(event.message);
@@ -651,10 +614,9 @@ export class CascadeSession {
   }
 
   /**
-   * Report a connect failure once, then tear this attempt down. The app owns
-   * the one managed retry (`decideCascadeFallback`); this session only names
-   * the cause — it never decides `retryManaged`, so a second refusal cannot
-   * inherit a stale verdict from here.
+   * Report a connect failure once, then tear this attempt down. The session
+   * only names the cause; the app owns the visitor-facing copy and the demo
+   * has no managed retry to decide.
    */
   private failConnect(cause: CascadeConnectFailure, message: string): void {
     if (this.connectFailureReported || this.ended) return;

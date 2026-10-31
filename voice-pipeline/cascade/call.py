@@ -105,7 +105,7 @@ from cascade.cost import CallCost, LegCost as PricedLeg, RateTable, cost_call
 from cascade.counter import limit_amount
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
-from cascade.events import OperationalEvents
+from cascade.events import COST_PRICED_EVENT_TYPE, OperationalEvents
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
 from cascade.meta_stt import SpeechPartial, SpeechStart
 from cascade.reconnect import ReconnectBudget
@@ -1104,6 +1104,7 @@ class CallLifecycle:
         eligibility: EligibilityDecision | None = None,
         chime: Callable[[], None] | None = None,
         reconnect_budget: ReconnectBudget | None = None,
+        on_caption: Callable[[str, str, bool], Any] | None = None,
     ) -> None:
         self._message = message
         self._secret = secret
@@ -1117,6 +1118,7 @@ class CallLifecycle:
         #: The call-level audio sequence and every frame this call emitted.
         self.sequence = CallSequence()
         self.audio_frames: list[OutboundAudio] = []
+        self._on_caption = on_caption
         self._clock = clock if clock is not None else time.monotonic
         self._ledger = (
             ledger if ledger is not None else TimingLedger(now=self._clock)
@@ -1398,8 +1400,11 @@ class CallLifecycle:
                 )
                 if task is not None
             ]
+            # A silent open (a hold return) has no greeting to finish, so the
+            # turn layer starts at once; any other call waits for its opening.
             while not (
-                barge.is_set()
+                greeting is None
+                or barge.is_set()
                 or failure_event.is_set()
                 or budget_event.is_set()
                 or end_event.is_set()
@@ -1448,6 +1453,16 @@ class CallLifecycle:
                         self._greeting = result
                     else:
                         self._greeting = await greeting_task
+                if (
+                    self._greeting is not None
+                    and self._greeting.text
+                    and self._on_caption is not None
+                ):
+                    # The greeting is not a turn, but it is the first agent
+                    # line the caller hears: give the browser one final caption
+                    # after the audio so the transcript opens with it and the
+                    # UI moves from "connecting" to "listening".
+                    await self._on_caption("agent", self._greeting.text, True)
                 if failure_event.is_set():
                     # The leg failed while the greeting sounded: the call is
                     # already over, so the turn layer is never started.
@@ -1566,6 +1581,10 @@ class CallLifecycle:
             kind=kind,
             flush_id=flush_id,
         )
+        if kind == "reply":
+            # The first reply frame is the caller-perceived end of the reply
+            # gap; `mark` is first-wins, so every later frame is free.
+            self._ledger.mark("first_playout")
         self.audio_frames.append(outbound)
         if self._send_audio is not None:
             await self._send_audio(outbound)
@@ -2326,6 +2345,13 @@ class CallLifecycle:
         # The end-of-call session facts are still charged to the day they were
         # consumed, even though the ceiling can no longer stop the call.
         await self._charge_recorded_units()
+        # Price the call once and use that one answer for both forms: the row
+        # in the trace and the end message's cost. A second pricing path would
+        # let the two disagree.
+        cost = self._cost()
+        self._emit_operational(
+            COST_PRICED_EVENT_TYPE, lambda events: events.cost_priced(cost)
+        )
         # The artifact is live state: a sink disabled during the call has no
         # path, and its reason is named instead of claiming a file that is not
         # there.
@@ -2344,7 +2370,7 @@ class CallLifecycle:
             providers=ProviderTable.from_opened(
                 opened, missing_reason=missing_reason
             ),
-            cost=self._cost(),
+            cost=cost,
             eligibility=eligibility,
             turns=self._turns(),
             ended_by=ended_by,

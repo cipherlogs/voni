@@ -24,6 +24,12 @@ export type Playout = {
    * (see call-sounds). Observation only: it never touches the signal path.
    */
   onFirstAudible?: () => void;
+  /**
+   * Lower the cushion a cold reply starts on, for a browser-only surface.
+   * The worklet clamps it to the owner's 500 ms ceiling; higher values are
+   * ignored, so a caller can never weaken the phone buffer.
+   */
+  setCushion?: (seconds: number) => void;
 };
 
 export type WorkletPlayout = Playout & {
@@ -35,6 +41,12 @@ export type WorkletPlayout = Playout & {
   cushionMs: () => number;
   /** The target cushion a reply starts at, in milliseconds (the named constant). */
   targetCushionMs: () => number;
+  /**
+   * Lower the cushion a cold reply starts on, for a browser-only surface.
+   * The worklet clamps it to the owner's 500 ms ceiling; higher values are
+   * ignored, so a caller can never weaken the phone buffer.
+   */
+  setCushion?: (seconds: number) => void;
   /**
    * Playback-rate correction in percent at the worklet's last report: negative
    * while it plays slower to refill a short cushion, zero when the stream needs
@@ -125,6 +137,9 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
     queuedMs: () => queuedMs,
     cushionMs: () => cushionMs,
     targetCushionMs: () => targetCushionMs,
+    setCushion(seconds) {
+      node.port.postMessage({ type: "cushion", s: seconds });
+    },
     correctionPct: () => correctionPct,
     sentSamples: () => sentSamples,
     consumedSamples: () => consumed,

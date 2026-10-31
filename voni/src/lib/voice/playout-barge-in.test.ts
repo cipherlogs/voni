@@ -447,10 +447,10 @@ test("playout handle: a barge-in keeps the cushion and a hang-up clears it", () 
 
 /** The cushioned start gate ticket 29 adds. */
 const CUSHIONED_START = `      const cushioned = currentTime >= this.cushionBy;
-      const buffered = this.queued >= TARGET_CUSHION_S * this.rate;
+      const buffered = this.queued >= this.cushionS * this.rate;
       if (resuming || cushioned || buffered || lull) this.start();`;
 /** The worklet before this ticket: a flush resets the start gate to a cold start. */
-const COLD_START = `      const buffered = this.queued >= TARGET_CUSHION_S * this.rate;
+const COLD_START = `      const buffered = this.queued >= this.cushionS * this.rate;
       if (resuming || buffered || lull) this.start();`;
 
 function withColdStartFlush(): string {

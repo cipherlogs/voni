@@ -198,6 +198,101 @@ class StoredBodyChannelTests(unittest.TestCase):
         self.assertIn(AGENT_ID, message["message"])
 
 
+REFUSAL_HEADER = "X-Cascade-Refusal"
+
+
+class CallBodyRefusalHeaderTests(unittest.TestCase):
+    """Every ``/v1/call-body`` refusal names itself, additively (ticket 07).
+
+    The app never parses ``detail`` prose: the refusal is machine-readable in
+    one header. The status code and the body stay exactly what they were, so an
+    older app that ignores the header is unaffected.
+    """
+
+    def assert_refusal(self, response, status: int, code: str) -> None:
+        self.assertEqual(response.status_code, status)
+        self.assertEqual(response.headers.get(REFUSAL_HEADER), code)
+        # Additive: the response body keeps its one-field shape.
+        self.assertEqual(list(response.json()), ["detail"])
+
+    def test_a_draining_instance_names_the_refusal(self):
+        from fastapi.testclient import TestClient
+
+        from cascade.health import DrainState
+
+        drain = DrainState()
+        drain.start("deploy")
+        http = TestClient(create_app(envelope_secret=SECRET, clock=CLOCK, drain=drain))
+        response = http.post("/v1/call-body", json=delivery())
+
+        self.assert_refusal(response, 503, "draining")
+        self.assertIn("draining", response.json()["detail"])
+
+    def test_a_missing_envelope_secret_names_the_refusal(self):
+        response = client(secret="").post("/v1/call-body", json=delivery())
+
+        self.assert_refusal(response, 503, "envelope_secret_missing")
+        self.assertIn("VOICE_PIPELINE_ENVELOPE_SECRET", response.json()["detail"])
+
+    def test_a_malformed_body_names_the_refusal(self):
+        http = client()
+
+        not_json = http.post(
+            "/v1/call-body",
+            content="this is not json",
+            headers={"content-type": "application/json"},
+        )
+        self.assert_refusal(not_json, 400, "malformed_body")
+
+        unknown = http.post("/v1/call-body", json=delivery(system_prompt="hi"))
+        self.assert_refusal(unknown, 400, "malformed_body")
+
+        missing = delivery()
+        del missing["signed_body"]
+        self.assert_refusal(
+            http.post("/v1/call-body", json=missing), 400, "malformed_body"
+        )
+
+    def test_a_refused_envelope_names_the_refusal(self):
+        payload = delivery()
+        payload["signed_body"]["body"]["system_prompt"] = "You are someone else."
+
+        response = client().post("/v1/call-body", json=payload)
+
+        self.assert_refusal(response, 400, "envelope_refused")
+        self.assertIn("body hash", response.json()["detail"])
+
+    def test_a_second_delivery_for_one_token_names_the_refusal(self):
+        http = client()
+        self.assertEqual(http.post("/v1/call-body", json=delivery()).status_code, 202)
+
+        second = http.post("/v1/call-body", json=delivery())
+
+        self.assert_refusal(second, 400, "duplicate_call_token")
+
+    def test_the_refusal_header_carries_no_secret_or_signature(self):
+        from fastapi.testclient import TestClient
+
+        from cascade.health import DrainState
+
+        drain = DrainState()
+        drain.start("deploy")
+        draining = TestClient(create_app(envelope_secret=SECRET, clock=CLOCK, drain=drain))
+        bad = delivery()
+        bad["signed_body"]["body"]["system_prompt"] = "You are someone else."
+        responses = [
+            draining.post("/v1/call-body", json=delivery()),
+            client(secret="").post("/v1/call-body", json=delivery()),
+            client().post("/v1/call-body", json=bad),
+        ]
+
+        signature = bad["signed_body"]["envelope"]["signature"]
+        for response in responses:
+            rendered = f"{dict(response.headers)} {response.text}"
+            self.assertNotIn(SECRET, rendered)
+            self.assertNotIn(signature, rendered)
+
+
 class BrowserCallWiringTests(unittest.TestCase):
     """The service hands the browser call every cascade dependency it owns."""
 

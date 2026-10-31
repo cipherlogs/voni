@@ -238,6 +238,11 @@ class PlayoutProcessor extends AudioWorkletProcessor {
      * — starts at once instead of waiting out an artificial half second.
      */
     this.cushionBy = Infinity;
+    /**
+     * The cushion a cold reply starts on. The owner's 500 ms phone call is the
+     * default; a browser-only surface may lower it (see ``cushion`` below).
+     */
+    this.cushionS = TARGET_CUSHION_S;
     /** EDGE_S in output samples, and the matching per-sample gain step. */
     this.edgeSamples = Math.round(EDGE_S * sampleRate);
     this.gainStep = 1 / (EDGE_S * sampleRate);
@@ -275,6 +280,10 @@ class PlayoutProcessor extends AudioWorkletProcessor {
       // A barge-in keeps the cushion unless the caller says otherwise (a
       // deliberate hang-up passes false).
       this.flush(msg.fadeS, msg.keepCushion !== false);
+    } else if (msg.type === "cushion") {
+      // Lower only: the owner's 500 ms is the ceiling a surface may not raise.
+      const s = Number(msg.s);
+      if (Number.isFinite(s) && s > 0) this.cushionS = Math.min(s, TARGET_CUSHION_S);
     } else if (msg.type === "probe") {
       this.popProbe = Boolean(msg.on);
     } else if (msg.type === "tap") {
@@ -445,7 +454,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     // A barge-in carries the cushion's deadline across the flush, so the new
     // reply is not charged a second pre-roll (see the constructor). A hang-up
     // keeps nothing: it holds no credit for audio that will never come.
-    this.cushionBy = keepCushion ? currentTime + TARGET_CUSHION_S : Infinity;
+    this.cushionBy = keepCushion ? currentTime + this.cushionS : Infinity;
   }
 
   /** Dev pop recorder: flag what the speaker is about to click on. */
@@ -517,7 +526,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
       const lull = currentTime - this.lastPush >= LULL_S;
       const resuming = currentTime - this.dryAt <= RESUME_WINDOW_S;
       const cushioned = currentTime >= this.cushionBy;
-      const buffered = this.queued >= TARGET_CUSHION_S * this.rate;
+      const buffered = this.queued >= this.cushionS * this.rate;
       if (resuming || cushioned || buffered || lull) this.start();
     }
     const dt = out.length / sampleRate;
@@ -542,7 +551,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
         seq: this.seq,
         queuedMs: (this.queued / this.rate) * 1000,
         cushionMs: (this.queued / this.rate) * 1000,
-        targetCushionMs: TARGET_CUSHION_S * 1000,
+        targetCushionMs: this.cushionS * 1000,
         correctionPct: this.playing ? this.adjust * 100 : 0,
         playing: this.playing,
         idle: nowIdle,

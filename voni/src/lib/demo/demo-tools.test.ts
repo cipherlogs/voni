@@ -32,7 +32,7 @@ test("show_test_address puts the inbox and the call's tag on screen; its result 
 
 test("demo tools outlast a long invite reply, and the address is optional", async () => {
   const { DEMO_VOICE_TOOLS } = await import("./demo-tools");
-  for (const tool of DEMO_VOICE_TOOLS.filter((t) => t.name !== "end_call")) {
+  for (const tool of DEMO_VOICE_TOOLS.filter((t) => t.name !== "hang_up")) {
     assert.ok(tool.timeout_seconds >= 30, `${tool.name}: ${tool.timeout_seconds}s`);
   }
   const check = DEMO_VOICE_TOOLS.find((t) => t.name === "check_email");
@@ -47,4 +47,18 @@ test("the reply and the code check are route tools, never answered in the browse
   assert.deepEqual((check?.parameters as { required?: string[] }).required, ["code"]);
   assert.equal((await executeDemoTool("send_code_reply", { warm_line: "hi" })).ok, false);
   assert.equal((await executeDemoTool("check_code", { code: "1234" })).ok, false);
+});
+
+test("a check_email response can carry the call's code-readback fact without losing its shape", async () => {
+  const { withCodeVerified } = await import("./demo-tools");
+  const result = await executeDemoTool("show_test_address", {}, { testTag: "Lime 42" });
+  assert.equal(result.ok, true);
+  const withFact = withCodeVerified(result, true);
+  assert.equal(withFact.ok, true);
+  assert.equal(withFact.ok && withFact.data.codeVerified, true);
+  assert.equal(withFact.ok && withFact.data.testTag, "Lime 42", "the existing data survives");
+  assert.equal(withFact.ok && withFact.data.instructions, result.ok && result.data.instructions);
+
+  const failed = { ok: false as const, error: "No test tag on this call.", retryable: false };
+  assert.deepEqual(withCodeVerified(failed, true), failed, "a failed check keeps its shape");
 });

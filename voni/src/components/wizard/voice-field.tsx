@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AudioLines } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +20,7 @@ import {
   ACCENT_FLAG,
   ACCENT_LABEL,
   INPUT_LANGUAGES,
+  tenantVoices,
   voicesByLanguage,
   voiceLabel,
   type Voice,
@@ -125,7 +126,6 @@ export type VoiceFieldProps = {
   description?: string;
 };
 
-const GROUPS = voicesByLanguage();
 const SPEAKABLE = INPUT_LANGUAGES.filter((l) => l.canSpeak);
 
 function flagFor(code: string) {
@@ -179,9 +179,11 @@ function useVoicePreview() {
 
 /** Language chips filter the voices. */
 function LanguageChips({
+  groups,
   language,
   onValueChange,
 }: {
+  groups: ReturnType<typeof voicesByLanguage>;
   language: string;
   onValueChange: (codes: string[]) => void;
 }) {
@@ -192,7 +194,7 @@ function LanguageChips({
       aria-label="Spoken language"
       className="flex-wrap justify-start"
     >
-      {GROUPS.map((g) => (
+      {groups.map((g) => (
         <ToggleGroupItem key={g.code} value={g.code} aria-label={g.language}>
           <span aria-hidden>{flagFor(g.code)}</span> {g.language}
         </ToggleGroupItem>
@@ -220,7 +222,11 @@ export function VoiceField({
   const [api, setApi] = useState<CarouselApi>();
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(0);
-  const group = GROUPS.find((g) => g.code === language) ?? GROUPS[0];
+  // The tenant picker offers English voices (demo-cascade ticket 04); the
+  // agent's stored voice rides along so opening an existing non-English agent
+  // shows the voice it has instead of an empty selection.
+  const groups = useMemo(() => voicesByLanguage(tenantVoices(voiceId)), [voiceId]);
+  const group = groups.find((g) => g.code === language) ?? groups[0];
 
   // Dots track the settled snap. Sync-on-mount follows the stock shadcn
   // Carousel API pattern (setCount/setCurrent in the setApi effect), plus a
@@ -256,7 +262,7 @@ export function VoiceField({
     stopPreview();
     onChange({ language: next, voiceId: resolved.voiceId });
     const nextLabel =
-      GROUPS.find((g) => g.code === next)?.language ?? next;
+      groups.find((g) => g.code === next)?.language ?? next;
     setNotice(
       resolved.changed
         ? `Voice switched to ${voiceLabel(resolved.voiceId)} for ${nextLabel}.`
@@ -306,7 +312,7 @@ export function VoiceField({
         {description ??
           "The voice renders on the call — select a card to hear the real voice."}
       </FieldDescription>
-      <LanguageChips language={language} onValueChange={selectLanguage} />
+      <LanguageChips groups={groups} language={language} onValueChange={selectLanguage} />
       {group.voices.length > 1 ? (
         <ToggleGroup
           value={[voiceId]}

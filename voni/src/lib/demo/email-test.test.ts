@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   EMAIL_TEST_START,
   PROVISIONAL_TALK_S,
+  VERIFIED_TALK_S,
   checkEmail,
   checkTag,
   mentionsScreen,
@@ -10,6 +11,7 @@ import {
   checkResultFromData,
   checkResultToData,
   emailTestAfterCheck,
+  emailTestAfterPoll,
   fallbackMatch,
   isFreeEmailDomain,
   loadTagToken,
@@ -383,6 +385,35 @@ test("Voni putting something on the screen is recognised (the call then puts the
   assert.equal(mentionsScreen("Your customers see the price on the screen when they book."), false, "business talk");
 });
 
+test("the invite chip comes up from the agent's tagged final turn, once", () => {
+  const base = { tag: "Lime 42", invited: false, found: false, toolActive: false };
+  // The pipeline runs show_test_address server-side; the browser sees Voni's
+  // final line, which says the tag. That line is the invite even when it never
+  // says "screen".
+  assert.equal(
+    inviteFallbackAction({
+      ...base,
+      text: "Send me an email from your work address with Lime 42 in the subject, and tell me when it's sent.",
+    }),
+    "show-only",
+    "a tagged final turn puts the chip up and speaks nothing extra",
+  );
+  assert.equal(
+    inviteFallbackAction({
+      ...base,
+      invited: true,
+      text: "Send me an email from your work address with Lime 42 in the subject.",
+    }),
+    "none",
+    "a duplicate tagged turn never puts a second invite up",
+  );
+  assert.equal(
+    inviteFallbackAction({ ...base, found: true, text: "Your code is in the subject Lime 42." }),
+    "none",
+    "after the email is found the test is no longer invited",
+  );
+});
+
 test("the invite fallback never repeats an invite the agent already said", () => {
   const base = { tag: "Lime 42", invited: false, found: false, toolActive: false };
   // Live sess_cd108689aa6e4dcfad809d9aa04e8b25: the model's own line carried
@@ -486,3 +517,43 @@ test("a tag minted while storage is blocked still scopes the call (private mode)
   }
 });
 
+
+test("the check_email poll can flip the visible verified state from the call's code readback", () => {
+  // The pipeline runs check_code server-side, so the browser never sees a tool
+  // result. The poll response carries `codeVerified` from demo_calls and this
+  // is the one transition that raises the talk limit.
+  const found = { ...EMAIL_TEST_START, invited: true, found: true };
+  assert.equal(talkLimitS(found), PROVISIONAL_TALK_S);
+
+  const still = emailTestAfterPoll(found, {
+    status: "found",
+    address: "owner@bakery.pt",
+    exact: true,
+    codeVerified: false,
+  });
+  assert.equal(still, found, "no code readback means no change");
+  assert.equal(talkLimitS(still), PROVISIONAL_TALK_S);
+
+  const verified = emailTestAfterPoll(found, {
+    status: "found",
+    address: "owner@bakery.pt",
+    exact: true,
+    codeVerified: true,
+  });
+  assert.equal(verified.verified, true);
+  assert.equal(talkLimitS(verified), VERIFIED_TALK_S, "the verified extension applies");
+});
+
+test("the same poll still applies the found transition before the code readback", () => {
+  const invited = { ...EMAIL_TEST_START, invited: true };
+  const next = emailTestAfterPoll(invited, {
+    status: "found",
+    address: "owner@bakery.pt",
+    name: "Owner",
+    exact: true,
+    codeVerified: true,
+  });
+  assert.equal(next.found, true);
+  assert.equal(next.verified, true);
+  assert.equal(talkLimitS(next), VERIFIED_TALK_S);
+});

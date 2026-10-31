@@ -7,7 +7,6 @@ import {
   buildConfigMessage,
   CASCADE_PROTOCOL_VERSION,
   CascadeSession,
-  decideCascadeFallback,
   decodeAudioMessage,
   DrainingError,
   encodeAudioFrame,
@@ -62,6 +61,28 @@ test("the config message cannot smuggle a body through an extra key", () => {
   ]);
 });
 
+test("the cascade starts replies on the demo's 250 ms cushion", async () => {
+  const socket = makeSocket();
+  let seen: number | null = null;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({
+        play: () => {},
+        flush: () => {},
+        setCushion: (seconds: number) => {
+          seen = seconds;
+        },
+      }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+
+  assert.equal(seen, 0.25, "the demo does not pay the phone cushion");
+});
+
 test("audio frames encode to base64 data messages", () => {
   const bytes = new Uint8Array([0, 1, 2, 3]).buffer;
   const parsed = JSON.parse(encodeAudioFrame(bytes));
@@ -75,6 +96,43 @@ test("context messages serialize as hidden system events", () => {
     role: "system",
     content: "context",
   });
+});
+
+test("demo notes reach the context frame and never become a caption", async () => {
+  // Ticket 12: every browser-generated note the managed session used to speak
+  // is hidden context on the cascade. The service applies it to the next
+  // generated turn; it must never arrive as a user or agent caption.
+  const { MUTE_CHECK_IN_INSTRUCTIONS, TIME_UP_INSTRUCTIONS, rungInstructions } =
+    await import("@/lib/demo/voni-agent");
+  const notes = [
+    MUTE_CHECK_IN_INSTRUCTIONS,
+    TIME_UP_INSTRUCTIONS,
+    rungInstructions("nudge", "the live email test"),
+  ];
+  const socket = makeSocket();
+  const captions: string[] = [];
+  const session = new CascadeSession(
+    { onCaption: (caption) => captions.push(caption.text) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  socket.sent.length = 0;
+
+  for (const note of notes) session.sendContext(note);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(
+    socket.sent.map((frame) => JSON.parse(frame)),
+    notes.map((content) => ({ type: "context", role: "system", content })),
+    "each note is one hidden context frame, in order",
+  );
+  assert.deepEqual(captions, [], "hidden context is never captioned");
 });
 
 test("server messages parse to typed events", () => {
@@ -585,15 +643,21 @@ test("delivered capture: a cascade tap that never acks is a named failure on the
 // version it speaks in the end message. The client must surface that, not hang
 // with a mic open, and must not report a refused connect as a completed call.
 
-test("a protocol-version refusal is surfaced and the session stops instead of hanging", async () => {
+test("a protocol-version refusal tears down the socket and microphone", async () => {
   const socket = makeSocket();
+  const failures: DrainingError[] = [];
   const errors: string[] = [];
   let ended = 0;
+  let micStops = 0;
   const session = new CascadeSession(
-    { onError: (message) => errors.push(message), onEnd: () => (ended += 1) },
+    {
+      onConnectFailure: (error) => failures.push(error),
+      onError: (message) => errors.push(message),
+      onEnd: () => (ended += 1),
+    },
     {
       socketFactory: () => socket as unknown as WebSocket,
-      startMic: async () => ({ stop: () => {} }),
+      startMic: async () => ({ stop: () => (micStops += 1) }),
       createPlayout: () => ({ play: () => {}, flush: () => {} }),
     },
   );
@@ -605,8 +669,12 @@ test("a protocol-version refusal is surfaced and the session stops instead of ha
   socket.emit(JSON.stringify({ type: "error", code: "protocol_version", message: refusal }));
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(errors, [refusal]);
+  assert.equal(failures.length, 1, "a pre-accept version refusal is one connect cause");
+  assert.equal(failures[0].code, "protocol");
+  assert.equal(failures[0].message, refusal);
+  assert.deepEqual(errors, [], "the generic error path does not paint over the refusal");
   assert.equal(socket.closed, true, "the socket is torn down instead of left hanging");
+  assert.equal(micStops, 1, "the microphone is released, never left live");
   assert.equal(ended, 0, "a refused connect is not a completed call");
 });
 
@@ -670,36 +738,7 @@ test("a matching end message is not reported as a mismatch", async () => {
   assert.deepEqual(ended, { turns: 1 });
 });
 
-// ── Connect fallback (ticket 140 AC5) ──────────────────────────────────────
-// A draining instance, a routed-managed verdict and an unavailable socket all
-// receive no cascade call. The app routes the call to managed once; the session
-// hands over a typed cause and stops, never a dead-end error and never a
-// "completed call".
-
-test("a draining, managed or unavailable connect plans exactly one managed retry", () => {
-  for (const failure of ["draining", "managed", "unavailable"] as const) {
-    const first = decideCascadeFallback({ failure, alreadyFellBack: false });
-    assert.equal(first.action, "retry-managed");
-    if (first.action !== "retry-managed") return;
-    assert.ok(first.error instanceof DrainingError, "the cause is typed, not a string");
-    assert.equal(first.error.code, failure);
-    assert.equal(first.error.retryManaged, true, "the one retry is still available");
-    assert.match(first.reason, new RegExp(failure === "unavailable" ? "unavailable" : failure));
-    assert.match(first.reason, /managed path/, "the visible reason names where the call went");
-
-    const second = decideCascadeFallback({ failure, alreadyFellBack: true });
-    assert.equal(second.action, "surface", "a second failure is not retried");
-    if (second.action !== "surface") return;
-    assert.equal(second.error.code, failure);
-    assert.equal(second.error.retryManaged, false, "the retry was already spent");
-    assert.equal(second.error.message, first.error.message);
-  }
-});
-
-test("the session reports a bare cause: retryManaged belongs to the decision", async () => {
-  // A session cannot know whether the app already spent the one retry, so it
-  // must not pre-decide the verdict (a second cascade refusal would inherit a
-  // stale `true`). Only `decideCascadeFallback` sets it.
+test("a connect refusal reports only its named cause", async () => {
   const socket = makeSocket();
   const failures: DrainingError[] = [];
   const session = new CascadeSession(
@@ -715,7 +754,8 @@ test("the session reports a bare cause: retryManaged belongs to the decision", a
   socket.emit(JSON.stringify({ type: "error", code: "managed", message: "routed managed" }));
 
   assert.equal(failures.length, 1);
-  assert.equal(failures[0].retryManaged, undefined, "no verdict is hardcoded in the cause");
+  assert.equal(failures[0].code, "managed");
+  assert.equal(failures[0].message, "routed managed");
 });
 
 test("a routed-managed refusal on connect is handed over typed, not shown as a dead end", async () => {
@@ -858,7 +898,6 @@ test("a socket that fails or closes before acceptance is unavailable, reported o
 
   assert.equal(failures.length, 1, "one failed connection reports one cause");
   assert.equal(failures[0].code, "unavailable");
-  assert.equal(failures[0].retryManaged, undefined, "the decision owns the retry verdict");
   assert.equal(ended, 0);
   assert.equal(socket.closed, true);
 });

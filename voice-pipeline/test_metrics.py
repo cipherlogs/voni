@@ -51,6 +51,8 @@ MANAGED_ARTIFACT_DF21BEDB = {
         "yield": 1,
         "interruption": 0,
         "prefetch_started": 1,
+        "hedge_started": 0,
+        "hedge_won": 0,
         "prefetch_cancelled": 1,
         "prefetch_used": 1,
         "tool_denied": 0,

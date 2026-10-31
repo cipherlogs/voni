@@ -13,8 +13,8 @@ answers it:
 
 The supervisor never cancels a call task: it observes :class:`LiveCalls` and
 waits. A call that outlives the bound is left running and the exit is a
-deployment-policy event (the platform's ``kill_timeout``), not this module
-killing a call.
+deployment-policy event (the platform's ``terminationGracePeriodSeconds``),
+not this module killing a call.
 """
 
 from __future__ import annotations

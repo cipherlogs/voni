@@ -14,6 +14,8 @@ import { agentUpdatePayload } from "@/lib/agents/provision";
 import { DEMO_VOICE_IDS, VONI_AGENT_ID, voniConfig } from "./voni-agent";
 import { toRestTool } from "@/lib/tools/definitions";
 import { DEMO_VOICE_TOOLS } from "./demo-tools";
+import BOUNDS from "@/lib/voice/cascade-bounds.json";
+import type { ResumeMessage } from "@/lib/voice/resume-history";
 
 export type { LlmOverride } from "@/lib/agents/body";
 
@@ -52,54 +54,16 @@ export type { LlmOverride } from "@/lib/agents/body";
 
 const AGENTS_URL = "https://agents.assemblyai.com/v1/agents";
 
-/** Vercel AI Gateway: the fastest measured tool-calling model (see research 08). */
-export const DEMO_LLM_BASE_URL = "https://ai-gateway.vercel.sh/v1";
-/** Gemini 2.5 Flash thinks by default; the demo needs the first token fast. */
-export const DEMO_LLM_REASONING_EFFORT = "none";
-export const DEMO_LLM_MODEL = "google/gemini-2.5-flash";
-
 export type ProvisionResult =
   | {
       ok: true;
       agentId: string;
       /** Hash the cached row stores; the eval reports it as run identity. */
       fingerprint: string;
-      /** The override model in force, or null for the managed default. */
-      llmModel: string | null;
       /** A refresh failed and the cached remote copy is stale (served anyway). */
       stale?: true;
     }
   | { ok: false; error: string };
-
-/**
- * The fast-LLM override, when the deployment has an AI Gateway key.
- *
- * The landing demo's reply latency is dominated by the managed model's think
- * time (measured ~1.26s), so a demo agent runs on a faster one when the key
- * exists. Absent key = no override at all, and the body stays byte-identical
- * to the managed default (so no stored agent is refreshed just by shipping
- * this). Both settings are read through `secret()` so `.env.local`, plain
- * Node/CI, and the deployed Worker all agree.
- */
-export async function demoLlmOverride(): Promise<LlmOverride[] | null> {
-  const apiKey = await secret("AI_GATEWAY_API_KEY");
-  if (!apiKey) return null;
-  const [baseUrl, model, reasoning] = await Promise.all([
-    secret("DEMO_LLM_BASE_URL"),
-    secret("DEMO_LLM_MODEL"),
-    secret("DEMO_LLM_REASONING_EFFORT"),
-  ]);
-  return [
-    {
-      base_url: baseUrl || DEMO_LLM_BASE_URL,
-      model: model || DEMO_LLM_MODEL,
-      api_key: apiKey,
-      ...(reasoning || DEMO_LLM_REASONING_EFFORT
-        ? { reasoning_effort: reasoning || DEMO_LLM_REASONING_EFFORT }
-        : {}),
-    },
-  ];
-}
 
 /**
  * Which stored body a caller gets. `production` is the demo every visitor
@@ -244,6 +208,66 @@ export function demoAgentProfile(opts?: {
 }
 
 /** The exact remote body a demo agent runs. Pure: fingerprint + tests pin it. */
+/**
+ * The hold return's bounded recent turns are part of the demo body, so the
+ * one builder validates them before anything is hashed or signed. These
+ * refusals are named: a fresh call carrying history, an unknown role, a blank
+ * line, an over-bound list, or a malformed registry bound never reaches the
+ * wire as a guessed shape.
+ */
+export class InvalidResumeHistory extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = new.target.name;
+  }
+}
+
+/** The registry's bound, refused by name when it is not a positive whole number. */
+export function resumeHistoryBound(
+  bounds: { resumeHistoryTurns?: unknown } = BOUNDS,
+): number {
+  const bound = bounds.resumeHistoryTurns;
+  if (!Number.isInteger(bound) || (bound as number) <= 0) {
+    throw new InvalidResumeHistory(
+      `cascade bounds field "resumeHistoryTurns" must be a positive whole number, got ${String(bound)}`,
+    );
+  }
+  return bound as number;
+}
+
+/** Settled user/assistant turns only, no blank lines, never more than the bound. */
+export function validateResumeHistory(history: unknown): ResumeMessage[] {
+  if (!Array.isArray(history)) {
+    throw new InvalidResumeHistory('demo body field "history" must be an array of turns');
+  }
+  const bound = resumeHistoryBound();
+  if (history.length > bound) {
+    throw new InvalidResumeHistory(
+      `demo body field "history" carries ${history.length} turns; the bound is ${bound}`,
+    );
+  }
+  return history.map((message, index) => {
+    if (typeof message !== "object" || message === null) {
+      throw new InvalidResumeHistory(`demo body history[${index}] must be an object`);
+    }
+    const { role, content } = message as { role?: unknown; content?: unknown };
+    if (role !== "user" && role !== "assistant") {
+      throw new InvalidResumeHistory(
+        `demo body history[${index}].role must be "user" or "assistant", got ${JSON.stringify(role)}`,
+      );
+    }
+    if (typeof content !== "string" || content.trim() === "") {
+      throw new InvalidResumeHistory(
+        `demo body history[${index}].content must be a non-empty string`,
+      );
+    }
+    return { role, content };
+  });
+}
+
+/** The demo body: the one builder's output, plus a resumed call's history. */
+export type DemoAgentBody = StoredAgentBody & { history?: ResumeMessage[] };
+
 export function buildDemoAgentBody(
   voiceId: string,
   opts?: {
@@ -251,10 +275,22 @@ export function buildDemoAgentBody(
     llm?: LlmOverride[];
     variant?: DemoAgentVariant;
     turnWindows?: DemoTurnWindows;
+    /**
+     * A hold return's bounded recent turns (ticket 13). Only a resumed body may
+     * carry them; the builder validates and appends them, so no caller ever
+     * amends the body after it is built.
+     */
+    history?: readonly ResumeMessage[];
   },
-): StoredAgentBody {
+): DemoAgentBody {
   const resume = opts?.resume === true;
   const variant = opts?.variant ?? "production";
+  if (opts?.history !== undefined && !resume) {
+    throw new InvalidResumeHistory(
+      'demo body field "history" belongs to a hold return; a fresh call starts blank',
+    );
+  }
+  const history = opts?.history === undefined ? undefined : validateResumeHistory(opts.history);
   // The experiment's windows are demo-only session mechanics: they reach the
   // builder as a turn-taking input, never as a profile field (ticket 65 deleted
   // the explicit preset variant and the tenant's old object).
@@ -262,7 +298,7 @@ export function buildDemoAgentBody(
     variant === "turn-window"
       ? opts?.turnWindows ?? DEMO_TURN_WINDOW_DEFAULTS
       : undefined;
-  return buildStoredAgent({
+  const body = buildStoredAgent({
     name: demoAgentName(voiceId, resume, variant),
     config: voniConfig(voiceId),
     profile: demoAgentProfile({
@@ -271,6 +307,8 @@ export function buildDemoAgentBody(
     }),
     ...(turnTaking ? { turnTaking } : {}),
   });
+  // Appended here, in the one builder, never by a later caller.
+  return history === undefined ? body : { ...body, history };
 }
 
 export type DemoAgentProvisionPlan = {
@@ -641,11 +679,9 @@ export async function getOrCreateDemoAgent(
   const apiKey = await secret("ASSEMBLYAI_API_KEY");
   if (!apiKey) return { ok: false, error: "Voice is not configured." };
 
-  // A faster LLM when the gateway key is configured (the landing demo and the
-  // eval then run the same stored body). The key rides the body, never a
-  // client response; the fingerprint below covers the whole body, so a model
-  // change refreshes the agent exactly like a prompt change.
-  const llm = await demoLlmOverride();
+  // The demo's model is the cascade's own Meta client, and the managed
+  // fallback runs the platform's model. No model override is ever attached:
+  // the Agent body carries only the one demo body builder's output.
   const turnWindows =
     variant === "turn-window"
       ? (opts?.turnWindows ?? (await demoTurnWindowsFromEnv()))
@@ -654,10 +690,8 @@ export async function getOrCreateDemoAgent(
     resume,
     variant,
     ...(turnWindows ? { turnWindows } : {}),
-    ...(llm ? { llm } : {}),
   });
   const fingerprint = demoAgentFingerprint(body, apiKey);
-  const llmModel = llm?.[0]?.model ?? null;
 
   const cached = await db
     .select({ agentId: demoAgents.assemblyaiAgentId, fingerprint: demoAgents.fingerprint })
@@ -667,7 +701,7 @@ export async function getOrCreateDemoAgent(
     )
     .limit(1);
   if (cached.length > 0 && cached[0].fingerprint === fingerprint) {
-    return { ok: true, agentId: cached[0].agentId, fingerprint, llmModel };
+    return { ok: true, agentId: cached[0].agentId, fingerprint };
   }
 
   if (cached.length > 0) {
@@ -690,7 +724,6 @@ export async function getOrCreateDemoAgent(
         // never claim the intended one for a remote copy that did not take it.
         // (A pre-fingerprint row has none; `stale` marks the identity unusable.)
         fingerprint: cached[0].fingerprint ?? fingerprint,
-        llmModel,
         stale: true,
       };
     }
@@ -702,7 +735,7 @@ export async function getOrCreateDemoAgent(
           and(eq(demoAgents.personaId, personaId), eq(demoAgents.voiceId, storageKey)),
         )
         .catch((e: unknown) => console.warn(`[demo-agent] fingerprint write failed, continuing: ${e}`));
-      return { ok: true, agentId: cached[0].agentId, fingerprint, llmModel };
+      return { ok: true, agentId: cached[0].agentId, fingerprint };
     }
     console.warn(`[demo-agent] ${cached[0].agentId} not found under this API key; recreating`);
   }
@@ -729,5 +762,5 @@ export async function getOrCreateDemoAgent(
     console.warn(`[demo-agent] cache write failed, continuing: ${e}`);
   }
 
-  return { ok: true, agentId: created.id, fingerprint, llmModel };
+  return { ok: true, agentId: created.id, fingerprint };
 }

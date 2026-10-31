@@ -193,3 +193,53 @@ _Avoid_: fallback (the rung it selects), circuit breaker (unqualified)
 **Fallback-contaminated run**:
 A measured run in which any leg used its fallback, or the budget stopped the call. Ineligible for a green, because the stack that produced the number is not the stack being judged.
 _Avoid_: degraded run, flaky run
+
+### Demo verification
+
+**Demo-ready**:
+The state in which every property in the demo contract was measured in the current certification run and passed, with nothing left unverified. A named residual risk may remain; an unnamed one may not.
+_Avoid_: perfect, solid, done
+
+**Human-anchored**:
+Measured against human-to-human conversation, not against an earlier agent version.
+_Avoid_: human-like (unqualified)
+
+**Certification run**:
+One full execution of the demo contract against a named target, producing exactly one certificate. A diagnosis run covers part of the contract and never certifies.
+_Avoid_: test run, eval run (when it certifies)
+
+**Certificate**:
+The evidence record of one certification run: code, corpus and vendor builds, every property's verdict, sample sizes, and named gaps. The only thing that may be called a pass.
+_Avoid_: report, score
+
+**Studio**:
+The local-only surface where the owner records caller audio and rates calls. It never ships and is never reachable from production.
+_Avoid_: recorder, admin panel
+
+**Take**:
+One recorded piece of caller audio, hashed into the corpus and never edited in place.
+_Avoid_: clip, sample
+
+**Caller corpus**:
+The versioned set of takes plus their labels, from which scenarios draw their caller audio.
+_Avoid_: fixtures, test audio
+
+**Soundscape**:
+The background bed under a take: other voices, television, music, street, or silence.
+_Avoid_: noise (unqualified), background
+
+**Panel**:
+The owner's blind rating session over a certification run's sampled calls.
+_Avoid_: review, feedback
+
+**Gold label**:
+A panel rating that becomes the reference the machine judge is measured against.
+_Avoid_: ground truth (unqualified)
+
+**Defect card**:
+One named failure or low rating rendered as a fixable unit: what was expected, what happened, the turn and audio excerpt, and where in the code it points.
+_Avoid_: bug report, ticket (until it becomes one)
+
+**Held-out scenario**:
+A scenario executed only by certification runs and never used while fixing, so a pass cannot be manufactured by tuning to the suite.
+_Avoid_: hidden test, secret test

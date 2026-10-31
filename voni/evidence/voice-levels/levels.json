@@ -236,5 +236,38 @@
       "volume": 100
     }
   ],
-  "unmeasured": []
+  "unmeasured": [
+    {
+      "voice": "audrey",
+      "locale": "en",
+      "measuredOn": null,
+      "volume": 100,
+      "reason": "not measured: added to the demo roster after the 2026-10-29 level run (demo-cascade ticket 04); no vendor /v1/speech render of this voice is committed, so its output.volume is the named native default, never a measurement",
+      "source": "no take exists in this record for audrey; capture one with `npm run voice:levels -- --voice audrey`"
+    },
+    {
+      "voice": "malvina",
+      "locale": "es",
+      "measuredOn": null,
+      "volume": 100,
+      "reason": "not measured: added to the demo roster after the 2026-10-29 level run (demo-cascade ticket 04); no vendor /v1/speech render of this voice is committed, so its output.volume is the named native default, never a measurement",
+      "source": "no take exists in this record for malvina; capture one with `npm run voice:levels -- --voice malvina`"
+    },
+    {
+      "voice": "donatien",
+      "locale": "fr",
+      "measuredOn": null,
+      "volume": 100,
+      "reason": "not measured: added to the demo roster after the 2026-10-29 level run (demo-cascade ticket 04); no vendor /v1/speech render of this voice is committed, so its output.volume is the named native default, never a measurement",
+      "source": "no take exists in this record for donatien; capture one with `npm run voice:levels -- --voice donatien`"
+    },
+    {
+      "voice": "benicio",
+      "locale": "pt",
+      "measuredOn": null,
+      "volume": 100,
+      "reason": "not measured: added to the demo roster after the 2026-10-29 level run (demo-cascade ticket 04); no vendor /v1/speech render of this voice is committed, so its output.volume is the named native default, never a measurement",
+      "source": "no take exists in this record for benicio; capture one with `npm run voice:levels -- --voice benicio`"
+    }
+  ]
 }

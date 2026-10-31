@@ -20,7 +20,8 @@ The pieces are the call's own, not copies:
 An open Locale is a named row, never a clip: the pre-re-cast German id
 (``juergen``) is refused by the binding table, so if it were ever named the plan
 would record that refusal and no asset would be planned, written or kept. German
-itself is bound to ``jorg`` (ticket 130), so the six demo voices now render.
+itself is bound to ``jorg`` (ticket 130), so every demo Locale now renders; the
+Italian renderings stay in the code, unused (demo-cascade ticket 04).
 
 The manifest pins what a clip is, so ``--check`` can prove it later without a
 key: endpoint, model, voice, vendor language, Locale, the exact line and its
@@ -33,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import re
 import struct
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -58,19 +60,55 @@ from cascade.voice_binding import (
 )
 
 #: The Locales this demo speaks. One clip Locale each; every one is bound.
-CLIP_LOCALES: tuple[str, ...] = ("en", "es", "fr", "de", "it", "pt")
+#: Italian is not offered by the demo (ticket 04): its greeting stays in
+#: ``GREETINGS``, unused, and it is deliberately absent here.
+CLIP_LOCALES: tuple[str, ...] = ("en", "es", "fr", "de", "pt")
 
-#: The app's demo subjects, in its own order. Restated from
-#: ``voni/src/lib/demo/voni-agent.ts`` (``DEMO_VOICE_IDS``); the test compares
-#: the two so drift is visible.
-DEMO_VOICE_IDS: tuple[str, ...] = (
-    "anna",
-    "lola",
-    "estelle",
-    "jorg",
-    "giovanni",
-    "rafael",
+#: The app's demo roster. The app owns it; this service reads it rather than
+#: keeping a second literal, so withdrawing a voice is one app-side change
+#: (ticket 04 AC2). The drift test compares the parsed roster with the app.
+VONI_AGENT_TS = (
+    Path(__file__).resolve().parents[2] / "voni/src/lib/demo/voni-agent.ts"
 )
+
+_DEMO_VOICE_LIST = re.compile(r"DEMO_VOICE_IDS\s*=\s*\[([^\]]*)\]")
+
+
+def demo_voice_ids_from(source: str) -> tuple[str, ...]:
+    """Parse ``DEMO_VOICE_IDS`` out of the app's module source.
+
+    A missing or empty roster is a named refusal: an empty demo would plan no
+    clip, and guessing one would hide the app change that withdrew every voice.
+    """
+    match = _DEMO_VOICE_LIST.search(source)
+    if match is None:
+        raise ClipError(
+            f"DEMO_VOICE_IDS is not in {VONI_AGENT_TS}: the app is the one "
+            "owner of the demo roster"
+        )
+    voices = tuple(re.findall(r'"([^"]+)"', match.group(1)))
+    if not voices:
+        raise ClipError(
+            f"DEMO_VOICE_IDS in {VONI_AGENT_TS} is empty: the demo offers at "
+            "least one voice, and an empty roster is a withdrawal to make "
+            "explicit, not a clip plan to guess"
+        )
+    return voices
+
+
+def _read_demo_voice_ids() -> tuple[str, ...]:
+    try:
+        source = VONI_AGENT_TS.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ClipError(
+            f"cannot read the app's demo roster at {VONI_AGENT_TS}: {error}; "
+            "clips are planned from the app source, never a second literal"
+        ) from None
+    return demo_voice_ids_from(source)
+
+
+#: The app's demo subjects, in its own order, read from the app's source.
+DEMO_VOICE_IDS: tuple[str, ...] = _read_demo_voice_ids()
 
 #: The app's greeting per Locale. Restated from ``VONI_GREETINGS`` in the same
 #: file; the test compares the two, so a greeting change fails the plan rather
@@ -160,7 +198,7 @@ def clip_plan_for(voice_id: str) -> ClipPlan:
     """One demo voice's plan, or a usage error for a voice outside the demo."""
     if voice_id not in DEMO_VOICE_IDS:
         raise ClipError(
-            f'"{voice_id}" is not a demo subject: clips are the six demo voices '
+            f'"{voice_id}" is not a demo subject: clips are the five demo voices '
             f"({', '.join(DEMO_VOICE_IDS)})"
         )
     # The Locale is the catalogue's, not the caller's: the binding table owns it.
@@ -808,7 +846,7 @@ def audit_manifest(
         entry = plan.get(record.voice)
         if entry is None:
             problems.append(
-                f'clip for voice "{record.voice}", which is not one of the six demo voices'
+                f'clip for voice "{record.voice}", which is not one of the five demo voices'
             )
             continue
         if not entry.bound:

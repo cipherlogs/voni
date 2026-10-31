@@ -29,6 +29,7 @@ from cascade.testing import FakeClock, Response, ScriptedSessionFactory
 from cascade.testing.scripted import ScriptedLLM, ScriptedTTS
 from cascade.tools import (
     END_CALL_TOOL,
+    HANG_UP_TOOL,
     TOOL_CLOSING_LINE_MISSING,
     CallClosing,
     DeniedCall,
@@ -102,6 +103,43 @@ class EndCallSignalTest(unittest.TestCase):
         self.assertEqual("call_end", outcome.tool_call_id)
         self.assertEqual(CLOSING, outcome.closing_line)
         self.assertEqual([], factory.posts, "end_call reached the HTTP route")
+
+    def test_the_demo_hang_up_name_is_the_same_call_control_signal(self):
+        factory = ScriptedSessionFactory([])
+        executor = make_executor(factory)
+
+        outcome = asyncio.run(
+            executor.execute(
+                ToolCallRequest(
+                    name=HANG_UP_TOOL,
+                    arguments={"closing_line": CLOSING},
+                    call_id="call_hang_up",
+                )
+            )
+        )
+
+        self.assertIsInstance(outcome, EndCallSignal)
+        self.assertEqual(CLOSING, outcome.closing_line)
+        self.assertEqual([], factory.posts, "hang_up reached the HTTP route")
+
+    def test_a_demo_hang_up_without_a_closing_line_is_denied_under_its_name(self):
+        factory = ScriptedSessionFactory([])
+        executor = make_executor(factory)
+
+        outcome = asyncio.run(
+            executor.execute(
+                ToolCallRequest(
+                    name=HANG_UP_TOOL,
+                    arguments={},
+                    call_id="call_hang_up",
+                )
+            )
+        )
+
+        self.assertIsInstance(outcome, DeniedCall)
+        self.assertEqual(HANG_UP_TOOL, outcome.name)
+        self.assertEqual(TOOL_CLOSING_LINE_MISSING, outcome.denial.code)
+        self.assertEqual([], factory.posts)
 
     def test_end_call_without_a_closing_line_is_denied_and_recorded(self):
         factory = ScriptedSessionFactory([])

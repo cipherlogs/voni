@@ -178,6 +178,7 @@ def build_bindings(declarations: Iterable[VoiceBinding]) -> dict[str, VoiceBindi
 # re-cast to `jorg` (ticket 130).
 _CATALOGUE: tuple[VoiceBinding, ...] = (
     VoiceBinding("alba", LOCALES["en"]),
+    VoiceBinding("audrey", LOCALES["en"]),
     VoiceBinding("eve", LOCALES["en"]),
     VoiceBinding("jane", LOCALES["en"]),
     VoiceBinding("mary", LOCALES["en"]),
@@ -190,9 +191,12 @@ _CATALOGUE: tuple[VoiceBinding, ...] = (
     VoiceBinding("paul", LOCALES["en"]),
     VoiceBinding("giovanni", LOCALES["it"]),
     VoiceBinding("lola", LOCALES["es"]),
+    VoiceBinding("malvina", LOCALES["es"]),
     VoiceBinding("jorg", LOCALES["de"]),
     VoiceBinding("rafael", LOCALES["pt"]),
+    VoiceBinding("benicio", LOCALES["pt"]),
     VoiceBinding("estelle", LOCALES["fr"]),
+    VoiceBinding("donatien", LOCALES["fr"]),
 )
 
 BINDINGS: Mapping[str, VoiceBinding] = MappingProxyType(build_bindings(_CATALOGUE))

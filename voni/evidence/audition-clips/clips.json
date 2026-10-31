@@ -442,5 +442,30 @@
       "generatedOn": "2026-10-29"
     }
   ],
-  "pending": []
+  "pending": [
+    {
+      "voice": "audrey",
+      "locale": "en",
+      "reason": "the Voice Agent API does not serve \"audrey\" and its cascade clip public/voices/cascade/audrey.wav is missing: render it with voice-pipeline/scripts/render_clips.py --voice audrey",
+      "command": "cd voni && npm run voice:clips -- --voice audrey"
+    },
+    {
+      "voice": "malvina",
+      "locale": "es",
+      "reason": "the Voice Agent API does not serve \"malvina\" and its cascade clip public/voices/cascade/malvina.wav is missing: render it with voice-pipeline/scripts/render_clips.py --voice malvina",
+      "command": "cd voni && npm run voice:clips -- --voice malvina"
+    },
+    {
+      "voice": "benicio",
+      "locale": "pt",
+      "reason": "the Voice Agent API does not serve \"benicio\" and its cascade clip public/voices/cascade/benicio.wav is missing: render it with voice-pipeline/scripts/render_clips.py --voice benicio",
+      "command": "cd voni && npm run voice:clips -- --voice benicio"
+    },
+    {
+      "voice": "donatien",
+      "locale": "fr",
+      "reason": "the Voice Agent API does not serve \"donatien\" and its cascade clip public/voices/cascade/donatien.wav is missing: render it with voice-pipeline/scripts/render_clips.py --voice donatien",
+      "command": "cd voni && npm run voice:clips -- --voice donatien"
+    }
+  ]
 }

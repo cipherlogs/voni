@@ -41,6 +41,11 @@ voni/GATES.md
 # Local video-making workspace
 /demo/
 
+# Local cascade runtime (ticket 21): a generated dev TLS cert (never a private
+# key in git) and the dedicated pipeline Postgres data dir.
+voni/.dev-certs/
+.dev-postgres/
+
 # Dev delivered capture (WAV of what the playout worklet emitted; working file)
 voni/.captures/
 

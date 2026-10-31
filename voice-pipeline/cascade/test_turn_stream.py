@@ -123,6 +123,7 @@ class StreamTest(unittest.TestCase):
         sleep=None,
         stall_guard_ms=None,
         on_end_call=None,
+        on_caption=None,
     ):
         self.llm = ScriptedLLM(replies)
         self.tts = FakeTTS() if tts is None else tts
@@ -138,6 +139,7 @@ class StreamTest(unittest.TestCase):
             sleep=sleep,
             stall_guard_ms=stall_guard_ms,
             on_end_call=on_end_call,
+            on_caption=on_caption,
         )
         return stream
 
@@ -149,6 +151,26 @@ class StreamTest(unittest.TestCase):
             await stream.drain()
 
         asyncio.run(run())
+
+    def test_a_reply_ends_with_one_final_agent_caption(self):
+        captions: list[tuple[str, str, bool]] = []
+
+        async def collect(role, text, final):
+            captions.append((role, text, final))
+
+        stream = self.make(
+            replies=[{"deltas": ["Hello there. ", "How can I help?"]}],
+            on_caption=collect,
+        )
+        self.run_events(
+            stream,
+            [SpeechStart("t1"), SpeechComplete("book a demo", turn_id="t1")],
+        )
+
+        agent = [c for c in captions if c[0] == "agent"]
+        self.assertTrue(any(not final for _, _, final in agent), "streams partials")
+        finals = [text for _, text, final in agent if final]
+        self.assertEqual(["Hello there. How can I help?"], finals)
 
     def test_a_completion_is_answered_and_spoken_through_the_call_audio_seam(self):
         stream = self.make(replies=[{"deltas": ["Hello there. ", "How can I help?"]}])
@@ -292,6 +314,35 @@ class EndCallLLM:
         # Anything the model generates after the end-call signal is not speech.
         record.content_text += "This must never be spoken."
         yield TokenDelta(text=" This must never be spoken.")
+        record.finish_reason = "tool_calls"
+        record.usage = TurnUsage(prompt_tokens=4, completion_tokens=5)
+        record.finished = True
+
+
+class SpokenGoodbyeLLM(EndCallLLM):
+    """Streams the goodbye as content, then calls ``end_call`` (Gemini's shape)."""
+
+    async def complete(self, *, messages, tools=None, turn=None):
+        self.requests.append(messages)
+        record = turn if turn is not None else MetaLLMTurn()
+        record.content_text += self.closing_line
+        yield TokenDelta(text=self.closing_line)
+        from cascade.meta_llm import MetaToolCall
+        from cascade.tools import END_CALL_TOOL
+
+        record.tool_calls.append(
+            MetaToolCall(
+                0,
+                "call_end",
+                END_CALL_TOOL,
+                '{"closing_line": "%s"}' % self.closing_line,
+            )
+        )
+        yield ToolCallRequest(
+            name=END_CALL_TOOL,
+            arguments={"closing_line": self.closing_line},
+            call_id="call_end",
+        )
         record.finish_reason = "tool_calls"
         record.usage = TurnUsage(prompt_tokens=4, completion_tokens=5)
         record.finished = True
@@ -496,6 +547,82 @@ class LegGateTest(unittest.TestCase):
         self.assertEqual(1, len(stream._llm.requests))
 
 
+class AckTest(unittest.TestCase):
+    """One short spoken line covers a reply that has not started yet."""
+
+    def test_a_slow_reply_is_covered_by_one_ack_that_is_never_captioned(self):
+        gate = asyncio.Event()
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "Sure."
+                yield TokenDelta(text="Sure.")
+                record.finished = True
+
+        captions: list[tuple[str, str, bool]] = []
+
+        async def on_caption(role, text, final):
+            captions.append((role, text, final))
+
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=FakeTTS(),
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=("Mhm.",),
+            ack_delay_ms=5,
+            on_caption=on_caption,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("hi", turn_id="t1"))
+            for _ in range(200):
+                if stream._tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual(["Mhm.", "Sure."], stream._tts.spoken)
+        self.assertNotIn("Mhm.", [text for _, text, _ in captions], "the ack is not a caption")
+        self.assertIn(("agent", "Sure.", True), captions, "the reply is the final caption")
+
+    def test_a_fast_reply_never_speaks_an_ack(self):
+        class FastLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "Sure."
+                yield TokenDelta(text="Sure.")
+                record.finished = True
+
+        stream = CascadeTurnStream(
+            llm=FastLLM(),
+            tts=FakeTTS(),
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=("Mhm.",),
+            ack_delay_ms=50,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("hi", turn_id="t1"))
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual(["Sure."], stream._tts.spoken)
+
+
 class EndCallSignalTest(unittest.TestCase):
     """``end_call`` is spoken, ends the turn and asks the call to hang up."""
 
@@ -531,6 +658,116 @@ class EndCallSignalTest(unittest.TestCase):
         self.assertEqual([closing], stream._tts.spoken)
         self.assertEqual(["end"], ended)
         self.assertEqual(1, len(stream._llm.requests))
+
+    def test_a_goodbye_streamed_before_the_tool_is_spoken_only_once(self):
+        closing = "Okay, bye!"
+        ended: list[str] = []
+
+        async def on_end_call() -> None:
+            ended.append("end")
+
+        audio = RecordingAudio()
+        stream = CascadeTurnStream(
+            llm=SpokenGoodbyeLLM(closing),
+            tts=FakeTTS(),
+            emit_audio=audio,
+            tool_executor=EndCallExecutor(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            on_end_call=on_end_call,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("that's all", turn_id="t1"))
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual([closing], stream._tts.spoken)
+        self.assertEqual(["end"], ended)
+
+    def _run_caller_request(self, final_text, reply_text, *, locale="en", calls=(), executor=None):
+        ended: list[str] = []
+
+        async def on_end_call() -> None:
+            ended.append("end")
+
+        audio = RecordingAudio()
+        stream = CascadeTurnStream(
+            llm=ScriptedLLM([{"deltas": [reply_text], "calls": calls}]),
+            tts=FakeTTS(),
+            emit_audio=audio,
+            tool_executor=executor,
+            locale_code=locale,
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            on_end_call=on_end_call,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete(final_text, turn_id="t1"))
+            await stream.drain()
+
+        asyncio.run(run())
+        return stream, ended
+
+    def test_a_caller_asking_to_hang_up_ends_the_call_without_a_tool_call(self):
+        stream, ended = self._run_caller_request(
+            "Okay, that's all I needed. Please hang up now.",
+            "Okay, bye!",
+        )
+
+        self.assertEqual(["Okay, bye!"], stream._tts.spoken)
+        self.assertEqual(["end"], ended, "the caller's request is call control")
+
+    def test_a_german_caller_asking_to_hang_up_ends_the_call(self):
+        stream, ended = self._run_caller_request(
+            "Bitte legen Sie jetzt auf.",
+            "Auf Wiederhören!",
+            locale="de",
+        )
+
+        self.assertEqual(["Auf Wiederhören!"], stream._tts.spoken)
+        self.assertEqual(["end"], ended)
+
+    def test_a_negated_hang_up_leaves_the_call_open(self):
+        stream, ended = self._run_caller_request(
+            "Please don't hang up, I have one more question.",
+            "Of course, go ahead.",
+        )
+
+        self.assertEqual([], ended)
+        self.assertEqual(["Of course, go ahead."], stream._tts.spoken)
+
+    def test_an_empty_model_hang_up_still_ends_on_the_callers_request(self):
+        from cascade.meta_llm import MetaToolCall, ToolDenial
+        from cascade.tools import HANG_UP_TOOL, TOOL_CLOSING_LINE_MISSING, DeniedCall
+
+        class DenyingExecutor:
+            async def execute(self, call):
+                return DeniedCall(
+                    name=call.name,
+                    denial=ToolDenial(
+                        name=call.name,
+                        reason="no closing line",
+                        call_id=call.call_id,
+                        code=TOOL_CLOSING_LINE_MISSING,
+                    ),
+                )
+
+        stream, ended = self._run_caller_request(
+            "Hang up now, please.",
+            "Okay, bye!",
+            calls=[MetaToolCall(0, "call_hang_up", HANG_UP_TOOL, "{}")],
+            executor=DenyingExecutor(),
+        )
+
+        self.assertEqual(["Okay, bye!"], stream._tts.spoken)
+        self.assertEqual(["end"], ended)
 
     def test_a_barge_in_during_the_goodbye_keeps_listening_and_never_hangs_up(self):
         closing = "Thanks for calling. Goodbye!"

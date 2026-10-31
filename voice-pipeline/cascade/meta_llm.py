@@ -65,7 +65,7 @@ import json
 import os
 import re
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit
@@ -521,6 +521,16 @@ class MessageHistory:
         self._messages: list[dict[str, Any]] = []
         self._hidden: list[str] = []
 
+    def seed(self, history: Sequence[Mapping[str, Any]]) -> None:
+        """Start the conversation from a resumed call's carried turns.
+
+        The signed body adapter has already validated role/content; this copy
+        keeps the caller's list immutable and in order. Seeded turns are real
+        conversation, so they precede every new user turn and hidden note.
+        """
+        for message in history:
+            self._messages.append(dict(message))
+
     @property
     def messages(self) -> tuple[dict[str, Any], ...]:
         """The recorded conversation, without system prompt or hidden context."""
@@ -788,6 +798,16 @@ class MetaLLMTurn:
         without an identity, so that turn closes with a hold line instead.
         """
         return [denial for denial in self.rejected_tool_calls if denial.correctable]
+
+    def adopt(self, other: "MetaLLMTurn") -> None:
+        """Take another completion's facts, in place.
+
+        A hedged turn may be served by the second request; the caller holds a
+        reference to the first record, so the winner's content, tool calls and
+        usage are copied onto it before the turn is billed.
+        """
+        for descriptor in fields(self):
+            setattr(self, descriptor.name, getattr(other, descriptor.name))
 
     def close(self) -> None:
         """Finalise the record; safe to call more than once."""

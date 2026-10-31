@@ -6,6 +6,7 @@
     "dev": "next dev",
     "dev:phone": "next dev --experimental-https",
     "dev:all": "node scripts/dev-all.mjs",
+    "dev:cascade": "node scripts/dev-cascade.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -51,7 +52,10 @@
     "scoreboard:streak": "node --env-file-if-exists=.env.local --import tsx scripts/score-streak.mts",
     "typecheck": "next typegen && tsc --noEmit",
     "scoreboard:inspect": "node --import tsx scripts/scoreboard-inspect.mts",
-    "readiness:pack": "node --import tsx scripts/readiness-pack.mts"
+    "readiness:pack": "node --import tsx scripts/readiness-pack.mts",
+    "parity:check": "node --env-file-if-exists=.env.local --import tsx scripts/parity-check.mts",
+    "cutover:check": "node --env-file-if-exists=.env.local --import tsx scripts/cutover-check.mts",
+    "check:real-legs": "node --env-file-if-exists=.env.local --import tsx scripts/real-legs.mts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",
@@ -96,6 +100,7 @@
     "sharp": "^0.35.4",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "wrangler": "^4.128.0"
+    "wrangler": "^4.128.0",
+    "ws": "^8.21.0"
   }
 }

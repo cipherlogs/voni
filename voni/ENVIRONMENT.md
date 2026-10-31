@@ -56,6 +56,13 @@ local save and shows a retryable deployment warning on the agent page.
   Jev probabilities in `/api/voice-judge`; without it the route serves the
   offline heuristic (`source: "heuristic"`), so calls work either way. Set by
   hand in `.env.local` (and prod Worker secrets) — never committed.
+- The live demo is Meta-only: the cascade body carries no LLM override and
+  runs the pipeline's Standard Spark rung, with Meta STT. `AI_GATEWAY_API_KEY`
+  is not used by the demo call. The managed demo provisioning path still has
+  its own (`DEMO_LLM_*`) override; that body is not served by the cascade.
+- Set the service's `META_REASONING_EFFORT=minimal` for the demo: measured p50
+  951 ms to first token vs 1648 ms at `low` in a fast window (the vendor tail
+  still reaches 2-4 s; see `PROGRESS.md`).
 - `VOICE_JUDGE_MODEL` (optional) — defaults to `typesafe-ai/jev`.
 - `VOICE_JUDGE_GATEWAY_URL` (optional) — defaults to the AI Gateway evaluate
   endpoint (`https://ai-gateway.vercel.sh/v1/evaluate`).
@@ -65,22 +72,97 @@ local save and shows a retryable deployment warning on the agent page.
   `VONI_TOOL_SECRET` bearer. Sampling is fire-and-forget and off by default
   until the URL resolves.
 
-## Cascade test-call client (dev slice)
+## Cascade pipeline (demo)
 
-`NEXT_PUBLIC_*` because the browser reads them (set in `.env.local` for
-`next dev`; never secrets — the browser must never hold vendor keys):
+One runtime value, read only on the server:
 
-- `NEXT_PUBLIC_VOICE_PIPELINE_URL` — pipeline service WS URL. Default
-  `ws://127.0.0.1:8766/v1/browser-call` (see `voice-pipeline/README.md`).
-- `NEXT_PUBLIC_CASCADE_LLM_MODEL` — gateway model id (default
-  `alibaba/qwen3.5-flash`, verified live).
-- `NEXT_PUBLIC_CASCADE_TTS_MODEL` — Cartesia model (default `sonic-2`).
-- `NEXT_PUBLIC_CASCADE_TTS_VOICE` — Cartesia voice ID from the dashboard
-  (no default — the service errors clearly without it). Distinct from the
-  AssemblyAI `voiceId` on the agent; voice identity does not carry across.
+- `VOICE_PIPELINE_URL` — the pipeline's `https` base
+  (`https://<host>[:port][/prefix]`). Required. The app derives the browser
+  WebSocket URL (`wss://<host>[:port][/prefix]/v1/browser-call`) and the mint
+  delivers it, so a non-default port and a path prefix both survive. A missing
+  value makes the demo unavailable — there is no localhost default — and a
+  non-`https` value is refused when the app reads the configuration. Nothing
+  is baked into the build and the browser never reads a pipeline variable.
 
-The Test dialog's Managed/Cascade toggle switches engines per call;
-managed stays the default and demo calls always use managed.
+The Test dialog has no engine control: a test call always runs the managed
+session. The public demo is the only cascade surface (demo-cascade ticket 04).
+
+The pipeline's own vendor settings (`VOICE_PIPELINE_LLM_MODEL`,
+`META_REASONING_EFFORT`, `META_IDENTIFIER_SALT`, `ASSEMBLYAI_API_KEY`, …) live
+on the service, not the app: see `deploy/northflank/README.md` and
+`voice-pipeline/README.md`.
+
+### Deploy parity check
+
+`npm run parity:check` proves the app, the service and the routing switch agree
+before a demo and after a deploy. It reads four settings — the app's
+`VOICE_PIPELINE_URL`, the service's public base, the service's
+`VOICE_PIPELINE_TOOL_BASE_URL`, and the app's public origin — signs one
+throwaway v2 demo body with the app's own signer, delivers it to the service
+(and a tampered copy it must refuse), then prints the durable routing mode. It
+opens no vendor session and starts no call, and CI never runs it.
+
+| Input | Flag | Environment |
+|---|---|---|
+| App pipeline base | `--pipeline-url` | `VOICE_PIPELINE_URL` |
+| Service public base | `--service-url` | `VOICE_PIPELINE_SERVICE_URL` |
+| Service tool base | `--tool-base-url` | `VOICE_PIPELINE_TOOL_BASE_URL` |
+| App public origin | `--app-origin` | `VONI_PUBLIC_ORIGIN`, then `BETTER_AUTH_URL`, then `VONI_API_URL` |
+| Routing store | `--sqlite` / `--database-url` | `CASCADE_STORE_PATH` / `DATABASE_URL` |
+| Envelope secret | — (environment only) | `VOICE_PIPELINE_ENVELOPE_SECRET` |
+
+The routing store must be the **service's** store: locally `dev:all` gives the
+service the app's `DATABASE_URL`, so `.env.local` is correct; on Northflank pass
+the addon's DSN with `--database-url` (the app has its own database). The
+routing switch is read through `voice-pipeline/scripts/routing_switch.py`; for
+Postgres runs point `PYTHON` (or `--python`) at an interpreter with `asyncpg`.
+
+### Local cascade: one command
+
+```bash
+cd voni && npm run dev:cascade
+```
+
+Starts, from one command, and reports readiness for each by name and port:
+
+| Process | Port | What it is |
+|---|---|---|
+| `postgres` | 5433 | the pipeline's dedicated Postgres (own data dir, `.dev-postgres/`) |
+| `pipeline` | 8767 | the cascade service, plain and internal only |
+| `pipeline-tls` | 8766 | TLS/WSS front; this is the `https` pipeline base |
+| `app` | 3000 | Next.js, pointed at `https://localhost:8766` |
+
+The app's `VOICE_PIPELINE_URL` and the shared
+`VOICE_PIPELINE_ENVELOPE_SECRET` are set on both sides by the launcher, so the
+landing demo connects to the local pipeline with no code edit. A secret already
+in `.env.local` wins; an absent one is generated for the run and never written
+to a file. `VONI_TOOL_SECRET` follows the same rule. The local routing switch is
+set to `demo` (a local store starts fail-safe `off`), and the launcher prints
+the mode.
+
+The local TLS front needs a certificate, because ticket 08 refuses a non-https
+pipeline base and the browser derives `wss` from it. The launcher reuses
+`VOICE_PIPELINE_TLS_CERT`/`VOICE_PIPELINE_TLS_KEY` when both are set; otherwise
+it generates a self-signed dev cert for `localhost` with `openssl` under
+`voni/.dev-certs/` (gitignored, never committed). There is no http fallback: a
+missing `openssl` or cert is a refusal that names it. The browser must trust the
+dev cert once — open `https://localhost:8766/healthz` and accept it. The app
+process is given `NODE_EXTRA_CA_CERTS` pointing at the same cert, so the app's
+server-side delivery verifies TLS rather than disabling verification.
+
+`META_REASONING_EFFORT` is required like every other real-call value
+(`deploy/northflank/README.md`); the launcher refuses by name when it is
+missing. Any occupied port is refused before a process starts — never attached
+to an unknown server and never routed managed.
+
+Manual acceptance: start a call on the landing demo in one of the five voices,
+hear the greeting, speak and hear the reply, watch the email tool call with its
+test tag, then say goodbye and hear the call end. The trace lands at
+`voice-pipeline/.events/<call id>.jsonl`. Ctrl-C stops every process the
+command started (including the dedicated Postgres) and verifies the ports are
+free. `npm run dev:cascade -- --smoke` additionally runs the key-gated
+`parity:check` delivery against the local service once ready.
+
 
 ## Async TTS (WhatsApp voice-note replies — AssemblyAI has no standalone TTS API, plan Section I)
 - `CARTESIA_API_KEY` — cartesia.ai → sign up → dashboard → API Keys. Free plan

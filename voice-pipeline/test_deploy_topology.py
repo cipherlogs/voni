@@ -1,20 +1,24 @@
-"""Deployment topology (ticket 135): Fly.io, two instances, rolling, WebSocket.
+"""Deployment topology (ticket 19): one Northflank service, one instance.
 
-The artifact this ticket ships is a deployment config, so that is the seam:
-these tests parse the committed files and ask ``deploy/topology.py`` to name
-every violation. Nothing here inspects a Fly API — the config is the claim, and
-the validator is what a deploy (or a reviewer) runs before trusting it.
+The artifact this ticket ships is a deployment descriptor, so that is the seam:
+these tests parse the committed Northflank descriptor and ask
+``deploy/topology.py`` to name every violation. Nothing here calls the
+Northflank API — the descriptor is the claim, and the validator is what a
+deploy (or a reviewer) runs before trusting it.
 
-The two load-bearing assertions are the ticket's ACs: dropping the instance
-count to one, or removing the health check, must fail. Both are exercised here
-against the real file (copied, then mutated), so a check deleted from the
-validator fails a test rather than silently passing.
+Every load-bearing rule has a test that mutates the committed file and fails
+when the rule is violated: one service, one instance, one Postgres addon, one
+single-read/write volume, the HTTP liveness probe on 8766, a grace period equal
+to the recorded drain bound, no Fly descriptor, and exactly one envelope
+secret. A rule deleted from the validator fails a test here rather than
+silently passing.
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
+import json
 import shutil
 import sys
 import tempfile
@@ -35,7 +39,6 @@ DRAIN_MAX_WAIT_MS = int(require_bound("deploy.drain_max_wait_ms"))
 # without touching the worktree.
 TOPOLOGY_FILES = (
     topology.SERVICE_CONFIG,
-    topology.APP_CONFIG,
     topology.VERSIONS_RECORD,
     topology.COMPOSE_CONFIG,
     topology.DOCKERFILE,
@@ -51,6 +54,14 @@ TOPOLOGY_FILES = (
 )
 
 
+def load_service() -> dict:
+    return topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
+
+
+def validate_service(doc: dict, *, drain_max_wait_ms: int = DRAIN_MAX_WAIT_MS) -> list[str]:
+    return topology.validate_service(doc, drain_max_wait_ms=drain_max_wait_ms)
+
+
 class CommittedTopologyTest(unittest.TestCase):
     def test_the_committed_topology_is_valid(self) -> None:
         errors = topology.validate(REPO_ROOT, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
@@ -61,6 +72,15 @@ class CommittedTopologyTest(unittest.TestCase):
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
             self.assertEqual(topology.main([str(REPO_ROOT)]), 0, captured.getvalue())
 
+    def test_the_cli_names_the_northflank_one_instance_shape(self) -> None:
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            self.assertEqual(topology.main([str(REPO_ROOT)]), 0, captured.getvalue())
+        message = captured.getvalue().lower()
+        self.assertIn("northflank", message)
+        self.assertIn("one instance", message)
+        self.assertNotIn("fly", message)
+
     def test_the_registry_reader_agrees_with_the_threshold_registry(self) -> None:
         # The validator reads thresholds.json without importing the cascade
         # package; that shortcut must not drift from the real loader.
@@ -69,148 +89,285 @@ class CommittedTopologyTest(unittest.TestCase):
         )
 
 
-class TwoInstanceTest(unittest.TestCase):
-    def test_the_service_runs_at_least_two_machines(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        self.assertGreaterEqual(
-            doc["http_service"]["min_machines_running"], topology.MIN_INSTANCES
-        )
+class OneServiceTest(unittest.TestCase):
+    def test_the_descriptor_names_one_service(self) -> None:
+        doc = load_service()
+        self.assertEqual(doc["host"], "northflank")
+        self.assertTrue(doc["service"]["name"])
+        self.assertNotIn("services", doc)
 
-    def test_one_instance_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        doc["http_service"]["min_machines_running"] = 1
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
-        self.assertTrue(
-            any("min_machines_running" in error for error in errors),
-            errors,
-        )
+    def test_the_service_runs_exactly_one_instance(self) -> None:
+        self.assertEqual(topology.MIN_INSTANCES, 1)
+        self.assertEqual(topology.MAX_INSTANCES, 1)
+        doc = load_service()
+        self.assertEqual(doc["service"]["deploy"]["instances"], 1)
+
+    def test_a_second_service_is_refused(self) -> None:
+        for key in ("services", "app"):
+            with self.subTest(key=key):
+                doc = load_service()
+                doc[key] = [{"name": "voni-app"}] if key == "services" else "voni-app"
+                errors = validate_service(doc)
+                self.assertTrue(any("one service" in error for error in errors), errors)
+
+    def test_two_instances_are_refused(self) -> None:
+        doc = load_service()
+        doc["service"]["deploy"]["instances"] = 2
+        errors = validate_service(doc)
+        self.assertTrue(any("instances" in error for error in errors), errors)
+
+    def test_zero_instances_are_refused(self) -> None:
+        doc = load_service()
+        doc["service"]["deploy"]["instances"] = 0
+        errors = validate_service(doc)
+        self.assertTrue(any("instances" in error for error in errors), errors)
 
     def test_a_missing_instance_count_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        del doc["http_service"]["min_machines_running"]
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
-        self.assertTrue(any("min_machines_running" in error for error in errors), errors)
+        doc = load_service()
+        del doc["service"]["deploy"]["instances"]
+        errors = validate_service(doc)
+        self.assertTrue(any("instances" in error for error in errors), errors)
 
-    def test_the_app_also_runs_at_least_two_machines(self) -> None:
-        app = topology.load_config(REPO_ROOT, topology.APP_CONFIG)
-        app["http_service"]["min_machines_running"] = 1
-        service = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        errors = topology.validate_app(app, service_doc=service)
-        self.assertTrue(any("min_machines_running" in error for error in errors), errors)
-
-    def test_an_auto_stopping_machine_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        doc["http_service"]["auto_stop_machines"] = True
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
-        self.assertTrue(any("auto_stop_machines" in error for error in errors), errors)
-
-    def test_a_multi_worker_command_is_refused(self) -> None:
-        text = (REPO_ROOT / topology.DOCKERFILE).read_text() + "\n# --workers 4\n"
-        port = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)["http_service"][
-            "internal_port"
-        ]
-        errors = topology.validate_dockerfile(text, internal_port=port)
-        self.assertTrue(any("--workers" in error for error in errors), errors)
+    def test_a_missing_service_block_is_refused(self) -> None:
+        doc = load_service()
+        del doc["service"]
+        errors = validate_service(doc)
+        self.assertTrue(any("service" in error for error in errors), errors)
 
 
-class HealthCheckTest(unittest.TestCase):
-    def test_the_committed_service_probes_healthz(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        paths = [check["path"] for check in doc["http_service"]["checks"]]
-        self.assertIn("/healthz", paths)
+class PostgresAddonTest(unittest.TestCase):
+    def test_the_descriptor_has_one_postgres_addon(self) -> None:
+        doc = load_service()
+        database = doc["database"]
+        self.assertEqual(database["type"], "postgres")
+        self.assertTrue(database["name"])
+        self.assertEqual(database["env"], "DATABASE_URL")
 
-    def test_removing_the_health_check_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        del doc["http_service"]["checks"]
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
-        self.assertTrue(any("checks" in error for error in errors), errors)
+    def test_a_missing_addon_is_refused(self) -> None:
+        doc = load_service()
+        del doc["database"]
+        errors = validate_service(doc)
+        self.assertTrue(any("postgres" in error.lower() for error in errors), errors)
 
-    def test_an_empty_health_check_list_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        doc["http_service"]["checks"] = []
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
-        self.assertTrue(any("checks" in error for error in errors), errors)
+    def test_a_non_postgres_addon_is_refused(self) -> None:
+        doc = load_service()
+        doc["database"]["type"] = "mysql"
+        errors = validate_service(doc)
+        self.assertTrue(any("postgres" in error.lower() for error in errors), errors)
+
+    def test_an_addon_that_does_not_inject_database_url_is_refused(self) -> None:
+        doc = load_service()
+        doc["database"]["env"] = "STORE_URL"
+        errors = validate_service(doc)
+        self.assertTrue(any("DATABASE_URL" in error for error in errors), errors)
+
+
+class SingleVolumeTest(unittest.TestCase):
+    def test_the_descriptor_has_one_single_writer_volume(self) -> None:
+        doc = load_service()
+        self.assertEqual(len(doc["volumes"]), 1)
+        volume = doc["volumes"][0]
+        self.assertEqual(volume["accessMode"], "ReadWriteOnce")
+        self.assertEqual(volume["mountPath"], "/var/lib/voni")
+
+    def test_no_volume_is_refused(self) -> None:
+        doc = load_service()
+        doc["volumes"] = []
+        errors = validate_service(doc)
+        self.assertTrue(any("volume" in error.lower() for error in errors), errors)
+
+    def test_two_volumes_are_refused(self) -> None:
+        doc = load_service()
+        doc["volumes"].append(
+            {
+                "name": "voice-second",
+                "mountPath": "/var/lib/other",
+                "sizeGb": 1,
+                "accessMode": "ReadWriteOnce",
+            }
+        )
+        errors = validate_service(doc)
+        self.assertTrue(any("volume" in error.lower() for error in errors), errors)
+
+    def test_a_multi_writer_volume_is_refused(self) -> None:
+        doc = load_service()
+        doc["volumes"][0]["accessMode"] = "ReadWriteMany"
+        errors = validate_service(doc)
+        self.assertTrue(any("ReadWriteOnce" in error for error in errors), errors)
+
+    def test_the_volume_holds_the_events_directory(self) -> None:
+        doc = load_service()
+        events_dir = doc["env"]["VOICE_PIPELINE_EVENTS_DIR"]
+        self.assertEqual(doc["volumes"][0]["mountPath"], "/var/lib/voni")
+        self.assertTrue(events_dir.startswith("/var/lib/voni/"), events_dir)
+
+
+class LivenessProbeTest(unittest.TestCase):
+    def test_the_probe_is_http_healthz_on_the_service_port(self) -> None:
+        doc = load_service()
+        probe = doc["healthCheck"]
+        port = doc["ports"][0]["internalPort"]
+        self.assertEqual(probe["type"], "liveness")
+        self.assertEqual(probe["method"], "GET")
+        self.assertEqual(probe["path"], "/healthz")
+        self.assertEqual(probe["port"], port)
+        self.assertEqual(port, 8766)
 
     def test_readiness_is_not_the_platform_probe(self) -> None:
-        # /readyz fails while draining (ticket 139); a platform probe on it
-        # would kill a machine that is still finishing live calls.
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        doc["http_service"]["checks"][0]["path"] = "/readyz"
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
+        doc = load_service()
+        doc["healthCheck"]["path"] = "/readyz"
+        errors = validate_service(doc)
         self.assertTrue(any("/healthz" in error for error in errors), errors)
 
-    def test_a_check_missing_its_timing_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        del doc["http_service"]["checks"][0]["interval"]
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
-        self.assertTrue(any("interval" in error for error in errors), errors)
+    def test_a_readiness_typed_probe_is_refused(self) -> None:
+        doc = load_service()
+        doc["healthCheck"]["type"] = "readiness"
+        errors = validate_service(doc)
+        self.assertTrue(any("liveness" in error for error in errors), errors)
 
-    def test_removing_the_app_health_check_is_refused(self) -> None:
-        app = topology.load_config(REPO_ROOT, topology.APP_CONFIG)
-        del app["http_service"]["checks"]
-        service = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        errors = topology.validate_app(app, service_doc=service)
-        self.assertTrue(any("checks" in error for error in errors), errors)
+    def test_a_probe_on_another_port_is_refused(self) -> None:
+        doc = load_service()
+        doc["healthCheck"]["port"] = 8080
+        errors = validate_service(doc)
+        self.assertTrue(any("port" in error.lower() for error in errors), errors)
 
+    def test_a_missing_probe_is_refused(self) -> None:
+        doc = load_service()
+        del doc["healthCheck"]
+        errors = validate_service(doc)
+        self.assertTrue(any("health" in error.lower() for error in errors), errors)
 
-class RollingAndDrainTest(unittest.TestCase):
-    def test_a_non_rolling_strategy_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        doc["deploy"]["strategy"] = "immediate"
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
-        self.assertTrue(any("rolling" in error for error in errors), errors)
-
-    def test_a_drain_timeout_shorter_than_the_recorded_bound_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        doc["kill_timeout"] = DRAIN_MAX_WAIT_MS // 1000 - 1
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
-        self.assertTrue(any("kill_timeout" in error for error in errors), errors)
-
-    def test_a_missing_sigterm_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        doc["kill_signal"] = "SIGKILL"
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
-        self.assertTrue(any("kill_signal" in error for error in errors), errors)
-
-    def test_the_committed_kill_timeout_covers_the_registry_bound(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        self.assertGreaterEqual(doc["kill_timeout"] * 1000, DRAIN_MAX_WAIT_MS)
+    def test_a_probe_missing_its_timing_is_refused(self) -> None:
+        doc = load_service()
+        del doc["healthCheck"]["periodSeconds"]
+        errors = validate_service(doc)
+        self.assertTrue(any("periodSeconds" in error for error in errors), errors)
 
 
-class SeparationTest(unittest.TestCase):
-    def test_the_app_and_the_service_are_different_fly_apps(self) -> None:
-        service = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        app = topology.load_config(REPO_ROOT, topology.APP_CONFIG)
-        self.assertNotEqual(service["app"], app["app"])
-
-    def test_the_service_image_is_not_the_app_image(self) -> None:
-        service = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        app = topology.load_config(REPO_ROOT, topology.APP_CONFIG)
-        self.assertNotEqual(
-            service["build"].get("dockerfile"), app["build"].get("dockerfile")
+class DrainGraceTest(unittest.TestCase):
+    def test_the_grace_period_equals_the_recorded_drain_bound(self) -> None:
+        doc = load_service()
+        self.assertEqual(
+            doc["terminationGracePeriodSeconds"] * 1000, DRAIN_MAX_WAIT_MS
         )
 
-    def test_sharing_the_service_app_name_is_refused(self) -> None:
-        service = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        app = topology.load_config(REPO_ROOT, topology.APP_CONFIG)
-        app["app"] = service["app"]
-        errors = topology.validate_app(app, service_doc=service)
-        self.assertTrue(any("separately" in error for error in errors), errors)
+    def test_a_shorter_grace_period_is_refused(self) -> None:
+        doc = load_service()
+        doc["terminationGracePeriodSeconds"] = DRAIN_MAX_WAIT_MS // 1000 - 1
+        errors = validate_service(doc)
+        self.assertTrue(
+            any("terminationGracePeriodSeconds" in error for error in errors), errors
+        )
 
-    def test_sharing_the_service_port_is_refused(self) -> None:
-        service = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        app = topology.load_config(REPO_ROOT, topology.APP_CONFIG)
-        app["http_service"]["internal_port"] = service["http_service"]["internal_port"]
-        errors = topology.validate_app(app, service_doc=service)
-        self.assertTrue(any("internal_port" in error for error in errors), errors)
+    def test_a_longer_grace_period_is_refused(self) -> None:
+        # Equality is the rule: the platform bound is the drain bound, not a
+        # second, longer policy that a deploy could hide behind.
+        doc = load_service()
+        doc["terminationGracePeriodSeconds"] = DRAIN_MAX_WAIT_MS // 1000 + 1
+        errors = validate_service(doc)
+        self.assertTrue(
+            any("terminationGracePeriodSeconds" in error for error in errors), errors
+        )
 
-    def test_the_service_image_carries_no_app(self) -> None:
-        text = (REPO_ROOT / topology.DOCKERFILE).read_text() + "\nCOPY voni/ /srv/voni/\n"
-        port = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)["http_service"][
-            "internal_port"
+    def test_a_missing_grace_period_is_refused(self) -> None:
+        doc = load_service()
+        del doc["terminationGracePeriodSeconds"]
+        errors = validate_service(doc)
+        self.assertTrue(
+            any("terminationGracePeriodSeconds" in error for error in errors), errors
+        )
+
+    def test_the_committed_drain_bound_is_thirty_seconds(self) -> None:
+        self.assertEqual(DRAIN_MAX_WAIT_MS, 30_000)
+
+
+class FlyRemovedTest(unittest.TestCase):
+    def test_the_fly_descriptors_are_deleted(self) -> None:
+        for relative in topology.FLY_CONFIGS:
+            self.assertFalse((REPO_ROOT / relative).exists(), relative)
+        self.assertEqual(
+            sorted((REPO_ROOT / "deploy").glob("fly.*.toml")), []
+        )
+
+    def test_a_reintroduced_fly_descriptor_is_refused(self) -> None:
+        root = _temp_topology(self)
+        (root / topology.FLY_CONFIGS[0]).write_text('app = "voni-voice-pipeline"\n')
+        errors = topology.validate(root)
+        self.assertTrue(
+            any("fly" in error.lower() for error in errors), errors
+        )
+
+    def test_the_validator_reads_no_fly_descriptor(self) -> None:
+        self.assertNotIn("fly", topology.SERVICE_CONFIG.lower())
+        for relative in topology.FLY_CONFIGS:
+            self.assertNotEqual(topology.SERVICE_CONFIG, relative)
+
+    def test_the_deployment_record_is_not_a_fly_record(self) -> None:
+        record = (REPO_ROOT / topology.DEPLOYMENT_RECORD).read_text().lower()
+        self.assertNotIn("fly.io", record)
+
+
+class EnvelopeSecretTest(unittest.TestCase):
+    def test_the_example_lists_one_envelope_secret_with_no_value(self) -> None:
+        text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
+        names = topology._parse_dotenv_names(text)
+        lines = [
+            line
+            for line in text.splitlines()
+            if line.strip().startswith(f"{topology.ENVELOPE_SECRET_NAME}=")
         ]
-        errors = topology.validate_dockerfile(text, internal_port=port)
-        self.assertTrue(any("voni/" in error for error in errors), errors)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertEqual(lines[0].strip(), f"{topology.ENVELOPE_SECRET_NAME}=")
+        self.assertEqual(names[topology.ENVELOPE_SECRET_NAME], "")
+        self.assertEqual(topology.validate_secrets_example(text), [])
+
+    def test_a_second_envelope_secret_name_is_refused(self) -> None:
+        text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
+        errors = topology.validate_secrets_example(
+            text + "\nVOICE_PIPELINE_SIGNING_SECRET=\n"
+        )
+        self.assertTrue(
+            any("envelope secret" in error.lower() for error in errors), errors
+        )
+
+    def test_a_duplicate_envelope_secret_line_is_refused(self) -> None:
+        text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
+        errors = topology.validate_secrets_example(
+            text + f"\n{topology.ENVELOPE_SECRET_NAME}=\n"
+        )
+        self.assertTrue(
+            any("envelope secret" in error.lower() for error in errors), errors
+        )
+
+    def test_an_envelope_secret_value_is_refused(self) -> None:
+        text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
+        polluted = text.replace(
+            f"{topology.ENVELOPE_SECRET_NAME}=",
+            f"{topology.ENVELOPE_SECRET_NAME}=not-a-real-secret-value",
+        )
+        errors = topology.validate_secrets_example(polluted)
+        self.assertTrue(
+            any(topology.ENVELOPE_SECRET_NAME in error for error in errors), errors
+        )
+
+    def test_the_tool_base_url_is_the_app_public_origin(self) -> None:
+        text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
+        names = topology._parse_dotenv_names(text)
+        self.assertEqual(
+            names["VOICE_PIPELINE_TOOL_BASE_URL"], topology.APP_PUBLIC_ORIGIN
+        )
+        self.assertTrue(topology.APP_PUBLIC_ORIGIN.startswith("https://"))
+
+    def test_a_wrong_tool_base_url_is_refused(self) -> None:
+        text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
+        broken = text.replace(
+            f"VOICE_PIPELINE_TOOL_BASE_URL={topology.APP_PUBLIC_ORIGIN}",
+            "VOICE_PIPELINE_TOOL_BASE_URL=http://localhost:3000",
+        )
+        errors = topology.validate_secrets_example(broken)
+        self.assertTrue(
+            any("VOICE_PIPELINE_TOOL_BASE_URL" in error for error in errors), errors
+        )
 
 
 class SecretsTest(unittest.TestCase):
@@ -219,9 +376,9 @@ class SecretsTest(unittest.TestCase):
         self.assertEqual(topology.validate_secrets_example(text), [])
 
     def test_a_committed_secret_value_is_refused(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
+        doc = load_service()
         doc["env"]["META_API_KEY"] = "not-a-real-key-but-a-value"
-        errors = topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS)
+        errors = validate_service(doc)
         self.assertTrue(any("META_API_KEY" in error for error in errors), errors)
 
     def test_the_secret_value_scan_catches_a_dotenv_assignment(self) -> None:
@@ -254,11 +411,11 @@ class RequiredEnvTest(unittest.TestCase):
     record.
     """
 
-    def test_the_committed_service_config_never_sets_a_required_setting_empty(self) -> None:
-        doc = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        self.assertEqual(
-            topology.validate_service(doc, drain_max_wait_ms=DRAIN_MAX_WAIT_MS), []
-        )
+    def test_the_committed_service_descriptor_never_sets_a_required_setting_empty(
+        self,
+    ) -> None:
+        doc = load_service()
+        self.assertEqual(validate_service(doc), [])
         for name in topology.REQUIRED_SETTINGS:
             if name in doc["env"]:
                 self.assertTrue(str(doc["env"][name]).strip(), name)
@@ -266,14 +423,10 @@ class RequiredEnvTest(unittest.TestCase):
     def test_an_empty_required_setting_is_refused(self) -> None:
         for name in topology.REQUIRED_SETTINGS:
             with self.subTest(name=name):
-                broken = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
+                broken = load_service()
                 broken["env"][name] = ""
-                errors = topology.validate_service(
-                    broken, drain_max_wait_ms=DRAIN_MAX_WAIT_MS
-                )
-                self.assertTrue(
-                    any(name in error for error in errors), errors
-                )
+                errors = validate_service(broken)
+                self.assertTrue(any(name in error for error in errors), errors)
 
     def test_the_example_names_every_required_name(self) -> None:
         text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
@@ -281,7 +434,7 @@ class RequiredEnvTest(unittest.TestCase):
 
     def test_a_missing_name_in_the_example_is_refused(self) -> None:
         text = (REPO_ROOT / topology.SECRETS_EXAMPLE).read_text()
-        for name in topology.REQUIRED_SETTINGS:
+        for name in topology.REQUIRED_ENV_NAMES:
             with self.subTest(name=name):
                 broken = "\n".join(
                     line
@@ -331,14 +484,13 @@ class DrainAwareEntrypointTest(unittest.TestCase):
     """The image must run main(), not uvicorn's server:app (ticket 140).
 
     ``uvicorn server:app`` never installs the drain supervisor, so SIGTERM
-    exits and every live call dies with the machine. The entrypoint is therefore
-    part of the topology claim, and deleting it must fail the validator.
+    exits and every live call dies with the instance. The entrypoint is
+    therefore part of the topology claim, and deleting it must fail the
+    validator.
     """
 
     def _port(self) -> int:
-        return topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)[
-            "http_service"
-        ]["internal_port"]
+        return load_service()["ports"][0]["internalPort"]
 
     def test_the_committed_command_runs_the_drain_aware_entrypoint(self) -> None:
         text = (REPO_ROOT / topology.DOCKERFILE).read_text()
@@ -371,6 +523,11 @@ class DrainAwareEntrypointTest(unittest.TestCase):
         errors = topology.validate_dockerfile(broken, internal_port=self._port())
         self.assertTrue(any("server.py" in error for error in errors), errors)
 
+    def test_a_multi_worker_command_is_refused(self) -> None:
+        text = (REPO_ROOT / topology.DOCKERFILE).read_text() + "\n# --workers 4\n"
+        errors = topology.validate_dockerfile(text, internal_port=self._port())
+        self.assertTrue(any("--workers" in error for error in errors), errors)
+
 
 class ImageAndPinsTest(unittest.TestCase):
     def test_the_image_pins_match_ci(self) -> None:
@@ -385,10 +542,8 @@ class ImageAndPinsTest(unittest.TestCase):
         errors = topology.validate_requirements(drifted, ci)
         self.assertTrue(any("aiohttp" in error for error in errors), errors)
 
-    def test_the_exposed_port_matches_the_proxy(self) -> None:
-        port = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)["http_service"][
-            "internal_port"
-        ]
+    def test_the_exposed_port_matches_the_descriptor(self) -> None:
+        port = load_service()["ports"][0]["internalPort"]
         text = (REPO_ROOT / topology.DOCKERFILE).read_text()
         self.assertEqual(topology.validate_dockerfile(text, internal_port=port), [])
 
@@ -396,6 +551,11 @@ class ImageAndPinsTest(unittest.TestCase):
         text = (REPO_ROOT / topology.DOCKERFILE).read_text().replace("EXPOSE 8766", "")
         errors = topology.validate_dockerfile(text, internal_port=8766)
         self.assertTrue(any("EXPOSE" in error for error in errors), errors)
+
+    def test_the_image_carries_no_app(self) -> None:
+        text = (REPO_ROOT / topology.DOCKERFILE).read_text() + "\nCOPY voni/ /srv/voni/\n"
+        errors = topology.validate_dockerfile(text, internal_port=8766)
+        self.assertTrue(any("voni/" in error for error in errors), errors)
 
     def test_the_image_carries_the_budget_record_it_cannot_start_without(self) -> None:
         text = (REPO_ROOT / topology.DOCKERFILE).read_text()
@@ -415,12 +575,13 @@ class ImageAndPinsTest(unittest.TestCase):
 
 class RecordAndRehearsalTest(unittest.TestCase):
     def test_the_host_and_the_exclusion_are_recorded(self) -> None:
-        service = topology.load_config(REPO_ROOT, topology.SERVICE_CONFIG)
-        app = topology.load_config(REPO_ROOT, topology.APP_CONFIG)
+        service = load_service()
         record = (REPO_ROOT / topology.DEPLOYMENT_RECORD).read_text()
         self.assertEqual(
             topology.validate_record(
-                record, service_app=service["app"], app_name=app["app"]
+                record,
+                service_name=service["service"]["name"],
+                app_name="voni-app",
             ),
             [],
         )
@@ -429,18 +590,39 @@ class RecordAndRehearsalTest(unittest.TestCase):
         record = (REPO_ROOT / topology.DEPLOYMENT_RECORD).read_text()
         errors = topology.validate_record(
             record.replace("Cloudflare Workers", "some runtime"),
-            service_app="voni-voice-pipeline",
+            service_name="voice-pipeline",
             app_name="voni-app",
         )
         self.assertTrue(any("Cloudflare Workers" in error for error in errors), errors)
 
-    def test_the_compose_rehearsal_keeps_two_replicas(self) -> None:
+    def test_a_record_that_names_fly_as_the_host_is_refused(self) -> None:
+        record = (REPO_ROOT / topology.DEPLOYMENT_RECORD).read_text()
+        errors = topology.validate_record(
+            record.replace("Northflank", "Fly.io"),
+            service_name="voice-pipeline",
+            app_name="voni-app",
+        )
+        self.assertTrue(any("Northflank" in error for error in errors), errors)
+
+    def test_a_record_without_the_one_instance_shape_is_refused(self) -> None:
+        record = (REPO_ROOT / topology.DEPLOYMENT_RECORD).read_text()
+        broken = record.replace("one instance", "several instances").replace(
+            "One instance", "Several instances"
+        )
+        errors = topology.validate_record(
+            broken,
+            service_name="voice-pipeline",
+            app_name="voni-app",
+        )
+        self.assertTrue(any("one instance" in error for error in errors), errors)
+
+    def test_the_compose_rehearsal_keeps_the_one_instance_shape(self) -> None:
         text = (REPO_ROOT / topology.COMPOSE_CONFIG).read_text()
         self.assertEqual(topology.validate_compose(text, internal_port=8766), [])
 
-    def test_a_single_replica_rehearsal_is_refused(self) -> None:
+    def test_two_replicas_in_the_rehearsal_are_refused(self) -> None:
         text = (REPO_ROOT / topology.COMPOSE_CONFIG).read_text().replace(
-            "replicas: 2", "replicas: 1"
+            "replicas: 1", "replicas: 2"
         )
         errors = topology.validate_compose(text, internal_port=8766)
         self.assertTrue(any("replicas" in error for error in errors), errors)
@@ -450,35 +632,38 @@ class ValidatorWiringTest(unittest.TestCase):
     """The file-level entry point, not only the per-config functions."""
 
     def _temp_topology(self) -> Path:
-        directory = Path(tempfile.mkdtemp(prefix="deploy-topology-"))
-        self.addCleanup(shutil.rmtree, directory, True)
-        for relative in TOPOLOGY_FILES:
-            target = directory / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(REPO_ROOT / relative, target)
-        return directory
+        return _temp_topology(self)
 
     def test_a_copied_topology_validates(self) -> None:
         self.assertEqual(topology.validate(self._temp_topology()), [])
 
-    def test_validate_reports_a_one_instance_file(self) -> None:
+    def test_validate_reports_a_two_instance_file(self) -> None:
         root = self._temp_topology()
         config = root / topology.SERVICE_CONFIG
-        config.write_text(
-            config.read_text().replace("min_machines_running = 2", "min_machines_running = 1")
-        )
+        doc = json.loads(config.read_text())
+        doc["service"]["deploy"]["instances"] = 2
+        config.write_text(json.dumps(doc))
         errors = topology.validate(root)
-        self.assertTrue(any("min_machines_running" in error for error in errors), errors)
+        self.assertTrue(any("instances" in error for error in errors), errors)
 
-    def test_validate_reports_a_removed_health_check(self) -> None:
+    def test_validate_reports_a_removed_probe(self) -> None:
         root = self._temp_topology()
         config = root / topology.SERVICE_CONFIG
-        text = config.read_text()
-        start = text.index("  [[http_service.checks]]")
-        end = text.index("[[vm]]")
-        config.write_text(text[:start] + text[end:])
+        doc = json.loads(config.read_text())
+        del doc["healthCheck"]
+        config.write_text(json.dumps(doc))
         errors = topology.validate(root)
-        self.assertTrue(any("checks" in error for error in errors), errors)
+        self.assertTrue(any("health" in error.lower() for error in errors), errors)
+
+
+def _temp_topology(case: unittest.TestCase) -> Path:
+    directory = Path(tempfile.mkdtemp(prefix="deploy-topology-"))
+    case.addCleanup(shutil.rmtree, directory, True)
+    for relative in TOPOLOGY_FILES:
+        target = directory / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+    return directory
 
 
 if __name__ == "__main__":

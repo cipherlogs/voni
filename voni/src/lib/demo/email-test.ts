@@ -273,7 +273,7 @@ export function emailTestAfterCheck(state: EmailTestState, result: CheckEmailRes
   if (state.found) return state;
   // A near miss (spoken fallback) waits for the spelled-out address.
   if (result.status === "found" && result.exact) return { ...state, found: true };
-  if (result.status === "free") return { ...state, gated: true };
+  if (result.status === "free") return state.gated ? state : { ...state, gated: true };
   return state;
 }
 
@@ -284,6 +284,22 @@ export function emailTestAfterCheck(state: EmailTestState, result: CheckEmailRes
  */
 export function emailTestAfterCode(state: EmailTestState, status: CodeStatus): EmailTestState {
   return status === "correct" || status === "used" ? { ...state, verified: true } : state;
+}
+
+/**
+ * One `check_email` poll response as the browser reads it: the found/gate
+ * transition the check already owned, plus the call's code readback. The
+ * pipeline runs `check_code` server-side (ticket 15), so this boolean is the
+ * only way the visible verified state can rise on the cascade.
+ */
+export function emailTestAfterPoll(
+  state: EmailTestState,
+  data: Record<string, unknown>,
+): EmailTestState {
+  const next = emailTestAfterCheck(state, checkResultFromData(data));
+  return data.codeVerified === true && !next.verified
+    ? emailTestAfterCode(next, "correct")
+    : next;
 }
 
 /** Only an arrived business email earns the provisional extension (never a spoken claim). */
@@ -415,12 +431,16 @@ export function mentionsScreen(text: string): boolean {
 }
 
 /**
- * What the call should do with a spoken line that mentions the screen when
- * the show tool never ran: put the chip up, and send the invite only when the
- * line itself did not say the tag. Live (sess_cd108689aa6e4dcfad809d9aa04e8b25)
- * the model said the invite with the tag, then the fallback spoke it again:
- * the caller heard the same invite twice. A line that carries the call's tag
- * already IS the invite, so its chip goes up and nothing is spoken again.
+ * What the call should do with Voni's final line. The pipeline runs the show
+ * tool server-side, so the browser has no tool result to hang the chip on; the
+ * spoken line is the signal. A line that carries the call's tag already IS the
+ * invite: its chip goes up and nothing is spoken again. A line that only
+ * mentions putting something on screen gets the chip and the fallback invite.
+ *
+ * Live (sess_cd108689aa6e4dcfad809d9aa04e8b25) the model said the invite with
+ * the tag, then the fallback spoke it again: the caller heard the same invite
+ * twice. The `invited` gate makes the chip one-shot, so a duplicate final turn
+ * never invites twice.
  */
 export function inviteFallbackAction(input: {
   text: string;
@@ -430,6 +450,8 @@ export function inviteFallbackAction(input: {
   toolActive: boolean;
 }): "none" | "show-only" | "show-and-speak" {
   if (input.invited || input.found || input.toolActive) return "none";
-  if (!input.tag || !mentionsScreen(input.text)) return "none";
-  return containsTag(input.text, input.tag) ? "show-only" : "show-and-speak";
+  if (!input.tag) return "none";
+  if (containsTag(input.text, input.tag)) return "show-only";
+  if (!mentionsScreen(input.text)) return "none";
+  return "show-and-speak";
 }

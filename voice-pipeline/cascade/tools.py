@@ -119,6 +119,15 @@ TOOL_TIMEOUT_BOUND = "tool.timeout_ms"
 #: Call control, never an HTTP tool.
 END_CALL_TOOL = "end_call"
 
+#: The demo body's call-control name. Spark reliably calls a tool named after
+#: the action the caller asked for ("hang up") but ignored an identically
+#: shaped ``end_call``: measured against the real demo prompt and schema, the
+#: model said goodbye and called nothing. Both names mean the same signal.
+HANG_UP_TOOL = "hang_up"
+
+#: Every tool name that is call control rather than an HTTP hop.
+CALL_CONTROL_TOOLS = frozenset({END_CALL_TOOL, HANG_UP_TOOL})
+
 #: The model's argument that carries the line the caller hears before the call
 #: ends. ``end_call`` without one is denied (ticket 87).
 CLOSING_LINE_ARGUMENT = "closing_line"
@@ -678,12 +687,12 @@ def _closing_text(value: Any) -> str | None:
 def denied_end_call(call: ToolCallRequest) -> DeniedCall:
     """The recorded denial for an ``end_call`` that named no closing line."""
     return DeniedCall(
-        name=END_CALL_TOOL,
+        name=call.name,
         denial=ToolDenial(
-            name=END_CALL_TOOL,
+            name=call.name,
             reason=(
-                "end_call did not carry a non-empty closing_line; the call is "
-                "not ended and the turn closes with a hold line"
+                f"{call.name} did not carry a non-empty closing_line; the call "
+                "is not ended and the turn closes with a hold line"
             ),
             call_id=call.call_id if isinstance(call.call_id, str) else "",
             code=TOOL_CLOSING_LINE_MISSING,
@@ -1351,7 +1360,7 @@ class ToolExecutor:
         missing or blank id returns a denied outcome without a request, and an
         overlength id fails the turn here, before any request.
         """
-        if call.name == END_CALL_TOOL:
+        if call.name in CALL_CONTROL_TOOLS:
             line = closing_line_from(call.arguments)
             if line is None:
                 return ToolHop(task=None, outcome=denied_end_call(call))
@@ -1589,7 +1598,7 @@ async def execute_turn_calls(
         outcomes.append(outcome)
         if isinstance(outcome, EndCallSignal):
             break
-        if isinstance(outcome, DeniedCall) and outcome.name == END_CALL_TOOL:
+        if isinstance(outcome, DeniedCall) and outcome.name in CALL_CONTROL_TOOLS:
             # A refused end_call still means the model asked to say goodbye:
             # nothing after it runs, and the turn closes with a hold line.
             break

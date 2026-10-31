@@ -29,6 +29,16 @@
     "atMs": 4200,
     "phase": "turn"
   },
+  "cascadeDemoOperational": {
+    "schemaVersion": 1,
+    "pipeline": "cascade",
+    "callId": "call-107",
+    "type": "breaker.transition",
+    "subject": "demo:audrey",
+    "leg": "llm",
+    "atMs": 4200,
+    "phase": "turn"
+  },
   "cascadeFallback": {
     "schemaVersion": 1,
     "pipeline": "cascade",

@@ -3,8 +3,11 @@
 Every call-scoped event the voice service emits carries ``schemaVersion``,
 ``pipeline``, ``callId``, ``type``, ``subject``, ``turn`` (a logical id or
 ``None``), ``atMs`` and ``phase``. An operational event carries ``leg`` in
-place of ``subject``/``turn``. The managed engine and the cascade engine use the
-same envelope; only the ``pipeline`` value differs.
+place of ``turn``; a demo call's operational event also carries ``subject`` so
+every line of its trace names ``demo:<voice>`` (ticket 17). A tenant call's
+operational event keeps the existing shape: ``leg`` and no subject. The managed
+engine and the cascade engine use the same envelope; only the ``pipeline``
+value differs.
 
 A provider fallback is a call-scoped event (``provider_fallback``) with
 ``leg``, ``from``, ``to`` and ``trigger`` in its payload, plus the optional
@@ -37,9 +40,9 @@ Operational decisions are first-class events, not console lines (ticket 110):
 :class:`OperationalEvents` emits ``budget.crossing`` (line, day, spend, cap),
 ``budget.stopped`` (call, spend, ceiling), ``deploy.drain``, ``reconnect`` (leg,
 reason, planned/failure), the three greeting marks, ``protocol.error``,
-``turn.failed`` and ``breaker.transition``. The breaker is operational (the leg
-in place of subject/turn); a budget crossing or stop is cascade-only and names
-the subject with a null turn. The methods take typed values rather than free
+``turn.failed`` and ``breaker.transition``. The breaker is operational (its
+leg in place of turn; a demo call's line also names ``demo:<voice>``); a budget
+crossing or stop is cascade-only and names the subject with a null turn. The methods take typed values rather than free
 form fields, so caller text or audio cannot be smuggled onto a line, and the
 one sanitizer still runs on every event.
 
@@ -71,6 +74,17 @@ from cascade.sanitizer import sanitize_fields
 #: The one schema version. A reader must refuse anything else.
 EVENT_SCHEMA_VERSION = 1
 
+#: The subject kind a demo call declares in its signed envelope. A demo
+#: call's trace names ``demo:<voice>`` on every line; it never names a tenant
+#: subject, a managed agent id or a bare voice id, because a trace that names
+#: the wrong subject is evidence of a call that never happened.
+DEMO_SUBJECT_KIND = "demo"
+
+#: The two subject kinds the signed envelope can name.
+SUBJECT_KINDS = ("demo", "tenant")
+
+_DEMO_SUBJECT = re.compile(r"demo:[^\s:]+")
+
 #: The engine that produced the call.
 PIPELINES = ("managed", "cascade")
 
@@ -89,7 +103,8 @@ CALL_SCOPED_FIELDS = (
     "phase",
 )
 
-#: Every field an operational event carries: ``leg`` replaces subject and turn.
+#: Every field an operational event carries: ``leg`` replaces turn. A demo
+#: call adds ``subject`` so no line of its trace lacks the demo subject.
 OPERATIONAL_FIELDS = (
     "schemaVersion",
     "pipeline",
@@ -107,6 +122,14 @@ BREAKER_EVENT_TYPE = "breaker.transition"
 #: :class:`OperationalEvents` below, through this writer and the one stream.
 BUDGET_CROSSING_EVENT_TYPE = "budget.crossing"
 BUDGET_STOPPED_EVENT_TYPE = "budget.stopped"
+#: The one priced row a completed session leaves in the call's artifact (ticket
+#: 18). A hold return resumes the same call id, so its row appends to the same
+#: file rather than creating a second record store.
+COST_PRICED_EVENT_TYPE = "cost.priced"
+
+#: The producer named on every cost row: the one pricing path, ``cost_call``.
+#: A reader can tell a measured price from anything else by this name.
+COST_PRODUCER = "cascade.cost.cost_call"
 DEPLOY_DRAIN_EVENT_TYPE = "deploy.drain"
 RECONNECT_EVENT_TYPE = "reconnect"
 PROTOCOL_ERROR_EVENT_TYPE = "protocol.error"
@@ -122,11 +145,11 @@ GREETING_EVENT_TYPES = (
 OPERATIONAL_EVENT_TYPES = (BREAKER_EVENT_TYPE,)
 
 #: Names owned by the envelope. A call-scoped event owns subject/turn, an
-#: operational event owns leg; ``leg`` is a legitimate payload field on a
-#: call-scoped event (``provider_fallback`` names the leg it moved), so each
-#: shape reserves only its own names.
+#: operational event owns leg (and, on a demo call, subject); ``leg`` is a
+#: legitimate payload field on a call-scoped event (``provider_fallback`` names
+#: the leg it moved), so each shape reserves only its own names.
 _CALL_SCOPED_RESERVED = frozenset(CALL_SCOPED_FIELDS)
-_OPERATIONAL_RESERVED = frozenset(OPERATIONAL_FIELDS)
+_OPERATIONAL_RESERVED = frozenset((*OPERATIONAL_FIELDS, "subject"))
 
 
 class EventEnvelopeError(ValueError):
@@ -162,6 +185,22 @@ def _require_text(field: str, value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise EventEnvelopeError(field, f'"{field}" must be a non-empty string, got {value!r}')
     return value
+
+
+def _require_demo_subject(subject: Any) -> str:
+    """A demo call's subject: ``demo:<voice>``, never a tenant identity.
+
+    The refusal names the shape, not a guess: a tenant subject, a managed
+    agent id and a bare voice id all fail the one prefix rule.
+    """
+    text = _require_text("subject", subject)
+    if not _DEMO_SUBJECT.fullmatch(text):
+        raise EventEnvelopeError(
+            "subject",
+            f'a demo call\'s subject must be "demo:<voice>", got {text!r}; a '
+            "tenant subject, a managed agent id or a bare voice id is refused",
+        )
+    return text
 
 
 def _require_phase(phase: Any) -> str:
@@ -258,9 +297,15 @@ class EventWriter:
         leg: str,
         at_ms: float | int,
         phase: str,
+        subject: str | None = None,
         fields: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """One operational event: the leg, in place of subject and turn."""
+        """One operational event: the leg, and on a demo call its subject.
+
+        A demo call's trace names ``demo:<voice>`` on every line (ticket 17),
+        so its operational lines carry both ``subject`` and ``leg``. A tenant
+        call passes no subject and keeps the existing shape.
+        """
         if type not in OPERATIONAL_EVENT_TYPES:
             raise EventEnvelopeError(
                 "type",
@@ -271,10 +316,12 @@ class EventWriter:
             "pipeline": self.pipeline,
             "callId": self.call_id,
             "type": _require_text("type", type),
-            "leg": _require_text("leg", leg),
-            "atMs": _require_at_ms(at_ms),
-            "phase": _require_phase(phase),
         }
+        if subject is not None:
+            event["subject"] = _require_demo_subject(subject)
+        event["leg"] = _require_text("leg", leg)
+        event["atMs"] = _require_at_ms(at_ms)
+        event["phase"] = _require_phase(phase)
         event.update(self._payload(fields, _OPERATIONAL_RESERVED))
         return event
 
@@ -844,6 +891,57 @@ def _leg_field(value: Any, field: str = "leg") -> str:
     return value
 
 
+def _cost_legs(value: Any) -> dict[str, Any]:
+    """One cost summary's priced legs, validated, never a reinvented shape.
+
+    Each leg keeps the fields :meth:`cascade.call.CostSummary.to_document`
+    produced: the unit, the reported quantity, whether it was measured, the
+    source of the measurement and the priced amount. A leg claiming to be
+    measured without an amount is refused, because that is a zero in disguise.
+    """
+    if not isinstance(value, Mapping) or not value:
+        raise EventEnvelopeError(
+            "legs", f"a cost row must name the legs it priced, got {value!r}"
+        )
+    legs: dict[str, Any] = {}
+    for name, raw in value.items():
+        leg = _leg_field(name)
+        if not isinstance(raw, Mapping):
+            raise EventEnvelopeError(
+                "legs", f"leg {leg!r} must be an object, got {raw!r}"
+            )
+        measured = _bool_field("measured", raw.get("measured"))
+        quantity = raw.get("quantity")
+        if quantity is not None:
+            quantity = _number_field("quantity", quantity)
+        amount = raw.get("amountUsd")
+        if amount is not None:
+            amount = _number_field("amountUsd", amount)
+        if measured and amount is None:
+            raise EventEnvelopeError(
+                "amountUsd",
+                f"a measured {leg} leg must carry its priced amount; an "
+                "unmeasured leg must say so instead",
+            )
+        units = raw.get("units")
+        if not isinstance(units, Mapping):
+            raise EventEnvelopeError(
+                "units", f"leg {leg!r} must carry the units it was measured in"
+            )
+        legs[leg] = {
+            "unit": _text_field("unit", raw.get("unit")),
+            "quantity": quantity,
+            "measured": measured,
+            "source": _text_field("source", raw.get("source")),
+            "amountUsd": amount,
+            "units": {
+                _text_field("units", key): _number_field("units", entry)
+                for key, entry in units.items()
+            },
+        }
+    return legs
+
+
 class OperationalEvents:
     """One call's operational decisions, through the one envelope and stream.
 
@@ -873,6 +971,11 @@ class OperationalEvents:
         if not callable(now):
             raise ValueError(f"now must be callable, got {now!r}")
         self.stream = stream
+        # A demo stream's subject is checked when the call is set up, so a
+        # malformed identity refuses the call loudly instead of silently
+        # dropping every line (the lifecycle continues past a failed write).
+        if stream.subject_kind == DEMO_SUBJECT_KIND:
+            _require_demo_subject(subject)
         self.subject = _require_text("subject", subject)
         self._now = now
 
@@ -931,6 +1034,7 @@ class OperationalEvents:
             leg=leg,
             at_ms=self._moment(at_ms),
             phase=phase,
+            subject=self.subject if self.stream.subject_kind == DEMO_SUBJECT_KIND else None,
             fields=fields,
         )
 
@@ -984,6 +1088,55 @@ class OperationalEvents:
             fields,
             turn=_require_turn(document.get("turn")),
             phase="drain",
+            at_ms=at_ms,
+        )
+
+    def cost_priced(
+        self, cost: Any, *, at_ms: float | int | None = None
+    ) -> dict[str, Any]:
+        """The completed session's priced row, or the reason it has no price.
+
+        A measured row cites the rate table and its version, the engine that
+        produced it (the envelope's ``pipeline``), and every leg's measured
+        unit and quantity. An unmeasured row keeps ``measured: false`` and
+        ``totalUsd: null`` with ``unmeasuredReason``: a call that cannot be
+        priced is visible here, never absent and never a zero.
+        """
+        document = _document_of(cost, "cost")
+        measured = _bool_field("measured", document.get("measured"))
+        version = document.get("rateTableVersion")
+        if version is not None:
+            version = _text_field("rateTableVersion", version)
+        if measured and version is None:
+            raise EventEnvelopeError(
+                "rateTableVersion",
+                "a measured cost row must cite the rate table that priced it",
+            )
+        total = document.get("totalUsd")
+        if measured:
+            total = _number_field("totalUsd", total)
+        elif total is not None:
+            raise EventEnvelopeError(
+                "totalUsd",
+                "an unmeasured cost row has no total; a zero would claim a "
+                "price the table never gave",
+            )
+        fields: dict[str, Any] = {
+            "producer": COST_PRODUCER,
+            "rateTableVersion": version,
+            "measured": measured,
+            "totalUsd": total,
+            "legs": _cost_legs(document.get("legs")),
+        }
+        if not measured:
+            fields["unmeasuredReason"] = _text_field(
+                "unmeasuredReason", document.get("unmeasuredReason")
+            )
+        return self._call(
+            COST_PRICED_EVENT_TYPE,
+            fields,
+            turn=None,
+            phase="end",
             at_ms=at_ms,
         )
 
@@ -1100,7 +1253,7 @@ class OperationalEvents:
         manual_pin: bool | None = None,
         at_ms: float | int | None = None,
     ) -> dict[str, Any]:
-        """One breaker move, operational: the leg in place of subject and turn."""
+        """One breaker move, operational: its leg, plus a demo call's subject."""
         self._cascade_only(BREAKER_EVENT_TYPE)
         leg = _leg_field(getattr(transition, "leg", None))
         from_state = getattr(transition, "from_state", None)
@@ -1276,16 +1429,33 @@ class EventStream:
     ``emit_fallback(..., sink=stream)`` works because the stream is callable,
     so a fallback line is sanitized like every other line. When the sink is a
     :class:`CallEventLog`, ``path`` names the artifact the end message cites.
+
+    ``subject_kind`` is the verified envelope's signed kind (``demo`` or
+    ``tenant``; ``None`` for a stream built without one). A demo stream refuses
+    any line without a ``demo:<voice>`` subject at this boundary, so no builder
+    — call-scoped, operational, fallback or attribution — can write a line that
+    names a tenant subject, a managed agent id or a bare voice id, or no
+    subject at all.
     """
 
     def __init__(
-        self, writer: EventWriter, *, sink: Callable[[str], None]
+        self,
+        writer: EventWriter,
+        *,
+        sink: Callable[[str], None],
+        subject_kind: str | None = None,
     ) -> None:
         if not isinstance(writer, EventWriter):
             raise TypeError(f"EventStream needs an EventWriter, got {writer!r}")
         if not callable(sink):
             raise TypeError(f"EventStream needs a write sink, got {sink!r}")
+        if subject_kind is not None and subject_kind not in SUBJECT_KINDS:
+            raise ValueError(
+                f"subject_kind must be one of {', '.join(SUBJECT_KINDS)} or None, "
+                f"got {subject_kind!r}"
+            )
         self.writer = writer
+        self.subject_kind = subject_kind
         self._sink = sink
 
     @property
@@ -1303,6 +1473,18 @@ class EventStream:
         sanitized = sanitize_fields(dict(event))
         if sanitized.rejected_keys:
             raise ForbiddenEventKey(sanitized.rejected_keys)
+        if self.subject_kind == DEMO_SUBJECT_KIND:
+            # A demo trace names ``demo:<voice>`` on every line, operational
+            # lines included; a line without one is refused here, at the one
+            # write boundary, before anything reaches the artifact.
+            if "subject" not in sanitized.value:
+                raise EventEnvelopeError(
+                    "subject",
+                    "every line of a demo call's trace must name "
+                    '"demo:<voice>", including an operational line; this line '
+                    "carries no subject",
+                )
+            _require_demo_subject(sanitized.value["subject"])
         self._sink(
             json.dumps(sanitized.value, ensure_ascii=False, separators=(",", ":")) + "\n"
         )
@@ -1337,11 +1519,17 @@ class EventStream:
         leg: str,
         at_ms: float | int,
         phase: str,
+        subject: str | None = None,
         fields: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build and write one operational line."""
         return self(
             self.writer.operational(
-                type, leg=leg, at_ms=at_ms, phase=phase, fields=fields
+                type,
+                leg=leg,
+                at_ms=at_ms,
+                phase=phase,
+                subject=subject,
+                fields=fields,
             )
         )

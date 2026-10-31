@@ -63,6 +63,7 @@ import {
 } from "@/lib/providers/registry";
 import {
   voicesByLanguage,
+  tenantVoices,
   INPUT_LANGUAGES,
   ACCENT_LABEL,
   voiceLabel,
@@ -418,14 +419,14 @@ export function AgentConfigForm({
   const voiceItems = useMemo<Record<string, string>>(
     () =>
       Object.fromEntries(
-        voicesByLanguage().flatMap((group) =>
+        voicesByLanguage(tenantVoices(config.voiceId)).flatMap((group) =>
           group.voices.map((voice) => [
             voice.id,
             `${voiceLabel(voice.id)} — ${ACCENT_LABEL[voice.accent]}`,
           ]),
         ),
       ),
-    [],
+    [config.voiceId],
   );
 
   const set = <K extends keyof AgentConfig>(key: K, value: AgentConfig[K]) =>
@@ -682,10 +683,10 @@ export function AgentConfigForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {/* Grouped by the language each voice speaks: the catalog is
-                    closed and six-deep, and a flat list hides which voices can
-                    answer a Spanish or German caller at all. */}
-                {voicesByLanguage().map((group) => (
+                {/* Grouped by the language each voice speaks. The tenant
+                    picker offers English voices only (ticket 04); an agent's
+                    stored non-English voice rides along so it opens intact. */}
+                {voicesByLanguage(tenantVoices(config.voiceId)).map((group) => (
                   <SelectGroup key={group.language}>
                     <SelectLabel>{group.language}</SelectLabel>
                     {group.voices.map((voice: Voice) => (

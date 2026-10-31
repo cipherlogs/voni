@@ -73,6 +73,7 @@ import {
   type SubjectRecord,
   type SubjectTransport,
 } from "./subject";
+import { BODY_SOURCE_CLAIMS, type BodySource } from "./body-source";
 import { DEMO_VOICE_IDS } from "./voni-agent";
 
 // The manifest boundary is re-exported so the CLI and tests keep one import.
@@ -89,6 +90,14 @@ export {
 
 export const READINESS_PACK_SCHEMA_VERSION = 1;
 export const READINESS_PACK_KIND = "all-subject-readiness-pack";
+
+/**
+ * The body every readiness claim comes from (demo-cascade ticket 24). The pack
+ * accepts cascade artifacts only, so its evidence is the cascade call's own
+ * record; a managed artifact is refused by name instead of being implied to
+ * cover the cascade.
+ */
+export const READINESS_EVIDENCE_BODY_SOURCE: BodySource = "cascade";
 
 /** The rule the pack enforces; printed in the markdown so it cannot drift. */
 export const READINESS_RULE =
@@ -140,6 +149,8 @@ export type ReadinessPack = {
   status: "ready" | "blocked";
   ready: boolean;
   recordedAt: string;
+  /** Which body these claims come from; always the cascade (ticket 24). */
+  evidenceBody: BodySource;
   required: {
     demoVoices: string[];
     tenants: string[];
@@ -175,7 +186,7 @@ function readRun(
     const pipeline = pipelineOfArtifact(artifact, path);
     if (pipeline !== "cascade") {
       blockers.push(
-        `artifact ${path} is ${pipeline}, not cascade; a readiness row needs the cascade engine (a managed verdict does not carry over)`,
+        `artifact ${path} is ${pipeline}, not cascade; a readiness row needs the cascade engine (a managed artifact's body source is the platform-served stored agent, and a managed verdict does not carry over)`,
       );
     }
   } catch (error) {
@@ -504,6 +515,7 @@ export function assembleReadinessPack(request: ReadinessRequest): ReadinessPack 
     status: ready ? "ready" : "blocked",
     ready,
     recordedAt: now.toISOString(),
+    evidenceBody: READINESS_EVIDENCE_BODY_SOURCE,
     required: {
       demoVoices: [...DEMO_VOICE_IDS],
       tenants: tenants.map((tenant) => tenant.subject),
@@ -548,6 +560,8 @@ export function formatReadinessPack(pack: ReadinessPack): string {
     "",
     `- Status: **${pack.status.toUpperCase()}**`,
     `- Recorded: ${pack.recordedAt}`,
+    `- Evidence body: ${BODY_SOURCE_CLAIMS[pack.evidenceBody]}`,
+    `- Managed evidence: blocked by name; a managed artifact never covers the cascade`,
     `- Required: ${pack.required.demoVoices.length} demo voices, ${pack.required.tenants.length} eligible tenant subjects`,
     `- Rule: ${pack.rule}`,
     "",

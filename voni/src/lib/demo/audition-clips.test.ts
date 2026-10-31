@@ -223,15 +223,40 @@ test("a cascade-clip record says which managed voice path supplied its audio", (
   assert.deepEqual(auditionClipProblems(clip, cascade), [], "a named cascade clip is a valid source");
 });
 
-test("every demo voice has a committed public preview and an audition-clip row", () => {
+test("every demo voice's preview is a committed clip or a named pending row", () => {
   const committed = manifest();
+  const clipped = new Set(committed.clips.map((record) => record.voice));
+  const pending = new Map(committed.pending.map((row) => [row.voice, row]));
+
   for (const voiceId of DEMO_VOICE_IDS) {
-    const asset = `public/voices/${voiceId}.mp3`;
-    assert.equal(assetExists(asset), true, `${voiceId}: ${asset} is committed`);
-    const record = committed.clips.find((candidate) => candidate.voice === voiceId);
-    assert.ok(record, `${voiceId}: the audition evidence has its row, not a pending entry`);
-    assert.equal(record.asset, asset);
-    assert.equal(record.locale, getVoice(voiceId)?.languageCode, `${voiceId}: its own Locale`);
+    const voice = getVoice(voiceId);
+    assert.ok(voice, `${voiceId}: the demo voice is a catalog voice`);
+    const playable = clipped.has(voiceId);
+    const row = pending.get(voiceId);
+    assert.ok(playable || row, `${voiceId}: the evidence names it, never omits it`);
+
+    if (playable) {
+      const asset = `public/voices/${voiceId}.mp3`;
+      assert.equal(assetExists(asset), true, `${voiceId}: ${asset} is committed`);
+      const record = committed.clips.find((candidate) => candidate.voice === voiceId);
+      assert.ok(record, `${voiceId}: the audition evidence has its row`);
+      assert.equal(record.asset, asset);
+      assert.equal(record.locale, voice.languageCode, `${voiceId}: its own Locale`);
+      continue;
+    }
+
+    // The four new demo voices are newer than the managed Voice Agent API, so
+    // there is no managed preview to encode yet. The gap is named with the
+    // pipeline command that renders the cascade clip (ticket 05), and no audio
+    // is fabricated in its place.
+    assert.ok(row, `${voiceId}: the pending row is the named gap`);
+    assert.match(row.reason, /does not serve|cascade clip/i, `${voiceId}: the reason names why`);
+    assert.match(row.command, /voice:clips -- --voice/, `${voiceId}: the remedy is the clip command`);
+    assert.equal(
+      assetExists(`public/voices/${voiceId}.mp3`),
+      false,
+      `${voiceId}: no fabricated or stale audio sits in place of the missing clip`,
+    );
   }
 });
 

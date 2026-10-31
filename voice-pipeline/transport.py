@@ -44,6 +44,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from cascade.ack import ack_lines as ack_lines_for
 from cascade.admission import admit_new_call
 from cascade.assemblyai_tts import AssemblyAIStreamingTTS
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
@@ -57,6 +58,7 @@ from cascade.call import (
 )
 from cascade.cost import RateTable
 from cascade.events import OperationalEvents
+from cascade.hedge import HedgedLLM
 from cascade.meta_llm import MetaLLM, construct_byo_model
 from cascade.meta_stt import MetaStreamingSTT
 from cascade.reconnect import ReconnectBudget
@@ -342,13 +344,13 @@ def _usage_meter_for(factory: Any) -> UsageMeter:
 
 
 def _events_for(
-    factory: Any, *, call_id: str, subject: str
+    factory: Any, *, call_id: str, subject: str, kind: str | None = None
 ) -> OperationalEvents | None:
     if factory is None:
         return None
     if isinstance(factory, OperationalEvents):
         return factory
-    return factory(call_id, subject)
+    return factory(call_id, subject, kind=kind)
 
 
 async def handle_browser_call(
@@ -515,6 +517,16 @@ async def handle_browser_call(
         try:
             ledger = TimingLedger(now=clock)
             budget = ReconnectBudget(ledger=ledger, now=clock)
+            # The trace's identity is taken from the verified envelope and
+            # checked before a vendor-facing leg is built: a demo call whose
+            # envelope names a tenant subject is refused here, not discovered
+            # when its first line is written.
+            events = _events_for(
+                operational_events,
+                call_id=verified.call_id,
+                subject=verified.agent_id,
+                kind=verified.subject_kind,
+            )
             if leg_builder is None:
                 legs = build_cascade_legs(
                     call_id=verified.call_id,
@@ -525,9 +537,6 @@ async def handle_browser_call(
             else:
                 legs = leg_builder(body, verified.body)
 
-            events = _events_for(
-                operational_events, call_id=verified.call_id, subject=verified.agent_id
-            )
             lifecycle: CallLifecycle | None = None
 
             def require_lifecycle() -> CallLifecycle:
@@ -560,8 +569,15 @@ async def handle_browser_call(
             async def on_end_call() -> None:
                 require_lifecycle().request_end("end_call")
 
+            # One bounded hedge for the demo's bursty first token. It is the
+            # same Meta model and the same signed body, not a fallback: the
+            # first stream wins and the loser is cancelled. Tenant calls never
+            # reach the cascade (ADR-0012), and the kind is a signed claim.
+            model = legs.model
+            if verified.subject_kind == "demo" and model is not None:
+                model = HedgedLLM(model, ledger=ledger)
             stream = CascadeTurnStream(
-                llm=legs.model,
+                llm=model,
                 tts=legs.voice,
                 tools=body.tools,
                 emit_audio=emit_audio,
@@ -574,6 +590,12 @@ async def handle_browser_call(
                 on_interrupted=browser.interrupted,
                 on_turn_billed=on_turn_billed,
                 on_end_call=on_end_call,
+                history=body.history,
+                ack_lines=(
+                    ack_lines_for(body.language_code)
+                    if verified.subject_kind == "demo"
+                    else ()
+                ),
             )
             lifecycle = CallLifecycle(
                 message={
@@ -599,6 +621,7 @@ async def handle_browser_call(
                 operational_events=events,
                 events_path=str(events.path) if events is not None and events.path else None,
                 reconnect_budget=budget,
+                on_caption=browser.caption,
             )
         except BaseException:
             call_tokens.release(claim)
@@ -622,7 +645,9 @@ async def handle_browser_call(
     try:
         admission = await admit_new_call(
             switch,
-            CallSubject(subject_id=verified.agent_id),
+            # Ticket 03: the kind is the verified envelope's signed claim (v1
+            # reads as tenant); nothing here reads a ``demo:`` prefix or a name.
+            CallSubject(subject_id=verified.agent_id, kind=verified.subject_kind),
             open_cascade=prepare,
             budget=counter,
         )

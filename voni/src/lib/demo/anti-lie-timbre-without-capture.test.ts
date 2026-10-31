@@ -56,8 +56,8 @@ function measuredTone(path: string, rmsDbfs: number, frames = SAMPLE_RATE): Meas
   return { path, audio: decodePcm(bytes, { sampleRate: SAMPLE_RATE, channels: 1 }) };
 }
 
-const reference = () => measuredTone("captures/reference-anna-en.wav", -23.1);
-const delivered = () => measuredTone("captures/delivered-anna-en.wav", -23.2);
+const reference = () => measuredTone("captures/reference-audrey-en.wav", -23.1);
+const delivered = () => measuredTone("captures/delivered-audrey-en.wav", -23.2);
 
 /** The same samples under a second path: a copy is not a delivery either. */
 function copyOf(file: MeasuredLevelFile, path: string): MeasuredLevelFile {
@@ -94,7 +94,7 @@ function passingBallots(recording = "c".repeat(64)): HumanRatings {
 function gateWith(measuredLevel: { reference: MeasuredLevelFile | null; delivered: MeasuredLevelFile | null }) {
   return evaluateTimbreGate({
     probes: ZERO_PROBES,
-    voiceId: "anna",
+    voiceId: DEFAULT_GATE_VOICE,
     agentChannel: CLEAN_CHANNEL,
     runBody: servedBody(),
     measuredLevel: measuredLevel as never,
@@ -115,7 +115,7 @@ function greenCascade(captures: Record<string, unknown>): ScoreboardArtifact {
     runId: "run-timbre-lie",
     codeFingerprint: { head: "a".repeat(40), dirty: false, dirtyHash: "0".repeat(64) },
     subject: {
-      agent: { kind: "demo", voice: "anna", agentId: null },
+      agent: { kind: "demo", voice: DEFAULT_GATE_VOICE, agentId: null },
       locale: "en",
       transport: "browser",
       source: "flag",
@@ -124,9 +124,10 @@ function greenCascade(captures: Record<string, unknown>): ScoreboardArtifact {
   return {
     ...base,
     pipeline: "cascade",
+    bodySource: "cascade",
     run: {
       runId: base.runId,
-      variant: "cascade-anna-1",
+      variant: "cascade-audrey-1",
       startedAt: "2026-10-29T10:00:00.000Z",
       finishedAt: "2026-10-29T10:00:01.000Z",
     },
@@ -172,7 +173,7 @@ test("a copy of the reference under a delivered path is still not a delivery", (
   const referenceFile = reference();
   const result = measureTimbre({
     reference: referenceFile,
-    delivered: copyOf(referenceFile, "captures/delivered-anna-en.wav"),
+    delivered: copyOf(referenceFile, "captures/delivered-audrey-en.wav"),
   });
 
   assert.notEqual(result.status, "PASS", result.detail);
@@ -216,14 +217,14 @@ test("a real delivered capture still passes the gate, so the refusal is narrow",
   const gate = gateWith({ reference: reference(), delivered: delivered() });
 
   assert.equal(gate.status, "PASS", gate.detail);
-  assert.match(gate.detail, /captures\/delivered-anna-en\.wav/);
+  assert.match(gate.detail, /captures\/delivered-audrey-en\.wav/);
 });
 
 test("an artifact that records the reference file as its delivered capture is refused by name", () => {
   const raw = greenCascade({
-    reference: capture("captures/reference-anna-en.wav"),
+    reference: capture("captures/reference-audrey-en.wav"),
     platform: { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE },
-    delivered: capture("captures/reference-anna-en.wav"),
+    delivered: capture("captures/reference-audrey-en.wav"),
   });
 
   assert.throws(
@@ -238,7 +239,7 @@ test("an artifact that records the reference file as its delivered capture is re
 
 test("an artifact with only a reference capture is not green, and the verdict says why", () => {
   const artifact = greenCascade({
-    reference: capture("captures/reference-anna-en.wav"),
+    reference: capture("captures/reference-audrey-en.wav"),
     platform: { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE },
   });
 
@@ -251,9 +252,9 @@ test("an artifact with only a reference capture is not green, and the verdict sa
 test("a delivered capture whose bytes changed is dirty evidence, not a pass", () => {
   const sha = createHash("sha256").update("the delivered bytes").digest("hex");
   const artifact = greenCascade({
-    reference: capture("captures/reference-anna-en.wav"),
+    reference: capture("captures/reference-audrey-en.wav"),
     platform: { absent: CASCADE_PLATFORM_CAPTURE_ABSENCE },
-    delivered: capture("captures/delivered-anna-en.wav", sha),
+    delivered: capture("captures/delivered-audrey-en.wav", sha),
   });
 
   const verdict = deriveRunEligibility({

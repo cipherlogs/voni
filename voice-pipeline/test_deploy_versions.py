@@ -25,7 +25,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from deploy import secret_scan, topology
 
-APP_CONFIG = topology.APP_CONFIG
 SERVICE_CONFIG = topology.SERVICE_CONFIG
 
 
@@ -38,7 +37,7 @@ class ArtifactTests(unittest.TestCase):
         record = load(REPO_ROOT / topology.VERSIONS_RECORD)
 
         self.assertEqual(record["app"]["name"], "voni-app")
-        self.assertEqual(record["service"]["name"], "voni-voice-pipeline")
+        self.assertEqual(record["service"]["name"], "voice-pipeline")
         for party in ("app", "service"):
             entry = record[party]
             self.assertTrue(entry["version"], f"{party} version is unrecorded")
@@ -155,7 +154,6 @@ def _temp_tree(case: unittest.TestCase) -> Path:
     for relative in (
         topology.VERSIONS_RECORD,
         topology.SERVICE_CONFIG,
-        topology.APP_CONFIG,
         "voice-pipeline/cascade/token.py",
         "voni/src/lib/voice/cascade-session.ts",
     ):

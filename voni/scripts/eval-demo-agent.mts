@@ -40,10 +40,12 @@
  * `npm run scoreboard:inspect --events <path>` summarizes it. Without the flag
  * no file is written.
  *
- * A stored run's LLM comes from the demo agent's own body: with
- * `AI_GATEWAY_API_KEY` configured it is `google/gemini-2.5-flash` via the
- * Vercel AI Gateway (`DEMO_LLM_MODEL` / `DEMO_LLM_BASE_URL` override), otherwise
- * the managed model. The summary always says which one ran.
+ * A stored run's LLM is the demo agent's own managed model; the public
+ * cascade demo replies with the pipeline's direct Meta client instead. The
+ * summary always says which one ran (the eval reports `managed`).
+ *
+ * `AI_GATEWAY_API_KEY` here is Jev's judge key and nothing else: no demo
+ * model ever routes through the Vercel AI Gateway.
  *
  * Every live call prints `  · trace session sess_…` when the session is
  * ready: score-demo chains its Call trace merge from that id, so per-turn
@@ -353,7 +355,7 @@ async function storedAgentFor(voiceId: string): Promise<EvalAgentIdentity> {
       const identity: EvalAgentIdentity = {
         agentId: provisioned.agentId,
         fingerprint: provisioned.fingerprint,
-        llmModel: provisioned.llmModel,
+        llmModel: "managed",
         variant: VARIANT_SELECTION.variant,
         variantKey: VARIANT_SELECTION.variantKey,
         turnWindows: VARIANT_SELECTION.turnWindows,

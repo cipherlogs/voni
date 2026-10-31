@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -94,14 +94,14 @@ test("the budget is read from the registry, never baked into the workflow", () =
   );
 });
 
-test("the harness page exists only in the isolated test build", () => {
-  const page = readFileSync(
-    resolve(REPO, "voni/src/app/e2e/cascade/page.tsx"),
-    "utf8",
+test("the rig drives the landing demo, not a hidden cascade page", () => {
+  assert.equal(
+    existsSync(resolve(REPO, "voni/src/app/e2e/cascade/page.tsx")),
+    false,
+    "there is no second cascade client surface to drift from the demo",
   );
-  assert.match(page, /process\.env\.VONI_INSTANT_TEST_BUILD !== "1"/);
-  assert.match(page, /notFound\(\)/);
-  assert.match(page, /engine="cascade"/, "the page drives the real cascade client");
+  const landing = readFileSync(resolve(REPO, "voni/src/components/landing-demo.tsx"), "utf8");
+  assert.match(landing, /<VoiceCall mode=\{\{ kind: "demo" \}\} \/>/);
 });
 
 test("the fake service replays committed scripted frames, not inline code", () => {

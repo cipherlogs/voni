@@ -44,10 +44,10 @@
  * `juergen` was the exception the vendor's TTS endpoint does not serve
  * (`422 voice_not_found`); it has no measured reference, so it was a named
  * `measured: false` row rather than a silent 100. German was re-cast to `jorg`
- * (ticket 130), whose native reference is measured, so the registry now covers
- * every offered voice and the retired id no longer has a level row. The
- * unmeasured mechanism remains: a future voice the endpoint cannot serve is a
- * visible row, never a default that skipped the measurement (ticket 21).
+ * (ticket 130), whose native reference is measured. The four demo voices added
+ * after the 2026-10-29 run (`audrey`, `malvina`, `donatien`, `benicio`) are
+ * named unmeasured rows for the same reason: no vendor render of them is
+ * committed yet, so their level is the named native default, never a guess.
  */
 
 /**
@@ -113,11 +113,60 @@ export const MEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.fr
 /**
  * The voices with no measured reference, recorded as first-class rows so the
  * registry and every report say "unmeasured" instead of showing a bare 100.
- * Empty today: every offered voice, German's `jorg` included, is measured.
+ * The four demo voices added after the 2026-10-29 level run (demo-cascade
+ * ticket 04) are named gaps: no vendor render of them is committed, so their
+ * level is the named native default until one is captured. German's `jorg` is
+ * measured, and the retired `juergen` has no row at all (it is not a catalogue
+ * voice).
  */
 export const UNMEASURED_VOICE_LEVELS: readonly VoiceLevelMeasurement[] = Object.freeze<
   VoiceLevelMeasurement[]
->([]);
+>([
+  {
+    voice: "audrey",
+    locale: "en",
+    measuredOn: null,
+    integratedLufs: null,
+    truePeakDbtp: null,
+    volume: UNMEASURED_VOICE_OUTPUT_VOLUME,
+    measured: false,
+    unmeasuredReason:
+      "added to the demo roster after the 2026-10-29 level run: no vendor /v1/speech render is committed",
+  },
+  {
+    voice: "malvina",
+    locale: "es",
+    measuredOn: null,
+    integratedLufs: null,
+    truePeakDbtp: null,
+    volume: UNMEASURED_VOICE_OUTPUT_VOLUME,
+    measured: false,
+    unmeasuredReason:
+      "added to the demo roster after the 2026-10-29 level run: no vendor /v1/speech render is committed",
+  },
+  {
+    voice: "donatien",
+    locale: "fr",
+    measuredOn: null,
+    integratedLufs: null,
+    truePeakDbtp: null,
+    volume: UNMEASURED_VOICE_OUTPUT_VOLUME,
+    measured: false,
+    unmeasuredReason:
+      "added to the demo roster after the 2026-10-29 level run: no vendor /v1/speech render is committed",
+  },
+  {
+    voice: "benicio",
+    locale: "pt",
+    measuredOn: null,
+    integratedLufs: null,
+    truePeakDbtp: null,
+    volume: UNMEASURED_VOICE_OUTPUT_VOLUME,
+    measured: false,
+    unmeasuredReason:
+      "added to the demo roster after the 2026-10-29 level run: no vendor /v1/speech render is committed",
+  },
+]);
 
 /** Every offered voice's level decision: measured rows first, then the named gaps. */
 export const VOICE_LEVEL_REGISTRY: readonly VoiceLevelMeasurement[] = Object.freeze([

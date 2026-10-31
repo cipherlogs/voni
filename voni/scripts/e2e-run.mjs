@@ -86,6 +86,25 @@ function writeBehaviorEvidence() {
 const NEXT_PORT = 3100;
 const CF_PORT = 3101;
 
+/**
+ * Install the candidate's dependencies.
+ *
+ * `--offline` first: the platform tarballs (notably `@esbuild/linux-x64`) are
+ * already in the npm cache on a warmed machine, and the registry path was
+ * failing in this sandbox. A cache miss falls back to the registry, so CI is
+ * unchanged.
+ */
+function installCandidate(cand) {
+  console.log(`[e2e] npm ci --offline (candidate)…`);
+  const offline = spawnSync("npm", ["ci", "--offline", "--no-audit", "--no-fund"], {
+    cwd: cand,
+    stdio: "inherit",
+  });
+  if (offline.status === 0) return;
+  console.log(`[e2e] offline install missed the cache; retrying with the registry…`);
+  sh("npm", ["ci", "--no-audit", "--no-fund"], { cwd: cand });
+}
+
 function sh(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { stdio: "inherit", ...opts });
   // Throw instead of process.exit so `finally` cleanup (server stop + temp
@@ -207,6 +226,12 @@ function bootEnv(baseUrl, options = {}) {
   // on this throwaway candidate — an ordinary `next build` never sets it.
   if (options.capture) env.NEXT_PUBLIC_VONI_E2E_CAPTURE = "1";
   else delete env.NEXT_PUBLIC_VONI_E2E_CAPTURE;
+  // Ticket 08: the app reads its pipeline base at runtime, server-side. The
+  // cascade rig fakes the socket in the browser, so any https host works and
+  // nothing here can reach a real service. Absent for every other mode, where
+  // the hidden cascade page must fail by name instead of guessing localhost.
+  if (options.cascade) env.VOICE_PIPELINE_URL = "https://pipeline.invalid";
+  else delete env.VOICE_PIPELINE_URL;
   return env;
 }
 
@@ -237,8 +262,7 @@ async function serveNext(cand, port, options = {}) {
     console.error(`[e2e] REFUSE: port ${port} occupied — not attaching to unknown server.`);
     process.exit(1);
   }
-  console.log(`[e2e] npm ci (candidate)…`);
-  sh("npm", ["ci", "--no-audit", "--no-fund"], { cwd: cand });
+  installCandidate(cand);
   console.log(`[e2e] next build (VONI_INSTANT_TEST_BUILD=1, ephemeral boot secret)…`);
   sh("npm", ["run", "build"], { cwd: cand, env: bootEnv(`http://localhost:${port}`, options) });
   const server = spawn("npm", ["run", "start", "--", "-p", String(port)], {
@@ -295,11 +319,13 @@ async function modeBehavior() {
 }
 
 async function modeCascade() {
-  // Seam 4 (ticket 149): real Chromium + real client + real worklet against
-  // the deterministic fake worker, writing a real delivered capture. No
-  // vendor key, no vendor network. The runtime is compared with the registry
-  // bound `ci.browser_e2e_budget_s`; an open bound is a named blocker, never
-  // an invented timeout.
+  // Seam 2 (ticket 149, pointed at the public landing demo by ticket 16):
+  // real Chromium + the real demo client + the real mic path and worklet
+  // against the deterministic fake pipeline, writing a real delivered capture
+  // and the call's trace. The demo's one mint is faked in the browser, so no
+  // vendor key and no vendor network are involved. The runtime is compared
+  // with the registry bound `ci.browser_e2e_budget_s`; an open bound is a
+  // named blocker, never an invented timeout.
   const startedAt = Date.now();
   const fp = fingerprint();
   const cand = buildCandidate(fp);
@@ -307,7 +333,7 @@ async function modeCascade() {
   rmSync(artifactDir, { recursive: true, force: true });
   mkdirSync(artifactDir, { recursive: true });
   console.log(`[e2e] delivered-capture artifacts: ${artifactDir}`);
-  const server = await serveNext(cand, NEXT_PORT, { capture: true });
+  const server = await serveNext(cand, NEXT_PORT, { capture: true, cascade: true });
   try {
     // One real Chromium (the desktop project): the seam is the client and the
     // worklet, not two viewports of the same call.
@@ -339,8 +365,7 @@ async function modeCloudflare() {
     console.error(`[e2e] REFUSE: port ${CF_PORT} occupied.`);
     process.exit(1);
   }
-  console.log(`[e2e] npm ci (candidate)…`);
-  sh("npm", ["ci", "--no-audit", "--no-fund"], { cwd: cand });
+  installCandidate(cand);
   console.log(`[e2e] opennext build…`);
   sh("npx", ["@opennextjs/cloudflare", "build"], { cwd: cand, env: bootEnv(`http://localhost:${CF_PORT}`) });
   // Separate preview config: local R2 emulation, cache bucket isolated from

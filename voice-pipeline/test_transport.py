@@ -15,13 +15,17 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import tempfile
 import unittest
 from decimal import Decimal
+from pathlib import Path
 from unittest import mock
 
 from cascade.body_map import adapt_body, body_fingerprint
 from cascade.call import CallLifecycle
 from cascade.envelope import sign_body
+from cascade.events import CallEventLog, EventStream, EventWriter, OperationalEvents
 from cascade.meta_llm import MetaLLMTurn, TurnUsage
 from cascade.meta_stt import SpeechComplete, SpeechStart
 from cascade.routing import KEY as ROUTING_KEY
@@ -50,6 +54,10 @@ TOKEN = mint_call_token(
     clock=CLOCK,
     nonce="transport-token-136",
 )
+
+#: The demo call's own id: the randomUUID the app mints, never the subject.
+DEMO_CALL_ID = "5b0f5c9a-4e2a-4a2b-9c3d-1f2e3a4b5c6d"
+DEMO_SUBJECT = "demo:audrey"
 
 BODY = {
     "name": "transport-agent",
@@ -247,6 +255,7 @@ def signed_message(
     *,
     call_id: str = CALL_ID,
     agent_id: str = AGENT_ID,
+    kind: str | None = None,
 ) -> dict:
     served = BODY if body is None else body
     signed = sign_body(
@@ -256,6 +265,7 @@ def signed_message(
         secret=SECRET,
         call_id=call_id,
         agent_id=agent_id,
+        kind=kind,
         ttl_ms=60_000,
         clock=CLOCK,
     )
@@ -263,9 +273,20 @@ def signed_message(
     return json.loads(json.dumps(signed.message()))
 
 
-def delivered_channel(body=None, *, token: str = TOKEN) -> StoredBodyChannel:
+def delivered_channel(
+    body=None,
+    *,
+    token: str = TOKEN,
+    call_id: str = CALL_ID,
+    agent_id: str = AGENT_ID,
+    kind: str | None = None,
+) -> StoredBodyChannel:
     channel = StoredBodyChannel(secret=SECRET, clock=CLOCK)
-    channel.deliver(call_token=token, call_id=CALL_ID, message=signed_message(body))
+    channel.deliver(
+        call_token=token,
+        call_id=call_id,
+        message=signed_message(body, call_id=call_id, agent_id=agent_id, kind=kind),
+    )
     return channel
 
 
@@ -277,14 +298,45 @@ def token_registry(clock: float = 1_000_001.0) -> CallTokenRegistry:
     return CallTokenRegistry(secret=SECRET, clock=FakeClock(clock))
 
 
-async def open_switch() -> RoutingSwitch:
-    """A durable switch pinned to ``all`` so a test call is admitted."""
+async def switch_in_mode(mode: str) -> RoutingSwitch:
+    """A durable switch seeded to ``mode`` so a test call is decided by it."""
     store = MemoryStore()
-    record = RoutingRecord.seeded("all", actor="transport-test", at=CLOCK())
+    record = RoutingRecord.seeded(mode, actor="transport-test", at=CLOCK())
     await store.compare_and_set(
         ROUTING_KEY, None, StoredDocument(version=1, document=record.to_document())
     )
     return RoutingSwitch(store, now=CLOCK)
+
+
+async def open_switch() -> RoutingSwitch:
+    """A durable switch pinned to ``all`` so a test call is admitted."""
+    return await switch_in_mode("all")
+
+
+def seeded_switch(mode: str, *, recording: bool = False) -> RoutingSwitch:
+    """A seeded switch built outside the event loop, for tests that read it."""
+    store = MemoryStore()
+    record = RoutingRecord.seeded(mode, actor="transport-test", at=CLOCK())
+    asyncio.run(
+        store.compare_and_set(
+            ROUTING_KEY, None, StoredDocument(version=1, document=record.to_document())
+        )
+    )
+    chooser = RecordingSwitch if recording else RoutingSwitch
+    return chooser(store, now=CLOCK)
+
+
+class RecordingSwitch(RoutingSwitch):
+    """The real switch, with every frozen decision it produced kept."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.decisions = []
+
+    async def decide(self, subject, *, refusal="", budget=None):
+        decision = await super().decide(subject, refusal=refusal, budget=budget)
+        self.decisions.append(decision)
+        return decision
 
 
 class RecordingLifecycle(CallLifecycle):
@@ -310,8 +362,10 @@ def run_call(
     legs=None,
     leg_builder=None,
     switch=None,
+    mode=None,
     counter=None,
     call_tokens=None,
+    operational_events=None,
     token: str = TOKEN,
     envelope_clock=CLOCK,
 ):
@@ -325,6 +379,10 @@ def run_call(
             return built[-1]
 
         chosen = leg_builder if leg_builder is not None else default_leg_builder
+
+        chosen_switch = switch
+        if chosen_switch is None:
+            chosen_switch = await (open_switch() if mode is None else switch_in_mode(mode))
 
         with mock.patch("transport.CallLifecycle", RecordingLifecycle):
             await handle_browser_call(
@@ -340,8 +398,9 @@ def run_call(
                 call_tokens=(
                     call_tokens if call_tokens is not None else token_registry()
                 ),
-                switch=switch if switch is not None else await open_switch(),
+                switch=chosen_switch,
                 counter=counter,
+                operational_events=operational_events,
                 secret=SECRET,
                 envelope_clock=envelope_clock,
                 leg_builder=chosen,
@@ -383,6 +442,19 @@ class BrowserCallTests(unittest.TestCase):
         self.assertTrue(
             any(c["role"] == "agent" and c["final"] is False for c in captions),
             "agent caption streams while speaking",
+        )
+        self.assertTrue(
+            any(c["role"] == "agent" and c["final"] is True for c in captions),
+            "the reply ends with one final agent caption",
+        )
+        self.assertTrue(
+            any(
+                c["role"] == "agent"
+                and c["final"] is True
+                and c["text"] == "Hola."
+                for c in captions
+            ),
+            "the greeting is the first final agent caption",
         )
         audio = by_type.get("audio", [])
         self.assertTrue(audio, "expected playout audio")
@@ -495,6 +567,37 @@ class BrowserCallTests(unittest.TestCase):
         errors = [m for m in ws.sent if m["type"] == "error"]
         self.assertEqual(len(errors), 1)
         self.assertIn("smuggled", errors[0]["message"])
+
+    def test_an_unbound_voice_is_refused_by_name_with_its_locale_before_a_socket(self):
+        body = json.loads(json.dumps(BODY))
+        body["voice"]["voice_id"] = "juergen"
+        ws, built, instances = run_call(
+            [browser_config(), {"type": "stop"}],
+            [],
+            channel=delivered_channel(body),
+        )
+
+        self.assertEqual(built, [], "no vendor socket before the voice binding is read")
+        self.assertEqual(instances, [], "no lifecycle is built for an unbound voice")
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("juergen", errors[0]["message"])
+        self.assertIn("de (German)", errors[0]["message"])
+        self.assertIn("422", errors[0]["message"])
+
+    def test_an_unknown_voice_is_refused_by_name_before_a_socket(self):
+        body = json.loads(json.dumps(BODY))
+        body["voice"]["voice_id"] = "ghost"
+        ws, built, _instances = run_call(
+            [browser_config(), {"type": "stop"}],
+            [],
+            channel=delivered_channel(body),
+        )
+
+        self.assertEqual(built, [], "no vendor socket before the voice binding is read")
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn('unknown voice "ghost"', errors[0]["message"])
 
     def test_first_message_must_be_config(self):
         ws, _built, _instances = run_call([audio_message()], [])
@@ -626,6 +729,240 @@ class RoutingAdmissionTests(unittest.TestCase):
             Decimal("0"),
             "the call's wire usage never reached the daily counter",
         )
+
+
+def run_subject_call(*, kind, agent_id, mode=None, switch=None):
+    """One browser call whose signed envelope declares ``kind``.
+
+    The token subject, the envelope's agent id and the browser's agent id are
+    the same string, exactly as the transport requires.
+    """
+    token = mint_call_token(
+        secret=SECRET,
+        call_id=CALL_ID,
+        subject=agent_id,
+        clock=CLOCK,
+        nonce=f"subject-kind-{kind}-{mode}-{agent_id}",
+    )
+    inbound = [browser_config(agentId=agent_id, callToken=token), {"type": "stop"}]
+    channel = delivered_channel(token=token, agent_id=agent_id, kind=kind)
+    return run_call(
+        inbound,
+        [],
+        channel=channel,
+        token=token,
+        switch=switch,
+        mode=mode,
+    )
+
+
+class SubjectKindRoutingTests(unittest.TestCase):
+    """Ticket 03: the routing subject's kind is the signed envelope's claim.
+
+    The kind is never read from the id: a tenant envelope whose agent id starts
+    with ``demo:`` is still a tenant call. Every refusal opens zero vendor
+    sessions, and a permitted call opens exactly one cascade connection.
+    """
+
+    def test_a_v2_demo_envelope_under_demo_opens_exactly_one_cascade_connection(self):
+        switch = seeded_switch("demo", recording=True)
+        ws, built, instances = run_subject_call(
+            kind="demo", agent_id="demo:audrey", switch=switch
+        )
+
+        self.assertEqual(1, len(built), "the demo envelope reached the leg builder")
+        self.assertEqual(1, len(instances), "one call, one cascade connection")
+        self.assertTrue(instances[0].ran)
+        self.assertFalse(any(m["type"] == "error" for m in ws.sent))
+        self.assertEqual(1, len(switch.decisions), "one frozen decision per call")
+        self.assertEqual(
+            {"id": "demo:audrey", "kind": "demo"},
+            switch.decisions[0].subject.to_document(),
+            "the decision carries the envelope's agent id and declared kind",
+        )
+        self.assertEqual("cascade", switch.decisions[0].disposition)
+
+    def test_a_v2_tenant_envelope_under_demo_opens_zero_vendor_sessions(self):
+        ws, built, instances = run_subject_call(
+            kind="tenant", agent_id=AGENT_ID, mode="demo"
+        )
+
+        self.assertEqual([], built, "no vendor session may open for a tenant call")
+        self.assertEqual([], instances, "no cascade connection for a tenant call")
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["code"], "managed")
+        self.assertIn(f'"{AGENT_ID}" is a tenant call', errors[0]["message"])
+        self.assertIn("demo only makes stored demo subjects eligible", errors[0]["message"])
+
+    def test_routing_off_refuses_both_kinds_with_zero_vendor_sessions(self):
+        for kind, agent_id in (("demo", "demo:audrey"), ("tenant", AGENT_ID)):
+            with self.subTest(kind=kind):
+                ws, built, instances = run_subject_call(
+                    kind=kind, agent_id=agent_id, mode="off"
+                )
+
+                self.assertEqual([], built, "no vendor session may open when routing is off")
+                self.assertEqual([], instances, "no cascade connection when routing is off")
+                errors = [m for m in ws.sent if m["type"] == "error"]
+                self.assertEqual(len(errors), 1)
+                self.assertEqual(errors[0]["code"], "managed")
+                self.assertEqual(
+                    "routing is off; every new call routes managed",
+                    errors[0]["message"],
+                )
+
+    def test_a_v1_envelope_is_tenant_under_every_mode(self):
+        for mode, expected in (("off", "managed"), ("demo", "managed"), ("all", "cascade")):
+            with self.subTest(mode=mode):
+                switch = seeded_switch(mode, recording=True)
+                ws, built, instances = run_subject_call(
+                    kind=None, agent_id=AGENT_ID, switch=switch
+                )
+
+                self.assertEqual(1, len(switch.decisions))
+                self.assertEqual(
+                    {"id": AGENT_ID, "kind": "tenant"},
+                    switch.decisions[0].subject.to_document(),
+                    "version 1 has no kind claim, so it is read as tenant",
+                )
+                if expected == "cascade":
+                    self.assertEqual(1, len(built))
+                    self.assertEqual(1, len(instances))
+                    self.assertFalse(any(m["type"] == "error" for m in ws.sent))
+                    continue
+                self.assertEqual([], built)
+                self.assertEqual([], instances)
+                errors = [m for m in ws.sent if m["type"] == "error"]
+                self.assertEqual(len(errors), 1)
+                self.assertEqual(errors[0]["code"], "managed")
+                if mode == "demo":
+                    self.assertIn(f'"{AGENT_ID}" is a tenant call', errors[0]["message"])
+
+    def test_a_tenant_envelope_with_a_demo_prefix_is_still_refused(self):
+        """The prefix proves nothing: a signed tenant kind wins over the id."""
+        ws, built, instances = run_subject_call(
+            kind="tenant", agent_id="demo:audrey", mode="demo"
+        )
+
+        self.assertEqual([], built, "a demo: prefix may never open a vendor session")
+        self.assertEqual([], instances)
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["code"], "managed")
+        self.assertIn('"demo:audrey" is a tenant call', errors[0]["message"])
+
+    def test_a_v2_demo_envelope_under_all_opens(self):
+        ws, built, instances = run_subject_call(
+            kind="demo", agent_id="demo:audrey", mode="all"
+        )
+
+        self.assertEqual(1, len(built))
+        self.assertEqual(1, len(instances))
+        self.assertTrue(instances[0].ran)
+        self.assertFalse(any(m["type"] == "error" for m in ws.sent))
+
+    def test_a_store_outage_still_routes_managed(self):
+        store = MemoryStore()
+        record = RoutingRecord.seeded("demo", actor="transport-test", at=CLOCK())
+        asyncio.run(
+            store.compare_and_set(
+                ROUTING_KEY, None, StoredDocument(version=1, document=record.to_document())
+            )
+        )
+        store.fail_reads = True
+        switch = RecordingSwitch(store, now=CLOCK)
+
+        ws, built, instances = run_subject_call(
+            kind="demo", agent_id="demo:audrey", switch=switch
+        )
+
+        self.assertEqual([], built, "an unreadable switch may open no vendor session")
+        self.assertEqual([], instances)
+        self.assertEqual(1, len(switch.decisions))
+        self.assertIsNone(switch.decisions[0].mode)
+        self.assertEqual("managed", switch.decisions[0].disposition)
+        errors = [m for m in ws.sent if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["code"], "managed")
+        self.assertIn("routing switch is unreadable", errors[0]["message"])
+
+
+class DemoTraceSubjectTests(unittest.TestCase):
+    """Ticket 17: the connect path passes the verified kind into the trace.
+
+    The demo call's trace is keyed by the demo call id (the app's randomUUID),
+    and every line that names a subject names ``demo:<voice>``. A demo envelope
+    carrying a tenant subject is refused before a leg is built, so a demo trace
+    can never carry a tenant identity.
+    """
+
+    def run_demo(
+        self,
+        *,
+        directory: str,
+        kind: str = "demo",
+        agent_id: str = DEMO_SUBJECT,
+        call_id: str = DEMO_CALL_ID,
+    ):
+        from server import operational_events_for
+
+        token = mint_call_token(
+            secret=SECRET,
+            call_id=call_id,
+            subject=agent_id,
+            clock=CLOCK,
+            nonce=f"demo-trace-{kind}-{agent_id}",
+        )
+        inbound = [browser_config(agentId=agent_id, callToken=token), {"type": "stop"}]
+        with mock.patch.dict(
+            os.environ, {"VOICE_PIPELINE_EVENTS_DIR": directory}
+        ):
+            return run_call(
+                inbound,
+                [],
+                channel=delivered_channel(
+                    token=token, call_id=call_id, agent_id=agent_id, kind=kind
+                ),
+                token=token,
+                switch=seeded_switch("demo"),
+                operational_events=operational_events_for,
+            )
+
+    def test_a_demo_call_writes_one_trace_keyed_by_call_id_with_its_demo_subject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _ws, _built, instances = self.run_demo(directory=directory)
+            path = Path(directory) / f"{DEMO_CALL_ID}.jsonl"
+
+            self.assertEqual(1, len(instances), "one demo call, one cascade connection")
+            self.assertTrue(path.exists(), "the demo call wrote no trace")
+            self.assertEqual(DEMO_CALL_ID, path.stem)
+            self.assertNotEqual(DEMO_SUBJECT, path.stem, "the subject named the file")
+            rows = [
+                json.loads(line)
+                for line in path.read_text().splitlines()
+                if line
+            ]
+
+        self.assertTrue(rows, "the demo trace is empty")
+        self.assertTrue(all(row["callId"] == DEMO_CALL_ID for row in rows))
+        subjects = [row["subject"] for row in rows if "subject" in row]
+        self.assertTrue(subjects, "no line named a subject")
+        self.assertEqual({DEMO_SUBJECT}, set(subjects))
+
+    def test_a_demo_envelope_with_a_tenant_subject_opens_no_leg_and_writes_no_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ws, built, instances = self.run_demo(
+                directory=directory, agent_id=AGENT_ID
+            )
+            files = list(Path(directory).glob("*.jsonl"))
+
+        self.assertEqual([], built, "a refused trace identity opened a leg")
+        self.assertEqual([], instances, "a refused trace identity opened a call")
+        self.assertEqual([], files, "a refused trace identity wrote an artifact")
+        errors = [message for message in ws.sent if message["type"] == "error"]
+        self.assertEqual(1, len(errors))
+        self.assertIn("subject", errors[0]["message"])
 
 
 class CallTokenAtConnectTests(unittest.TestCase):
@@ -858,6 +1195,124 @@ class LegBuilderTests(unittest.TestCase):
 
         handshake = json.loads(socket.sent[0])
         self.assertEqual(["Spanish"], handshake["languageBias"])
+
+
+class HoldReturnTests(unittest.TestCase):
+    """A hold return re-mints a token and body for the same call id.
+
+    The service accepts the fresh token after the first socket released its
+    claim, runs the greeting-less resumed body, carries the history into the
+    first model request, and appends to the same call-scoped trace file. No
+    vendor socket and no database: the transport's own fakes.
+    """
+
+    def test_a_re_minted_token_reclaims_the_same_call_and_continues_its_trace(self):
+        first_token = mint_call_token(
+            secret=SECRET,
+            call_id=DEMO_CALL_ID,
+            subject=DEMO_SUBJECT,
+            clock=CLOCK,
+            nonce="demo-hold-first",
+        )
+        second_token = mint_call_token(
+            secret=SECRET,
+            call_id=DEMO_CALL_ID,
+            subject=DEMO_SUBJECT,
+            clock=CLOCK,
+            nonce="demo-hold-second",
+        )
+        registry = token_registry()
+
+        fresh_body = json.loads(json.dumps(BODY))
+        resumed_body = json.loads(json.dumps(BODY))
+        resumed_body.pop("greeting")
+        history = [
+            {"role": "user", "content": "We run a bakery in Lisbon."},
+            {"role": "assistant", "content": "What is your busiest hour?"},
+        ]
+        resumed_body["history"] = history
+
+        with tempfile.TemporaryDirectory() as directory:
+            def events_for(call_id, subject, *, kind=None):
+                writer = EventWriter(pipeline="cascade", call_id=call_id)
+                sink = CallEventLog(directory, call_id=call_id)
+                return OperationalEvents(
+                    EventStream(writer, sink=sink, subject_kind=kind),
+                    subject=subject,
+                    now=CLOCK,
+                )
+
+            inbound = lambda token: [  # noqa: E731 - one shape for both calls
+                browser_config(agentId=DEMO_SUBJECT, callToken=token),
+                audio_message(),
+                {"type": "stop"},
+            ]
+            events = [SpeechStart("t1"), SpeechComplete("hola", turn_id="t1")]
+
+            first_ws, first_legs, _ = run_call(
+                inbound(first_token),
+                events,
+                channel=delivered_channel(
+                    fresh_body,
+                    token=first_token,
+                    call_id=DEMO_CALL_ID,
+                    agent_id=DEMO_SUBJECT,
+                    kind="demo",
+                ),
+                call_tokens=registry,
+                operational_events=events_for,
+            )
+            second_ws, second_legs, _ = run_call(
+                inbound(second_token),
+                events,
+                channel=delivered_channel(
+                    resumed_body,
+                    token=second_token,
+                    call_id=DEMO_CALL_ID,
+                    agent_id=DEMO_SUBJECT,
+                    kind="demo",
+                ),
+                call_tokens=registry,
+                operational_events=events_for,
+            )
+
+            # The fresh token is accepted for the same call after the first
+            # socket released its claim; the old token is never reused.
+            self.assertNotEqual(first_token, second_token)
+            self.assertEqual(registry.live_call_ids(), (), "both sockets are done")
+            self.assertEqual(
+                [m["type"] for m in first_ws.sent if m["type"] == "end"], ["end"]
+            )
+            self.assertEqual(
+                [m["type"] for m in second_ws.sent if m["type"] == "end"], ["end"]
+            )
+
+            # The resumed body's history is the first model request, so the
+            # next reply continues instead of starting blank. The fresh body
+            # opened with its greeting; the resumed one did not.
+            self.assertEqual(second_legs[0].model.requests[0][: len(history)], history)
+            self.assertEqual(
+                second_legs[0].model.requests[0][-1],
+                {"role": "user", "content": "hola"},
+                "the new turn follows the carried conversation",
+            )
+            self.assertEqual(first_legs[0].voice.greeted, ["Hola."])
+            self.assertEqual(second_legs[0].voice.greeted, [])
+
+            # One call id, one trace file: both runs appended to it.
+            traces = sorted(Path(directory).glob("*.jsonl"))
+            self.assertEqual(len(traces), 1, "no second call record")
+            lines = [
+                json.loads(line)
+                for line in traces[0].read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertTrue(lines, "the resumed call left trace lines")
+            self.assertEqual({line["callId"] for line in lines}, {DEMO_CALL_ID})
+            self.assertTrue(
+                any(line["type"] == "greeting.start" for line in lines),
+                "the first call's opening is in the same trace",
+            )
 
 
 if __name__ == "__main__":

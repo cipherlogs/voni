@@ -372,6 +372,47 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertFalse(document["greeting"]["spoken"])
         self.assertIn("no greeting", document["greeting"]["reason"])
 
+    def test_a_silent_open_starts_the_turn_layer_without_waiting_for_a_greeting(self):
+        # A hold return has no greeting to finish, so nothing else may hold the
+        # turn layer back: the caller's first audio must be served while the
+        # socket stays open.
+        body = json.loads(json.dumps(BODY))
+        body["greeting"] = ""
+
+        class HangingTransport(FakeTransport):
+            def __init__(self, inputs=()) -> None:
+                super().__init__(inputs)
+                self.stop_signal = asyncio.Event()
+
+            async def receive(self):
+                if self.inputs:
+                    return self.inputs.pop(0)
+                await self.stop_signal.wait()
+                return BrowserStop()
+
+        transport = HangingTransport([AudioFrame(b"\x00\x01")])
+
+        async def scenario():
+            task = asyncio.ensure_future(
+                self.make(transport=transport, body=body).run()
+            )
+            for _ in range(100):
+                if self.stream.started:
+                    break
+                await asyncio.sleep(0.01)
+            started = self.stream.started
+            events = [type(event) for event in self.stream.events]
+            transport.stop_signal.set()
+            end = await asyncio.wait_for(task, timeout=2.0)
+            return started, events, end
+
+        started, events, end = asyncio.run(scenario())
+
+        self.assertTrue(started, "a silent open must not wait for a greeting")
+        self.assertEqual([SpeechStart, SpeechComplete], events)
+        self.assertEqual([b"\x00\x01"], self.speech.audio)
+        self.assertEqual("stop", end.ended_by)
+
     def test_a_greeting_failure_ends_the_call_visibly_before_the_stream_starts(self):
         transport = FakeTransport([BrowserStop()])
 

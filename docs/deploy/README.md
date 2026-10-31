@@ -1,21 +1,21 @@
-# Cascade deployment record (M17)
+# Cascade deployment record (ticket 19)
 
-> **Superseded 2026-10-30:** the host is **Northflank Sandbox**. Setup lives in
-> [`deploy/northflank/README.md`](../../deploy/northflank/README.md). The
-> Fly.io material below is history and the Fly app is not deployed.
+The record for the container host and the one-instance topology. The host
+decision itself is in [`meta-cascade-host.md`](meta-cascade-host.md); the setup
+path is [`deploy/northflank/README.md`](../../deploy/northflank/README.md); the
+committed descriptor is
+[`deploy/northflank/service.json`](../../deploy/northflank/service.json). This
+file records what the descriptor implements and how to check it. Ticket 135
+owned the original config; ticket 19 moved the committed shape to one Northflank
+instance.
 
-The record for the container host and the two-instance topology. The host
-decision itself is in [`meta-cascade-host.md`](meta-cascade-host.md) (ticket
-04); this file records what the committed config implements and how to check
-it. Ticket 135 owns the config; tickets 136–141 own the token, the protocol
-version, the health endpoints, the drain supervisor and the version report.
+## Host: Northflank, not Cloudflare Workers
 
-## Host: Fly.io, and not Cloudflare Workers
-
-The cascade service runs on **Fly.io** as one container per machine. Fly holds a
-long-lived WebSocket for the length of a call, a rolling deploy brings a new
-machine up before an old one goes away, and a normal container keeps the Python
-process, the socket loop and the durable-store adapter unchanged.
+The cascade service runs on **Northflank** as **one combined service** with
+**one instance**. Northflank's public HTTP/2 port carries the long-lived
+WebSocket for the length of a call, a normal container keeps the Python
+process, the socket loop and the durable-store adapter unchanged, and one
+Postgres addon supplies the shared store.
 
 **Cloudflare Workers is excluded** for the cascade service, and the reason is
 recorded rather than implied: Workers is request/response oriented and cannot
@@ -28,59 +28,18 @@ Vercel is the AI Gateway URL for the managed path, never a cascade host.
 
 ## Topology
 
-Two machines per app, physically one region (`iad`) to start.
-
-| | Fly app | Image | Config |
+| | Resource | Image | Descriptor |
 |---|---|---|---|
-| Cascade voice service | `voni-voice-pipeline` | `voice-pipeline/Dockerfile` (built here) | `deploy/fly.voice-pipeline.toml` |
-| App | `voni-app` | built and pushed by the app's own pipeline | `deploy/fly.voni.toml` |
+| Cascade voice service | Northflank combined service `voice-pipeline` | `voice-pipeline/Dockerfile` (built here) | `deploy/northflank/service.json` |
+| App | `voni-app`, deployed by its own pipeline | built and pushed by the app's own pipeline | not part of this descriptor |
 
-- The app and the service deploy separately, with separate configs, images,
-  ports and secret sets. A protocol version mismatch is a deploy error; the
-  health endpoints make it visible before a call.
-- **Two machines minimum.** `min_machines_running = 2` on both apps: a rolling
-  deploy must never remove the last machine while a call is live on it. Any
-  machine may accept a new call; a live call stays on its machine until it ends.
-- **No sticky sessions.** One call per socket means there is nothing to pin: the
-  proxy may place a new socket on either machine.
-- **WebSocket-aware.** Concurrency is counted in `connections`, not requests;
-  `auto_stop_machines = false` so a machine is never stopped under a live call;
-  the image runs one uvicorn worker (a second worker in the same container would
-  split a call's socket and its state).
-- **Rolling, with health checks.** `[deploy] strategy = "rolling"`; the platform
-  probe is `GET /healthz` (liveness, no vendor touched). Readiness (`/readyz`,
-  ticket 139) is deliberately not the platform probe: a draining machine must
-  stay reachable while it finishes live calls.
-- **Liveness vs readiness.** `/healthz` answers only "the process is up" and
-  touches no store, vendor or key, so a store outage never restarts a machine
-  serving live calls. `/readyz` answers "this instance may take a new call" and
-  reports `protocolVersion`, the drain state, and one check each for the
-  durable store, the daily counter and the breaker record. Any unreadable
-  dependency returns 503 and names the reason; a missing breaker record is a
-  fresh deploy, not an outage. Readiness never opens a vendor socket. A
-  draining instance returns 503 on `/readyz` and refuses new calls (the socket
-  gets `{"type":"error","code":"draining"}`), while calls already running finish.
-- **Drain seam.** `kill_signal = "SIGTERM"`, `kill_timeout = 30`, which equals
-  the recorded `deploy.drain_max_wait_ms` (30 000 ms) in
-  `voice-pipeline/cascade/thresholds.json`. On SIGTERM the drain supervisor
-  (`voice-pipeline/cascade/drain.py`, ticket 140) flips the `DrainState` the
-  routes read — `/readyz` 503, new sockets refused with
-  `{"type":"error","code":"draining"}`, the call-body route 503 — then waits
-  for the calls this process accepted, bounded by that recorded value, and only
-  then asks uvicorn to exit. It never cancels a call task: reaching the bound is
-  logged as an operational-policy event (`deploy.drain_max_wait_ms reached; N
-  live call(s) still running`) and the process exits; the platform's
-  `kill_timeout` is the same bound. A call held open across a rolling deploy
-  completes because the old machine keeps serving it while the proxy sends new
-  calls to the healthy machine.
-- **Shared state.** Only the durable breaker, routing switch and daily counter
-  are shared, and they are read through the store protocol in
-  `voice-pipeline/cascade/store.py`. The concrete deployment choice is a **Fly
-  Postgres** attachment injecting `DATABASE_URL` into both machines; the
-  single-host `SqliteStore` stays a local/test adapter. The asyncpg adapter is
-  `voice-pipeline/cascade/pg_store.py` (ticket 139) and implements the same
-  `DurableStore` protocol; readiness proves it is readable on every probe
-  without touching a vendor.
+- **One service, one instance.** `service.deploy.instances = 1`. The
+  `CallTokenRegistry` and the delivered-body channel are in-process
+  (`voice-pipeline/cascade/token.py`), so a second instance would break single
+  use and hold return. One instance is a correctness property, not only a
+  hosting choice.
+- **No sticky sessions.** One call per socket means there is nothing to pin.
+  The public HTTP/2 port forwards to `ports[0].internalPort = 8766`.
 - **One container for the Python service.** `voice-pipeline/Dockerfile` copies
   `voice-pipeline/` and the one bridge module it imports
   (`telephony-bot/voice_judge.py`), installs `voice-pipeline/requirements.txt`,
@@ -91,6 +50,48 @@ Two machines per app, physically one region (`iad`) to start.
   The budgets stay single-source; the app tree does not enter the image. The
   image builds from the repository root (the context is set in
   `.dockerignore`), runs as a non-root user and holds one uvicorn worker.
+- **Liveness vs readiness.** The platform probe is HTTP liveness
+  `GET /healthz` on `8766` (`healthCheck.type = "liveness"`). Readiness
+  (`/readyz`, ticket 139) is deliberately **not** the platform probe: a
+  draining instance must stay reachable while it finishes live calls.
+  `/healthz` touches no store, vendor or key, so a store outage never restarts
+  an instance serving live calls. `/readyz` answers "this instance may take a
+  new call": it reports `protocolVersion`, the drain state, and one check each
+  for the durable store, the daily counter and the breaker record. A draining
+  instance returns 503 on `/readyz` and refuses new calls with
+  `{"type":"error","code":"draining"}`, while calls already running finish.
+- **One Postgres addon.** `database.type = "postgres"`, name `voni-store`,
+  injecting `DATABASE_URL`. Only the durable breaker, routing switch and daily
+  counter are shared, and they are read through the store protocol in
+  `voice-pipeline/cascade/store.py`. The asyncpg adapter is
+  `voice-pipeline/cascade/pg_store.py`; readiness proves it is readable on
+  every probe without touching a vendor. The single-host `SqliteStore` stays a
+  local/test adapter.
+- **One single-read/write volume.** `volumes` names exactly one entry,
+  `voice-events`, `accessMode = "ReadWriteOnce"`, `1` GB, mounted at
+  `/var/lib/voni`. Every call writes one operational-event JSONL artifact under
+  `VOICE_PIPELINE_EVENTS_DIR = /var/lib/voni/events`; the image creates that
+  directory for uid 10001. The artifact is best-effort: if the write fails, the
+  call still runs and the end message carries `eventsError` with the reason
+  instead of claiming an `eventsPath`.
+- **Drain seam.** `terminationGracePeriodSeconds = 30` equals the recorded
+  `deploy.drain_max_wait_ms` (30 000 ms) in
+  `voice-pipeline/cascade/thresholds.json`. On SIGTERM the drain supervisor
+  (`voice-pipeline/cascade/drain.py`, ticket 140) flips the `DrainState` the
+  routes read — `/readyz` 503, new sockets refused with
+  `{"type":"error","code":"draining"}`, the call-body route 503 — then waits
+  for the calls this process accepted, bounded by that recorded value, and only
+  then exits. It never cancels a call task: reaching the bound is logged as an
+  operational-policy event (`deploy.drain_max_wait_ms reached; N live call(s)
+  still running`) and the process exits. One instance means a deploy refuses
+  new demo calls for up to the drain bound; deploy outside demo hours.
+
+## Deploy window
+
+One instance means there is no second instance to serve new calls while the
+old one drains. A deploy therefore refuses new calls for up to the 30-second
+bound and the visitor sees the unavailable state; a live call finishes. That
+window is the accepted cost of the one-instance shape, not a fault.
 
 ## Shared state: the routing switch
 
@@ -112,17 +113,18 @@ cd voice-pipeline
 A missing switch reads as `off` (fail-safe), not an error; an unreadable or
 corrupt switch is a named failure. A flip governs new calls only: a live call
 keeps the decision it was admitted with and finishes. The audit trail records
-who, when, from, to and why, which is the dated record tickets 153, 155 and 161
-cite. The store is exactly one of `--sqlite`/`CASCADE_STORE_PATH` or
-`--database-url`/`DATABASE_URL`; there is no hidden default.
+who, when, from, to and why. The store is exactly one of
+`--sqlite`/`CASCADE_STORE_PATH` or `--database-url`/`DATABASE_URL`; there is no
+hidden default.
 
 ## Protocol version
 
 The app and the service speak exactly one protocol version: `PROTOCOL_VERSION`
 in `voice-pipeline/cascade/token.py` and `CASCADE_PROTOCOL_VERSION` in
-`voni/src/lib/voice/cascade-session.ts`. `voice-pipeline/cascade/test_protocol_version.py`
-reads the app's export and fails when the two drift, so a half-deployed pair
-cannot silently run two versions.
+`voni/src/lib/voice/cascade-session.ts`.
+`voice-pipeline/cascade/test_protocol_version.py` reads the app's export and
+fails when the two drift, so a half-deployed pair cannot silently run two
+versions.
 
 The browser's one config frame carries `protocolVersion`. A missing or unknown
 version is refused before the body is claimed or any vendor socket opens, with
@@ -136,12 +138,10 @@ reports `protocolVersion`, and the client checks it on a call that did open.
 The service reports its **build** and its **protocol** version, not only the
 protocol one. `GET /healthz` returns `service`, `buildVersion`, `buildSource`
 and `protocolVersion`; the end message on every call carries `buildVersion` and
-`protocolVersion`. The build comes from the host environment —
-`VOICE_PIPELINE_BUILD_VERSION` if the host names builds, otherwise Fly's
-injected `FLY_IMAGE_REF`. When neither is set the report says `unversioned`
+`protocolVersion`. The build comes from the host environment,
+`VOICE_PIPELINE_BUILD_VERSION`. When it is unset the report says `unversioned`
 (`source: "none"`): an honest absence, never a guessed value. The protocol
-number is `cascade.token.PROTOCOL_VERSION`, re-exported by
-`cascade.version` — one copy, ticket 138's.
+number is `cascade.token.PROTOCOL_VERSION`, re-exported by `cascade.version`.
 
 `deploy/versions.json` is the artifact: it names the app and the service, the
 version each is deployed at (the app's is pinned to `voni/package.json`; the
@@ -152,32 +152,28 @@ deploy error before a cutover claim, not a surprise mid-call.
 
 ## Secrets
 
-Names only, set on the app with `fly secrets set`; `deploy/voice-pipeline.env.example`
-is the list and carries no values. The service reads `META_API_KEY`,
-`META_IDENTIFIER_SALT`, `ASSEMBLYAI_API_KEY`, `AI_GATEWAY_API_KEY`,
-`VONI_TOOL_SECRET`, `VOICE_PIPELINE_ENVELOPE_SECRET` and `DATABASE_URL`. The app
-has its own set on its own app; the two are never shared.
+Names only, set in the Northflank secret group linked to the `voice-pipeline`
+service; `deploy/voice-pipeline.env.example` is the list and carries no values.
+The service reads `META_API_KEY`, `META_IDENTIFIER_SALT`, `ASSEMBLYAI_API_KEY`,
+`AI_GATEWAY_API_KEY`, `VONI_TOOL_SECRET`,
+`VOICE_PIPELINE_ENVELOPE_SECRET` and `DATABASE_URL`. There is **exactly one
+envelope secret**, `VOICE_PIPELINE_ENVELOPE_SECRET`: the app signs with it and
+the service verifies with it, one value on both sides, never committed. The app
+has its own secret set on its own deploy; the two are never shared.
 
 The deployment also carries two **required non-secret host settings**, recorded
 in `deploy/voice-pipeline.env.example` and this record: `META_REASONING_EFFORT`
 is the measured effort (M03). Spark has no default, so a default-rung call fails
-setup while it is unset; the host supplies the measured value with
-`fly secrets set`, never this repository. `VOICE_PIPELINE_TOOL_BASE_URL` is the
-app origin the tool route calls; when it is empty no `ToolExecutor` is
-constructed and every tool call is dropped. Neither required setting is written
-into `[env]` or Compose's `environment` with an empty value: Compose gives that
-block precedence over `env_file`, and a blank entry is the blank runtime value on
-either host, so an empty entry would prevent the real value from being used.
-`python deploy/topology.py` fails by name when a required setting is present but
-empty, and when the example or this record does not name it.
-
-Each call writes one operational-event JSONL artifact under
-`VOICE_PIPELINE_EVENTS_DIR`; the image sets it to `/var/lib/voni/events` and
-creates that directory for uid 10001. The artifact is best-effort: if the
-directory cannot be created or a line cannot be written, the call still runs,
-the sink is disabled, and the end message carries `eventsError` with the reason
-instead of claiming an `eventsPath`. The deployed setting is the same in
-`fly.voice-pipeline.toml`, `docker-compose.yml` and the example.
+setup while it is unset; the host supplies the measured value, never this
+repository. `VOICE_PIPELINE_TOOL_BASE_URL` is the app's public origin
+(`https://app.voni.cc`) the tool route calls; when it is empty no
+`ToolExecutor` is constructed and every tool call is dropped. Neither required
+setting is written into the descriptor `env` or Compose's `environment` with an
+empty value: Compose gives that block precedence over `env_file`, and a blank
+entry is the blank runtime value, so an empty entry would prevent the real value
+from being used. `python deploy/topology.py` fails by name when a required
+setting is present but empty, when the example or this record does not name it,
+and when the tool base URL is not the app's public origin.
 
 The repository scan is ticket 141's second guard: `python deploy/topology.py`
 runs it (and `python deploy/secret_scan.py` runs it alone). It reports a
@@ -205,23 +201,25 @@ python deploy/secret_scan.py         # the credential scan alone
 cd voice-pipeline && python -m unittest test_deploy_topology test_deploy_versions -v
 ```
 
-The validator is the same file a reviewer reads: it fails by name when the
-instance count drops to one, when the `/healthz` probe is removed, when the
-deploy stops being rolling, when the drain timeout is shorter than the recorded
-bound, when a secret value appears in a committed file, when the version
-artifact and the code disagree on the protocol, and when the app and the service
-stop being separate deploys.
+The validator is the same file a reviewer reads. It fails by name when the
+descriptor names a second service, when the instance count is not exactly one,
+when the Postgres addon or the single-read/write volume is missing or doubled,
+when the liveness probe is not `GET /healthz` on 8766, when the grace period is
+not the recorded drain bound, when a deleted host descriptor reappears, when the
+example names a second envelope secret or carries a value, when a secret value
+appears in a committed file, and when the version artifact and the code disagree
+on the protocol.
 
 ## Rehearsal
 
-`deploy/docker-compose.yml` reproduces the shape locally: two service replicas,
-a `/healthz` health check, `SIGTERM` with a 30 s grace period, and the app as a
-separate container. Rehearse a rolling deploy there before trusting one:
+`deploy/docker-compose.yml` reproduces the shape locally: **one** service
+replica, the one volume mounted at `/var/lib/voni`, a `/healthz` health check,
+`SIGTERM` with a 30 s grace period, and the app as a separate container:
 
 ```sh
-docker compose -f deploy/docker-compose.yml up --build --scale voice-pipeline=2
+docker compose -f deploy/docker-compose.yml up --build
 ```
 
-A call held open across `docker compose up --scale voice-pipeline=2 --no-deps`
-(or a `fly deploy --strategy rolling`) is the ticket 135 acceptance evidence; the
-drain supervisor that makes the wait a policy is ticket 140.
+The drain supervisor that makes the wait a policy is ticket 140. A two-replica
+rehearsal is not this topology: the token registry is in-process, so the
+rehearsal runs one replica and a deploy is the only drain window.

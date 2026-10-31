@@ -1043,8 +1043,27 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         if verdict.failure_class is FailureClass.DO_NOT_OPEN:
             await self._close_socket()
             if code == 1000:
+                # A clean close ends the session, not the call: the next
+                # speak must open a new one. Without this a barge-in during
+                # the greeting left the reply path with no socket and the
+                # call died with "the synthesis session is not open".
+                self.needs_reconnect = True
                 return CloseDecision(verdict=verdict, action=CloseAction.CLEAN)
             raise self._fail(verdict, f"{where}: {verdict.reason}")
+        if self._discarding and self._reply is None:
+            # A cancel we sent (a barge-in during the greeting) makes the
+            # vendor close an idle socket. There is no request in flight and no
+            # audio to resume, so this is a planned handover, not a failure:
+            # the next speak opens a new session without spending the call's
+            # one trigger reconnect.
+            await self._close_socket()
+            # No budget entry: a 1006 is classified as a trigger, and the
+            # budget rightly refuses to file it as planned. No failure is
+            # spent and no reconnect is counted; the next speak reopens.
+            self.needs_reconnect = True
+            return CloseDecision(
+                verdict=verdict, action=CloseAction.PLANNED_RECONNECT
+            )
         # Capture where the reply got to before the old session is replaced.
         resume, resume_text = self._unheard_point()
         decision = self._budget.failed(verdict)

@@ -44,12 +44,14 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from cascade.end_intent import wants_to_end
 from cascade.event_rules import EventRules
 from cascade.meta_llm import MessageHistory, MetaLLMTurn, last_complete_sentence
 from cascade.meta_stt import SpeechComplete, SpeechStart
 from cascade.thresholds import require_bound
 from cascade.tools import (
-    END_CALL_TOOL,
+    CALL_CONTROL_TOOLS,
+    DeniedCall,
     EndCallSignal,
     ToolLoop,
     closing_line_from,
@@ -81,6 +83,9 @@ EndCallSink = Callable[[], Awaitable[None]]
 #: The idle keepalive cadence (ticket 53's bound; never a literal here).
 KEEPALIVE_BOUND = "tts.keepalive_interval_ms"
 
+#: How long a reply may stay silent before one short spoken ack covers it.
+ACK_DELAY_BOUND = "reply.ack_delay_ms"
+
 
 class CascadeTurnStream:
     """The turn layer for one cascade call, on the lifecycle's seams."""
@@ -103,6 +108,9 @@ class CascadeTurnStream:
         on_interrupted: InterruptSink | None = None,
         on_turn_billed: BilledSink | None = None,
         on_end_call: EndCallSink | None = None,
+        history: Sequence[Mapping[str, Any]] = (),
+        ack_lines: Sequence[str] = (),
+        ack_delay_ms: float | None = None,
     ) -> None:
         self._llm = llm
         self._tts = tts
@@ -118,6 +126,16 @@ class CascadeTurnStream:
         self._on_interrupted = on_interrupted
         self._on_turn_billed = on_turn_billed
         self._on_end_call = on_end_call
+        self._ack_lines = tuple(ack_lines)
+        self._ack_delay_s = (
+            (float(require_bound(ACK_DELAY_BOUND)) if ack_delay_ms is None else float(ack_delay_ms))
+            / 1000.0
+        )
+        #: One ack watcher per reply; never spoken as the reply or captioned.
+        self._ack_task: asyncio.Task | None = None
+        self._ack_index = 0
+        #: Serialises the ack and the reply on the one synthesis session.
+        self._voice_lock = asyncio.Lock()
 
         self._turns = TurnStateStore(clock=self._clock, source="meta")
         self._rules = EventRules(
@@ -128,13 +146,20 @@ class CascadeTurnStream:
             stall_guard_ms=stall_guard_ms,
         )
         # The system prompt belongs to the model client; this history holds the
-        # conversation and the browser's hidden context only.
+        # conversation and the browser's hidden context only. A hold return
+        # seeds it with the signed body's carried turns.
         self._history = MessageHistory()
+        self._history.seed(history)
         self._tool_loop: ToolLoop | None = None
 
         self._reply_task: asyncio.Task | None = None
         self._active: TurnState | None = None
         self._speaking = False
+        #: The text spoken in the current reply, so the browser gets one final
+        #: caption after the audio (not only sentence partials).
+        self._reply_text = ""
+        #: Whether the caller's final asked to end (call control, not a tool).
+        self._caller_wants_end = False
         self._buffer = ""
         self._failure: BaseException | None = None
         self._records: dict[str, MetaLLMTurn] = {}
@@ -226,8 +251,12 @@ class CascadeTurnStream:
         if self._may_request is not None and not self._may_request("llm"):
             return
         self._active = state
+        if self._ledger is not None:
+            self._ledger.mark("floor_take")
         self._reply_task = asyncio.ensure_future(self._reply(state))
         self._reply_task.add_done_callback(self._reply_done)
+        if self._ack_lines:
+            self._ack_task = asyncio.ensure_future(self._ack_if_slow())
 
     def _reply_done(self, task: asyncio.Task) -> None:
         if task.cancelled():
@@ -243,6 +272,9 @@ class CascadeTurnStream:
         await asyncio.sleep(0)
         key = state.id.event_id
         self._buffer = ""
+        # The caller's words end the call, not the model's tool choice: Spark
+        # does not call the hang-up tool on a caller request (measured 0/20).
+        self._caller_wants_end = wants_to_end(state.final_text, self._locale_code)
         record = MetaLLMTurn()
         cancelled = False
         try:
@@ -252,12 +284,23 @@ class CascadeTurnStream:
             cancelled = True
             raise
         finally:
+            ack_task = self._ack_task
+            self._ack_task = None
+            if ack_task is not None and not ack_task.done():
+                ack_task.cancel()
+                await asyncio.gather(ack_task, return_exceptions=True)
             record.close()
             self._records[key] = record
             if key not in self._completed:
                 self._completed.append(key)
             self._speaking = False
             self._active = None
+            # One final agent caption per reply: the browser appends the turn
+            # once, after the audio, instead of holding a partial forever.
+            spoken = self._reply_text.strip()
+            self._reply_text = ""
+            if spoken:
+                await self._caption("agent", spoken, True)
             if not cancelled:
                 # The turn's usage chunk exists now: the call records and
                 # prices it before the next utterance, not at the next event.
@@ -275,7 +318,7 @@ class CascadeTurnStream:
             async for item in self._complete(record):
                 if isinstance(item, ToolCallRequest):
                     calls.append(item)
-                    if item.name == END_CALL_TOOL and closing_line_from(
+                    if item.name in CALL_CONTROL_TOOLS and closing_line_from(
                         item.arguments
                     ) is not None:
                         # The model has already decided to end the call: the
@@ -285,6 +328,8 @@ class CascadeTurnStream:
                     await self._say(item.text)
             await self._flush()
             if not record.tool_calls or self._tool_executor is None:
+                if self._caller_wants_end:
+                    await self._request_hangup(state)
                 return record
             outcomes = await execute_turn_calls(self._tool_executor, record, calls)
             signal = next(
@@ -293,8 +338,18 @@ class CascadeTurnStream:
             if signal is not None:
                 await self._finish_end_call(signal, state)
                 return record
+            if self._caller_wants_end and any(
+                isinstance(item, DeniedCall) and item.name in CALL_CONTROL_TOOLS
+                for item in outcomes
+            ):
+                # The model asked to hang up with no closing line; the caller
+                # already asked to end, so the spoken reply is the goodbye.
+                await self._request_hangup(state)
+                return record
             record = await self._continue_after_tools(record, outcomes)
             if not record.tool_calls:
+                if self._caller_wants_end:
+                    await self._request_hangup(state)
                 return record
 
     def _complete(self, record: MetaLLMTurn):
@@ -343,8 +398,23 @@ class CascadeTurnStream:
         """
         self._stop_speech()
         line = (signal.closing_line or "").strip()
-        if line:
+        # The model often streams its goodbye as content and then calls the
+        # tool with the same line as `closing_line` (Gemini does; Spark does
+        # not). The caller must hear one goodbye: speak the argument only when
+        # the turn spoke nothing, and treat the spoken text as the closing.
+        spoken = self._reply_text.strip()
+        if line and not spoken:
             await self._speak(line, force=True)
+        await self._request_hangup(state)
+
+    async def _request_hangup(self, state: TurnState) -> None:
+        """Close the turn as ``end_call`` and ask the call to drain.
+
+        The spoken reply (the goodbye) is already on the wire; nothing else is
+        synthesized. A barge-in before the hangup is taken withdraws the
+        decision and keeps the call live.
+        """
+        self._stop_speech()
         self._turns.close(turn=state.id, reason="end_call")
         # Armed only after the line played: a barge-in before this point
         # cancels the closing speech and withdraws the end-call decision.
@@ -471,16 +541,23 @@ class CascadeTurnStream:
             and not self._may_request("tts")
         ):
             return
+        self._reply_text = f"{self._reply_text} {text}".strip()
         await self._caption("agent", text, False)
-        async for audio in self._tts.speak(text):
-            self._speaking = True
-            await self._emit_audio(
-                audio, kind="reply", flush_id=getattr(self._tts, "flush_id", None)
-            )
+        async with self._voice_lock:
+            async for audio in self._tts.speak(text):
+                self._speaking = True
+                await self._emit_audio(
+                    audio, kind="reply", flush_id=getattr(self._tts, "flush_id", None)
+                )
 
     async def _cancel_reply(self) -> None:
         """Cut the sounding reply with ``Cancel``, then release the floor."""
         state = self._active
+        ack_task = self._ack_task
+        self._ack_task = None
+        if ack_task is not None and not ack_task.done():
+            ack_task.cancel()
+            await asyncio.gather(ack_task, return_exceptions=True)
         task = self._reply_task
         if task is not None and not task.done():
             task.cancel()
@@ -498,6 +575,39 @@ class CascadeTurnStream:
         self._active = None
         if self._on_interrupted is not None:
             await self._on_interrupted()
+
+    async def _ack_if_slow(self) -> None:
+        """Speak one short line if the reply has not started by the bound.
+
+        The ack is not a turn: it writes no reply text, sends no caption and
+        makes no model or tool request. It holds the voice lock only while its
+        own short line plays, so the reply follows it instead of overlapping.
+        """
+        if not self._ack_lines:
+            return
+        try:
+            await self._sleep(self._ack_delay_s)
+        except asyncio.CancelledError:
+            return
+        if self._ending or self._speaking or self._reply_text.strip():
+            return
+        line = self._ack_lines[self._ack_index % len(self._ack_lines)]
+        self._ack_index += 1
+        if self._may_request is not None and not self._may_request("tts"):
+            return
+        async with self._voice_lock:
+            if self._ending or self._speaking or self._reply_text.strip():
+                return
+            try:
+                async for audio in self._tts.speak(line):
+                    await self._emit_audio(
+                        audio, kind="ack", flush_id=getattr(self._tts, "flush_id", None)
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A failed filler is not the reply: the turn still speaks.
+                return
 
     async def _cancel_voice(self) -> None:
         cancel = getattr(self._tts, "cancel", None)

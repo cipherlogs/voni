@@ -1,31 +1,32 @@
-"""The deployment topology as a checked artifact (ticket 135).
+"""The deployment topology as a checked artifact (ticket 19).
 
-The ticket's acceptance criteria are properties of the files a deploy reads, not
-of a Python object, so this module reads those files and returns a list of
-named violations (the house style: an empty list means valid, the same shape as
+The acceptance criteria are properties of the files a deploy reads, not of a
+Python object, so this module reads those files and returns a list of named
+violations (the house style: an empty list means valid, the same shape as
 ``config.validate_pipeline_config``). ``python deploy/topology.py`` prints them
 and exits non-zero; ``voice-pipeline/test_deploy_topology.py`` asserts the
 committed topology validates and that each load-bearing rule can fail.
 
 What is checked:
 
-* the host is Fly.io and the shape is one container, two machines, rolling
-  deploys with a liveness health check (host record: ticket 04);
-* the sockets are treated as connections, machines never auto-stop under a live
-  call, and a SIGTERM waits at least the recorded drain bound;
-* the app and the service are separate Fly apps, separate images and separate
-  secret sets;
+* the host is Northflank and the shape is **one** combined service running
+  **one** instance, a single Postgres addon and one single-read/write volume
+  (``deploy/northflank/service.json`` is the committed topology record);
+* the platform probe is HTTP liveness ``GET /healthz`` on 8766; readiness is
+  not the platform probe, because a draining instance must stay reachable to
+  finish live calls;
+* the platform grace period equals the recorded 30-second drain bound, so a
+  deploy drains live calls and refuses new ones for exactly that window;
+* the Fly descriptors are deleted and no topology rule resurrects them;
+* no secret value is committed anywhere, only names, and the environment
+  example carries exactly one envelope secret, blank;
 * the artifact records both parties' versions and they speak one protocol
-  version (ticket 141): a mismatch is a deploy error;
-* no secret value is committed anywhere, only names, and every name is one the
-  code actually reads; the repository scan (``deploy/secret_scan.py``) is the
-  wider guard, reporting a committed credential by file, line and kind — never
-  its value;
-* the image's pinned runtime dependencies agree with ``requirements-ci.txt`` and
-  the exposed port agrees with the proxy and the command.
+  version: a mismatch is a deploy error;
+* the image's pinned runtime dependencies agree with ``requirements-ci.txt``
+  and the exposed port agrees with the descriptor and the command.
 
-Nothing here calls the Fly API. The config is the claim; a deploy reads the
-same files.
+Nothing here calls the Northflank API. The descriptor is the claim; a deploy
+reads the same file.
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ from __future__ import annotations
 import json
 import re
 import sys
-import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -43,12 +43,14 @@ try:  # imported as ``deploy.topology`` (tests) or run as a script (deploy/topol
 except ImportError:  # pragma: no cover - the script path
     import secret_scan  # type: ignore[no-redef]
 
-#: Two machines minimum: a rolling deploy must never remove the last one while
-#: a live call is pinned to it (spec "Deployment / Topology").
-MIN_INSTANCES = 2
+#: One instance, and no more: the token registry and the delivered-body channel
+#: are in-process, so a second instance would break single use and hold return.
+MIN_INSTANCES = 1
+MAX_INSTANCES = 1
 
-SERVICE_CONFIG = "deploy/fly.voice-pipeline.toml"
-APP_CONFIG = "deploy/fly.voni.toml"
+#: The committed Northflank descriptor. It is the topology record a deploy
+#: reads; the setup path next to it explains how the resources are created.
+SERVICE_CONFIG = "deploy/northflank/service.json"
 COMPOSE_CONFIG = "deploy/docker-compose.yml"
 DOCKERFILE = "voice-pipeline/Dockerfile"
 DOCKERIGNORE = ".dockerignore"
@@ -61,11 +63,35 @@ APP_PROTOCOL_CLIENT = "voni/src/lib/voice/cascade-session.ts"
 RUNTIME_REQUIREMENTS = "voice-pipeline/requirements.txt"
 CI_REQUIREMENTS = "requirements-ci.txt"
 
+#: The Fly descriptors this ticket deleted. The glob is the rule: a descriptor
+#: reintroduced under any name fails the validator, not only these two.
+FLY_CONFIGS: tuple[str, ...] = (
+    "deploy/fly.voice-pipeline.toml",
+    "deploy/fly.voni.toml",
+)
+FLY_DESCRIPTOR_GLOB = "deploy/fly.*.toml"
+
+#: The one envelope secret. One value on both sides (the app signs, the service
+#: verifies); the environment example names it once and carries no value.
+ENVELOPE_SECRET_NAME = "VOICE_PIPELINE_ENVELOPE_SECRET"
+
+#: The app's public origin is the pipeline's tool base URL. It is not a secret
+#: and it is not the pipeline host: the service calls the app's tool route.
+APP_PUBLIC_ORIGIN = "https://app.voni.cc"
+
+#: The liveness path and the one port the public proxy forwards to.
+LIVENESS_PATH = "/healthz"
+SERVICE_PORT = 8766
+
+#: Where the single-read/write volume is mounted, and the events directory under
+#: it. The image creates both for uid 10001.
+VOLUME_MOUNT = "/var/lib/voni"
+
 #: Every secret the service reads from its host environment, by name only.
 #: Sources: meta_stt API_KEY_ENV, meta_llm IDENTIFIER_SALT_ENV, tools
 #: TOOL_SECRET_ENV, server VOICE_PIPELINE_ENVELOPE_SECRET and DATABASE_URL
-#: (the shared breaker/counter store), plus the managed-path keys the dev
-#: browser route still constructs. A value for any of these is never committed.
+#: (the Postgres addon), plus the managed-path keys the dev browser route still
+#: constructs. A value for any of these is never committed.
 REQUIRED_SECRET_NAMES: tuple[str, ...] = (
     "META_API_KEY",
     "META_IDENTIFIER_SALT",
@@ -82,15 +108,15 @@ REQUIRED_SECRET_NAMES: tuple[str, ...] = (
 #: is the app origin the tool route calls; empty silently drops every tool call.
 #: Both are host-supplied. A deploy file may omit a name (the host's secret or
 #: env file supplies it) but may never set it to an empty value: Compose gives
-#: ``environment`` precedence over ``env_file``, and a blank ``[env]`` or
-#: ``environment`` entry is a blank runtime value on either host.
+#: ``environment`` precedence over ``env_file``, and a blank descriptor env entry
+#: is a blank runtime value.
 REQUIRED_SETTINGS: tuple[str, ...] = (
     "META_REASONING_EFFORT",
     "VOICE_PIPELINE_TOOL_BASE_URL",
 )
 
 #: Every name the deployment must carry, secret or not. The example file lists
-#: them; the service config names the non-secret ones; the record explains them.
+#: them; the descriptor names the non-secret ones; the record explains them.
 REQUIRED_ENV_NAMES: tuple[str, ...] = REQUIRED_SECRET_NAMES + REQUIRED_SETTINGS
 
 #: The one non-secret environment setting the topology itself depends on.
@@ -100,6 +126,10 @@ PORT_ENV = "VOICE_PIPELINE_PORT"
 #: API key, a signing secret, a salt, a password or a connection string.
 _SECRET_NAME_PARTS = ("KEY", "SECRET", "SALT", "TOKEN", "PASSWORD", "DATABASE_URL")
 
+#: A second envelope/signing secret name is a typo the deploy would never
+#: notice; the example carries exactly one.
+_ENVELOPE_SECRET_MARKERS = ("ENVELOPE", "SIGNING", "HMAC")
+
 
 def _read(repo_root: Path, relative: str) -> str | None:
     path = repo_root / relative
@@ -108,16 +138,30 @@ def _read(repo_root: Path, relative: str) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
-def _load_toml(repo_root: Path, relative: str, errors: list[str]) -> dict[str, Any] | None:
+def load_config(repo_root: Path, relative: str) -> dict[str, Any]:
+    """Read the one committed topology descriptor, raising when it is broken."""
+    path = Path(repo_root) / relative
+    with path.open("rb") as handle:
+        document = json.load(handle)
+    if not isinstance(document, dict):
+        raise ValueError(f"{relative}: the descriptor must be an object")
+    return document
+
+
+def _load_descriptor(repo_root: Path, relative: str, errors: list[str]) -> dict[str, Any] | None:
     text = _read(repo_root, relative)
     if text is None:
         errors.append(f"missing {relative}: the topology cannot be checked without it")
         return None
     try:
-        return tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:  # pragma: no cover - a broken file
-        errors.append(f"{relative}: not valid TOML ({exc})")
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:  # pragma: no cover - a broken file
+        errors.append(f"{relative}: not valid JSON ({exc})")
         return None
+    if not isinstance(document, dict):
+        errors.append(f"{relative}: the descriptor must be an object")
+        return None
+    return document
 
 
 def looks_secret(name: str) -> bool:
@@ -151,88 +195,12 @@ def secret_values(text: str) -> list[str]:
     return hits
 
 
-def load_config(repo_root: Path, relative: str) -> dict[str, Any]:
-    """Read one TOML config, raising when it is missing or malformed."""
-    path = Path(repo_root) / relative
-    with path.open("rb") as handle:
-        return tomllib.load(handle)
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
-def _check_http_service(
-    doc: Mapping[str, Any],
-    *,
-    label: str,
-    errors: list[str],
-    liveness_path: str = "/healthz",
-) -> dict[str, Any]:
-    """Shared checks for either app's proxy service. Returns the block."""
-    service = doc.get("http_service")
-    if not isinstance(service, dict):
-        errors.append(f"{label}: missing [http_service]; a Fly app needs a proxy service")
-        return {}
-
-    machines = service.get("min_machines_running")
-    if isinstance(machines, bool) or not isinstance(machines, int):
-        errors.append(
-            f"{label}: min_machines_running is {machines!r}; the topology needs an "
-            f"integer of at least {MIN_INSTANCES} so a rolling deploy never removes "
-            "the last machine"
-        )
-    elif machines < MIN_INSTANCES:
-        errors.append(
-            f"{label}: min_machines_running is {machines}; the topology needs at "
-            f"least {MIN_INSTANCES} machines so a live call is never the machine "
-            "that was removed"
-        )
-
-    if service.get("auto_stop_machines") is not False:
-        errors.append(
-            f"{label}: auto_stop_machines must be false; a machine that stops to "
-            "save money cannot hold a long-lived WebSocket"
-        )
-
-    concurrency = service.get("concurrency")
-    if not isinstance(concurrency, dict) or concurrency.get("type") != "connections":
-        errors.append(
-            f"{label}: [http_service.concurrency] type must be \"connections\"; a "
-            "cascade call is one WebSocket, not a request-per-CPU workload"
-        )
-
-    checks = service.get("checks")
-    if not isinstance(checks, list) or not checks:
-        errors.append(
-            f"{label}: no [[http_service.checks]]; a rolling deploy needs a health "
-            "check before it drains the old machine"
-        )
-    else:
-        paths = {check.get("path") for check in checks if isinstance(check, dict)}
-        if liveness_path and liveness_path not in paths:
-            errors.append(
-                f"{label}: the health check must GET {liveness_path} "
-                f"(found {sorted(p for p in paths if p)}); a rolling deploy reads "
-                "this probe, so it must be the liveness path"
-            )
-        for check in checks:
-            if not isinstance(check, dict):
-                continue
-            for field in ("interval", "timeout", "grace_period", "path"):
-                if not check.get(field):
-                    errors.append(f"{label}: health check is missing {field!r}")
-
-    strategy = doc.get("deploy", {}).get("strategy") if isinstance(doc.get("deploy"), dict) else None
-    if strategy != "rolling":
-        errors.append(
-            f"{label}: [deploy] strategy is {strategy!r}; it must be \"rolling\" so a "
-            "new machine is healthy before an old one is drained (an immediate "
-            "deploy kills live calls)"
-        )
-
-    if "services" in doc:
-        errors.append(
-            f"{label}: [[services]] is the old shape; use [http_service] plus "
-            "WebSocket-aware concurrency (one port, no sticky sessions)"
-        )
-    return service
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _check_env(doc: Mapping[str, Any], *, label: str, errors: list[str]) -> dict[str, str]:
@@ -242,8 +210,8 @@ def _check_env(doc: Mapping[str, Any], *, label: str, errors: list[str]) -> dict
     for name, value in env.items():
         if looks_secret(name) and str(value).strip():
             errors.append(
-                f"{label}: [env] sets {name} to a value; secrets are host-only "
-                "(`fly secrets set NAME=...`), never committed"
+                f"{label}: env sets {name} to a value; secrets are host-only "
+                "(the Northflank secret group), never committed"
             )
     return {str(name): str(value) for name, value in env.items()}
 
@@ -254,94 +222,209 @@ def validate_service(
     drain_max_wait_ms: int,
     config: str = SERVICE_CONFIG,
 ) -> list[str]:
-    """Every rule the service deployment must satisfy, named one per line."""
+    """Every rule the one Northflank service must satisfy, named per line."""
     errors: list[str] = []
     label = config
 
-    if not doc.get("app"):
-        errors.append(f"{label}: app is unset; the service is its own Fly app")
+    if doc.get("recordVersion") != 1:
+        errors.append(
+            f"{label}: recordVersion is {doc.get('recordVersion')!r}; this reader "
+            "supports 1"
+        )
+    if doc.get("host") != "northflank":
+        errors.append(
+            f"{label}: host is {doc.get('host')!r}; the committed host is Northflank"
+        )
+    for key in ("services", "app"):
+        if key in doc:
+            errors.append(
+                f"{label}: names {key!r}; the topology is one service "
+                "(`service`), and the app is a separate deploy"
+            )
 
-    service = _check_http_service(doc, label=label, errors=errors)
+    service = _mapping(doc.get("service"))
+    if not service:
+        errors.append(
+            f"{label}: missing `service`; the topology is one combined service"
+        )
+    else:
+        if not str(service.get("name") or "").strip():
+            errors.append(f"{label}: service.name is unset; the service must be named")
+        if service.get("type") != "combined":
+            errors.append(
+                f"{label}: service.type is {service.get('type')!r}; a combined "
+                "service builds and deploys in one resource"
+            )
+    deploy = _mapping(service.get("deploy"))
+    instances = deploy.get("instances")
+    if isinstance(instances, bool) or not isinstance(instances, int):
+        errors.append(
+            f"{label}: service.deploy.instances is {instances!r}; the topology runs "
+            "exactly one instance"
+        )
+    elif not (MIN_INSTANCES <= instances <= MAX_INSTANCES):
+        errors.append(
+            f"{label}: service.deploy.instances is {instances}; the topology runs "
+            "exactly one instance. The token registry and the delivered-body "
+            "channel are in-process, so a second instance breaks single use"
+        )
 
-    port = service.get("internal_port")
-    if isinstance(port, bool) or not isinstance(port, int) or port <= 0:
-        errors.append(f"{label}: http_service.internal_port is {port!r}; expected a port")
+    ports = doc.get("ports")
+    port: int | None = None
+    if not isinstance(ports, list) or len(ports) != 1:
+        count = len(ports) if isinstance(ports, list) else ports
+        errors.append(
+            f"{label}: ports is {count!r}; the service publishes exactly one "
+            f"public port and the proxy forwards to {SERVICE_PORT}"
+        )
+    else:
+        entry = _mapping(ports[0])
+        port = entry.get("internalPort") if _positive_int(entry.get("internalPort")) else None
+        if port is None:
+            errors.append(
+                f"{label}: ports[0].internalPort is {entry.get('internalPort')!r}; "
+                f"expected {SERVICE_PORT}"
+            )
+        if entry.get("protocol") != "HTTP2":
+            errors.append(
+                f"{label}: ports[0].protocol is {entry.get('protocol')!r}; the "
+                "browser WebSocket needs HTTP/2"
+            )
+        if entry.get("public") is not True:
+            errors.append(
+                f"{label}: ports[0].public is {entry.get('public')!r}; the call "
+                "socket must be reachable from the browser"
+            )
+
+    database = _mapping(doc.get("database"))
+    if not database:
+        errors.append(
+            f"{label}: missing `database`; the durable store is one Postgres addon "
+            "that injects DATABASE_URL"
+        )
+    else:
+        if database.get("type") != "postgres":
+            errors.append(
+                f"{label}: database.type is {database.get('type')!r}; the durable "
+                "store is a Postgres addon"
+            )
+        if not str(database.get("name") or "").strip():
+            errors.append(f"{label}: database.name is unset; the addon must be named")
+        if database.get("env") != "DATABASE_URL":
+            errors.append(
+                f"{label}: database.env is {database.get('env')!r}; the addon must "
+                "inject DATABASE_URL, the one name the service reads"
+            )
+
+    volumes = doc.get("volumes")
+    if not isinstance(volumes, list) or len(volumes) != 1:
+        count = len(volumes) if isinstance(volumes, list) else volumes
+        errors.append(
+            f"{label}: volumes is {count!r}; the artifact dir is one "
+            f"single-read/write volume at {VOLUME_MOUNT}"
+        )
+    else:
+        volume = _mapping(volumes[0])
+        if volume.get("accessMode") != "ReadWriteOnce":
+            errors.append(
+                f"{label}: volumes[0].accessMode is {volume.get('accessMode')!r}; "
+                "the events volume is single read/write (ReadWriteOnce), which is "
+                "the one-instance shape"
+            )
+        if volume.get("mountPath") != VOLUME_MOUNT:
+            errors.append(
+                f"{label}: volumes[0].mountPath is {volume.get('mountPath')!r}; the "
+                f"image writes under {VOLUME_MOUNT}"
+            )
+        if not str(volume.get("name") or "").strip():
+            errors.append(f"{label}: volumes[0].name is unset; the volume must be named")
+        if not _positive_int(volume.get("sizeGb")):
+            errors.append(
+                f"{label}: volumes[0].sizeGb is {volume.get('sizeGb')!r}; expected "
+                "a positive size"
+            )
+
     env = _check_env(doc, label=label, errors=errors)
     for name in REQUIRED_SETTINGS:
         if name in env and not env[name].strip():
             errors.append(
-                f"{label}: [env] sets {name} to an empty value; the host-supplied "
+                f"{label}: env sets {name} to an empty value; the host-supplied "
                 "setting is then blank at runtime. Remove the key and let the "
-                "host (fly secrets set) supply the value"
+                "Northflank environment supply the value"
             )
+    tool_base = env.get("VOICE_PIPELINE_TOOL_BASE_URL")
+    if tool_base is not None and tool_base.strip() and tool_base != APP_PUBLIC_ORIGIN:
+        errors.append(
+            f"{label}: env VOICE_PIPELINE_TOOL_BASE_URL is {tool_base!r}; it must be "
+            f"the app's public origin {APP_PUBLIC_ORIGIN!r}"
+        )
     if port is not None and env.get(PORT_ENV) != str(port):
         errors.append(
-            f"{label}: [env] {PORT_ENV} is {env.get(PORT_ENV)!r} but the proxy "
+            f"{label}: env {PORT_ENV} is {env.get(PORT_ENV)!r} but the public port "
             f"forwards to {port}; the server would listen on the wrong port"
         )
-
-    if doc.get("kill_signal") != "SIGTERM":
+    events_dir = env.get("VOICE_PIPELINE_EVENTS_DIR")
+    if events_dir is not None and events_dir.strip() and not events_dir.startswith(
+        f"{VOLUME_MOUNT}/"
+    ):
         errors.append(
-            f"{label}: kill_signal must be SIGTERM; the drain supervisor (ticket 140) "
-            "starts on SIGTERM and a live call is never killed by the drain"
-        )
-    kill_timeout = doc.get("kill_timeout")
-    if isinstance(kill_timeout, bool) or not isinstance(kill_timeout, int):
-        errors.append(f"{label}: kill_timeout is {kill_timeout!r}; expected whole seconds")
-    elif kill_timeout * 1000 < drain_max_wait_ms:
-        errors.append(
-            f"{label}: kill_timeout is {kill_timeout}s, shorter than the recorded "
-            f"deploy.drain_max_wait_ms ({drain_max_wait_ms} ms); the machine would be "
-            "removed while the drain is still waiting for a live call"
-        )
-    return errors
-
-
-def validate_app(
-    doc: Mapping[str, Any],
-    *,
-    service_doc: Mapping[str, Any],
-    config: str = APP_CONFIG,
-) -> list[str]:
-    """The app's own deployment: same host, separate app, own secret set."""
-    errors: list[str] = []
-    label = config
-    app_name = doc.get("app")
-    if not app_name:
-        errors.append(f"{label}: app is unset; the app is its own Fly app")
-    elif app_name == service_doc.get("app"):
-        errors.append(
-            f"{label}: app is {app_name!r}, the same Fly app as the service; the app "
-            "and the Python service deploy separately (spec, operational notes)"
+            f"{label}: env VOICE_PIPELINE_EVENTS_DIR is {events_dir!r}; the events "
+            f"artifact must live under the mounted volume {VOLUME_MOUNT}"
         )
 
-    service = _check_http_service(
-        doc, label=label, errors=errors, liveness_path="/"
-    )
-    app_port = service.get("internal_port")
-    service_port = (service_doc.get("http_service") or {}).get("internal_port")
-    if app_port == service_port:
+    probe = _mapping(doc.get("healthCheck"))
+    if not probe:
         errors.append(
-            f"{label}: internal_port is {app_port}, the service's port; two separate "
-            "Fly apps cannot share a port and still be separate deploys"
+            f"{label}: missing `healthCheck`; the platform probe is HTTP "
+            f"liveness GET {LIVENESS_PATH}"
         )
+    else:
+        if probe.get("type") != "liveness":
+            errors.append(
+                f"{label}: healthCheck.type is {probe.get('type')!r}; the platform "
+                "probe is liveness, not readiness. A draining instance must stay "
+                "reachable to finish live calls"
+            )
+        if probe.get("method") != "GET":
+            errors.append(
+                f"{label}: healthCheck.method is {probe.get('method')!r}; expected GET"
+            )
+        if probe.get("path") != LIVENESS_PATH:
+            errors.append(
+                f"{label}: healthCheck.path is {probe.get('path')!r}; the platform "
+                f"probe must GET {LIVENESS_PATH}. Readiness (/readyz) is not the "
+                "platform probe"
+            )
+        probe_port = probe.get("port")
+        if probe_port != port:
+            errors.append(
+                f"{label}: healthCheck.port is {probe_port!r} but the service port "
+                f"is {port!r}; the probe must hit the process the proxy forwards to"
+            )
+        for field in (
+            "initialDelaySeconds",
+            "periodSeconds",
+            "timeoutSeconds",
+            "failureThreshold",
+        ):
+            if not _positive_int(probe.get(field)):
+                errors.append(
+                    f"{label}: healthCheck.{field} is {probe.get(field)!r}; expected "
+                    "a positive whole number"
+                )
 
-    env = _check_env(doc, label=label, errors=errors)
-    shared = sorted(set(env) & set(REQUIRED_SECRET_NAMES))
-    if shared:
+    grace = doc.get("terminationGracePeriodSeconds")
+    if isinstance(grace, bool) or not isinstance(grace, int):
         errors.append(
-            f"{label}: [env] names {shared[0]}, a service secret; the app's secrets "
-            "are its own and the service's secret set is injected by its own app"
+            f"{label}: terminationGracePeriodSeconds is {grace!r}; expected the "
+            "recorded deploy.drain_max_wait_ms"
         )
-
-    build = doc.get("build") if isinstance(doc.get("build"), dict) else {}
-    service_build = (
-        service_doc.get("build") if isinstance(service_doc.get("build"), dict) else {}
-    )
-    if build.get("dockerfile") and build.get("dockerfile") == service_build.get("dockerfile"):
+    elif grace * 1000 != drain_max_wait_ms:
         errors.append(
-            f"{label}: build.dockerfile is the service image; the app and the service "
-            "are separate images"
+            f"{label}: terminationGracePeriodSeconds is {grace}s but the recorded "
+            f"deploy.drain_max_wait_ms is {drain_max_wait_ms} ms; the platform grace "
+            "period must equal the drain bound, not be shorter (a killed call) or "
+            "longer (a second policy)"
         )
     return errors
 
@@ -406,12 +489,12 @@ def validate_dockerfile(text: str, *, internal_port: int, config: str = DOCKERFI
         ):
             errors.append(
                 f"{label}: copies {line.strip()!r} from the app; the app is its own "
-                "image (deploy/fly.voni.toml) and only the budget record belongs here"
+                "image and separate deploy, and only the budget record belongs here"
             )
     if "--workers" in lowered:
         errors.append(
             f"{label}: runs the --workers flag; a call is one WebSocket on one "
-            "process, and the two Fly machines are the two instances"
+            "process, and the one instance is one process"
         )
     for forbidden, reason in (
         ("node_modules", "the app's dependencies are not the service's"),
@@ -424,19 +507,26 @@ def validate_dockerfile(text: str, *, internal_port: int, config: str = DOCKERFI
     return errors
 
 
+def _dotenv_name(line: str) -> str:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return ""
+    return stripped.partition("=")[0].strip().strip('"').strip("'")
+
+
 def _parse_dotenv_names(text: str) -> dict[str, str]:
     names: dict[str, str] = {}
     for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        name = _dotenv_name(raw)
+        if not name:
             continue
-        name, _, value = line.partition("=")
-        names[name.strip()] = value.strip().strip('"').strip("'")
+        _, _, value = raw.strip().partition("=")
+        names[name] = value.strip().strip('"').strip("'")
     return names
 
 
 def validate_secrets_example(text: str, config: str = SECRETS_EXAMPLE) -> list[str]:
-    """Names only: every host env the service reads is listed, secrets blank."""
+    """Names only: one envelope secret, blank; the app origin for tool calls."""
     errors: list[str] = []
     names = _parse_dotenv_names(text)
     for required in REQUIRED_ENV_NAMES:
@@ -449,12 +539,36 @@ def validate_secrets_example(text: str, config: str = SECRETS_EXAMPLE) -> list[s
             errors.append(
                 f"{config}: {required} has a value; this file records names only"
             )
+    envelope_lines = [
+        line for line in text.splitlines() if _dotenv_name(line) == ENVELOPE_SECRET_NAME
+    ]
+    if len(envelope_lines) != 1:
+        errors.append(
+            f"{config}: lists the envelope secret {len(envelope_lines)} times; the "
+            f"deployment carries exactly one envelope secret ({ENVELOPE_SECRET_NAME}), "
+            "named once and blank"
+        )
     for name in names:
+        upper = name.upper()
+        if name != ENVELOPE_SECRET_NAME and any(
+            marker in upper for marker in _ENVELOPE_SECRET_MARKERS
+        ):
+            errors.append(
+                f"{config}: {name} is a second envelope secret name; the "
+                f"deployment carries exactly one ({ENVELOPE_SECRET_NAME})"
+            )
         if looks_secret(name) and name not in REQUIRED_SECRET_NAMES:
             errors.append(
                 f"{config}: {name} is not a secret the service reads; an unread secret "
                 "name is a typo the deploy would never notice"
             )
+    tool_base = names.get("VOICE_PIPELINE_TOOL_BASE_URL", "")
+    if tool_base != APP_PUBLIC_ORIGIN:
+        errors.append(
+            f"{config}: VOICE_PIPELINE_TOOL_BASE_URL is {tool_base!r}; it must be the "
+            f"app's public origin {APP_PUBLIC_ORIGIN!r}, the host whose tool route the "
+            "pipeline calls"
+        )
     return errors
 
 
@@ -497,13 +611,38 @@ def _parse_requirements(text: str) -> dict[str, str]:
     return pins
 
 
-def validate_record(text: str, *, service_app: str, app_name: str) -> list[str]:
-    """The host is recorded, Workers is excluded with a reason, both apps named."""
+def fly_descriptors(repo_root: Path) -> list[str]:
+    """Every Fly descriptor still present under ``deploy/``, by relative path."""
+    root = Path(repo_root)
+    deploy_dir = root / "deploy"
+    if not deploy_dir.is_dir():
+        return []
+    return sorted(path.relative_to(root).as_posix() for path in deploy_dir.glob("fly.*.toml"))
+
+
+def validate_no_fly_descriptors(repo_root: Path) -> list[str]:
+    """The Fly shape is deleted, not left as history in the checked artifact."""
+    return [
+        f"{relative}: the Fly descriptor is deleted; the committed topology is "
+        f"{SERVICE_CONFIG}"
+        for relative in fly_descriptors(repo_root)
+    ]
+
+
+def validate_record(text: str, *, service_name: str, app_name: str) -> list[str]:
+    """The host and the one-instance shape are recorded; Fly is not the host."""
     errors: list[str] = []
     label = DEPLOYMENT_RECORD
     lowered = text.lower()
-    if "fly.io" not in lowered:
-        errors.append(f"{label}: does not name Fly.io as the container host")
+    if "northflank" not in lowered:
+        errors.append(
+            f"{label}: does not name Northflank as the committed host"
+        )
+    if "fly" in lowered:
+        errors.append(
+            f"{label}: still names Fly; the host moved to Northflank and the "
+            "descriptor is deleted"
+        )
     if "cloudflare workers" not in lowered:
         errors.append(
             f"{label}: does not name Cloudflare Workers as the excluded runtime"
@@ -513,10 +652,10 @@ def validate_record(text: str, *, service_app: str, app_name: str) -> list[str]:
             f"{label}: names Cloudflare Workers but not why it is excluded; a host "
             "choice without a reason is not a decision"
         )
-    for app in (service_app, app_name):
+    for app in (service_name, app_name):
         if app and app not in text:
-            errors.append(f"{label}: does not name the Fly app {app!r}")
-    for phrase in ("two machines", "no sticky"):
+            errors.append(f"{label}: does not name the deployed service {app!r}")
+    for phrase in ("one instance", "no sticky"):
         if phrase not in lowered:
             errors.append(f"{label}: {phrase!r} is not recorded")
     for name in REQUIRED_ENV_NAMES:
@@ -570,20 +709,26 @@ def _compose_environment(text: str) -> dict[str, str]:
 
 
 def validate_compose(text: str, *, internal_port: int) -> list[str]:
-    """The local rehearsal keeps the same shape: two replicas, a health check."""
+    """The local rehearsal keeps the same shape: one instance, one volume."""
     errors: list[str] = []
     label = COMPOSE_CONFIG
     for needle, reason in (
         ("voice-pipeline:", "the service is not a compose service"),
         ("voni:", "the app is not a compose service"),
-        ("replicas: 2", f"compose runs fewer than {MIN_INSTANCES} service replicas"),
         ("healthcheck:", "compose has no health check to wait on"),
         ("/healthz", "compose does not probe the liveness path"),
         ("SIGTERM", "compose does not send the drain signal"),
+        ("stop_grace_period: 30s", "compose does not give the drain its 30 s bound"),
+        ("/var/lib/voni", "compose does not mount the events volume"),
         (str(internal_port), "compose does not name the service port"),
     ):
         if needle not in text:
             errors.append(f"{label}: {needle!r} missing; {reason}")
+    if not re.search(r"^\s*replicas:\s*1\s*$", text, re.M):
+        errors.append(
+            f"{label}: replicas is not 1; the deployed topology is one instance, "
+            "and the token registry is in-process"
+        )
     env = _compose_environment(text)
     for name in REQUIRED_ENV_NAMES:
         if name in env and not env[name]:
@@ -689,14 +834,14 @@ def validate_versions(
             "reader supports 1"
         )
 
-    if service_app is None or app_name is None:
+    if service_app is None:
         try:
-            service_doc = load_config(root, SERVICE_CONFIG)
-            app_doc = load_config(root, APP_CONFIG)
+            descriptor = load_config(root, SERVICE_CONFIG)
         except (OSError, ValueError):
-            service_doc, app_doc = {}, {}
-        service_app = service_app or str(service_doc.get("app") or "")
-        app_name = app_name or str(app_doc.get("app") or "")
+            descriptor = {}
+        service_app = str(
+            _mapping(_mapping(descriptor).get("service")).get("name") or ""
+        )
 
     entries: dict[str, Mapping[str, Any]] = {}
     for party, expected_name in (("app", app_name), ("service", service_app)):
@@ -758,7 +903,7 @@ def drain_max_wait_ms_from_registry(repo_root: Path) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(
             "deploy.drain_max_wait_ms has no value; ticket 04 records it before the "
-            "topology can size kill_timeout"
+            "topology can size the grace period"
         )
     return value
 
@@ -770,25 +915,20 @@ def validate(repo_root: Path, *, drain_max_wait_ms: int | None = None) -> list[s
     if drain_max_wait_ms is None:
         drain_max_wait_ms = drain_max_wait_ms_from_registry(repo_root)
 
-    service_doc = _load_toml(repo_root, SERVICE_CONFIG, errors)
-    app_doc = _load_toml(repo_root, APP_CONFIG, errors)
-    if service_doc is not None:
-        errors.extend(validate_service(service_doc, drain_max_wait_ms=drain_max_wait_ms))
-    if app_doc is not None and service_doc is not None:
-        errors.extend(validate_app(app_doc, service_doc=service_doc))
-    errors.extend(
-        validate_versions(
-            repo_root,
-            service_app=(
-                str(service_doc.get("app") or "") if service_doc is not None else None
-            ),
-            app_name=str(app_doc.get("app") or "") if app_doc is not None else None,
-        )
-    )
-
+    descriptor = _load_descriptor(repo_root, SERVICE_CONFIG, errors)
+    service_name = ""
     port = 0
-    if service_doc is not None:
-        port = int((service_doc.get("http_service") or {}).get("internal_port") or 0)
+    if descriptor is not None:
+        errors.extend(
+            validate_service(descriptor, drain_max_wait_ms=drain_max_wait_ms)
+        )
+        service_name = str(_mapping(descriptor.get("service")).get("name") or "")
+        ports = descriptor.get("ports")
+        if isinstance(ports, list) and ports:
+            raw_port = _mapping(ports[0]).get("internalPort")
+            port = raw_port if _positive_int(raw_port) else 0
+    errors.extend(validate_no_fly_descriptors(repo_root))
+    errors.extend(validate_versions(repo_root, service_app=service_name))
 
     dockerfile = _read(repo_root, DOCKERFILE)
     if dockerfile is None:
@@ -819,20 +959,16 @@ def validate(repo_root: Path, *, drain_max_wait_ms: int | None = None) -> list[s
 
     compose = _read(repo_root, COMPOSE_CONFIG)
     if compose is None:
-        errors.append(f"missing {COMPOSE_CONFIG}: the two-instance rehearsal is gone")
+        errors.append(f"missing {COMPOSE_CONFIG}: the one-instance rehearsal is gone")
     else:
         errors.extend(validate_compose(compose, internal_port=port))
 
     record = _read(repo_root, DEPLOYMENT_RECORD)
     if record is None:
         errors.append(f"missing {DEPLOYMENT_RECORD}: the host choice is unrecorded")
-    elif service_doc is not None and app_doc is not None:
+    elif descriptor is not None:
         errors.extend(
-            validate_record(
-                record,
-                service_app=str(service_doc.get("app") or ""),
-                app_name=str(app_doc.get("app") or ""),
-            )
+            validate_record(record, service_name=service_name, app_name="voni-app")
         )
     if _read(repo_root, HOST_DECISION) is None:
         errors.append(f"missing {HOST_DECISION}: the host decision record is gone")
@@ -852,7 +988,10 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         print(f"deployment topology: {len(errors)} problem(s)", file=sys.stderr)
         return 1
-    print("deployment topology: ok (Fly.io, two machines, rolling, /healthz)")
+    print(
+        "deployment topology: ok (Northflank, one service, one instance, "
+        "Postgres addon, one volume, GET /healthz on 8766, 30s drain)"
+    )
     return 0
 
 

@@ -1,39 +1,45 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import { DEMO_TEST_USE } from "./demo-fakes";
 import {
   FAKE_SAMPLE_RATE,
   fakeCascadeServer,
+  loadScriptedService,
   recordedCall,
   replyAudioSeconds,
   replyToneHz,
   uniqueAudioSeconds,
 } from "./cascade-fake-server";
 import { SCOREBOARD_BUDGETS } from "../../src/lib/demo/scoreboard-budgets";
+import { DEMO_UNAVAILABLE_MESSAGES } from "../../src/lib/voice/cascade-failure-view";
 
 /**
- * Seam 4 (tickets 149/150): a real Chromium runs the real browser client
- * (`CascadeSession`), the real mic path and the real playout worklet, and the
- * service half is the deterministic fake in `./cascade-fake-server`.
+ * Seam 2 (demo-cascade ticket 16): the landing demo, against a fake pipeline.
  *
- * 149 proved a delivered capture is written on every PR. 150 makes the seam
- * *say* what the caller experienced, so a client regression fails here before
- * a live call:
+ * A real Chromium opens the PUBLIC landing page (`/`), presses Start call, and
+ * runs the real demo client: the one mint (`/api/demo/token`, answered here
+ * with the cascade contract), the real `CascadeSession`, the real mic path and
+ * the real playout worklet. The service half is the deterministic fake in
+ * `./cascade-fake-server`, which replays the committed script — captions,
+ * numbered PCM at a stamped rate, a barge-in, the pipeline's server-side
+ * `show_test_address` line, a replayed frame, `end_call` and a clean close.
  *
- *  - the stamped source rate is what the playout played (the fixture is 16 kHz,
- *    not the client's 24 kHz default, and the captured pitch proves which one
- *    reached the speaker);
- *  - the cushion/drift correctors never amplitude-modulate the voice;
- *  - a barge-in flushes and cuts inside `realCutMs` from the frozen budget
- *    record, and the next reply is heard;
- *  - the connected chime fires once, on the first audible sample — never
- *    before audio arrives;
- *  - a replayed `seq` is dropped (the second reply stays its scripted length);
- *  - the goodbye drains before the client hangs up;
- *  - the WAV is the worklet's output, sample-continuous and dead-air-free.
+ * What this seam proves, end to end:
+ *
+ *  - the demo's Start call opens the CASCADE socket (never a managed one), with
+ *    identity only: agentId `demo:<voice>`, a call token, the protocol version;
+ *  - the greeting caption and its audio reach the caller;
+ *  - a barge-in cuts the greeting inside the frozen budget and the next reply
+ *    is heard in full;
+ *  - the invite chip goes up from the pipeline's tagged final agent line — the
+ *    browser never runs `show_test_address` itself;
+ *  - hang-up drains the goodbye before the client stops, and the worklet's
+ *    delivered capture is written;
+ *  - a refused connect shows the demo's unavailable state and opens ZERO
+ *    managed sessions: no `/api/voice-token`, no `agents.assemblyai.com`.
  *
  * It is not a live vendor run: one `delivered` leg, no `reference` or
  * `platform` leg, kind `browser-delivery`. Its artifact is a browser-delivery
@@ -45,6 +51,14 @@ test.use(DEMO_TEST_USE);
 /** Where the harness puts its working artifacts; CI uploads this directory. */
 const ARTIFACT_DIR = process.env.VONI_E2E_ARTIFACT_DIR ?? "";
 
+/** The cascade mint the fake route answers with; the wsUrl is intercepted. */
+const DEMO_WS = "wss://pipeline.invalid/v1/browser-call";
+const DEMO_CALL_ID = "call_demo_e2e_16";
+const DEMO_CALL_TOKEN = "ct1.e2e";
+const DEMO_AGENT = "demo:audrey";
+/** The tag the fixture's invite line carries; the mint must return the same. */
+const SCRIPT_TAG = loadScriptedService().testTag ?? "";
+
 /** Below this RMS a window is silence, not the 0.25-amplitude scripted tone. */
 const SILENCE_RMS = 0.02;
 /** Analysis window: long enough for a stable zero-crossing pitch at 440 Hz. */
@@ -55,6 +69,40 @@ const PITCH_TOLERANCE = 0.08;
 const REAL_CUT_MS = SCOREBOARD_BUDGETS.realCutMs.value;
 /** No uncovered silence past this; also from the frozen budget record. */
 const DEAD_AIR_MAX_MS = SCOREBOARD_BUDGETS.deadAirMaxMs.value;
+
+/** The exact cascade contract from ticket 09; a managed shape never validates. */
+const MINT_RESPONSE = {
+  engine: "cascade" as const,
+  wsUrl: DEMO_WS,
+  agentId: DEMO_AGENT,
+  callToken: DEMO_CALL_TOKEN,
+  demoCallToken: `${DEMO_CALL_ID}.1893456000.tag.mac`,
+  testTag: SCRIPT_TAG,
+  tagToken: "tag-token-e2e",
+  tagCarried: false,
+  maxSessionSeconds: 720,
+};
+
+type MintedRequest = {
+  body: Record<string, unknown>;
+  url: string;
+};
+
+/**
+ * The demo's one door, faked. Registered AFTER the offline catch-all so it
+ * wins (Playwright runs the most recently added matching handler first).
+ */
+async function mockDemoMint(page: Page) {
+  const requests: MintedRequest[] = [];
+  await page.route("**/api/demo/token", async (route) => {
+    requests.push({
+      body: route.request().postDataJSON() as Record<string, unknown>,
+      url: route.request().url(),
+    });
+    return route.fulfill({ json: MINT_RESPONSE });
+  });
+  return requests;
+}
 
 type Wav = {
   audioFormat: number;
@@ -179,17 +227,19 @@ function levelSpread(windows: Window[], reply: string): number {
   return Math.max(...levels) / Math.min(...levels);
 }
 
-test("a real cascade call proves the client's behaviours and writes a delivered capture", async ({
+test("the landing demo runs a real cascade call, and the pipeline's invite tool reaches the UI", async ({
   page,
 }, testInfo) => {
   const captures: { name: string; bytes: Buffer }[] = [];
   const vendorRequests: string[] = [];
+  const managedSockets: string[] = [];
+  const voiceTokenRequests: string[] = [];
   const pageErrors: string[] = [];
   const sounds: { url: string; at: number }[] = [];
 
   // Every app route is offline in this seam; the fake serves voice. Register
   // the catch-all first: Playwright runs the most recently added matching
-  // handler, so the capture sink below must come after it.
+  // handler, so the capture sink and the mint below must come after it.
   await page.route("**/api/**", (route) =>
     route.fulfill({ status: 503, json: { error: "offline in e2e" } }),
   );
@@ -203,6 +253,12 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
     }
     await route.fulfill({ json: { path: "captured-by-the-e2e-harness" } });
   });
+  const mintRequests = await mockDemoMint(page);
+  // The demo's inbox poll may ask; the pipeline owns the real tools, so the
+  // browser only ever polls. "Not yet" keeps the invite up without a find.
+  await page.route("**/api/demo/tools/*", (route) =>
+    route.fulfill({ json: { ok: true, data: { status: "not_arrived", instructions: "Not yet." } } }),
+  );
   // Live guard (ticket 151's rule enforced from this side too): the browser E2E
   // must not reach a vendor host, and a frame that tries is named below.
   await page.route(
@@ -212,45 +268,98 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
       return route.abort();
     },
   );
-  // The connected chime is a real HTMLAudio request (call-sounds.ts), so its
-  // arrival time is the browser's, not a test double's.
+  // The managed path is a distinct socket; it must never open for a demo call.
+  // Recording the attempt (and closing it) makes a silent managed engine a
+  // named failure instead of a quiet pass.
+  await page.routeWebSocket(/agents\.assemblyai\.com/, (route) => {
+    managedSockets.push(route.url());
+    return route.close();
+  });
   page.on("request", (request) => {
-    if (/\/sounds\/[^/]+\/connected\.mp3$/.test(new URL(request.url()).pathname)) {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/voice-token") voiceTokenRequests.push(request.url());
+    // The connected chime is a real HTMLAudio request (call-sounds.ts), so its
+    // arrival time is the browser's, not a test double's.
+    if (/\/sounds\/[^/]+\/connected\.mp3$/.test(url.pathname)) {
       sounds.push({ url: request.url(), at: Date.now() });
     }
   });
 
   const script = recordedCall();
+  expect(SCRIPT_TAG, "the fixture names the call's Test tag").not.toBe("");
   const fake = await fakeCascadeServer(page, script);
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
-  await page.goto("/e2e/cascade?delivercapture=1");
-  await expect(page.getByTestId("cascade-e2e-shell")).toBeVisible();
+  // The PUBLIC landing page. `?delivercapture=1` turns on the dev capture tap
+  // the isolated test build already opted into at build time.
+  await page.goto("/?delivercapture=1");
+  await expect(page.getByTestId("landing-shell")).toBeVisible();
 
   // A click before hydration does nothing; click again, as a person would.
-  const start = page.getByRole("button", { name: /^call voni$/i }).filter({ visible: true }).first();
+  const start = page.getByRole("button", { name: /^start call$/i }).filter({ visible: true }).first();
   await expect(async () => {
     if (!fake.opened()) await start.click({ timeout: 1000 }).catch(() => undefined);
     await expect.poll(fake.opened, { timeout: 3000 }).toBe(true);
   }).toPass({ timeout: 20_000 });
 
-  // Ticket 65's contract: identity only. A leaked prompt, tool list or
-  // pipeline would be a client regression, and this seam fails on it.
+  // Ticket 65's contract: identity only, and the demo subject the mint named.
+  // A leaked prompt, tool list or pipeline would be a client regression.
   await expect.poll(() => fake.config() !== null).toBe(true);
   const config = fake.config() as Record<string, unknown>;
   expect(Object.keys(config).sort()).toEqual(
     ["agentId", "callToken", "protocolVersion", "type"].sort(),
   );
   expect(config.type).toBe("config");
-  expect(config.agentId).toBe("agent_e2e");
+  expect(config.agentId).toBe(DEMO_AGENT);
+  expect(config.callToken).toBe(DEMO_CALL_TOKEN);
   expect(config.protocolVersion).toBe(1);
 
-  // The scripted service speaks, is barged in on, speaks again, replays two
-  // frames and hangs up; the client drains the goodbye before it stops.
-  await fake.play();
+  // The demo's one door: one mint, the voice the picker shows, a cascade
+  // response — and no engine choice in the request.
+  expect(mintRequests, "the demo minted exactly once").toHaveLength(1);
+  expect(mintRequests[0]!.body).toEqual({ voiceId: "audrey" });
+
+  // The mint above landed and the demo painted its connected state before the
+  // service speaks, exactly as a live call would.
+  await expect(page.locator('[data-voice-state="listening"]')).toBeVisible({ timeout: 15_000 });
+
+  // ── The greeting is a caption the caller can read ────────────────────────
+  const greeting = script.find(
+    (entry) => entry.frame.type === "caption" && entry.frame.role === "agent" && entry.frame.final === true,
+  );
+  expect(greeting, "the script opens with an agent greeting caption").toBeTruthy();
+  const greetingText = String(greeting!.frame.text);
+
+  // ── The pipeline's server-side tool puts the invite chip up ─────────────
+  // The fake plays the service's half: the tagged final line the pipeline's
+  // `show_test_address` call produces. The browser must not run that tool.
+  const invite = script.find((entry) => entry.tool === "show_test_address");
+  expect(invite, "the script carries the pipeline's show_test_address line").toBeTruthy();
+  expect(String(invite!.frame.text), "the line carries the call's Test tag").toContain(SCRIPT_TAG);
+
+  // The scripted service speaks, is barged in on and runs its invite tool;
+  // then the service hangs up. Play up to the goodbye so the chip is asserted
+  // while the call is live — it is shown from the invite until the call ends.
+  const beforeEnd = script.filter((entry) => entry.frame.type !== "end_call");
+  const endFrames = script.filter((entry) => entry.frame.type === "end_call");
+  expect(endFrames, "the script ends with one end_call").toHaveLength(1);
+  await fake.play(beforeEnd);
   await expect
     .poll(() => fake.audioFrames(), { message: "the real mic path sent audio" })
     .toBeGreaterThan(0);
+
+  await expect(page.getByText(greetingText).first()).toBeVisible();
+  const chip = page.getByTestId("demo-address-chip");
+  await expect(chip, "the invite chip appears from the tagged agent line").toBeVisible();
+  await expect(chip).toContainText("test@voni.cc");
+  await expect(chip).toContainText(SCRIPT_TAG);
+  expect(
+    fake.frames.filter((frame) => frame.type === "tool"),
+    "the browser never runs the demo's show tool itself",
+  ).toEqual([]);
+
+  // The service hangs up; the client drains the goodbye before it stops.
+  await fake.play(endFrames);
   await expect
     .poll(() => captures.length, { message: "the delivered capture was written", timeout: 20_000 })
     .toBe(1);
@@ -278,10 +387,10 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
     FAKE_SAMPLE_RATE,
   ]);
 
-  const tones = { first: replyToneHz("first", script), second: replyToneHz("second", script) };
+  const tones = { greeting: replyToneHz("greeting", script), second: replyToneHz("second", script) };
   const windows = analyse(wav, tones);
 
-  for (const reply of ["first", "second"] as const) {
+  for (const reply of ["greeting", "second"] as const) {
     const measured = medianPitch(windows, reply);
     expect(
       measured,
@@ -296,11 +405,11 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
   expect(firstAudioAt, "the script spoke before it was interrupted").not.toBeNull();
   expect(interruptedAt, "the script barged in").not.toBeNull();
   const elapsedToCut = (interruptedAt! - firstAudioAt!) / 1000;
-  const firstReplySeconds = secondsOf(windows, "first");
-  expect(firstReplySeconds, "the interrupted reply was actually sounding").toBeGreaterThan(0.1);
+  const greetingSeconds = secondsOf(windows, "greeting");
+  expect(greetingSeconds, "the interrupted greeting was actually sounding").toBeGreaterThan(0.1);
   expect(
-    firstReplySeconds * 1000,
-    `the barge-in cut the reply within realCutMs (${REAL_CUT_MS}ms) of the caller's ${Math.round(elapsedToCut * 1000)}ms of speech`,
+    greetingSeconds * 1000,
+    `the barge-in cut the greeting within realCutMs (${REAL_CUT_MS}ms) of the caller's ${Math.round(elapsedToCut * 1000)}ms of speech`,
   ).toBeLessThan(elapsedToCut * 1000 + REAL_CUT_MS);
 
   // ── The next reply is heard, in order, and the replayed frames are not ───
@@ -313,14 +422,14 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
   expect(secondReplySeconds).toBeLessThan(scriptedSecond + 0.2);
   expect(
     windows.findIndex((window) => window.reply === "second"),
-    "the second reply follows the first",
-  ).toBeGreaterThan(windows.findIndex((window) => window.reply === "first"));
+    "the second reply follows the greeting",
+  ).toBeGreaterThan(windows.findIndex((window) => window.reply === "greeting"));
 
   // ── Cushion and drift do not modulate the voice ─────────────────────────
   // The worklet's contract: the cushion is not a gain, and drift correction is
   // a rate adjustment bounded at ±1%. A constant tone therefore stays at a
   // constant level and pitch; pumping or a wider pitch swing fails here.
-  for (const reply of ["first", "second"] as const) {
+  for (const reply of ["greeting", "second"] as const) {
     expect(
       levelSpread(windows, reply),
       `the ${reply} reply is not amplitude-modulated by the cushion`,
@@ -352,18 +461,20 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
   const endCallAt = fake.endCallAt();
   expect(endCallAt, "the service sent end_call").not.toBeNull();
   const drainMs = fake.stopAt()! - endCallAt!;
-  expect(
-    drainMs,
-    "the goodbye played through before the client hung up",
-  ).toBeGreaterThan(scriptedSecond * 1000 * 0.8);
+  expect(drainMs, "the goodbye played through before the client hung up").toBeGreaterThan(
+    scriptedSecond * 1000 * 0.8,
+  );
   expect(drainMs, "and the line was not held after it").toBeLessThan(8000);
-  expect(
-    secondReplySeconds,
-    "the capture contains the whole goodbye",
-  ).toBeGreaterThan(scriptedSecond * 0.8);
+  expect(secondReplySeconds, "the capture contains the whole goodbye").toBeGreaterThan(
+    scriptedSecond * 0.8,
+  );
   // The capture was written by the hang-up, so it can only be complete if the
   // drain finished first: one file, and the wire saw the goodbye.
   expect(uniqueAudioSeconds(script), "the script had unique audio to deliver").toBeGreaterThan(0);
+
+  // ── The demo never opened a managed session ─────────────────────────────
+  expect(managedSockets, "no managed socket was opened").toEqual([]);
+  expect(voiceTokenRequests, "no managed token was requested").toEqual([]);
 
   // ── The artifact is a browser-delivery artifact, not a cutover artifact ──
   const dir = ARTIFACT_DIR ? resolve(ARTIFACT_DIR) : testInfo.outputPath();
@@ -377,6 +488,12 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
     gate: "ci.browser-e2e",
     recordedAt: new Date().toISOString(),
     command: "node scripts/e2e-run.mjs cascade",
+    call: {
+      surface: "landing-demo",
+      callId: DEMO_CALL_ID,
+      agentId: DEMO_AGENT,
+      testTag: SCRIPT_TAG,
+    },
     capture: {
       file: "browser-delivered.wav",
       name: capture.name,
@@ -390,7 +507,9 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
     observed: {
       sourceRate: FAKE_SAMPLE_RATE,
       tonesHz: tones,
-      firstReplySeconds: Number(firstReplySeconds.toFixed(3)),
+      greetingCaption: greetingText,
+      inviteLine: String(invite!.frame.text),
+      firstReplySeconds: Number(greetingSeconds.toFixed(3)),
       bargeInToCutMs: Math.round(elapsedToCut * 1000),
       cutBudgetMs: REAL_CUT_MS,
       secondReplySeconds: Number(secondReplySeconds.toFixed(3)),
@@ -412,9 +531,39 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
     nonIntrusiveProof: "cascade-session.test.ts#enabling-the-cascade-tap",
   };
   writeFileSync(resolve(dir, "browser-delivery.json"), `${JSON.stringify(sidecar, null, 2)}\n`);
-  expect(sidecar.legs).toEqual(["delivered"]);
-  expect(Object.keys(sidecar)).not.toContain("platform");
-  expect(Object.keys(sidecar)).not.toContain("reference");
+
+  // ── The call evidence the fake exposes ──────────────────────────────────
+  // The trace is the fake's side of the wire, keyed by the call id the mint
+  // named: the identity-only config, every service frame it sent (with the
+  // script's labels), every client frame, and the observed outcomes. It is a
+  // record of this run, not a claim about a live service.
+  const trace = {
+    kind: "demo-cascade-browser-trace",
+    schemaVersion: 1,
+    pipeline: "cascade",
+    surface: "landing-demo",
+    callId: DEMO_CALL_ID,
+    agentId: DEMO_AGENT,
+    testTag: SCRIPT_TAG,
+    recordedAt: new Date().toISOString(),
+    config,
+    mint: { requests: mintRequests },
+    serviceFrames: fake.sent.map(({ at, frame }) => ({ at, ...frame })),
+    clientFrames: fake.frames.map(({ at, ...frame }) => ({ at, ...frame })),
+    audioFramesFromMic: fake.audioFrames(),
+    deliveredCapture: "browser-delivered.wav",
+    observed: {
+      greetingCaption: greetingText,
+      inviteTool: { name: "show_test_address", line: String(invite!.frame.text), source: "pipeline" },
+      inviteChip: { address: "test@voni.cc", tag: SCRIPT_TAG, visible: true },
+      bargeInToNextReplyMs: interruptedAt! - firstAudioAt!,
+      endedState: "ended",
+      stopAt: fake.stopAt(),
+      endCallAt,
+    },
+    managed: { sockets: managedSockets, voiceTokenRequests },
+  };
+  writeFileSync(resolve(dir, "demo-call-trace.json"), `${JSON.stringify(trace, null, 2)}\n`);
 
   // A live vendor run is exactly what this is not.
   expect(vendorRequests, "no vendor host was contacted").toEqual([]);
@@ -422,42 +571,123 @@ test("a real cascade call proves the client's behaviours and writes a delivered 
   expect(fake.frames.map((frame) => frame.type)).toContain("stop");
 });
 
-test("an error is visible, and no chime fires without an audible sample", async ({ page }) => {
-  const captures: { name: string; bytes: Buffer }[] = [];
+/**
+ * The refused connect (demo-cascade ticket 11, proven by ticket 16's rig).
+ *
+ * The pipeline can refuse a demo at the socket — draining for a deploy, the
+ * routing switch off, a protocol mismatch. The demo has no managed fallback:
+ * the visitor sees the one vendor-free unavailable line, and ZERO managed
+ * sessions open. The two managed tells are recorded here, not inferred: a
+ * `/api/voice-token` request and an `agents.assemblyai.com` socket. Either one
+ * fails the test by name, so a demo that silently used the managed engine
+ * cannot pass this rig.
+ */
+test("a refused cascade connect shows the demo unavailable state and opens no managed session", async ({
+  page,
+}, testInfo) => {
+  const managedSockets: string[] = [];
+  const voiceTokenRequests: string[] = [];
+  const vendorRequests: string[] = [];
+  const pageErrors: string[] = [];
   const sounds: string[] = [];
+  const captures: Buffer[] = [];
 
   await page.route("**/api/**", (route) =>
     route.fulfill({ status: 503, json: { error: "offline in e2e" } }),
   );
   await page.route("**/api/dev/delivered-capture**", async (route) => {
     const bytes = route.request().postDataBuffer();
-    if (bytes) captures.push({ name: "delivered.wav", bytes });
+    if (bytes) captures.push(bytes);
     await route.fulfill({ json: { path: "captured-by-the-e2e-harness" } });
   });
+  const mintRequests = await mockDemoMint(page);
+  await page.route(
+    /(api\.meta\.ai|agents\.assemblyai\.com|api\.assemblyai\.com|tts\.assemblyai\.com|cartesia\.ai)/,
+    (route) => {
+      vendorRequests.push(route.request().url());
+      return route.abort();
+    },
+  );
+  await page.routeWebSocket(/agents\.assemblyai\.com/, (route) => {
+    managedSockets.push(route.url());
+    return route.close();
+  });
   page.on("request", (request) => {
-    if (/\/sounds\/[^/]+\/connected\.mp3$/.test(new URL(request.url()).pathname)) {
-      sounds.push(request.url());
-    }
+    const url = new URL(request.url());
+    if (url.pathname === "/api/voice-token") voiceTokenRequests.push(request.url());
+    if (/\/sounds\/[^/]+\/connected\.mp3$/.test(url.pathname)) sounds.push(request.url());
   });
 
   const fake = await fakeCascadeServer(page, []);
-  await page.goto("/e2e/cascade");
+  page.on("pageerror", (error) => pageErrors.push(error.message));
 
-  const start = page.getByRole("button", { name: /^call voni$/i }).filter({ visible: true }).first();
+  await page.goto("/?delivercapture=1");
+  await expect(page.getByTestId("landing-shell")).toBeVisible();
+  const start = page.getByRole("button", { name: /^start call$/i }).filter({ visible: true }).first();
   await expect(async () => {
     if (!fake.opened()) await start.click({ timeout: 1000 }).catch(() => undefined);
     await expect.poll(fake.opened, { timeout: 3000 }).toBe(true);
   }).toPass({ timeout: 20_000 });
+
+  // The cascade client sent identity only, then the service refused the call
+  // with its routing verdict (`managed`): the exact refusal the demo must not
+  // answer with a managed handover.
   await expect.poll(() => fake.config() !== null).toBe(true);
+  const config = fake.config() as Record<string, unknown>;
+  expect(config.agentId).toBe(DEMO_AGENT);
+  expect(config.callToken).toBe(DEMO_CALL_TOKEN);
+  fake.say({
+    type: "error",
+    code: "managed",
+    message: "The voice service routes this call to the managed engine.",
+  });
 
-  // The service fails mid-call before any audio: the caller must see why, and
-  // the connected chime (first audible sample) must never have fired.
-  await fake.say({ type: "caption", role: "agent", text: "One moment.", final: true });
-  await fake.say({ type: "error", message: "The voice service dropped the call." });
+  // The visitor-facing state: one line, no engine/vendor language, and the
+  // call is over — never a second transport.
+  const unavailable = page.getByTestId("demo-unavailable");
+  await expect(unavailable).toBeVisible({ timeout: 10_000 });
+  await expect(unavailable).toContainText(DEMO_UNAVAILABLE_MESSAGES.managed);
+  await expect(page.locator('[data-voice-state="ended"]')).toBeVisible();
 
-  const alert = page.getByTestId("cascade-e2e-shell").getByRole("alert");
-  await expect(alert).toBeVisible();
-  await expect(alert).toContainText("The voice service dropped the call.");
+  // The demo minted once. A managed fallback would fetch another credential
+  // and open the managed socket; neither happened.
+  expect(mintRequests, "the demo minted exactly once").toHaveLength(1);
+  expect(voiceTokenRequests, "no managed token was requested").toEqual([]);
+  expect(managedSockets, "no managed socket was opened").toEqual([]);
+  expect(vendorRequests, "no vendor host was contacted").toEqual([]);
   expect(sounds, "no audio ever sounded, so the chime stayed silent").toEqual([]);
   expect(captures, "a call with no audible sample writes no capture").toEqual([]);
+  expect(pageErrors).toEqual([]);
+
+  // The refused call is evidence too: the artifact records what was refused
+  // and the zero counts the assertions above just proved.
+  const dir = ARTIFACT_DIR ? resolve(ARTIFACT_DIR) : testInfo.outputPath();
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    resolve(dir, "demo-unavailable.json"),
+    `${JSON.stringify(
+      {
+        kind: "demo-cascade-refusal",
+        schemaVersion: 1,
+        pipeline: "cascade",
+        surface: "landing-demo",
+        recordedAt: new Date().toISOString(),
+        command: "node scripts/e2e-run.mjs cascade",
+        refusal: { code: "managed", source: "service" },
+        observed: {
+          state: "ended",
+          message: DEMO_UNAVAILABLE_MESSAGES.managed,
+          mintRequests: mintRequests.length,
+          managedSockets,
+          voiceTokenRequests,
+          vendorRequests,
+          audibleSamples: sounds.length,
+          captures: captures.length,
+        },
+        managedFallback: false,
+      },
+      null,
+      2,
+    )}\n`,
+  );
 });
