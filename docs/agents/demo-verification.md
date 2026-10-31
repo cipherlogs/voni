@@ -104,13 +104,18 @@ tests inject a fixture record; a live run stays unrun until the record lands.
   live rehearsal observed the STT `audio_seconds` and the TTS termination summary
   unmeasured, so its certificate was withheld; this is a pipeline evidence gap,
   not a browser-adapter pass.
-- 81 of 82 properties have no evaluator (tickets 13–22, 26), so a browser run's
-  verdict is `not-demo-ready`. A diagnose run measures one repetition and fails
-  the 53 timing/behaviour properties' three-repetition plan rather than borrowing
-  a pass.
+- The evaluator families that have not landed still fail closed, so a browser
+  run's verdict is `not-demo-ready`. A diagnose run measures one repetition and
+  fails the timing/behaviour properties' three-repetition plan rather than
+  borrowing a pass. The 2026-10-31 rehearsal on `golden-flow-hello` ran the real
+  call end to end: one call id on the delivered WAV, marks, trace and end
+  document, 24.2 s inside the 120 s ceiling, and a withheld certificate for the
+  unmeasured cost.
 - Parity compares deterministic properties only: the 2026-10-31 live rehearsal
-  compared 29 and they agreed; 53 timing/behaviour properties were named as not
+  compared 29 and they agreed; the timing/behaviour properties were named as not
   compared because the protocol adapter may be faster, never more permissive.
+  The rehearsal also proved the protocol adapter read its trace too early; it now
+  waits, bounded, for the end sidecar and the trace's end row before judging.
 
 An **unresolved** property is a recorded gap with no owning evaluator. Today
 that is K8: the spec states "word error within bar" without a number, and no
