@@ -85,8 +85,9 @@ export const REAL_LEGS_USAGE = `usage: npm run ${REAL_LEGS_COMMAND} -- [options]
   --ws-url URL        the browser-call WebSocket URL (derived from --base-url)
   --voice ID          the demo voice and subject (default: ${DEFAULT_VOICE}, whose
                       committed German caller clip ships in the repo)
-  --audio PATH        a caller clip to play twice (default: the committed clip;
-                      without it, one short line is synthesized with the key)
+  --audio PATH        a caller clip replayed for each caller turn (default:
+                      the committed clip; without it, one short line is
+                      synthesized with the key)
   --events-dir PATH   the service's trace directory (default:
                       ${EVENTS_DIR_ENV}, then voice-pipeline/.events)
   --timeout-ms N      per-wait bound (default: 120000)
@@ -146,7 +147,7 @@ export type RealLegsOptions = {
   audioPath?: string;
   eventsDir?: string;
   timeoutMs: number;
-  /** Prove the hold return after the two turns (default true). */
+  /** Prove the hold return after the call's turns (default true). */
   withResume: boolean;
   json: boolean;
   help: boolean;
@@ -536,9 +537,9 @@ export type LoadCallerAudioInput = {
 };
 
 /**
- * The caller's two turns: the committed clip when it exists, otherwise one
- * short line through the real AssemblyAI TTS with the key. Neither is a named
- * failure, never silence.
+ * The caller's line, played for each caller turn: the committed clip when it
+ * exists, otherwise one short line through the real AssemblyAI TTS with the
+ * key. Neither is a named failure, never silence.
  */
 export async function loadCallerAudio(input: LoadCallerAudioInput): Promise<CallerAudio> {
   const path = input.audioPath ?? defaultCallerClip();
@@ -788,7 +789,7 @@ export function createIngressPump(deps: IngressPumpDeps): IngressPump {
 }
 
 // ---------------------------------------------------------------------------
-// The two-turn flow
+// The call's flow
 // ---------------------------------------------------------------------------
 
 /** The socket surface the flow uses; the default is the platform WebSocket. */
@@ -848,9 +849,7 @@ function defaultConnect(url: string): RealLegsSocket {
 const STATE_POLL_MS = 25;
 /** The greeting's audio arrives with sub-250 ms gaps; this is its end. */
 const GREETING_QUIET_MS = 1_200;
-/** How long a hidden context frame is observed before the call is stopped. */
-const CONTEXT_SETTLE_MS = 1_000;
-/** A resumed call has no greeting; this window proves none was spoken. */
+/** How long a resumed call is observed before deciding it did not greet. */
 const RESUME_GREETING_WINDOW_MS = 1_500;
 
 function defaultSleep(ms: number): Promise<void> {
@@ -1165,13 +1164,14 @@ export function carriedHistory(
 }
 
 /**
- * Run the two-turn real-legs call and return every assertion in report order.
+ * Run the real-legs call and return every assertion in report order.
  *
  * One fatal step (the signed body, the delivery, the caller audio, the socket)
  * returns a single named failure; later checks are not invented. Once the call
- * is running, every assertion is recorded. With `withResume` (the default) the
- * call is stopped and the same call id is re-minted with `resume: true` and the
- * carried history, proving the hold return end to end.
+ * is running, every assertion is recorded. The caller speaks twice, the hidden
+ * context note rides the next model request, and with `withResume` (the
+ * default) the call is stopped and the same call id is re-minted with
+ * `resume: true` and the carried history, proving the hold return end to end.
  */
 export async function runRealLegs(
   options: RealLegsOptions,
@@ -1454,13 +1454,35 @@ export async function runRealLegs(
     await settleAudio(state, sleep, options.timeoutMs, "turn 2", 2_500);
 
     // Ticket 12 AC3: the demo's off-track note reaches the service over the
-    // hidden context frame and is never captioned. The time-up note uses the
+    // hidden context frame and is never captioned. The service holds the note
+    // for the next model request, and a note while the caller is silent starts
+    // no turn of its own, so spend it: one more caller turn, whose reply is the
+    // model request that carried the note. A phase that only sends the note
+    // would pass even with context handling deleted. The time-up note uses the
     // same frame but tells the agent to hang up, so it is not sent mid-check;
     // the off-track note is the one that leaves the call alive to resume.
     const contextNote = rungInstructions("nudge", OPEN_BEAT_GOAL);
-    socket.send(encodeContextMessage(contextNote));
     const captionsBeforeContext = state.captions.length;
-    await sleep(CONTEXT_SETTLE_MS);
+    const userFinalsBeforeContext = countUserFinals(state);
+    const audioFramesBeforeContext = state.audioFrames;
+    socket.send(encodeContextMessage(contextNote));
+    await ingress.say(audio.pcm);
+    await waitFor(
+      state,
+      () => countUserFinals(state) > userFinalsBeforeContext,
+      options.timeoutMs,
+      sleep,
+      "context turn",
+    );
+    await waitFor(
+      state,
+      () => state.audioFrames > audioFramesBeforeContext,
+      options.timeoutMs,
+      sleep,
+      "context reply",
+    );
+    await settleAudio(state, sleep, options.timeoutMs, "context turn", 2_500);
+    const captionsAfterContext = state.captions.length - captionsBeforeContext;
     const leaked = state.captions.filter(
       (caption) =>
         caption.text.includes(contextNote) ||
@@ -1471,7 +1493,7 @@ export async function runRealLegs(
         ? passed(
             "hidden context",
             "context-hidden",
-            `sent the off-track note as a context frame (${contextNote.length} chars); ${state.captions.length} captions (${state.captions.length - captionsBeforeContext} after the note), none contains it; the call stayed alive`,
+            `sent the off-track note as a context frame (${contextNote.length} chars); the next caller turn was answered (${captionsAfterContext} captions after the note), none contains it; the call stayed alive`,
           )
         : failed(
             "hidden context",

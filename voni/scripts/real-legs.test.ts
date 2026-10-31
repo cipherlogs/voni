@@ -6,11 +6,13 @@
  *  1. The command's own surface: the skip decision, flag parsing, target
  *     derivation, the printed report and the exit code. These are what an
  *     operator reads and what the no-key run proves.
- *  2. The two-turn flow against a fake service over the real wire: a real
+ *  2. The call's flow against a fake service over the real wire: a real
  *     `POST /v1/call-body` and a real WebSocket handshake, with the app's own
  *     body builder and signer producing the bytes. The fake verifies the call
- *     token with the app's verifier, then scripts a greeting, two caller turns,
- *     audio, the trace artifact and the `cost.priced` row.
+ *     token with the app's verifier, then scripts a greeting, three caller
+ *     turns, audio, the trace artifact and the `cost.priced` row. The third
+ *     turn spends the hidden context note (the second connection's history
+ *     also proves the hold return).
  *
  * A missing `META_API_KEY` / `ASSEMBLYAI_API_KEY` must never stop this file:
  * the flow test injects values into the environment it controls.
@@ -47,7 +49,11 @@ import {
 } from "./lib/real-legs";
 import { verifyCallToken } from "../src/lib/voice/cascade-token";
 import { envelopeBodyHash } from "../src/lib/voice/envelope";
-import { DEMO_VOICE_IDS } from "../src/lib/demo/voni-agent";
+import {
+  DEMO_VOICE_IDS,
+  OPEN_BEAT_GOAL,
+  rungInstructions,
+} from "../src/lib/demo/voni-agent";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VONI_ROOT = resolve(HERE, "..");
@@ -724,7 +730,7 @@ test("the carried history keeps settled turns, collapses partials and respects t
 });
 
 // --------------------------------------------------------------------------
-// The two-turn flow against a fake service (no keys)
+// The call's flow against a fake service (no keys)
 // --------------------------------------------------------------------------
 
 const TEST_SECRET = "t22-real-legs-test-envelope-secret";
@@ -738,6 +744,8 @@ type FakeService = {
   deliveries(): Record<string, unknown>[];
   /** Ingress frames the caller pump had sent before the first caller turn. */
   framesBeforeFirstTurn(): number;
+  /** Every hidden-context line the browser sent, in arrival order. */
+  contexts(): string[];
   close(): Promise<void>;
 };
 
@@ -745,8 +753,11 @@ async function startFakeService(options: {
   eventsDir: string;
   writeTrace: boolean;
   greetResume?: boolean;
+  /** Simulate a service that drops the hidden note (context handling gone). */
+  dropContext?: boolean;
 }): Promise<FakeService> {
   const delivered: Record<string, unknown>[] = [];
+  const contexts: string[] = [];
   let config: Record<string, unknown> | null = null;
   let state: { callId: string; subject: string; eventsPath: string } | null = null;
   let framesBeforeFirstTurn = -1;
@@ -892,6 +903,12 @@ async function startFakeService(options: {
         }
         return;
       }
+      if (message.type === "context") {
+        // The hidden context is held for the next model request only; a note
+        // while the caller is silent starts no turn of its own.
+        if (!options.dropContext) contexts.push(String(message.content ?? ""));
+        return;
+      }
       if (message.type === "audio") {
         ingressFrames += 1;
         // The pump is continuous: silence between the turns, the clip inside
@@ -901,7 +918,10 @@ async function startFakeService(options: {
         if (!pcm.some((byte: number) => byte !== 0)) return;
         if (speechEndTimer) clearTimeout(speechEndTimer);
         speechEndTimer = setTimeout(() => {
-          if (turn < 2) answerTurn();
+          // The third caller turn is the one that spends the hidden note: the
+          // fake answers it only after a context line arrived, exactly as the
+          // live service applies the note to the next model request.
+          if (turn < 2 || (turn < 3 && contexts.length > 0)) answerTurn();
         }, 150);
         return;
       }
@@ -923,7 +943,7 @@ async function startFakeService(options: {
           JSON.stringify({
             type: "end",
             callId: state.callId,
-            turns: 2,
+            turns: turn,
             metrics: {},
             endedBy: "stop",
             cost: {
@@ -957,6 +977,7 @@ async function startFakeService(options: {
     config: () => config,
     deliveries: () => delivered,
     framesBeforeFirstTurn: () => framesBeforeFirstTurn,
+    contexts: () => contexts,
     close: async () => {
       wss.close();
       await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
@@ -974,7 +995,7 @@ function shortCallerAudio() {
 
 async function runAgainstFake(
   writeTrace: boolean,
-  extra: { greetResume?: boolean } = {},
+  extra: { greetResume?: boolean; dropContext?: boolean } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "t22-real-legs-"));
   const service = await startFakeService({ eventsDir: dir, writeTrace, ...extra });
@@ -1006,7 +1027,7 @@ async function runAgainstFake(
   }
 }
 
-test("the two-turn flow passes every assertion against a fake service", async () => {
+test("the call's flow passes every assertion against a fake service", async () => {
   const { checks, dir, service } = await runAgainstFake(true);
   try {
     const failures = checks.filter((entry) => entry.status === "fail");
@@ -1054,9 +1075,18 @@ test("the two-turn flow passes every assertion against a fake service", async ()
       "type",
     ]);
     assert.equal(service.config()?.agentId, "demo:jorg");
+    assert.deepEqual(
+      service.contexts(),
+      [rungInstructions("nudge", OPEN_BEAT_GOAL)],
+      "the note reached the service before the caller turn that spent it",
+    );
+    assert.match(
+      checks.find((entry) => entry.code === "context-hidden")?.detail ?? "",
+      /next caller turn was answered/,
+    );
     assert.match(
       checks.find((entry) => entry.code === "captions")?.detail ?? "",
-      /caller finals and 2 agent caption lines/,
+      /caller finals and 3 agent caption lines/,
     );
     assert.match(
       checks.find((entry) => entry.code === "captions")?.detail ?? "",
@@ -1071,8 +1101,33 @@ test("the two-turn flow passes every assertion against a fake service", async ()
   }
 });
 
-test("a resumed call that speaks the greeting fails by name", async () => {
-  const { checks, dir, service } = await runAgainstFake(true, { greetResume: true });
+test("a note the service never holds cannot pass the hidden-context proof", async () => {
+  // The phase must spend the note on a real turn: a service that drops the
+  // context frame leaves no reply to the turn after it, so the check fails
+  // instead of passing on the note's absence alone.
+  const { checks, dir, service } = await runAgainstFake(true, { dropContext: true });
+  try {
+    assert.deepEqual(service.contexts(), []);
+    const failures = checks.filter((entry) => entry.status === "fail");
+    assert.deepEqual(
+      failures.map((entry) => entry.code),
+      ["call-timeout", "trace-missing", "cost-missing"],
+      JSON.stringify(checks, null, 2),
+    );
+    assert.match(failures[0]?.detail ?? "", /context turn/);
+    assert.equal(
+      checks.some((entry) => entry.code === "context-hidden"),
+      false,
+      "an unconsumed note is never reported as hidden context passing",
+    );
+    assert.equal(realLegsExitCode(checks), 1);
+  } finally {
+    await service.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a resumed call that speaks the greeting fails by name", async () => {  const { checks, dir, service } = await runAgainstFake(true, { greetResume: true });
   try {
     const failedChecks = checks.filter((entry) => entry.status === "fail");
     assert.deepEqual(
