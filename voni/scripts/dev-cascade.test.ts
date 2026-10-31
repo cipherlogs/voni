@@ -179,6 +179,7 @@ test("preflight refuses named variables, occupied ports and a missing runtime", 
     "ASSEMBLYAI_API_KEY",
     "META_API_KEY",
     "META_REASONING_EFFORT",
+    "META_IDENTIFIER_SALT",
   ]) {
     assert.ok(REQUIRED_ENV.includes(name), `${name} must be a required name`);
   }

@@ -140,7 +140,12 @@ async function mint(request: Request, deps: MintDeps): Promise<Response> {
   if (!callKey) return unavailable();
 
   const pipeline = await deps.pipelineUrl();
-  if (!pipeline.ok) return unavailable();
+  if (!pipeline.ok) {
+    // Named for the operator, not the visitor: the demo stays unavailable,
+    // but the reason is visible in the server log (no URL, no secret).
+    console.warn(`[demo-token] pipeline unavailable: ${pipeline.error.code}`);
+    return unavailable();
+  }
 
   // A hold rejoin must continue the call it left: no previous token, no resume.
   const previous = typeof body.callToken === "string" ? verifyDemoCall(callKey, body.callToken, now) : null;
@@ -200,8 +205,10 @@ async function mint(request: Request, deps: MintDeps): Promise<Response> {
     callId: cascade.callId,
     signedBody: cascade.signedBody,
   });
-  if (!delivered.ok) return noStore({ error: deliveryMessage(delivered.code) }, 503);
-
+  if (!delivered.ok) {
+    console.warn(`[demo-token] pipeline refused the body: ${delivered.code}`);
+    return noStore({ error: deliveryMessage(delivered.code) }, 503);
+  }
   return noStore(
     {
       engine: "cascade",

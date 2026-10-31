@@ -97,6 +97,7 @@ export const REQUIRED_ENV = Object.freeze([
   ENV.googleClientSecret,
   ENV.metaKey,
   ENV.reasoningEffort,
+  ENV.metaSalt,
   ENV.assemblyKey,
 ]);
 
