@@ -46,7 +46,8 @@ have is a defect in this map.
 | Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take. English and Locale corpora not landed | 10, 12–16 |
 | Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/real-legs.mts` (seed, via `voni/scripts/lib/real-legs.ts`) | 11 |
 | Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | not landed | 17 |
-| Evaluator families | L1–L11, T1–T10, C1–C10, K1–K8, X1–X10, A1–A8, R1–R8, S1–S6, E1–E4, H1–H7 | not landed | 18–22, 26 |
+| Evaluator families | L1–L11, T1–T10, C1–C10, K1–K8, X1–X10, A1–A8, R1–R8, S1–S6, E1–E4, H1–H7 | H6 landed in `voni/src/lib/demo/verification/verdict/evaluators/human.evaluators.ts` (judge calibration); the other families are not landed | 18–22, 26 |
+| Machine judges and calibration | two transcript-grounded judges, third-judge/panel escalation, vendor independence, weighted-kappa gate | `voni/src/lib/demo/verification/judges/` — `panel.ts` refuses a judge on the agent's vendor (`AGENT_VENDOR = meta`), scores two judges independently and reconciles a disagreement above one point through a third judge to the panel; `kappa.ts` is the linear weighted-kappa arithmetic; `rubric.ts` hashes the rubric; `calibration.ts` verifies every judge/axis at the frozen `dvJudgeKappaMin` bar and refuses a changed rubric hash; a live judge transport is not landed and is key-gated by `AI_GATEWAY_API_KEY` | 26 |
 | Studio | local-only Record, Rate and Corpus surfaces; never in the deployed build | Record landed in `voni/scripts/studio/`: `take-store.ts` writes one immutable hashed take per landing (`voni/.studio/`, gitignored) on the shared digest in `scenarios/digest.ts`; `dialogues.ts` validates authored prompt cards; `http.ts` serves `record.html` on loopback only and refuses a production environment or host by name; no `src/` file imports it. Rate and Corpus landed in the same process: `rate.ts` builds the blind queue (every failing call ahead of the clean sample, seeded per-session order, A/B sides with a private answer key, seven axes, free text and defect tags), `rating-store.ts` persists attributable sessions and gold labels under `voni/.studio/rating/` and rehashes evidence on every serving, `rate.html` and `corpus.html` are the surfaces, `take-store.ts` retires a take with `retired.json` (never editing the take) and records baseline consent metadata; `selectable()` excludes retired and baseline takes | 23, 24 |
 | Human baseline | three to five consented, hashed reference calls, blind comparison only | not landed (human gate) | 25 |
 | Panel and gold labels | blind sample, seven axes, blind A/B, signature, exit 3 | not landed | 27 |
@@ -62,12 +63,11 @@ ticket 28's CLI accept it unchanged; an unknown flag, a missing Locale or a
 certification mode is a named refusal (exit 2).
 
 An **unresolved** property is a recorded gap with no owning evaluator. Today
-that is H6 (judge agreement with gold labels): it is wired to the `judge`
-evidence source and the registry marks it unresolved, so the verdict engine
-reports it unverified and the run fails closed until ticket 26 or 27 claims it.
-K8 is unresolved for the same reason: the spec states "word error within bar"
-without a number, so ticket 13 must add that bar to a frozen record before K8
-can pass. Its entity check is recorded, but it may not carry a pass alone.
+that is K8: the spec states "word error within bar" without a number, so ticket
+13 must add that bar to a frozen record before K8 can pass. Its entity check is
+recorded, but it may not carry a pass alone. H6 is no longer unresolved: ticket
+26 owns it through the judge calibration gate, which fails closed when the
+calibration is absent, below the 0.65 bar or scored against another rubric.
 
 The one seam is the call boundary. If a proposed change adds a second seam
 inside the call lifecycle or the turn stream, it contradicts ADR 0013 and needs

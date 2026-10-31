@@ -609,9 +609,9 @@ test("the loaded 82-property contract fails closed when nothing was measured", a
 
   const h6 = verdict.properties.find((property) => property.propertyId === "H6");
   const k8 = verdict.properties.find((property) => property.propertyId === "K8");
-  assert.equal(h6?.reason, "unresolved", "H6 has no owning evaluator and must fail the run");
+  assert.equal(h6?.reason, "no-evaluator", "H6 has no evidence in this empty run and must fail");
   assert.equal(k8?.reason, "unresolved", "K8's unstated word-error bar must fail the run");
-  assert.match(h6?.detail ?? "", /unresolved/);
+  assert.match(h6?.detail ?? "", /no evaluator|unknown/i);
   assert.match(k8?.detail ?? "", /word error/i);
   assert.equal(
     verdict.properties.find((property) => property.propertyId === "L1")?.reason,
