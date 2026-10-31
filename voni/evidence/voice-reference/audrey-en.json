@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "voice": "audrey",
+  "locale": "en",
+  "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
+  "renderedOn": "2026-10-31",
+  "producedBy": "cd voice-pipeline && PYTHONPATH=. python scripts/render_reference.py --body /tmp/opencode/dv21/audrey-body.json --out-dir /tmp/opencode/dv21/refs --transport browser (AssemblyAI streaming TTS, request through the cascade's own greeting path)",
+  "method": "cascade-reference-render",
+  "vendor": {
+    "name": "assemblyai",
+    "voiceId": "aai-audrey",
+    "model": "assemblyai-tts-1"
+  },
+  "format": {
+    "transport": "browser",
+    "container": "wav",
+    "encoding": "pcm_s16le",
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitsPerSample": 16
+  },
+  "audio": {
+    "file": "audrey-en.wav",
+    "sha256": "9e48d159302b0a2592fe46ce16b37f386720dba7eef697881d8369cb2015894c",
+    "bytes": 307244,
+    "durationMs": 6400
+  }
+}

@@ -207,6 +207,30 @@ test("a numeric bar left unbound is refused by name", () => {
   );
 });
 
+test("a bar naming a negative or fractional sample index is refused by name", () => {
+  for (const sample of [-1, 1.5]) {
+    assertRefusal(
+      () =>
+        buildEvaluatorRegistry(
+          [
+            moduleOf("turn-taking", [
+              evaluator({
+                bars: [
+                  { key: "p50", statistic: "p50", comparison: "at-most", sample },
+                  { key: "p95", statistic: "p95", comparison: "at-most" },
+                  { key: "max", statistic: "max", comparison: "at-most" },
+                ],
+              }),
+            ]),
+          ],
+          probeContract([T1]),
+        ),
+      "invalid-bar-binding",
+      /sample/,
+    );
+  }
+});
+
 test("a categorical property may not bind a numeric threshold", () => {
   assertRefusal(
     () =>

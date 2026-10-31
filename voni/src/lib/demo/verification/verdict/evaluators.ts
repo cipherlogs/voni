@@ -140,6 +140,16 @@ function validateBars(
           `which is not a threshold of ${property.id}`,
       );
     }
+    if (
+      bar.sample !== undefined &&
+      (!Number.isInteger(bar.sample) || bar.sample < 0)
+    ) {
+      throw new VerdictError(
+        "invalid-bar-binding",
+        `evaluator for "${property.id}" (${source}) binds "${key}" to sample ` +
+          `"${String(bar.sample)}"; a sample index is a non-negative integer`,
+      );
+    }
     if (!(STATISTICS as readonly string[]).includes(bar.statistic)) {
       throw new VerdictError(
         "invalid-bar-binding",
