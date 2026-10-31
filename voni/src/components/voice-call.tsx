@@ -446,6 +446,8 @@ export function VoiceCall({
   const marksRef = useRef<CallMarks | null>(null);
   /** Connected chime fires once per call; reset every time we dial. */
   const connectedChimeRef = useRef(false);
+  /** True while the connecting loop is sounding, so one stretch is one mark. */
+  const ringbackActiveRef = useRef(false);
   /**
    * The connected chime marks the agent actually sounding, so it hangs off the
    * playout's first audible sample — not the moment a greeting is queued (the
@@ -792,7 +794,9 @@ export function VoiceCall({
     if (!connected) return;
     if (isDemo) {
       // The demo shows talk time: it freezes while muted or on hold.
+      const created = clockRef.current === null;
       const clock = (clockRef.current ??= new TalkClock(Date.now()));
+      if (created) marksRef.current?.mark("talk_clock_start");
       const id = setInterval(() => {
         const now = Date.now();
         setElapsed(clock.talkSeconds(now));
@@ -1041,10 +1045,22 @@ export function VoiceCall({
     if (state === "connecting") {
       connectedChimeRef.current = false;
       sounds().startRingback();
+      if (!ringbackActiveRef.current) {
+        ringbackActiveRef.current = true;
+        marksRef.current?.mark("ringback_start");
+      }
     } else if (state === "listening" || state === "speaking") {
       sounds().stopRingback();
+      if (ringbackActiveRef.current) {
+        ringbackActiveRef.current = false;
+        marksRef.current?.mark("ringback_stop");
+      }
     } else if (state === "ended") {
       sounds().stopRingback();
+      if (ringbackActiveRef.current) {
+        ringbackActiveRef.current = false;
+        marksRef.current?.mark("ringback_stop");
+      }
       if (!error) sounds().play("hangup");
     }
   }, [state, error]);
@@ -1054,6 +1070,10 @@ export function VoiceCall({
   useEffect(() => {
     if (error) {
       sounds().stopRingback();
+      if (ringbackActiveRef.current) {
+        ringbackActiveRef.current = false;
+        marksRef.current?.mark("ringback_stop");
+      }
       sounds().play("error");
     }
   }, [error]);

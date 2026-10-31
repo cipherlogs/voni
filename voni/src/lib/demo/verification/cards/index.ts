@@ -47,6 +47,6 @@ export {
   type ReplayReference,
 } from "./replay";
 
-export { buildDefectCards } from "./build";
+export { CALL_LEVEL_PROPERTY_IDS, buildDefectCards } from "./build";
 
 export { renderDefectCard, renderDefectCards } from "./render";

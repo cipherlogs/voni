@@ -112,6 +112,12 @@ export type PropertyEvaluator = {
   readonly bars: readonly BarBinding[];
   /** Where the evaluator came from, for a refusal that names it. */
   readonly source?: string;
+  /**
+   * The discovered module file, when the registry loaded this evaluator from
+   * one. A defect card points here; `source` is a human label and may name a
+   * path that does not exist.
+   */
+  readonly modulePath?: string;
   evaluate(context: EvaluatorContext): Evaluation | Promise<Evaluation>;
 };
 

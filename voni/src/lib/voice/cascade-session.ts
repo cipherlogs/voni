@@ -515,6 +515,9 @@ export class CascadeSession {
         this.finish(event.turns);
         break;
       case "error":
+        // One mark per error frame: the visitor's named state is the fact L10
+        // judges. The code is the service's closed vocabulary, never its text.
+        this.marks?.mark("error_received", { code: event.code ?? "" });
         // A named refusal before the service accepted the call means the call
         // never opened: `draining` (a deploy), `managed` (routing sent this
         // call to the managed engine — routing defaults to `off`, so this is

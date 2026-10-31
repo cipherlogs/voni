@@ -476,14 +476,29 @@ export function judgeProperty(
   // repetitions has no verdict.
   const selected: PropertyMeasurement[] = [];
   const missingByScenario: string[] = [];
+  const shortfallScenarios: ScenarioVerdict[] = [];
   for (const [scenario, entry] of byScenario) {
     const plan = plannedMeasurements(property, entry.measurements);
     selected.push(...plan.selected);
     if (plan.missing.length > 0) {
-      missingByScenario.push(
+      const detail =
         `scenario "${scenario}" measured ${plan.selected.length} of ${property.repetitions} ` +
-          `declared repetitions (missing ${plan.missing.join(", ")})`,
-      );
+        `declared repetitions (missing ${plan.missing.join(", ")})`;
+      missingByScenario.push(detail);
+      // A shortfall still belongs to the scenario that produced it. Keeping
+      // the scenario here lets a diagnose run attribute its card and replay
+      // the call; it does not make the property any less failed.
+      shortfallScenarios.push({
+        scenario,
+        ...(entry.locale === undefined ? {} : { locale: entry.locale }),
+        status: "FAIL",
+        reason: "repetition-shortfall",
+        measuredRepetitions: plan.selected.length,
+        requiredRepetitions: property.repetitions,
+        sampleCount: plan.selected.reduce((sum, item) => sum + item.samples.length, 0),
+        citations: unique(plan.selected.flatMap((item) => item.citations)),
+        detail,
+      });
     }
     entry.measurements = plan.selected;
     entry.samples = plan.selected.flatMap((item) => item.samples);
@@ -495,6 +510,7 @@ export function judgeProperty(
       reason: "repetition-shortfall",
       detail: `${property.id}: ${missingByScenario.join("; ")}`,
       sampleCount: selected.reduce((sum, item) => sum + item.samples.length, 0),
+      scenarios: shortfallScenarios,
       citations: unique(selected.flatMap((item) => item.citations)),
     };
   }

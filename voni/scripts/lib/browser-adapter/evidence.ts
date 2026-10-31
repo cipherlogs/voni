@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import {
+  CALL_LEVEL_PROPERTY_IDS,
   buildDefectCards,
   DefectCardError,
   type AudioExcerpt,
@@ -629,7 +630,10 @@ export function cardInputs(input: {
       continue;
     }
     let turn: string | undefined;
-    if (!CALL_LEVEL_SOURCES.has(property.evidence)) {
+    if (
+      !CALL_LEVEL_SOURCES.has(property.evidence) &&
+      !CALL_LEVEL_PROPERTY_IDS.has(property.propertyId)
+    ) {
       const citations = [
         ...property.citations,
         ...failedScenario.citations,

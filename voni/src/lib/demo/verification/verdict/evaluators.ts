@@ -235,7 +235,17 @@ function registerCandidates(
     }
     validateBars(property, evaluator, source);
     seen.set(propertyId, source);
-    registered.set(propertyId, { ...evaluator, propertyId, source });
+    registered.set(propertyId, {
+      ...evaluator,
+      propertyId,
+      source,
+      // The discovered module file is the one pointer a card can resolve. An
+      // evaluator's own `source` is a human label (and sometimes a path that
+      // does not exist), so it is never used as the card pointer.
+      ...(candidate.moduleFamily === undefined
+        ? {}
+        : { modulePath: candidate.source }),
+    });
   }
 
   return contract.properties.flatMap((property) => {
