@@ -58,7 +58,7 @@ test("the panel samples twelve calls with two per Locale and is blind to the ver
 test("two failing calls fill the two extra slots and both are mandatory", () => {
   const certificate = sessionCertificate({
     callsPerLocale: 3,
-    failing: ["panel-es", "panel-pt"],
+    failing: ["fail-es", "fail-pt"],
   });
   const { session } = buildPanelSession({
     certificate,
@@ -68,9 +68,15 @@ test("two failing calls fill the two extra slots and both are mandatory", () => 
     createdAt: "2026-10-31T10:00:00.000Z",
   });
   assert.equal(session.queue.length, PANEL_SAMPLE_SIZE);
+  assert.equal(session.queue.filter((item) => item.failing).length, 2);
+  assert.equal(
+    session.queue.filter((item) => !item.failing).length,
+    10,
+    "the ten-call Locale base is clean; the two failures are the extra slots",
+  );
   const queued = new Set(session.queue.map((item) => item.callId));
-  assert.ok(queued.has("call-es-1"), "the es failing call is mandatory");
-  assert.ok(queued.has("call-pt-1"), "the pt failing call is mandatory");
+  assert.ok(queued.has("call-es-fail-1"), "the es failing call is mandatory");
+  assert.ok(queued.has("call-pt-fail-1"), "the pt failing call is mandatory");
   for (const locale of LOCALES) {
     assert.ok(
       session.queue.filter((item) => item.locale === locale).length >= 2,

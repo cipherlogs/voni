@@ -69,10 +69,10 @@ export function sessionCertificate(options: {
   const failing = new Set(options.failing ?? []);
   const severity = options.severity ?? {};
   const levels = Math.max(1, ...Object.values(severity));
-  const rows = LOCALES.map((locale) => {
+  const rows = LOCALES.flatMap((locale) => {
     const scenario = `panel-${locale}`;
     const calls = Array.from({ length: perLocale }, (_, index) => `call-${locale}-${index + 1}`);
-    return {
+    const base = {
       locale,
       scenario,
       heldOut: false,
@@ -82,7 +82,21 @@ export function sessionCertificate(options: {
       gap: null,
       calls,
     };
+    const extra = [...failing]
+      .filter((name) => name === `fail-${locale}`)
+      .map((name) => ({
+        locale,
+        scenario: name,
+        heldOut: false,
+        requiredRepetitions: 1,
+        measuredRepetitions: 1,
+        status: "measured" as const,
+        gap: null,
+        calls: [`call-${locale}-fail-1`],
+      }));
+    return [base, ...extra];
   });
+  const rowsByLocale = LOCALES.map((locale) => rows.filter((row) => row.locale === locale));
   const failedProperties = Array.from({ length: levels }, (_, level) => ({
     propertyId: `T${level + 1}`,
     family: "turn-taking" as const,
@@ -122,10 +136,10 @@ export function sessionCertificate(options: {
       expectedScenarios: rows.length,
       gapRows: 0,
       rows,
-      byLocale: LOCALES.map((locale) => ({
-        locale,
-        expectedScenarios: 1,
-        measuredScenarios: 1,
+      byLocale: rowsByLocale.map((localeRows, index) => ({
+        locale: LOCALES[index]!,
+        expectedScenarios: localeRows.length,
+        measuredScenarios: localeRows.length,
         gapRows: 0,
         status: "measured" as const,
         gap: null,
@@ -134,7 +148,7 @@ export function sessionCertificate(options: {
     properties: failing.size === 0 ? [] : failedProperties,
     eligibility: { eligible: true, reasons: [] },
     runFailures: [],
-    cost: { usd: 0.42, callCount: rows.length * perLocale },
+    cost: { usd: 0.42, callCount: rows.reduce((sum, row) => sum + row.calls.length, 0) },
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: null,
     verdict: failing.size > 0 ? "not-demo-ready" : "pending-human",

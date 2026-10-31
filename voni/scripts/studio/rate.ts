@@ -544,37 +544,14 @@ export function buildRatingSession(input: RatingSessionInput): RatingSession {
         )
       : shuffle(failingCalls, random);
 
-  // Ticket 27's panel: two calls per Locale are the base of the twelve, with
-  // failing calls counted toward a Locale's two. The extra slots go to the
-  // worst remaining failing calls first (all of them are already in
-  // `failingOrder`, which the queue places ahead of the clean sample), then to
-  // the remaining calls in seeded, severity-first order. A run with more than
-  // two failures grows past twelve rather than dropping one.
-  let perLocaleClean: RatingCallInput[];
-  if (sampleSize > 0) {
-    const failingByLocale = new Map<Locale, number>();
-    for (const call of failingCalls) {
-      failingByLocale.set(call.locale, (failingByLocale.get(call.locale) ?? 0) + 1);
-    }
-    const cleanByLocale = new Map<Locale, RatingCallInput[]>();
-    for (const call of cleanCalls) {
-      const group = cleanByLocale.get(call.locale);
-      if (group) group.push(call);
-      else cleanByLocale.set(call.locale, [call]);
-    }
-    perLocaleClean = [];
-    for (const locale of [...cleanByLocale.keys()].sort()) {
-      const wanted = Math.max(
-        0,
-        cleanPerLocale - (failingByLocale.get(locale) ?? 0),
-      );
-      perLocaleClean.push(
-        ...shuffle(cleanByLocale.get(locale)!, random).slice(0, wanted),
-      );
-    }
-  } else {
-    perLocaleClean = cleanSample(cleanCalls, cleanPerLocale, random);
-  }
+  // Ticket 27's panel: the ten-call base is two calls per Locale, drawn from
+  // the clean calls where they exist (a Locale with fewer than two clean calls
+  // contributes its failing calls to the base instead). Every failing call is
+  // then mandatory and is queued ahead of the clean sample, worst first. The
+  // two extra slots beyond the base and the mandatory failures go to the worst
+  // remaining calls; a run with more than two remaining failures grows past
+  // twelve rather than dropping one.
+  const perLocaleClean = cleanSample(cleanCalls, cleanPerLocale, random);
 
   const selected = new Set(perLocaleClean.map((call) => call.callId));
   const topUpCount = Math.max(0, sampleSize - failingCalls.length - perLocaleClean.length);
