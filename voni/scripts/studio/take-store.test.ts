@@ -10,7 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -298,9 +298,175 @@ test("the store has no edit or delete surface: a take is appended, never mutated
 
     assert.deepEqual(
       Object.keys(store).sort(),
-      ["get", "land", "list", "read", "root", "verify"],
+      ["assertSelectable", "corpus", "get", "land", "list", "read", "retire", "retirement", "root", "selectable", "verify"],
       "re-recording is the only change a take has: no update, patch, rename or delete",
     );
     assert.deepEqual(await store.get(first.takeId), first);
+  });
+});
+
+// ── Retirement ──────────────────────────────────────────────────────────────
+
+test("retiring a take marks it and leaves the take, its record and its hash untouched", async () => {
+  await withStore(async (store) => {
+    const take = await store.land({ mode: "one-shot", audio: wav(8), labels: LABELS, prompt: { text: "Hi" } });
+    const recordPath = join(store.root, "takes", take.takeId, "take.json");
+    const before = await readFile(recordPath);
+    const beforeAudio = await store.read(take.takeId);
+
+    const retirement = await store.retire(take.takeId, {
+      reviewer: "owner",
+      reason: "the accent was wrong for this scenario",
+    });
+
+    assert.equal(retirement.takeId, take.takeId);
+    assert.equal(retirement.audioSha256, take.audioSha256, "the retirement names the exact hashed bytes it retires");
+    assert.equal(retirement.reviewer, "owner");
+    assert.match(retirement.reason, /accent/);
+    assert.match(retirement.retiredAt, /^\d{4}-\d{2}-\d{2}T/);
+
+    assert.deepEqual(await store.get(take.takeId), take, "the take record is not rewritten");
+    assert.deepEqual(await readFile(recordPath), before, "the take.json bytes are unchanged");
+    const afterAudio = await store.read(take.takeId);
+    assert.equal(afterAudio.record.audioSha256, take.audioSha256);
+    assert.deepEqual(afterAudio.bytes, beforeAudio.bytes, "a retired take remains readable by its hash");
+    assert.deepEqual(await store.retirement(take.takeId), retirement);
+  });
+});
+
+test("a retired take cannot be selected by a new scenario, while the rest stay selectable", async () => {
+  await withStore(async (store) => {
+    const retired = await store.land({ mode: "one-shot", audio: wav(8), labels: LABELS, prompt: { text: "Hi" } });
+    const kept = await store.land({ mode: "one-shot", audio: wav(16), labels: LABELS, prompt: { text: "Bye" } });
+    await store.retire(retired.takeId, { reviewer: "owner", reason: "retired from the reserve" });
+
+    assert.deepEqual((await store.selectable()).map((take) => take.takeId), [kept.takeId]);
+    await assert.rejects(
+      store.assertSelectable(retired.takeId),
+      assertRefusal("take-retired", /retired/),
+    );
+    assert.deepEqual(await store.assertSelectable(kept.takeId), kept);
+
+    const corpus = await store.corpus();
+    assert.equal(corpus.length, 2);
+    assert.equal(corpus.find((entry) => entry.record.takeId === retired.takeId)?.selectable, false);
+    assert.equal(corpus.find((entry) => entry.record.takeId === kept.takeId)?.selectable, true);
+  });
+});
+
+test("retiring twice or retiring an unknown take is refused by name", async () => {
+  await withStore(async (store) => {
+    const take = await store.land({ mode: "one-shot", audio: wav(8), labels: LABELS, prompt: { text: "Hi" } });
+    const other = await store.land({ mode: "one-shot", audio: wav(16), labels: LABELS, prompt: { text: "Bye" } });
+    await store.retire(take.takeId, { reviewer: "owner", reason: "first" });
+    await assert.rejects(
+      store.retire(take.takeId, { reviewer: "owner", reason: "second" }),
+      assertRefusal("already-retired", /already retired/),
+    );
+    await assert.rejects(
+      store.retire("take-000099", { reviewer: "owner", reason: "nope" }),
+      assertRefusal("unknown-take", /take-000099/),
+    );
+    await assert.rejects(
+      store.retire(other.takeId, { reviewer: " ", reason: "nope" }),
+      assertRefusal("missing-reviewer", /reviewer/),
+    );
+    await assert.rejects(
+      store.retire(other.takeId, { reviewer: "owner", reason: " " }),
+      assertRefusal("missing-reason", /reason/),
+    );
+  });
+});
+
+// ── Baseline consent ────────────────────────────────────────────────────────
+
+const BASELINE = {
+  participantId: "p-01",
+  consentRef: "consent-2026-10-31-p01",
+  consentedAt: "2026-10-31",
+  call: 1 as const,
+};
+
+test("a baseline take records its participant, consent reference and consent date", async () => {
+  await withStore(async (store) => {
+    const take = await store.land({
+      mode: "upload",
+      audio: wav(8),
+      labels: { ...LABELS, accent: "Indian English" },
+      upload: { filename: "baseline-p01-call-1.wav" },
+      baseline: BASELINE,
+    });
+
+    assert.deepEqual(take.baseline, BASELINE);
+    assert.deepEqual((await store.get(take.takeId))!.baseline, BASELINE);
+    const raw = JSON.parse(await readFile(join(store.root, "takes", take.takeId, "take.json"), "utf8")) as {
+      baseline: unknown;
+    };
+    assert.deepEqual(raw.baseline, BASELINE, "consent metadata is written with the take, not supplied at read time");
+  });
+});
+
+test("a baseline take is blind comparison audio, never a scenario take", async () => {
+  await withStore(async (store) => {
+    const baseline = await store.land({
+      mode: "one-shot",
+      audio: wav(8),
+      labels: LABELS,
+      prompt: { text: "I would like to book a table." },
+      baseline: BASELINE,
+    });
+    const scenario = await store.land({ mode: "one-shot", audio: wav(16), labels: LABELS, prompt: { text: "Hi" } });
+
+    assert.deepEqual((await store.selectable()).map((take) => take.takeId), [scenario.takeId]);
+    await assert.rejects(
+      store.assertSelectable(baseline.takeId),
+      assertRefusal("baseline-take", /blind comparison/),
+    );
+  });
+});
+
+test("a baseline take without complete consent metadata is refused by name, never stored", async () => {
+  await withStore(async (store) => {
+    await assert.rejects(
+      store.land({
+        mode: "one-shot",
+        audio: wav(),
+        labels: LABELS,
+        prompt: { text: "Hi" },
+        baseline: { ...BASELINE, consentRef: " " },
+      }),
+      assertRefusal("missing-baseline-consent", /consentRef/),
+    );
+    await assert.rejects(
+      store.land({
+        mode: "one-shot",
+        audio: wav(),
+        labels: LABELS,
+        prompt: { text: "Hi" },
+        baseline: { ...BASELINE, consentedAt: "31/10/2026" },
+      }),
+      assertRefusal("invalid-baseline-consent", /consentedAt/),
+    );
+    await assert.rejects(
+      store.land({
+        mode: "one-shot",
+        audio: wav(),
+        labels: LABELS,
+        prompt: { text: "Hi" },
+        baseline: { ...BASELINE, call: 3 as 1 },
+      }),
+      assertRefusal("invalid-baseline-consent", /call/),
+    );
+    await assert.rejects(
+      store.land({
+        mode: "one-shot",
+        audio: wav(),
+        labels: LABELS,
+        prompt: { text: "Hi" },
+        baseline: { ...BASELINE, consentEmail: "someone@example.com" } as never,
+      }),
+      assertRefusal("unknown-baseline-consent-field", /consentEmail/),
+    );
+    assert.equal((await store.list()).length, 0, "a refused baseline leaves nothing behind");
   });
 });
