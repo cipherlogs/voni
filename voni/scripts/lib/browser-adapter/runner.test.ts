@@ -185,6 +185,29 @@ test("a golden scenario runs once, writes a certificate bound to one call id, an
   }
 });
 
+test("a caller that owns the run's one certificate withholds this call's, and keeps its attempt", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), GOLDEN);
+    const result = await runBrowserCertification(
+      input(root, {
+        certificate: "withhold",
+        plan: { mode: "full", repetitions: 3 },
+      }),
+    );
+    assert.equal(result.certificateFile, null, "no per-call certificate is written");
+    assert.equal(result.attempt?.scenario, "golden-flow-smoke");
+    assert.equal(result.attempt?.repetition, 1);
+    assert.ok(result.attempt?.evidence.ledger, "the attempt carries the judged evidence");
+    const record = runJson(result);
+    assert.equal(record.certification, "withheld");
+    assert.match(String(record.certificationReason), /withheld/);
+    assert.equal(existsSync(join(result.runDir, "certificate.json")), false);
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("a deliberately failing scenario is a card, not a certificate pass", async () => {
   const root = tempRoot();
   try {
@@ -549,6 +572,45 @@ test("parity disagreement makes the run not-demo-ready and names the property", 
       result.verdict?.failures.some((line) => line.includes("parity")),
       "the disagreement is a run failure",
     );
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a provider fallback on the call makes the run ineligible, never certified", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), GOLDEN);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const result = await runBrowserCertification(
+      input(root, {
+        call: async (callInput) =>
+          fakeBrowserCall({
+            scenario: callInput.scenario,
+            eventsDir,
+            capturesDir,
+            runDir: callInput.runDir,
+            providerFallback: true,
+          }),
+      }),
+    );
+    assert.equal(result.status, "ineligible");
+    assert.equal(result.exitCode, 1, "ineligible is never exit 0");
+    assert.equal(result.verdict?.verdict, "ineligible");
+    assert.equal(result.verdict?.certifiable, false);
+    assert.match(result.verdict?.detail ?? "", /provider fallback/i);
+    const certificate = result.certificateFile
+      ? (JSON.parse(readFileSync(result.certificateFile, "utf8")) as {
+          verdict: string;
+          pass: boolean;
+        })
+      : null;
+    assert.equal(certificate?.verdict, "ineligible", "a contaminated run is never certified");
+    assert.equal(certificate?.pass, false);
+    const run = runJson(result);
+    assert.equal((run.certificate as { verdict: string }).verdict, "ineligible");
+    assert.equal((run.certificate as { pass: boolean }).pass, false);
   } finally {
     removeTree(root);
   }

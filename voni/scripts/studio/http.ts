@@ -13,12 +13,31 @@
  * decodes and validates transport, never invents a take.
  */
 
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadDialogues } from "./dialogues";
+import { BaselineError, audioDurationMs, verifyBaseline } from "./baseline";
+import {
+  BASELINE_ACCENTS,
+  BASELINE_BREAK_MS,
+  BASELINE_CALLS,
+  BASELINE_CALL_LABELS,
+  BASELINE_MAX_CALL_MS,
+  BASELINE_MIN_CALL_MS,
+  DEFAULT_BASELINE_ACCENT,
+  PARTICIPANT_COUNTS,
+  buildBaselinePlan,
+  consentMarkdown,
+  consentRefFor,
+  evaluateCallDuration,
+  isBaselineAccent,
+  isParticipantCount,
+  participantIdFor,
+  type BaselineAccent,
+} from "./baseline-flow";
 import { RATING_AXES, RatingError, type RatingSubmission } from "./rate";
 import { PanelError } from "../../src/lib/demo/verification/panel/errors";
 import {
@@ -32,6 +51,8 @@ import {
   StudioError,
   contentTypeFor,
   openTakeStore,
+  sniffAudioFormat,
+  validateBaselineCapture,
   type RecordMode,
   type RetirementInput,
   type TakeInput,
@@ -53,6 +74,7 @@ const RATE_RATINGS_ROUTE = /^\/api\/rate\/sessions\/(rating-[0-9a-f]{64})\/ratin
 const RATE_EXPORT_ROUTE = /^\/api\/rate\/sessions\/(rating-[0-9a-f]{64})\/export$/;
 const BODY_FIELDS = ["mode", "audioBase64", "labels", "prompt", "upload", "supersedes", "recordedAt", "baseline"] as const;
 const RETIRE_BODY_FIELDS = ["reviewer", "reason", "retiredAt"] as const;
+const BASELINE_SESSION_BODY_FIELDS = ["participants", "accents", "attested"] as const;
 const RATE_SESSION_BODY_FIELDS = ["reviewer", "certificate", "calls", "seed", "cleanPerLocale", "panel"] as const;
 const RATING_BODY_FIELDS = ["itemId", "axes", "freeText", "defectTags", "humanSide", "preferredSide"] as const;
 
@@ -178,6 +200,103 @@ function parseTakeBody(raw: unknown): TakeInput {
   return { ...common, mode: "one-shot", prompt: body.prompt as PromptCard };
 }
 
+/**
+ * The save gate, on the wire. A baseline call must measure 4:00–6:00 before it
+ * is written; the page refuses on its own timer, but the audio bytes are the
+ * authority. A short or long call is a named refusal and leaves no take.
+ */
+function assertBaselineCallInBand(input: TakeInput): void {
+  if (input.baseline === undefined) return;
+  validateBaselineCapture(input.baseline);
+  let durationMs: number;
+  try {
+    durationMs = audioDurationMs(Buffer.from(input.audio), sniffAudioFormat(input.audio));
+  } catch (error) {
+    if (error instanceof BaselineError) {
+      throw new StudioError("wrong-duration-band", error.message);
+    }
+    throw error;
+  }
+  const verdict = evaluateCallDuration(durationMs);
+  if (!verdict.ok) {
+    throw new StudioError(verdict.code, verdict.message);
+  }
+}
+
+/**
+ * The setup screen's one POST: a participant count, one accent per participant
+ * and the owner's consent attestation. There is no name, date, path or free
+ * text on the wire, so the pseudonym and the consent date are the server's.
+ */
+function parseBaselineSessionBody(raw: unknown): { count: 3 | 4 | 5; accents: BaselineAccent[] } {
+  const body = asObject(raw, "a baseline session body");
+  refuseUnknownFields(body, BASELINE_SESSION_BODY_FIELDS, "a baseline session body");
+  if (body.attested !== true) {
+    throw new StudioError(
+      "missing-attestation",
+      "a baseline session needs the owner's attestation that signed consent for every participant is filed outside the repository",
+    );
+  }
+  if (!isParticipantCount(body.participants)) {
+    throw new StudioError(
+      "invalid-baseline-session",
+      `a baseline session records ${PARTICIPANT_COUNTS.join(", ")} participants, got ${JSON.stringify(body.participants)}`,
+    );
+  }
+  if (!Array.isArray(body.accents) || body.accents.length !== body.participants) {
+    throw new StudioError(
+      "invalid-baseline-session",
+      `a baseline session needs one accent per participant (${body.participants}), got ${Array.isArray(body.accents) ? body.accents.length : typeof body.accents}`,
+    );
+  }
+  const accents: BaselineAccent[] = [];
+  for (const [index, accent] of body.accents.entries()) {
+    if (!isBaselineAccent(accent)) {
+      throw new StudioError(
+        "invalid-baseline-session",
+        `participant ${index + 1}'s accent must be one of ${BASELINE_ACCENTS.join(", ")}, got ${JSON.stringify(accent)}`,
+      );
+    }
+    accents.push(accent);
+  }
+  return { count: body.participants, accents };
+}
+
+/**
+ * Write the consent pointer from the attestation. The file is immutable once
+ * filed: a second session reads the date already recorded there rather than
+ * re-dating a signed consent, so the take and the pointer always agree.
+ */
+async function fileConsent(consentRoot: string, participantId: string, consentedAt: string): Promise<string> {
+  const path = join(consentRoot, participantId, "consent.md");
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    await writeFile(path, consentMarkdown(participantId, consentedAt), { flag: "wx" });
+    return consentedAt;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw new StudioError("studio-io", `cannot write consent ${path}: ${errorText(error)}`);
+    }
+  }
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    throw new StudioError("studio-io", `cannot read consent ${path}: ${errorText(error)}`);
+  }
+  if (!text.includes(participantId)) {
+    throw new StudioError(
+      "malformed-consent",
+      `consent ${path} does not name ${participantId}; a consent pointer and the participant must agree`,
+    );
+  }
+  const date = /\b\d{4}-\d{2}-\d{2}\b/.exec(text)?.[0];
+  if (!date) {
+    throw new StudioError("malformed-consent", `consent ${path} carries no consent date; it cannot back a baseline take`);
+  }
+  return date;
+}
+
 function parseRetireBody(raw: unknown): RetirementInput {
   const body = asObject(raw, "a retirement body");
   refuseUnknownFields(body, RETIRE_BODY_FIELDS, "a retirement body");
@@ -271,11 +390,16 @@ export type StudioHandlerOptions = {
   readonly surfacePath: string;
   readonly rateSurfacePath: string;
   readonly corpusSurfacePath: string;
+  /** The zero-typing baseline page; defaults to `./baseline.html` beside this module. */
+  readonly baselineSurfacePath: string;
+  /** Injectable clock for the consent date; defaults to the wall clock. */
+  readonly now?: () => Date;
 };
 
 /** The route table, exported for the server entry and the tests. */
 export function createStudioHandler(options: StudioHandlerOptions): (request: IncomingMessage, response: ServerResponse) => void {
-  const { store, ratingStore, dialoguesDir, surfacePath, rateSurfacePath, corpusSurfacePath } = options;
+  const { store, ratingStore, dialoguesDir, surfacePath, rateSurfacePath, corpusSurfacePath, baselineSurfacePath } = options;
+  const now = options.now ?? (() => new Date());
 
   async function serveSurface(response: ServerResponse, path: string, label: string): Promise<void> {
     let html: string;
@@ -337,6 +461,15 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
       return;
     }
 
+    if (path === "/baseline") {
+      if (method !== "GET") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} /baseline is not a route; the baseline page is a GET` });
+        return;
+      }
+      await serveSurface(response, baselineSurfacePath, "baseline");
+      return;
+    }
+
     if (path === "/api/health") {
       if (method !== "GET") {
         sendJson(response, 405, { error: "method-not-allowed", message: `${method} /api/health is not a route` });
@@ -357,7 +490,9 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
         return;
       }
       if (method === "POST") {
-        const take = await store.land(parseTakeBody(await readJsonBody(request)));
+        const input = parseTakeBody(await readJsonBody(request));
+        assertBaselineCallInBand(input);
+        const take = await store.land(input);
         sendJson(response, 201, { take });
         return;
       }
@@ -399,6 +534,70 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
         return;
       }
       sendJson(response, 200, { takes: await store.corpus() });
+      return;
+    }
+
+    if (path === "/api/baseline/session") {
+      if (method !== "POST") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} /api/baseline/session is not a route; a session is a POST` });
+        return;
+      }
+      const { count, accents } = parseBaselineSessionBody(await readJsonBody(request));
+      const today = now().toISOString().slice(0, 10);
+      const participants: Array<{
+        participantId: string;
+        accent: BaselineAccent;
+        consentedAt: string;
+        consentRef: string;
+      }> = [];
+      for (let index = 1; index <= count; index += 1) {
+        const participantId = participantIdFor(index);
+        const accent = accents[index - 1]!;
+        const consentedAt = await fileConsent(join(store.root, "consent"), participantId, today);
+        participants.push({ participantId, accent, consentedAt, consentRef: consentRefFor(participantId) });
+      }
+      sendJson(response, 201, { participants, plan: buildBaselinePlan(count) });
+      return;
+    }
+
+    if (path === "/api/baseline/pin") {
+      if (method !== "POST") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} /api/baseline/pin is not a route; pinning is a POST` });
+        return;
+      }
+      // `--record` semantics, then the ordinary verification: the second run
+      // reproduces the list that was just written. Hashing and the verifier
+      // stay in baseline.ts; this route only joins them.
+      const certificationRoots = [
+        join(HERE, "../../src/lib/demo/verification/scenarios/corpus"),
+        join(HERE, "../../evidence/certificates"),
+      ];
+      const pinned = await verifyBaseline({ root: store.root, record: true, certificationRoots });
+      const verified = await verifyBaseline({ root: store.root, certificationRoots });
+      sendJson(response, 200, {
+        pinned: pinned.pinned,
+        participants: verified.participants,
+        takes: verified.takes,
+        manifestPath: verified.manifestPath,
+      });
+      return;
+    }
+
+    if (path === "/api/baseline/setup") {
+      if (method !== "GET") {
+        sendJson(response, 405, { error: "method-not-allowed", message: `${method} /api/baseline/setup is not a route` });
+        return;
+      }
+      sendJson(response, 200, {
+        participantCounts: PARTICIPANT_COUNTS,
+        accents: BASELINE_ACCENTS,
+        defaultAccent: DEFAULT_BASELINE_ACCENT,
+        breakMs: BASELINE_BREAK_MS,
+        minCallMs: BASELINE_MIN_CALL_MS,
+        maxCallMs: BASELINE_MAX_CALL_MS,
+        calls: BASELINE_CALLS,
+        labels: BASELINE_CALL_LABELS,
+      });
       return;
     }
 
@@ -492,6 +691,10 @@ export function createStudioHandler(options: StudioHandlerOptions): (request: In
 
   return (request, response) => {
     void handle(request, response).catch((error: unknown) => {
+      if (error instanceof BaselineError) {
+        sendJson(response, error.code === "manifest-exists" ? 409 : 400, { error: error.code, message: error.message });
+        return;
+      }
       if (error instanceof RatingError) {
         sendJson(response, ratingStatusFor(error), { error: error.code, message: error.message });
         return;
@@ -535,6 +738,8 @@ export type StudioOptions = {
   readonly rateSurfacePath?: string;
   /** The corpus page; defaults to `./corpus.html` beside this module. */
   readonly corpusSurfacePath?: string;
+  /** The baseline page; defaults to `./baseline.html` beside this module. */
+  readonly baselineSurfacePath?: string;
   /** Audio evidence root; a call path outside it is refused. Defaults to `voni/evidence`. */
   readonly evidenceRoot?: string;
   /** Rating session root; defaults to `<root>/rating`. */
@@ -578,6 +783,8 @@ export async function startStudio(options: StudioOptions): Promise<RunningStudio
     surfacePath: options.surfacePath ?? join(HERE, "record.html"),
     rateSurfacePath: options.rateSurfacePath ?? join(HERE, "rate.html"),
     corpusSurfacePath: options.corpusSurfacePath ?? join(HERE, "corpus.html"),
+    baselineSurfacePath: options.baselineSurfacePath ?? join(HERE, "baseline.html"),
+    now: options.now ?? (() => new Date()),
   });
   const server = createServer(handler);
   await new Promise<void>((resolve, reject) => {

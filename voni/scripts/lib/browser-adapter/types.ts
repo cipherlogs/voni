@@ -82,6 +82,58 @@ export type BrowserTarget = {
   readonly local: boolean;
 };
 
+/**
+ * What the browser harness observed at the edge: the page, the microphone, the
+ * device, the transport and the deploy. These are the visitor's own machine
+ * changing under the call, not a fake pipeline inside it.
+ */
+export type EdgeObservation = {
+  readonly conditions: readonly {
+    readonly kind: string;
+    readonly atMs: number;
+    readonly durationMs?: number;
+    readonly applied: boolean;
+    readonly observed: string;
+  }[];
+  /** A freeze/hide hold: the stop and the return, with the clock read on each side. */
+  readonly hold: {
+    readonly enteredAtMs: number;
+    readonly returnedAtMs: number | null;
+    readonly holdingObserved: boolean;
+    readonly talkClockAtEnterS: number;
+    readonly talkClockAtReturnS: number | null;
+    readonly stateAtEnter: string;
+    readonly stateAtReturn: string | null;
+    /** True when the return painted "connecting" (the ringback's trigger). */
+    readonly ringbackObserved: boolean;
+    readonly greetingCountAtEnter: number;
+    readonly greetingCountAtReturn: number | null;
+  } | null;
+  /** A denied microphone: the named state and the sockets left behind. */
+  readonly micDenied: {
+    readonly namedState: string;
+    readonly errorText: string;
+    readonly socketOpenAfterMs: number;
+    readonly openSockets: number;
+    readonly teardownObserved: boolean;
+  } | null;
+  /** A mid-call input device change: recovered, honestly ended, or neither. */
+  readonly deviceSwitch: {
+    readonly atMs: number;
+    readonly reacquired: boolean;
+    readonly state: string;
+    readonly endedHonestly: boolean;
+  } | null;
+  /** The deploy drain trial: one live call finishing, one new call refused. */
+  readonly drain: {
+    readonly liveCallFinished: boolean;
+    readonly newCallAttempted: boolean;
+    readonly newCallRefused: boolean;
+    readonly refusalCode: string | null;
+    readonly refusalText: string | null;
+  } | null;
+};
+
 /** What the browser harness actually did to the microphone. */
 export type SyntheticMicReport = {
   /** Always `getUserMedia`: the harness owns the mic at the browser API. */
@@ -96,6 +148,8 @@ export type SyntheticMicReport = {
     readonly take: string;
     readonly atMs: number;
     readonly durationMs: number;
+    /** Wall-clock start, set by the harness; absent from an older report. */
+    readonly epochMs?: number;
   }[];
   /** The browser's audio context rate, when the page reported it. */
   readonly sampleRate: number | null;
@@ -114,6 +168,8 @@ export type BrowserCallResult = {
   readonly triggerPlan: TriggerPlan;
   readonly faultsApplied: readonly AppliedFault[];
   readonly syntheticMic: SyntheticMicReport;
+  /** The browser-edge conditions this call produced; null when none ran. */
+  readonly edge?: EdgeObservation | null;
   /** The real sockets and pages this call opened, recorded for the refusal check. */
   readonly browser: {
     readonly appUrl: string;
@@ -127,6 +183,11 @@ export type BrowserCallResult = {
   readonly capturePath: string | null;
   /** How the call ended, in the harness's words. */
   readonly endedBy: "caller-hangup" | "agent-end" | "call-drop" | "timeout";
+  /** The visitor's transcript, read from the page before teardown. */
+  readonly captions?: readonly {
+    readonly role: "caller" | "agent";
+    readonly text: string;
+  }[];
   /** A named harness problem that did not stop evidence assembly. */
   readonly error: string | null;
   readonly tracePath: string | null;
@@ -205,6 +266,11 @@ export type BrowserEvidenceBundle = {
   readonly browser: {
     readonly file: string;
     readonly marks: CallMarksArtifact;
+    /** The visitor's transcript, read from the page at teardown. */
+    readonly captions?: readonly {
+      readonly role: "caller" | "agent";
+      readonly text: string;
+    }[];
     readonly capture: {
       readonly file: string;
       readonly name: string;
@@ -213,6 +279,10 @@ export type BrowserEvidenceBundle = {
       readonly seconds: number;
     };
     readonly syntheticMic: SyntheticMicReport;
+    /** The scenario's applied media faults, with what each actually did. */
+    readonly faultsApplied: readonly AppliedFault[];
+    /** The browser-edge observations R2–R7 are judged from. */
+    readonly edge: EdgeObservation | null;
   };
 };
 
@@ -239,6 +309,7 @@ export type BrowserCallRecord = {
   readonly triggerPlan: TriggerPlan;
   readonly faultsApplied: readonly AppliedFault[];
   readonly syntheticMic: SyntheticMicReport;
+  readonly edge: EdgeObservation | null;
   readonly browser: BrowserCallResult["browser"];
   readonly elapsedMs: number;
   readonly files: {
@@ -339,6 +410,18 @@ export type BrowserRunResult = {
   readonly runId: string;
   readonly runDir: string;
   readonly status: BrowserRunStatus;
+  /**
+   * The one attempt this call produced, for a caller that judges several calls
+   * together (a multi-scenario certification run owns the run's one
+   * certificate). Null on a refusal.
+   */
+  readonly attempt: import("@/lib/demo/verification/verdict").ScenarioAttempt | null;
+  /** The call's own eligibility facts, so a multi-scenario judge keeps them. */
+  readonly eligibility:
+    | import("@/lib/demo/verification/verdict").CallEligibilityFact
+    | null;
+  /** The pipeline build the run served; a run certificate records it. */
+  readonly pipelineImage: string | null;
   /** 0 certified, 1 not-demo-ready, 2 a named refusal, 3 pending the human panel. */
   readonly exitCode: 0 | 1 | 2 | 3;
   readonly verdict: RunVerdict | null;

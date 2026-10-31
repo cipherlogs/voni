@@ -163,6 +163,41 @@ export type Fault = {
   readonly durationMs?: number;
 };
 
+/**
+ * Browser-edge conditions: the visitor's own machine changing under the call.
+ *
+ * These are not media faults and are not applied by the protocol adapter. They
+ * are named here, in the one scenario record, so the browser adapter can
+ * simulate them at its edge (the page, the mic, the socket or the deploy) and
+ * an adapter that cannot honour one refuses the scenario by name instead of
+ * pretending it ran. Nothing here adds a branch to production code.
+ *
+ * Spec: `.scratch/demo-verification/spec.md`, "Resilience" R2–R7 and
+ * "Connecting UX, hold/return, mic denial, deploy drain".
+ */
+export const EDGE_CONDITION_KINDS = [
+  /** The transport drops and the visitor returns; the call rejoins the same id. */
+  "page-freeze",
+  /** The page goes hidden and the browser freezes it; it returns after the pause. */
+  "page-hidden",
+  /** `getUserMedia` rejects with `NotAllowedError`. */
+  "mic-denied",
+  /** The active input device is unplugged and a fresh one is offered. */
+  "device-switch",
+  /** The service begins draining while a live call is in progress. */
+  "deploy-drain",
+] as const;
+
+export type EdgeConditionKind = (typeof EDGE_CONDITION_KINDS)[number];
+
+export type EdgeCondition = {
+  readonly kind: EdgeConditionKind;
+  /** Call time the condition begins. */
+  readonly atMs: number;
+  /** How long the condition lasts; omitted when it is instantaneous. */
+  readonly durationMs?: number;
+};
+
 /** A named background condition the adapter mixes under the call. */
 export type Soundscape = {
   readonly id: string;
@@ -199,6 +234,14 @@ export type ScenarioDocument = {
   readonly expectedProperties: readonly string[];
   readonly soundscape: Soundscape;
   readonly faults: readonly Fault[];
+  /**
+   * How long the harness keeps an otherwise finished call open before it hangs
+   * up. A greeting-only scenario sets this so the line's waiting time is a real
+   * measurement rather than the harness's teardown.
+   */
+  readonly holdOpenMs?: number;
+  /** Browser-edge conditions; empty for a scenario that only exercises media. */
+  readonly edge: readonly EdgeCondition[];
   readonly takes: readonly ScenarioTake[];
   readonly script: readonly ScriptStep[];
 };

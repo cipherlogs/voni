@@ -111,7 +111,7 @@ function writeLifecycleEvidence(input: {
   const captureName = `delivered-${callId}-20261031-120000.wav`;
   const capturePath = join(input.capturesDir, captureName);
   const buggy = input.kind === "buggy";
-  const endAt = buggy ? 8_010 : 30_610;
+  const endAt = buggy ? 8_010 : 31_010;
 
   writeWav(
     capturePath,
@@ -140,7 +140,7 @@ function writeLifecycleEvidence(input: {
       callId,
       subject: "demo:jorg",
       turn: "1:reply",
-      atMs: buggy ? 7_950 : 30_550,
+      atMs: buggy ? 7_950 : 30_950,
       phase: "drain",
       reason: "end_call",
     },
@@ -149,7 +149,7 @@ function writeLifecycleEvidence(input: {
       callId,
       subject: "demo:jorg",
       turn: "1:reply",
-      atMs: buggy ? 8_000 : 30_600,
+      atMs: buggy ? 8_000 : 31_000,
       phase: "drain",
       reason: buggy ? "end_call" : "caller_end",
     },
@@ -219,9 +219,9 @@ function writeLifecycleEvidence(input: {
       mark("first_audible", 800),
       mark("chime", 810),
       mark("talk_clock_start", buggy ? 620 : 820),
-      mark("end_call_received", buggy ? 7_950 : 30_550),
-      mark("end_received", buggy ? 8_000 : 30_600, { turns: 1 }),
-      mark("delivered_capture", buggy ? 7_990 : 30_590, { name: captureName, complete: true }),
+      mark("end_call_received", buggy ? 7_950 : 30_950),
+      mark("end_received", buggy ? 8_000 : 31_000, { turns: 1 }),
+      mark("delivered_capture", buggy ? 7_990 : 30_990, { name: captureName, complete: true }),
       mark("teardown", endAt),
     ],
     endAt + 50,
@@ -283,7 +283,7 @@ function input(input: {
         voice: "jorg",
         subject: "demo:jorg",
         startedAt: new Date(T0).toISOString(),
-        endedAt: new Date(T0 + (input.kind === "buggy" ? 8_050 : 30_650)).toISOString(),
+        endedAt: new Date(T0 + (input.kind === "buggy" ? 8_050 : 31_050)).toISOString(),
         timeline: {
           events: timeline,
           spoken: [{ step: 0, take: callInput.scenario.script[0]?.take ?? "opening", atMs: 0 }],
@@ -310,7 +310,7 @@ function input(input: {
         error: null,
         tracePath: written.tracePath,
         endPath: written.endPath,
-        elapsedMs: input.kind === "buggy" ? 8_100 : 30_700,
+        elapsedMs: input.kind === "buggy" ? 8_100 : 31_100,
       };
     },
   };
@@ -322,7 +322,7 @@ test("a greeting-only call that ends exits not-demo-ready with lifecycle cards, 
     writeCorpus(join(root, "corpus"), [
       {
         name: "golden-flow-greeting-only",
-        expectedProperties: ["C2", "L4"],
+        expectedProperties: ["C1", "C2", "L4", "L7", "L9", "L10"],
         text: "Hi, is this Voni?",
       },
     ]);
@@ -347,12 +347,20 @@ test("a greeting-only call that ends exits not-demo-ready with lifecycle cards, 
     assert.equal(buggy.status, "not-demo-ready", buggy.unrun.join("; "));
     assert.equal(buggy.exitCode, 1);
     const buggyCards = buggy.cards.map((card) => card.propertyId);
+    const c1Verdict = buggy.verdict?.properties.find((property) => property.propertyId === "C1");
     assert.ok(
       buggyCards.length > 0,
-      `no cards; gaps: ${buggy.cardGaps.map((gap) => `${gap.propertyId}:${gap.code}:${gap.detail}`).join(" | ")}`,
+      `no cards; gaps: ${buggy.cardGaps.map((gap) => `${gap.propertyId}:${gap.code}:${gap.detail}`).join(" | ")}; ` +
+        `C1=${c1Verdict?.status}/${c1Verdict?.reason}: ${c1Verdict?.detail}`,
     );
     for (const id of ["C1", "C2", "L9"]) {
-      assert.ok(buggyCards.includes(id), `expected a ${id} card, saw ${buggyCards.join(", ")}`);
+      const property = buggy.verdict?.properties.find((entry) => entry.propertyId === id);
+      assert.ok(
+        buggyCards.includes(id),
+        `expected a ${id} card, saw ${buggyCards.join(", ")}; ` +
+          `${id}=${property?.status}/${property?.reason}: ${property?.detail}; ` +
+          `gaps=${buggy.cardGaps.filter((gap) => gap.propertyId === id).map((gap) => `${gap.code}:${gap.detail}`).join("|")}`,
+      );
     }
     const c2 = buggy.verdict?.properties.find((property) => property.propertyId === "C2");
     assert.equal(c2?.status, "FAIL");

@@ -442,7 +442,7 @@ test("red proof: a greeting-only call that ends fails C2 and C1, and a cut goodb
     GREETING_ONLY_FACTS,
   );
   assert.equal(open.verdict.status, "FAIL");
-  assert.match(open.verdict.detail, /7\.5[01]s|7\.51/, "the open seconds are named");
+  assert.match(open.verdict.detail, /7\.2[0-9]s|7\.21/, "the open seconds are named");
   assert.match(open.verdict.detail, /30s|30 s/, "the open bar is named");
 
   const unilateral = await judged(
@@ -503,33 +503,39 @@ test("the same greeting-only call passes C2 and C1 when it stays open 30 s and e
     ...marks.marks,
     marks: marks.marks.marks.map((mark) =>
       mark.name === "end_call_received"
-        ? { ...mark, tMs: 30_500 }
+        ? { ...mark, tMs: 30_900 }
         : mark.name === "end_received"
-          ? { ...mark, tMs: 30_600 }
+          ? { ...mark, tMs: 31_000 }
           : mark.name === "delivered_capture"
-            ? { ...mark, tMs: 30_590 }
+            ? { ...mark, tMs: 30_990 }
             : mark.name === "teardown"
-              ? { ...mark, tMs: 30_610 }
+              ? { ...mark, tMs: 31_010 }
               : mark,
     ),
-    endedAt: new Date(T0 + 30_650).toISOString(),
+    endedAt: new Date(T0 + 31_050).toISOString(),
   };
+  const rows = (fixture.evidence.trace as { rows: Record<string, unknown>[] }).rows.map((row) =>
+    row.type === "turn.hangup" ? { ...row, reason: "caller_end", atMs: 30_900 } : row,
+  );
   const evidence: EvidenceBundle = {
     ...fixture.evidence,
     browser: { ...(fixture.evidence.browser as object), marks: fixedMarks },
-    ledger: { ...(fixture.evidence.ledger as object), marks: fixedMarks },
+    ledger: {
+      ...(fixture.evidence.ledger as object),
+      marks: fixedMarks,
+      turns: rows.filter((row) => typeof row.turn === "string" && row.turn.trim() !== ""),
+      turnIds: ["1:reply"],
+    },
     trace: {
       ...(fixture.evidence.trace as object),
-      rows: (fixture.evidence.trace as { rows: Record<string, unknown>[] }).rows.map((row) =>
-        row.type === "turn.hangup" ? { ...row, reason: "caller_end", atMs: 30_500 } : row,
-      ),
+      rows,
     },
   };
 
   const open = await judged("C2", evidence, "golden-flow-greeting-only", GREETING_ONLY_FACTS);
-  assert.equal(open.verdict.status, "PASS");
+  assert.equal(open.verdict.status, "PASS", open.verdict.detail);
   const unilateral = await judged("C1", evidence, "golden-flow-greeting-only", GREETING_ONLY_FACTS);
-  assert.equal(unilateral.verdict.status, "PASS");
+  assert.equal(unilateral.verdict.status, "PASS", unilateral.verdict.detail);
 });
 
 test("the same connected call passes L2 when connected paints after admission and after the first audible sample", async () => {
@@ -796,10 +802,10 @@ test("L10 passes only when a failed greeting names the unavailable state", async
   assert.match(honest.measurement, /error_received|unavailable/i);
 });
 
-test("C2 is unmeasured on a call that is not greeting-only", async () => {
+test("C2 measures the wait on a normal call and fails a short one, as ticket 19's conduct owner defines it", async () => {
   const clean = cleanCall();
   const { verdict } = await judged("C2", clean.evidence, "golden-flow-hello");
   assert.equal(verdict.status, "FAIL");
-  assert.equal(verdict.reason, "unmeasured");
-  assert.match(verdict.detail, /not a greeting-only call/i);
+  assert.equal(verdict.reason, "below-bar");
+  assert.match(verdict.detail, /stayed open/i);
 });

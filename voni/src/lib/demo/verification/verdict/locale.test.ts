@@ -70,7 +70,7 @@ function evidenceFor(
           : ("at-most" as const),
       }));
       const sample = bars.some((bar) => bar.comparison === "at-least") ? 1 : 0;
-      const existing = byProperty.get(propertyId) ?? { propertyId, bars, measurements: [] };
+      const existing: DraftEvidence = byProperty.get(propertyId) ?? { propertyId, bars, measurements: [] };
       for (let repetition = 1; repetition <= property.repetitions; repetition += 1) {
         if (
           options.drop?.scenario === scenario &&

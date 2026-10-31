@@ -131,10 +131,34 @@ export function writeBrowserEvidence(input: {
   readonly omitEnd?: boolean;
   readonly pricedUsd?: number;
   readonly costMeasured?: boolean;
+  /** Extra or replacement trace rows; a fallback row is the contamination proof. */
+  readonly traceRows?: readonly Record<string, unknown>[];
+  readonly providerFallback?: boolean;
+  readonly endOverride?: Record<string, unknown>;
 }): { marksPath: string; capturePath: string } {
   mkdirSync(input.eventsDir, { recursive: true });
   mkdirSync(input.capturesDir, { recursive: true });
-  const rows = probeTrace(input.callId, input.pricedUsd ?? 0.012);
+  const rows = [
+    ...(input.traceRows ?? probeTrace(input.callId, input.pricedUsd ?? 0.012)),
+    ...(input.providerFallback === true
+      ? [
+          {
+            schemaVersion: 1,
+            pipeline: "cascade",
+            callId: input.callId,
+            type: "provider_fallback",
+            subject: "demo:jorg",
+            leg: "stt",
+            from: "primary",
+            to: "fallback",
+            trigger: "leg_error",
+            turn: "1:reply",
+            atMs: 500,
+            phase: "turn",
+          },
+        ]
+      : []),
+  ];
   const priced = rows.find((row) => row.type === "cost.priced") as Record<string, unknown>;
   if (input.costMeasured === false) {
     priced.measured = false;
@@ -146,7 +170,10 @@ export function writeBrowserEvidence(input: {
     rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
   );
   if (input.omitEnd !== true) {
-    const end = probeEnd(input.callId, input.pricedUsd ?? 0.012);
+    const end = {
+      ...probeEnd(input.callId, input.pricedUsd ?? 0.012),
+      ...(input.endOverride ?? {}),
+    };
     if (input.costMeasured === false) {
       (end.cost as Record<string, unknown>).measured = false;
       (end.cost as Record<string, unknown>).totalUsd = null;
@@ -196,6 +223,11 @@ export function fakeBrowserCall(input: {
   readonly costMeasured?: boolean;
   readonly endedBy?: BrowserCallResult["endedBy"];
   readonly installedBeforeAppCode?: boolean;
+  readonly traceRows?: readonly Record<string, unknown>[];
+  readonly providerFallback?: boolean;
+  readonly endOverride?: Record<string, unknown>;
+  readonly edge?: BrowserCallResult["edge"];
+  readonly faultsApplied?: BrowserCallResult["faultsApplied"];
 }): BrowserCallResult {
   const callId = input.callId ?? BROWSER_CALL_ID;
   const paths = writeBrowserEvidence({
@@ -210,6 +242,9 @@ export function fakeBrowserCall(input: {
     captureCallIdInName: input.captureCallIdInName,
     pricedUsd: input.pricedUsd,
     costMeasured: input.costMeasured,
+    ...(input.traceRows === undefined ? {} : { traceRows: input.traceRows }),
+    ...(input.providerFallback === undefined ? {} : { providerFallback: input.providerFallback }),
+    ...(input.endOverride === undefined ? {} : { endOverride: input.endOverride }),
   });
   input.withEvidence?.(paths);
   const timeline = [
@@ -231,7 +266,8 @@ export function fakeBrowserCall(input: {
       spoken: [{ step: 0, take: input.scenario.script[0]?.take ?? "opening", atMs: 0 }],
     },
     triggerPlan,
-    faultsApplied: [],
+    faultsApplied: input.faultsApplied ?? [],
+    edge: input.edge ?? null,
     syntheticMic: {
       method: "getUserMedia",
       installedAt: Date.parse("2026-10-31T11:59:59.000Z"),
@@ -279,6 +315,8 @@ export function probeRunInput(input: {
   readonly elapsedBudgetS?: number | null;
   readonly parityVerdict?: BrowserRunInput["parityVerdict"];
   readonly parityRunDir?: BrowserRunInput["parityRunDir"];
+  readonly certificate?: BrowserRunInput["certificate"];
+  readonly plan?: BrowserRunInput["plan"];
 }): BrowserRunInput {
   return {
     scenarioName: input.scenarioName ?? "golden-flow-smoke",
@@ -302,5 +340,7 @@ export function probeRunInput(input: {
     stackProbe: input.stackProbe ?? fakeStackProbe(),
     ...(input.parityVerdict === undefined ? {} : { parityVerdict: input.parityVerdict }),
     ...(input.parityRunDir === undefined ? {} : { parityRunDir: input.parityRunDir }),
+    ...(input.certificate === undefined ? {} : { certificate: input.certificate }),
+    ...(input.plan === undefined ? {} : { plan: input.plan }),
   };
 }

@@ -7,7 +7,9 @@
   "expectedProperties": [
     "T3",
     "T6",
-    "T7"
+    "T7",
+"A7",
+    "T10"
   ],
   "soundscape": {
     "id": "quiet-room"

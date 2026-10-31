@@ -32,6 +32,15 @@ export type BarBinding = {
   readonly key: string;
   readonly statistic: Statistic;
   readonly comparison: Comparison;
+  /**
+   * Which value in a measurement's `samples` tuple this bar judges. Absent
+   * means every sample is the same metric (the timing/behaviour shape). A
+   * multi-axis property — timbre's six axes, playout's underrun and overrun —
+   * returns one value per axis and names its index here, so a bar is never
+   * judged against a value in another unit. An index the measurement does not
+   * carry is an empty sample and fails closed.
+   */
+  readonly sample?: number;
 };
 
 /** One evidence source's payload. Each evaluator family documents its shape. */
@@ -44,6 +53,12 @@ export type ScenarioAttempt = {
   readonly repetition: number;
   readonly locale?: string;
   readonly target?: string;
+  /**
+   * The contract ids this scenario declares. When present, evaluators for any
+   * other property are not run against this attempt: a scenario cannot measure
+   * a property it never cites. A property no attempt cites still fails closed.
+   */
+  readonly expectedProperties?: readonly string[];
   /** A missing source is a failure for the property that reads it. */
   readonly evidence: EvidenceBundle;
   /**

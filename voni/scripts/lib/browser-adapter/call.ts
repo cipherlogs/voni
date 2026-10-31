@@ -56,6 +56,9 @@ export type BrowserInvocation = {
   readonly takes: readonly BrowserInvocationTake[];
   readonly script: unknown;
   readonly faults: unknown;
+  /** How long the harness keeps the line open before hanging up. */
+  readonly holdOpenMs: number | null;
+  readonly edge: unknown;
 };
 
 /** A standard PCM16 mono WAV's data chunk and rate. */
@@ -138,6 +141,8 @@ export async function buildBrowserInvocation(input: {
     takes,
     script: input.call.scenario.script,
     faults: input.call.scenario.faults,
+    holdOpenMs: input.call.scenario.holdOpenMs ?? null,
+    edge: input.call.scenario.edge,
   };
   return { invocation, takes: micTakes };
 }

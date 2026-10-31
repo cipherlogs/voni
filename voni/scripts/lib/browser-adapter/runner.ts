@@ -44,6 +44,7 @@ import {
 } from "@/lib/demo/verification/certificate";
 import {
   DEFAULT_CORPUS_DIR,
+  scenarioFacts,
   type CorpusReference,
   type LoadedScenario,
   type Locale,
@@ -139,6 +140,12 @@ export type BrowserRunInput = {
   readonly parityNote?: string | null;
   /** The certificate plan; a diagnose run is one repetition. */
   readonly plan?: { readonly mode: "diagnose" | "fast" | "nightly" | "full" | "cutover"; readonly repetitions: number };
+  /**
+   * Whether this call writes its own certificate. A single-scenario certifying
+   * run issues one; a multi-scenario caller withholds it because the run owns
+   * the one certificate, and the call's attempt is judged with the rest.
+   */
+  readonly certificate?: "issue" | "withhold";
 };
 
 const VONI_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -267,6 +274,9 @@ async function refused(
     runId,
     runDir,
     status: "refused",
+    attempt: null,
+    eligibility: null,
+    pipelineImage: null,
     exitCode: 2,
     verdict: null,
     certificateFile: null,
@@ -414,27 +424,6 @@ export async function runBrowserCertification(
     });
   }
 
-  if (scenario.faults.length > 0) {
-    const error = new BrowserAdapterError(
-      "corpus-refused",
-      `scenario "${scenario.name}" asks for media faults ` +
-        `(${scenario.faults.map((fault) => fault.kind).join(", ")}); the browser adapter's ` +
-        "media-fault seam is not landed, so the run refuses rather than pretending it applied them",
-    );
-    return refused(runId, runDir, error, {
-      target: input.target,
-      locale,
-      scenarioName: input.scenarioName,
-      corpus: { version: corpus.version, sha256: corpus.fingerprint },
-      scenarioFingerprint: scenario.fingerprint,
-      codeFingerprint,
-      startedAt,
-      call: null,
-      budget,
-      previous: [],
-    });
-  }
-
   const callIdDir = join(runDir, "calls");
   await mkdir(callIdDir, { recursive: true });
 
@@ -550,7 +539,12 @@ export async function runBrowserCertification(
     repetition: 1,
     locale: scenario.locale,
     target: input.target,
+    // The scenario declares what it measures; an evaluator for a property it
+    // never cites is not run against this call. The authored caller words are
+    // ground truth for an exactness bar, not a measurement.
+    expectedProperties: scenario.expectedProperties,
     evidence: assembled.bundle,
+    facts: scenarioFacts(scenario),
   };
   const evidence = await evaluateScenarios({
     contract,
@@ -670,7 +664,15 @@ export async function runBrowserCertification(
   let certificate: Certificate | null = null;
   let certificateFile: string | null = null;
   let certificationReason: string | null = null;
+  const withholdCertificate = input.certificate === "withhold";
   try {
+    if (withholdCertificate) {
+      throw new BrowserAdapterError(
+        "certificate-refused",
+        "the caller withheld this call's certificate: a multi-scenario run owns the run's " +
+          "one certificate, and this call's attempt is judged with the rest",
+      );
+    }
     const usd = measuredCost(assembled.bundle);
     certificate = buildCertificate({
       contract,
@@ -748,7 +750,9 @@ export async function runBrowserCertification(
     certificate === null
       ? verdict.verdict === "ineligible"
         ? "ineligible"
-        : "not-demo-ready"
+        : verdict.verdict === "certified" && withholdCertificate
+          ? "certified"
+          : "not-demo-ready"
       : certificateVerdict === "certified"
         ? "certified"
         : certificateVerdict === "pending-human"
@@ -807,6 +811,9 @@ export async function runBrowserCertification(
     runId,
     runDir,
     status: runStatus,
+    attempt,
+    eligibility: assembled.eligibility,
+    pipelineImage: preflightAnswer.pipelineBuild,
     exitCode,
     verdict,
     certificateFile,

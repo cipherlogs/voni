@@ -197,20 +197,60 @@ function check(
   };
 }
 
+type ScenarioSamples = {
+  measurements: PropertyMeasurement[];
+  locale?: string;
+};
+
+/**
+ * The samples one bar judges. A measurement carries either one metric's turns
+ * (absent `sample`) or a tuple of axes (`sample` names its own). A bar that
+ * names an axis the measurement does not carry yields no samples, which the
+ * caller turns into an empty-sample failure rather than a silent pass.
+ */
+function samplesForBar(
+  measurements: readonly PropertyMeasurement[],
+  bar: BarBinding,
+): number[] {
+  if (bar.sample === undefined) {
+    return measurements.flatMap((measurement) => measurement.samples);
+  }
+  const samples: number[] = [];
+  for (const measurement of measurements) {
+    const value = measurement.samples[bar.sample];
+    if (value === undefined) return [];
+    samples.push(value);
+  }
+  return samples;
+}
+
 /** Judge every bar against the pooled sample and each scenario's own tail. */
 function numericChecks(
   property: ContractPropertyEntry,
   bars: readonly BarBinding[],
-  summary: SampleSummary,
-  byScenario: ReadonlyMap<string, { measurements: PropertyMeasurement[]; samples: number[]; locale?: string }>,
+  byScenario: ReadonlyMap<string, ScenarioSamples>,
 ): { checks: ThresholdCheck[]; smallSample: boolean; notes: string[] } {
   const checks: ThresholdCheck[] = [];
   const notes: string[] = [];
-  const smallSample = summary.count < SMALL_SAMPLE_FLOOR;
+  const summaries = new Map<string, SampleSummary>();
+  for (const bar of bars) {
+    const pooled = [...byScenario.values()].flatMap((entry) =>
+      samplesForBar(entry.measurements, bar),
+    );
+    const summary = summarizeSamples(pooled);
+    if (summary !== null) summaries.set(bar.key, summary);
+  }
+  const firstSummary = summaries.get(bars[0]?.key ?? "") ?? null;
+  const smallSample =
+    firstSummary === null || firstSummary.count < SMALL_SAMPLE_FLOOR;
 
   for (const bar of bars) {
+    const summary = summaries.get(bar.key);
+    if (summary === null || summary === undefined) continue;
+    const barSmallSample = summary.count < SMALL_SAMPLE_FLOOR;
+
     if (bar.statistic === "p50") {
-      if (!smallSample) {
+      if (!barSmallSample) {
         checks.push(
           check({
             property,
@@ -240,12 +280,14 @@ function numericChecks(
       if (covered) continue;
       const statistic: Statistic = bar.comparison === "at-least" ? "min" : "max";
       for (const [scenario, entry] of byScenario) {
+        const samples = samplesForBar(entry.measurements, bar);
+        if (samples.length === 0) continue;
         checks.push(
           check({
             property,
             bar,
             statistic,
-            observed: statistic === "max" ? Math.max(...entry.samples) : Math.min(...entry.samples),
+            observed: statistic === "max" ? Math.max(...samples) : Math.min(...samples),
             scenario,
             locale: entry.locale,
             note: "small sample: judged against the tail, not a per-call median",
@@ -271,15 +313,16 @@ function numericChecks(
     // max, min and each are per-scenario: a single call is judged against its
     // own tail, never a pooled median that could hide it.
     for (const [scenario, entry] of byScenario) {
-      if (entry.samples.length === 0) continue;
+      const samples = samplesForBar(entry.measurements, bar);
+      if (samples.length === 0) continue;
       let observed: number;
       if (bar.statistic === "each") {
-        const failing = entry.samples.find(
+        const failing = samples.find(
           (sample) => !compareToBudget(sample, thresholdFor(property, bar.key)?.value ?? NaN, bar.comparison),
         );
-        observed = failing ?? entry.samples[0];
+        observed = failing ?? samples[0];
       } else {
-        observed = statisticValue(summarizeSamples(entry.samples) as SampleSummary, bar.statistic);
+        observed = statisticValue(summarizeSamples(samples) as SampleSummary, bar.statistic);
       }
       checks.push(
         check({
@@ -570,7 +613,6 @@ export function judgeProperty(
     };
   }
 
-  const samples = selected.flatMap((item) => item.samples);
   const empty = selected.find((item) => item.samples.length === 0);
   if (empty !== undefined) {
     return {
@@ -585,6 +627,32 @@ export function judgeProperty(
     };
   }
 
+  // A bar that names an axis the measurement does not carry has no sample to
+  // judge. That is an empty sample, never an omitted check.
+  for (const bar of evidence.bars) {
+    if (bar.sample === undefined) continue;
+    const missing = selected.find((item) => item.samples.length <= bar.sample!);
+    if (missing !== undefined) {
+      return {
+        ...baseVerdict(property),
+        status: "FAIL",
+        reason: "empty-sample",
+        detail:
+          `${property.id}: bar "${bar.key}" names sample ${bar.sample}, but scenario ` +
+          `"${missing.scenario}" repetition ${missing.repetition} carries ` +
+          `${missing.samples.length} sample${missing.samples.length === 1 ? "" : "s"}`,
+        scenarios: scenarioVerdicts,
+        citations,
+      };
+    }
+  }
+
+  // The verdict's summary describes the first bar's axis; every other axis is
+  // in `checks`, which is where a multi-axis property is read.
+  const primaryBar = evidence.bars[0];
+  const samples = selected.flatMap((item) =>
+    primaryBar === undefined ? item.samples : samplesForBar([item], primaryBar),
+  );
   const summary = summarizeSamples(samples);
   if (summary === null) {
     return {
@@ -597,12 +665,7 @@ export function judgeProperty(
     };
   }
 
-  const { checks, smallSample, notes } = numericChecks(
-    property,
-    evidence.bars,
-    summary,
-    byScenario,
-  );
+  const { checks, smallSample, notes } = numericChecks(property, evidence.bars, byScenario);
 
   // Attribute each tail failure to its scenario so the property verdict names it.
   const checksByScenario = new Map<string, ThresholdCheck[]>();
