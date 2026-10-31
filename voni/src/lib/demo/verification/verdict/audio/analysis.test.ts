@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { click, clipped, fade, hole, silence, tone } from "./test-pcm";
 import {
+  CLICK_JUMP,
   detectClicks,
   detectClippedRuns,
   detectDropouts,
@@ -49,6 +51,16 @@ test("a click is a seam and names the time it happened", () => {
 
 test("a steady tone carries no click", () => {
   assert.equal(detectClicks(tone(1)).count, 0);
+});
+
+test("the analyser's click rule is the playout worklet's own POP_JUMP", () => {
+  const worklet = readFileSync(
+    new URL("../../../../../../public/playout-processor.js", import.meta.url),
+    "utf8",
+  );
+  const match = /const POP_JUMP = ([0-9.]+);/.exec(worklet);
+  assert.ok(match, "the worklet must still declare POP_JUMP");
+  assert.equal(CLICK_JUMP, Number(match[1]));
 });
 
 test("a clipped run is an overrun with its time range", () => {
