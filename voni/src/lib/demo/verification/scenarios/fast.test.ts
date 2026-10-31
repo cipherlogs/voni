@@ -524,7 +524,7 @@ test("wall-clock time is measured, and the unset numeric ceiling is a named gap"
   );
 });
 
-test("the committed corpus is discovered at the default root with its ten fast takes", async () => {
+test("the committed corpus is discovered at the default root and holds the ten fast scenarios", async () => {
   const contract = await CONTRACT;
   const loaded = await loadCorpus({
     dir: DEFAULT_CORPUS_DIR,

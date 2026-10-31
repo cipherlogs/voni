@@ -17,10 +17,11 @@ import {
 } from "./index";
 
 /**
- * The committed English fast corpus as data: ten scenarios, twenty real TTS
- * takes, one Locale, and no held-out name. The trigger plans are resolved
- * against a canonical agent timeline, so a script that can never fire is a
- * test failure rather than a run that silently speaks less than it claims.
+ * The committed English corpus as data: the fast ten are ten scenarios with
+ * twenty real TTS takes, one Locale and no held-out name; the larger class and
+ * Locale corpora are separate tickets. The trigger plans are resolved against a
+ * canonical agent timeline, so a script that can never fire is a test failure
+ * rather than a run that silently speaks less than it claims.
  *
  * A copied corpus with one changed byte proves the loader's drift refusal on
  * the committed bytes, not only on a synthetic fixture.
@@ -65,7 +66,7 @@ function wavFacts(bytes: Buffer): { sampleRate: number; channels: number; bits: 
   };
 }
 
-test("the committed fast corpus is ten English scenarios with twenty recorded takes", async () => {
+test("the committed fast corpus keeps its ten English scenarios and twenty recorded takes", async () => {
   const corpus = await load();
   assert.equal(corpus.version, 1);
   assert.match(corpus.fingerprint, /^[0-9a-f]{64}$/);

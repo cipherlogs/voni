@@ -444,6 +444,7 @@ export async function evaluateScenarios(
             repetition: attempt.repetition,
             source,
             evidence: attempt.evidence,
+            ...(attempt.facts === undefined ? {} : { facts: attempt.facts }),
           });
           measurements.push(measurementFrom(property, attempt, evaluation));
         } catch (error) {

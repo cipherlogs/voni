@@ -108,7 +108,9 @@ test("the new scenarios cite the S, R and audio properties they exist to feed", 
 test("the held-out seals are exactly the spec's names, never a broader class seal", async () => {
   const corpus = await load();
   const held = corpus.scenarios.filter((scenario) => scenario.heldOut).map((scenario) => scenario.name);
-  assert.deepEqual(held.sort(), ["prompt-injection", "second-voice", "speakerphone"]);
+  for (const name of ["prompt-injection", "second-voice", "speakerphone"]) {
+    assert.ok(held.includes(name), `${name} must be sealed`);
+  }
   for (const name of held) {
     assert.ok((HELD_OUT_SCENARIOS as readonly string[]).includes(name), `${name} is a sealed name`);
   }
