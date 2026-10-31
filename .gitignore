@@ -56,6 +56,9 @@ voni/.studio/
 # Demo scoreboard run artifacts (regenerated per run, never committed)
 voni/scoreboard-runs/
 
+# Demo verification run directories (per-run trace, end doc, PCM; never committed)
+voni/.demo-runs/
+
 # Kept platform channel captures from session QA (audio evidence, never committed)
 voice-captures/
 

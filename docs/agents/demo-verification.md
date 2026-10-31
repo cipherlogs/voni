@@ -44,7 +44,7 @@ have is a defect in this map.
 | Certificate | schema, builder, validator, target binding, residual-risk ids, panel signature | `voni/src/lib/demo/verification/certificate/` — `types.ts` is the schema, `build.ts` turns one verdict-core run into one certificate, `validate.ts` refuses an unknown schema, a mismatched target/fingerprint/corpus, an uncited verdict and a certified claim with no panel signature, `risks.ts` mirrors this register's ids (drift-tested), `render.ts` is the compact view; committed files live in `voni/evidence/certificates/` | 08 |
 | Defect cards | one card per failed property with turn, excerpt, bar and replay command | `voni/src/lib/demo/verification/cards/` — `build.ts` refuses a card without a session, a turn (for turn-level evidence) or an existing evidence file; `wav.ts` bounds every excerpt inside the named take/WAV; `replay.ts` is the one parser the runner must accept unchanged; `render.ts` is the compact card | 09 |
 | Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take. English and Locale corpora not landed | 10, 12–16 |
-| Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/real-legs.mts` (seed, via `voni/scripts/lib/real-legs.ts`) | 11 |
+| Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/lib/protocol-adapter/` — `refusals.ts` names a missing key, corpus, scenario, vendor build or soundscape before any vendor opens, `transport.ts` drives `POST /v1/call-body` + `WS /v1/browser-call` at the browser's 128-sample cadence, `faults.ts` applies the scenario's media faults, `evidence.ts` writes the per-run directory under `voni/.demo-runs/`, `runner.ts` turns one call into one verdict and any provable card; `voni/scripts/protocol-diagnose.mts` accepts a card's replay command unchanged and never returns 0 | 11 |
 | Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | not landed | 17 |
 | Evaluator families | L1–L11, T1–T10, C1–C10, K1–K8, X1–X10, A1–A8, R1–R8, S1–S6, E1–E4, H1–H7 | H6 landed in `voni/src/lib/demo/verification/verdict/evaluators/human.evaluators.ts` (judge calibration); the other families are not landed | 18–22, 26 |
 | Machine judges and calibration | two transcript-grounded judges, third-judge/panel escalation, vendor independence, weighted-kappa gate | `voni/src/lib/demo/verification/judges/` — `panel.ts` refuses a judge on the agent's vendor (`AGENT_VENDOR = meta`), scores two judges independently and reconciles a disagreement above one point through a third judge to the panel; `kappa.ts` is the linear weighted-kappa arithmetic; `rubric.ts` hashes the rubric; `calibration.ts` verifies every judge/axis at the frozen `dvJudgeKappaMin` bar and refuses a changed rubric hash; a live judge transport is not landed and is key-gated by `AI_GATEWAY_API_KEY` | 26 |
@@ -61,6 +61,12 @@ The defect-card replay command is the one parser in
 (or the repository's `npm run demo:verify -- ...` form). Ticket 11's runner and
 ticket 28's CLI accept it unchanged; an unknown flag, a missing Locale or a
 certification mode is a named refusal (exit 2).
+
+The protocol adapter reads the committed vendor-build record at
+`voni/evidence/vendor-builds.json` before it opens a vendor (RR-03). That file
+does not exist yet: no engineer has recorded authentic STT/TTS/LLM build ids, so
+a real protocol run refuses by name rather than inventing one. The adapter's
+tests inject a fixture record; a live run stays unrun until the record lands.
 
 An **unresolved** property is a recorded gap with no owning evaluator. Today
 that is K8: the spec states "word error within bar" without a number, so ticket
