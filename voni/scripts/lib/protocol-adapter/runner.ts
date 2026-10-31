@@ -35,6 +35,7 @@ import { loadContract, type Contract } from "@/lib/demo/verification/contract";
 import { parseReplayCommand, renderDefectCards } from "@/lib/demo/verification/cards";
 import {
   DEFAULT_CORPUS_DIR,
+  scenarioFacts,
   type CorpusReference,
   type Locale,
 } from "@/lib/demo/verification/scenarios";
@@ -408,6 +409,7 @@ export async function runProtocolDiagnosis(
     locale: scenario.locale,
     target: input.target,
     evidence: assembled.bundle,
+    facts: scenarioFacts(scenario),
   };
   const evidence = await evaluateScenarios({
     contract,

@@ -9,8 +9,11 @@ not fixtures. This file records how it was produced and how it may change.
   `efa653e5-314d-46ca-9f90-70ac7d6ca71e`.
 - Model: `sonic-3.6`, language `en`, Cartesia API version `2024-06-10`.
 - Format: 24 kHz mono PCM16 WAV, the pipeline's ingress format.
-- Corpus version **1**: ten scenarios, twenty takes, recorded **2026-10-31**
-  with `npm run corpus:takes` and the local `CARTESIA_API_KEY`.
+- Corpus version **1**: twenty scenarios, fifty takes, recorded **2026-10-31**
+  with `npm run corpus:takes` and the local `CARTESIA_API_KEY`. Ticket 12's ten
+  fast-contract scenarios carry twenty takes; ticket 13's five comprehension and
+  five emotion scenarios carry thirty. Adding a scenario directory does not move
+  the version; only a deliberate retake does.
 - Every take's exact bytes are pinned by its `sha256` in `scenario.json`. The
   loader hashes the file on every load; a mismatch is a named `take-drift`
   refusal with exit 2.
