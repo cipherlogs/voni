@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-nonsense-fr",
+  "class": "emotion",
+  "locale": "fr",
+  "heldOut": false,
+  "expectedProperties": [
+    "C3",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "a3a48c4f802435af01ba35385076af9cfffe233d9f5021cf81bbbacee8f2b047",
+      "text": "Bonjour, mon rendez-vous est violet, pouvez-vous réparer la lune ?"
+    },
+    {
+      "id": "nonsense",
+      "audio": "takes/nonsense.wav",
+      "sha256": "4265dcebf4c6668047a25c18080e50c535d28bf4cb7a05960f8055a871fd8b6e",
+      "text": "Le glibberflax est sous le mardi, tournez la boîte aux lettres."
+    },
+    {
+      "id": "pivot",
+      "audio": "takes/pivot.wav",
+      "sha256": "12abe7c706cfe9c738945823cfa6feef540218d1afd62c360852931735469397",
+      "text": "D'accord. En fait, je veux juste connaître les horaires."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "nonsense",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "pivot",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

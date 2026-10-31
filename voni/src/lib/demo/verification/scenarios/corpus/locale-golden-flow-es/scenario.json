@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-golden-flow-es",
+  "class": "golden-flow",
+  "locale": "es",
+  "heldOut": false,
+  "expectedProperties": [
+    "K5",
+    "T1",
+    "T2"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "4e756caea318442213a4499cbca8d66878ac1e2200405743cc7be8c638596e7f",
+      "text": "Hola, buenas tardes. Quería preguntar por los horarios."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "a62853268a1cd78d887f803782478740ad8a702dc905d865bdcb967216b3b373",
+      "text": "Perfecto. ¿Y cuánto cuesta la visita inicial?"
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
