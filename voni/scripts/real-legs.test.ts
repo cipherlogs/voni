@@ -32,6 +32,7 @@ import {
   TURN_TAIL_MS,
   UsageError,
   assessTrace,
+  carriedHistory,
   createIngressPump,
   defaultCallerClip,
   formatRealLegsReport,
@@ -60,7 +61,12 @@ function env(pairs: Record<string, string | undefined>): Record<string, string |
   return pairs;
 }
 
-function check(name: string, code: string, status: "pass" | "fail" | "skip", detail: string): RealLegsCheck {
+function check(
+  name: string,
+  code: string,
+  status: "pass" | "fail" | "skip" | "info",
+  detail: string,
+): RealLegsCheck {
   return { name, code, status, detail };
 }
 
@@ -135,6 +141,12 @@ test("every documented flag is accepted", () => {
   assert.equal(options.eventsDir, "/tmp/events");
   assert.equal(options.timeoutMs, 5000);
   assert.equal(options.json, true);
+  assert.equal(options.withResume, true, "the hold-return phase runs by default");
+});
+
+test("--with-resume is explicit and --no-resume is the named opt-out", () => {
+  assert.equal(parseRealLegsArgs(["--with-resume"]).withResume, true);
+  assert.equal(parseRealLegsArgs(["--no-resume"]).withResume, false);
 });
 
 test("an unknown flag, a missing value and a bad timeout are named usage errors", () => {
@@ -688,6 +700,29 @@ test("a queued caller turn is paced frame by frame and resolved after its tail s
   await pump.stop();
 });
 
+test("the carried history keeps settled turns, collapses partials and respects the bound", () => {
+  const captions = [
+    { role: "user" as const, text: "half a que", final: false },
+    { role: "user" as const, text: "hello there", final: true },
+    { role: "agent" as const, text: "Hi", final: false },
+    { role: "agent" as const, text: "Hi, how can I help?", final: false },
+    { role: "user" as const, text: "tell me about the test", final: true },
+    { role: "agent" as const, text: "Sure.", final: false },
+  ];
+  assert.deepEqual(carriedHistory(captions, 12), [
+    { role: "user", content: "hello there" },
+    { role: "assistant", content: "Hi, how can I help?" },
+    { role: "user", content: "tell me about the test" },
+    { role: "assistant", content: "Sure." },
+  ]);
+  // The newest turns survive the bound, and history never starts mid-reply.
+  assert.deepEqual(carriedHistory(captions, 2), [
+    { role: "user", content: "tell me about the test" },
+    { role: "assistant", content: "Sure." },
+  ]);
+  assert.deepEqual(carriedHistory(captions, 1), []);
+});
+
 // --------------------------------------------------------------------------
 // The two-turn flow against a fake service (no keys)
 // --------------------------------------------------------------------------
@@ -709,6 +744,7 @@ type FakeService = {
 async function startFakeService(options: {
   eventsDir: string;
   writeTrace: boolean;
+  greetResume?: boolean;
 }): Promise<FakeService> {
   const delivered: Record<string, unknown>[] = [];
   let config: Record<string, unknown> | null = null;
@@ -790,6 +826,7 @@ async function startFakeService(options: {
     };
     let turn = 0;
     let greeted = false;
+    let resume = false;
     let ingressFrames = 0;
     let speechEndTimer: NodeJS.Timeout | null = null;
 
@@ -840,7 +877,19 @@ async function startFakeService(options: {
       const message = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
       if (message.type === "config") {
         config = message;
-        greet();
+        // A hold return carries the signed history (and binds the `:resume`
+        // body): it must not be greeted again.
+        const minted = delivered.find((payload) => payload.call_token === message.callToken);
+        const body = (minted?.signed_body as { body?: Record<string, unknown> } | undefined)?.body;
+        resume =
+          Array.isArray(body?.history) ||
+          (typeof body?.name === "string" && body.name.endsWith(":resume"));
+        if (resume) {
+          greeted = true;
+          if (options.greetResume) greet();
+        } else {
+          greet();
+        }
         return;
       }
       if (message.type === "audio") {
@@ -923,9 +972,12 @@ function shortCallerAudio() {
   };
 }
 
-async function runAgainstFake(writeTrace: boolean) {
+async function runAgainstFake(
+  writeTrace: boolean,
+  extra: { greetResume?: boolean } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), "t22-real-legs-"));
-  const service = await startFakeService({ eventsDir: dir, writeTrace });
+  const service = await startFakeService({ eventsDir: dir, writeTrace, ...extra });
   const target = resolveTargets({ baseUrl: service.httpBase });
   const previous = process.env.VOICE_PIPELINE_ENVELOPE_SECRET;
   process.env.VOICE_PIPELINE_ENVELOPE_SECRET = TEST_SECRET;
@@ -933,6 +985,7 @@ async function runAgainstFake(writeTrace: boolean) {
     const options: RealLegsOptions = {
       voice: "jorg",
       timeoutMs: 15_000,
+      withResume: true,
       json: false,
       help: false,
       eventsDir: dir,
@@ -964,16 +1017,32 @@ test("the two-turn flow passes every assertion against a fake service", async ()
         "signed-body",
         "delivery",
         "caller-audio",
+        "context-hidden",
         "identity-config",
         "captions",
         "audio-frames",
         "end-message",
+        "resume-body",
+        "resume-delivery",
+        "resume-no-greeting",
+        "resume-continuation",
+        "resume-end-message",
+        "resume-trace",
         "trace",
         "cost",
       ],
     );
     assert.equal(realLegsExitCode(checks), 0);
-    assert.equal(service.deliveries().length, 1);
+    assert.equal(service.deliveries().length, 2);
+    const resumedBody = (
+      service.deliveries()[1]?.signed_body as { body?: Record<string, unknown> } | undefined
+    )?.body;
+    assert.ok(Array.isArray(resumedBody?.history) && resumedBody.history.length > 0);
+    assert.match(String(resumedBody?.name), /:resume$/);
+    assert.match(
+      checks.find((entry) => entry.code === "resume-continuation")?.detail ?? "",
+      /carried turns were in the signed body/,
+    );
     assert.ok(
       service.framesBeforeFirstTurn() > 0,
       "the caller pump must already be feeding silence while the greeting renders",
@@ -995,7 +1064,28 @@ test("the two-turn flow passes every assertion against a fake service", async ()
     );
     assert.match(checks.find((entry) => entry.code === "trace")?.detail ?? "", /call-real-legs-test/);
     assert.match(checks.find((entry) => entry.code === "cost")?.detail ?? "", /\$0\.000123/);
-    assert.match(formatRealLegsReport(checks), /9 checks, all passed/);
+    assert.match(formatRealLegsReport(checks), /16 checks, all passed/);
+  } finally {
+    await service.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a resumed call that speaks the greeting fails by name", async () => {
+  const { checks, dir, service } = await runAgainstFake(true, { greetResume: true });
+  try {
+    const failedChecks = checks.filter((entry) => entry.status === "fail");
+    assert.deepEqual(
+      failedChecks.map((entry) => entry.code),
+      ["resume-greeted"],
+      JSON.stringify(checks, null, 2),
+    );
+    assert.equal(realLegsExitCode(checks), 1);
+    assert.doesNotMatch(
+      formatRealLegsReport(checks),
+      /resume-no-greeting/,
+      "a greeted resume must never be reported as no greeting",
+    );
   } finally {
     await service.close();
     rmSync(dir, { recursive: true, force: true });
@@ -1008,7 +1098,7 @@ test("a local service that writes no trace fails the trace and the cost row", as
     assert.equal(realLegsExitCode(checks), 1);
     assert.deepEqual(
       checks.filter((entry) => entry.status === "fail").map((entry) => entry.code),
-      ["trace-missing", "cost-missing"],
+      ["resume-trace", "trace-missing", "cost-missing"],
     );
   } finally {
     await service.close();
