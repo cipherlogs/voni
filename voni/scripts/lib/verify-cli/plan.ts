@@ -2,9 +2,9 @@
  * What a `demo:verify` run will execute, before any vendor opens.
  *
  * The plan is the spec's shape, not the corpus's current size: fast is ten
- * English scenarios at one repetition; nightly health is the English forty
- * plus each Locale core twelve at one; full certification repeats each three
- * times. A corpus smaller than that shape is a named gap, never a smaller run
+ * English scenarios at one repetition; nightly health is the English
+ * forty-three plus each Locale core twelve at one; full certification repeats
+ * each three times. A corpus smaller than that shape is a named gap, never a smaller run
  * that reports green. Only `local` has an evidence sink, so `staging` and
  * `production` are refused by name today rather than certifying a stack nobody
  * can read evidence from.
@@ -13,7 +13,8 @@
  */
 
 import {
-  ENGLISH_SCENARIOS as FULL_ENGLISH_SCENARIOS,
+  ENGLISH_SCENARIOS,
+  FULL_REPETITIONS,
   LOCALE_CORE_SCENARIOS,
 } from "@/lib/demo/verification/cadence";
 import type { CertificateTarget } from "@/lib/demo/verification/certificate";
@@ -29,11 +30,11 @@ import type { VerifyRequest } from "./args";
 import { refuse } from "./errors";
 
 /**
- * The spec's corpus sizes come from the cadence's one source. They are
- * re-exported here because the CLI's public surface names them; a second
- * literal would be a drift.
+ * The spec's corpus sizes come from the cadence's one source. The Locale core
+ * is re-exported because the CLI's public surface names it; a second literal
+ * would be a drift.
  */
-export { FULL_ENGLISH_SCENARIOS, LOCALE_CORE_SCENARIOS };
+export { LOCALE_CORE_SCENARIOS };
 
 /** One scenario a plan will attempt, with the Locale it speaks. */
 export type PlannedScenario = {
@@ -65,7 +66,7 @@ const LOCALE_TITLE: Readonly<Record<Locale, string>> = {
 };
 
 function requiredFor(locale: Locale): number {
-  return locale === "en" ? FULL_ENGLISH_SCENARIOS : LOCALE_CORE_SCENARIOS;
+  return locale === "en" ? ENGLISH_SCENARIOS : LOCALE_CORE_SCENARIOS;
 }
 
 function planned(scenario: Corpus["scenarios"][number]): PlannedScenario {
@@ -171,14 +172,14 @@ function assertPerLocaleFull(request: VerifyRequest, corpus: Corpus): void {
   refuse(
     "missing-locale-corpus",
     `the ${LOCALE_TITLE[locale]} per-Locale full corpus is missing: a full certification of ` +
-      `"${locale}" runs all ${FULL_ENGLISH_SCENARIOS} scenarios in that Locale, and the corpus ` +
+      `"${locale}" runs all ${ENGLISH_SCENARIOS} scenarios in that Locale, and the corpus ` +
       `holds ${available} Locale-core scenario(s). Refusing rather than issuing a certificate ` +
       "that carries a Locale coverage gap; run English --full or the nightly Locale core",
   );
 }
 
 function certificationPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
-  const repetitions = request.mode === "full" ? 3 : 1;
+  const repetitions = request.mode === "full" ? FULL_REPETITIONS : 1;
   const locales: readonly Locale[] =
     request.locale === undefined ? LOCALES : [request.locale];
 

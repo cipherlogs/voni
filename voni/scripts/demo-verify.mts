@@ -4,7 +4,7 @@
  *
  *   npm run demo:verify -- --target local --fast
  *   npm run demo:verify -- --scenario <name> --target local --diagnose
- *   npm run demo:verify -- --full --locale de
+ *   npm run demo:verify -- --full          (English; a non-English full is refused)
  *
  * The logic lives in `scripts/lib/verify-cli/` so tests drive `main(argv)`
  * without spawning a process. This file owns only the wiring: the real browser

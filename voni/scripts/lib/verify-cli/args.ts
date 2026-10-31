@@ -214,10 +214,11 @@ export const VERIFY_USAGE = `usage: npm run demo:verify -- --target <local|stagi
   --target T          local | staging | production (default local)
   --full              full certification (default)
   --fast              the ten-scenario English fast contract
-  --nightly           nightly health (English 43 + Locale core 12)
+  --nightly           nightly health (English 43 + Locale core 12 x4)
   --diagnose          one scenario's diagnosis; never a certificate
   --scenario NAME     the scenario --diagnose runs
-  --locale L          en | es | fr | de | pt (a Locale filter)
+  --locale L          en | es | fr | de | pt (a Locale filter; a non-English
+                      --full is refused: only English has a per-Locale full set)
   --app-url URL       the real app (default VONI_APP_URL)
   --pipeline-url URL  the real pipeline (default VOICE_PIPELINE_URL)
   --events-dir PATH   the pipeline's per-call trace directory

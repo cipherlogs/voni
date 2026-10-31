@@ -17,7 +17,6 @@ export {
 export { VERIFY_ERROR_CODES, VERIFY_REFUSAL_EXIT_CODE, VerifyCliError } from "./errors";
 
 export {
-  FULL_ENGLISH_SCENARIOS,
   LOCALE_CORE_SCENARIOS,
   planVerify,
   runKindOf,
