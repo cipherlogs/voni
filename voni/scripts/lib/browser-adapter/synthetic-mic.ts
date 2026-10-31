@@ -34,6 +34,8 @@ export type SyntheticMicPlay = {
 export type SyntheticMicPageApi = {
   readonly installedBeforeAppCode: true;
   readonly sampleRate: number;
+  /** True once the app's `getUserMedia` was served the synthetic stream. */
+  acquired(): boolean;
   play(id: string, delayMs: number): Promise<SyntheticMicPlay>;
   played(): readonly SyntheticMicPlay[];
 };
@@ -51,7 +53,8 @@ function syntheticMicBootstrap(input: {
     keepAlive: ConstantSourceNode | null;
     played: { id: string; atMs: number; durationMs: number }[];
     callOrigin: number;
-  } = { ctx: null, bus: null, keepAlive: null, played: [], callOrigin: 0 };
+    acquired: boolean;
+  } = { ctx: null, bus: null, keepAlive: null, played: [], callOrigin: 0, acquired: false };
 
   const decode = (base64: string): Float32Array => {
     const binary = atob(base64);
@@ -87,6 +90,7 @@ function syntheticMicBootstrap(input: {
     value: {
       installedAt: origin,
       installedBeforeAppCode: true,
+      acquired: () => state.acquired,
       get sampleRate(): number {
         return state.ctx?.sampleRate ?? 0;
       },
@@ -126,6 +130,7 @@ function syntheticMicBootstrap(input: {
       }
       const ctx = ensureContext();
       await ctx.resume();
+      state.acquired = true;
       // One destination per call: the app stops its tracks on hang-up, and a
       // stopped destination cannot be revived for a second call.
       const destination = ctx.createMediaStreamDestination();

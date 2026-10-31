@@ -375,6 +375,20 @@ test("a certifying browser call on the real stack", async ({ page }) => {
     );
   }
 
+  // The caller cannot speak into a line whose mic has not been served. The
+  // synthetic stream is handed to the real mic path at getUserMedia; a
+  // call-open take waits for that handoff instead of playing into a dead bus.
+  await page.waitForFunction(
+    () => {
+      const api = (
+        window as unknown as { __voniSyntheticMic?: { acquired?: () => boolean } }
+      ).__voniSyntheticMic;
+      return api?.acquired?.() === true;
+    },
+    undefined,
+    { timeout: 20_000 },
+  );
+
   let cursor = 0;
   const stepTimeoutMs = 30_000;
   for (const [stepIndex, step] of spec.script.entries()) {

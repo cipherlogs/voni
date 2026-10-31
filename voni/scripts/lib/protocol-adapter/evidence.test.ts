@@ -5,15 +5,19 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+
+import { loadCorpus } from "@/lib/demo/verification/scenarios";
 
 import { ProtocolAdapterError } from "./errors";
 import { DEFAULT_RUN_ROOT } from "./types";
 import { runProtocolDiagnosis } from "./runner";
+import { assembleEvidence } from "./evidence";
 import {
   fakeCall,
+  probeEnd,
   probeEvaluators,
   probeRunInput,
   probeTrace,
@@ -242,4 +246,44 @@ test("the default run root is the gitignored voni/.demo-runs path", () => {
   assert.equal(DEFAULT_RUN_ROOT, ".demo-runs");
   const gitignore = readFileSync(resolve(process.cwd(), "..", ".gitignore"), "utf8");
   assert.match(gitignore, /^voni\/\.demo-runs\/$/m);
+});
+
+test("the adapter waits, bounded, for an end sidecar the service writes after the socket closes", async () => {
+  const root = tempRoot();
+  try {
+    const corpusDir = join(root, "corpus");
+    writeCorpus(corpusDir, SCENARIOS);
+    const eventsDir = join(root, "events");
+    mkdirSync(eventsDir, { recursive: true });
+    const scenario = (
+      await loadCorpus({ dir: corpusDir, knownProperties: ["G1", "E1"] })
+    ).scenarios[0]!;
+    assert.ok(scenario !== undefined);
+    const call = fakeCall({
+      callId: "44444444-4444-4444-8444-444444444444",
+      scenario,
+      eventsDir,
+      end: null,
+    });
+    // The service's final drain writes the sidecar just after the socket closes.
+    setTimeout(() => {
+      writeFileSync(
+        join(eventsDir, `${call.callId}.end.json`),
+        `${JSON.stringify(probeEnd(call.callId), null, 2)}\n`,
+      );
+    }, 150);
+    const { assembled, record } = await assembleEvidence({
+      call,
+      scenario,
+      target: "local",
+      eventsDir,
+      callDir: join(root, "call"),
+      endWaitMs: 2_000,
+    });
+    assert.equal(assembled.bundle.ledger.end?.type, "end");
+    assert.equal(assembled.bundle.ledger.endGap, null);
+    assert.equal(record.files.end, join(root, "call", "end.json"));
+  } finally {
+    removeTree(root);
+  }
 });

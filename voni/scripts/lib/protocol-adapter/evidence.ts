@@ -52,6 +52,43 @@ const CALL_LEVEL_SOURCES: ReadonlySet<EvidenceSource> = new Set([
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+/** How long the adapter waits for the service's end sidecar after the socket closes. */
+export const END_SIDECAR_WAIT_MS = 5_000;
+
+/**
+ * Wait, bounded, for a file the service writes after the socket closes. The
+ * end sidecar and its priced row are written during the service's final drain;
+ * reading a moment too early would turn a measured call into a missing-evidence
+ * gap. A file that never arrives is still a named gap, never an invented end.
+ */
+async function waitForFile(path: string, timeoutMs: number): Promise<boolean> {
+  const started = Date.now();
+  for (;;) {
+    if (existsSync(path)) return true;
+    if (Date.now() - started >= timeoutMs) return false;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+/**
+ * Wait, bounded, for the trace's final `end` row. The service writes the
+ * sidecar and appends the end row in its drain; a read between the two would
+ * copy a trace that predates its own priced row.
+ */
+async function waitForTraceEnd(path: string, timeoutMs: number): Promise<boolean> {
+  const started = Date.now();
+  for (;;) {
+    try {
+      const text = await readFile(path, "utf8");
+      if (text.split("\n").some((line) => line.includes('"type":"end"'))) return true;
+    } catch {
+      // The trace may not exist yet; the bounded wait below is the refusal.
+    }
+    if (Date.now() - started >= timeoutMs) return false;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 /** A run id and call id become directory names; anything else is refused. */
 export function requireSafeId(value: string, what: string): string {
   if (!SAFE_ID.test(value) || value.includes("..")) {
@@ -189,11 +226,19 @@ export async function assembleEvidence(input: {
   readonly target: ProtocolTargetLabel;
   readonly eventsDir: string;
   readonly callDir: string;
+  /** Bounded wait for the service's end sidecar; tests shorten it. */
+  readonly endWaitMs?: number;
 }): Promise<{ assembled: AssembledEvidence; record: ProtocolCallRecord }> {
   const gaps: string[] = [];
   const stem = input.call.callId.replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^[._]+|[._]+$/g, "") || "call";
   const traceSource = input.call.tracePath ?? join(input.eventsDir, `${stem}.jsonl`);
   const endSource = input.call.endPath ?? join(input.eventsDir, `${stem}.end.json`);
+
+  // The end sidecar (and the priced row beside it) is written by the service's
+  // final drain, after the socket closes. Wait for it, bounded: reading too
+  // early is a missing-evidence gap, not a faster verdict.
+  await waitForFile(endSource, input.endWaitMs ?? END_SIDECAR_WAIT_MS);
+  await waitForTraceEnd(traceSource, input.endWaitMs ?? END_SIDECAR_WAIT_MS);
 
   let traceText: string;
   try {
