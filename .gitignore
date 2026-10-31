@@ -49,6 +49,10 @@ voni/.dev-certs/
 # Dev delivered capture (WAV of what the playout worklet emitted; working file)
 voni/.captures/
 
+# Local Studio takes (ticket 23): hashed working audio + take records. A take
+# joins a committed corpus only when a human promotes it deliberately.
+voni/.studio/
+
 # Demo scoreboard run artifacts (regenerated per run, never committed)
 voni/scoreboard-runs/
 

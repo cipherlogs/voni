@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voni Studio — Record</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0d0f12;
+        --panel: #16191f;
+        --panel-2: #1d222a;
+        --ink: #e8ebf0;
+        --muted: #9aa3b2;
+        --line: #2b323d;
+        --accent: #8ab4ff;
+        --good: #6ee7a8;
+        --bad: #ff8b8b;
+        --radius: 12px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--line);
+      }
+      header h1 { font-size: 18px; margin: 0; letter-spacing: 0.01em; }
+      header .local {
+        color: var(--muted);
+        font-size: 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 2px 10px;
+      }
+      main {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
+        gap: 20px;
+        padding: 20px 22px 60px;
+        max-width: 1240px;
+        margin: 0 auto;
+      }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+      section.panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 16px;
+      }
+      h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; }
+      .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+      .tabs button[aria-selected="true"] { background: var(--panel-2); border-color: var(--accent); color: var(--ink); }
+      button, select, textarea, input[type="text"], input[type="file"] {
+        font: inherit;
+        color: var(--ink);
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        padding: 8px 11px;
+      }
+      button { cursor: pointer; }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      button.primary { background: var(--accent); color: #0b1020; border-color: transparent; font-weight: 600; }
+      button.record { background: #3a1f24; border-color: #6b2c35; }
+      button.record.live { background: #7a2130; border-color: #ff5a6e; }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      .stack { display: grid; gap: 10px; }
+      label.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+      label.field input, label.field textarea { width: 100%; }
+      textarea { resize: vertical; min-height: 72px; }
+      .card {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--accent);
+        border-radius: 10px;
+        padding: 16px;
+      }
+      .card .eyebrow { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+      .card .words { font-size: 20px; line-height: 1.4; margin: 8px 0 12px; }
+      .meter { font-variant-numeric: tabular-nums; color: var(--muted); }
+      .status { min-height: 22px; font-size: 13px; }
+      .status.ok { color: var(--good); }
+      .status.bad { color: var(--bad); white-space: pre-wrap; }
+      .takes { display: grid; gap: 10px; max-height: 62vh; overflow: auto; padding-right: 4px; }
+      article.take {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px;
+        display: grid;
+        gap: 8px;
+      }
+      article.take .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+      article.take .id { font-weight: 600; }
+      article.take .hash {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .chip { font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; color: var(--muted); }
+      .chip b { color: var(--ink); font-weight: 500; }
+      audio { width: 100%; height: 34px; }
+      .muted { color: var(--muted); font-size: 13px; }
+      .hint { color: var(--muted); font-size: 12px; }
+      .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Voni Studio</h1>
+      <span class="local">Record · local only</span>
+    </header>
+
+    <main>
+      <section class="panel" aria-labelledby="record-heading">
+        <h2 id="record-heading">Record</h2>
+
+        <div class="tabs" role="tablist" aria-label="Record mode">
+          <button role="tab" id="tab-one-shot" aria-controls="mode-one-shot" aria-selected="true" data-mode="one-shot">One-shot line</button>
+          <button role="tab" id="tab-dialogue" aria-controls="mode-dialogue" aria-selected="false" data-mode="dialogue">Dialogue</button>
+          <button role="tab" id="tab-upload" aria-controls="mode-upload" aria-selected="false" data-mode="upload">Upload</button>
+        </div>
+
+        <div class="stack" id="mode-one-shot" role="tabpanel" aria-labelledby="tab-one-shot">
+          <label class="field">Prompt card — the words to read
+            <textarea id="one-shot-prompt" placeholder="Type the line the caller should speak."></textarea>
+          </label>
+          <div class="card">
+            <div class="eyebrow">Prompt card</div>
+            <div class="words" id="one-shot-card">No prompt yet.</div>
+          </div>
+        </div>
+
+        <div class="stack" id="mode-dialogue" role="tabpanel" aria-labelledby="tab-dialogue" hidden>
+          <div class="row">
+            <label class="field" style="flex: 1">Scripted dialogue
+              <select id="dialogue-select"><option value="">— authored scripts —</option></select>
+            </label>
+            <button id="dialogue-reload" type="button">Reload</button>
+          </div>
+          <label class="field">Paste a dialogue (JSON)
+            <textarea id="dialogue-json" placeholder='{"schemaVersion":1,"name":"booking-basic","locale":"en","turns":[{"line":"open","text":"Hi, I&apos;d like to book."}]}'></textarea>
+          </label>
+          <div class="row">
+            <button id="dialogue-load" type="button">Load pasted script</button>
+            <span class="muted" id="dialogue-name">No dialogue loaded.</span>
+          </div>
+          <div class="card">
+            <div class="eyebrow" id="dialogue-eyebrow">Prompt card</div>
+            <div class="words" id="dialogue-card">Load a script, then each turn appears here in order.</div>
+            <div class="row">
+              <button id="dialogue-prev" type="button">Previous</button>
+              <span class="meter" id="dialogue-meter"></span>
+              <button id="dialogue-next" type="button">Next</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="stack" id="mode-upload" role="tabpanel" aria-labelledby="tab-upload" hidden>
+          <label class="field">Audio file (WAV, WebM, Ogg, MP3 or M4A)
+            <input id="upload-file" type="file" accept="audio/*,.wav,.webm,.ogg,.mp3,.m4a" />
+          </label>
+          <p class="hint">An upload lands exactly like a recorded take: hashed on arrival, labelled and never edited.</p>
+        </div>
+
+        <hr style="border:0;border-top:1px solid var(--line);margin:16px 0" />
+
+        <div class="stack" id="labels">
+          <h2 style="margin:0">Labels (required)</h2>
+          <div class="row">
+            <label class="field" style="flex:1">Intent
+              <input id="label-intent" type="text" placeholder="what the caller is trying to do" />
+            </label>
+            <label class="field" style="flex:1">Emotion
+              <input id="label-emotion" type="text" placeholder="calm, anxious, frustrated…" />
+            </label>
+            <label class="field" style="flex:1">Accent
+              <input id="label-accent" type="text" placeholder="e.g. Indian English" />
+            </label>
+          </div>
+          <p class="hint">No default is applied. A take without all three labels is refused rather than guessed.</p>
+        </div>
+
+        <div class="stack" style="margin-top:16px">
+          <div class="row">
+            <button id="record" class="record" type="button">Start recording</button>
+            <span class="meter" id="record-meter">00:00</span>
+            <button id="save" class="primary" type="button" disabled>Save take</button>
+            <button id="discard" type="button" disabled>Discard take</button>
+          </div>
+          <div class="row" id="take-actions">
+            <audio id="preview" controls hidden></audio>
+            <span class="muted" id="supersedes-note"></span>
+          </div>
+          <p class="status" id="status" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="takes-heading">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h2 id="takes-heading" style="margin:0">Takes</h2>
+          <span class="muted" id="takes-count">0 takes</span>
+        </div>
+        <div class="takes" id="takes"></div>
+      </section>
+    </main>
+
+    <script>
+      "use strict";
+
+      const state = {
+        mode: "one-shot",
+        blob: null,
+        previewUrl: null,
+        recorder: null,
+        chunks: [],
+        startedAt: 0,
+        timer: null,
+        dialogue: null,
+        turnIndex: 0,
+        supersedes: null,
+      };
+
+      const $ = (id) => document.getElementById(id);
+      const el = (tag, className) => {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        return node;
+      };
+
+      function setStatus(text, kind) {
+        const node = $("status");
+        node.textContent = text;
+        node.className = kind ? `status ${kind}` : "status";
+      }
+
+      function setMode(mode) {
+        state.mode = mode;
+        for (const tab of document.querySelectorAll("[role=tab]")) {
+          tab.setAttribute("aria-selected", String(tab.dataset.mode === mode));
+        }
+        $("mode-one-shot").hidden = mode !== "one-shot";
+        $("mode-dialogue").hidden = mode !== "dialogue";
+        $("mode-upload").hidden = mode !== "upload";
+        updateSaveEnabled();
+      }
+
+      function labels() {
+        return {
+          intent: $("label-intent").value,
+          emotion: $("label-emotion").value,
+          accent: $("label-accent").value,
+        };
+      }
+
+      function currentPrompt() {
+        if (state.mode === "upload") return null;
+        if (state.mode === "one-shot") {
+          const text = $("one-shot-prompt").value.trim();
+          return text ? { text } : null;
+        }
+        const turn = state.dialogue ? state.dialogue.turns[state.turnIndex] : null;
+        if (!turn) return null;
+        return {
+          dialogue: state.dialogue.name,
+          line: turn.line,
+          turn: turn.turn,
+          text: turn.text,
+        };
+      }
+
+      function updateSaveEnabled() {
+        const hasFile = Boolean($("upload-file").files[0]);
+        const sourceReady = state.mode === "upload" ? hasFile : Boolean(currentPrompt());
+        const audioReady = state.mode === "upload" ? hasFile : Boolean(state.blob);
+        $("save").disabled = !(sourceReady && audioReady);
+        $("discard").disabled = !state.blob && !hasFile;
+      }
+
+      function renderOneShotCard() {
+        const text = $("one-shot-prompt").value.trim();
+        $("one-shot-card").textContent = text || "No prompt yet.";
+        updateSaveEnabled();
+      }
+
+      function renderDialogue() {
+        const script = state.dialogue;
+        if (!script) {
+          $("dialogue-card").textContent = "Load a script, then each turn appears here in order.";
+          $("dialogue-eyebrow").textContent = "Prompt card";
+          $("dialogue-meter").textContent = "";
+          $("dialogue-name").textContent = "No dialogue loaded.";
+          $("dialogue-prev").disabled = true;
+          $("dialogue-next").disabled = true;
+          updateSaveEnabled();
+          return;
+        }
+        const turn = script.turns[state.turnIndex];
+        $("dialogue-name").textContent = `${script.name} · ${script.locale}`;
+        $("dialogue-eyebrow").textContent = `Prompt card · line ${turn.line}`;
+        $("dialogue-card").textContent = turn.text;
+        $("dialogue-meter").textContent = `Turn ${turn.turn} of ${script.turns.length}`;
+        $("dialogue-prev").disabled = state.turnIndex === 0;
+        $("dialogue-next").disabled = state.turnIndex >= script.turns.length - 1;
+        updateSaveEnabled();
+      }
+
+      function renderDialogueOptions(dialogues) {
+        const select = $("dialogue-select");
+        select.innerHTML = '<option value="">— authored scripts —</option>';
+        dialogues.forEach((script, index) => {
+          const option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = `${script.name} (${script.locale}, ${script.turns.length} turns)`;
+          select.append(option);
+        });
+        select.dataset.scripts = JSON.stringify(dialogues);
+      }
+
+      async function reloadDialogues() {
+        try {
+          const response = await fetch("/api/dialogues");
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.message || body.error || response.statusText);
+          renderDialogueOptions(body.dialogues);
+        } catch (error) {
+          setStatus(`Could not load dialogues: ${error.message}`, "bad");
+        }
+      }
+
+      function takeBase64(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(reader.error || new Error("cannot read the recording"));
+          reader.onload = () => {
+            const result = String(reader.result || "");
+            resolve(result.slice(result.indexOf(",") + 1));
+          };
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      async function startRecording() {
+        if (!navigator.mediaDevices || !window.MediaRecorder) {
+          setStatus("This browser has no MediaRecorder; record the line with another browser, or use Upload.", "bad");
+          return;
+        }
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"].find((type) => MediaRecorder.isTypeSupported(type));
+          const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+          state.recorder = recorder;
+          state.chunks = [];
+          recorder.ondataavailable = (event) => { if (event.data && event.data.size) state.chunks.push(event.data); };
+          recorder.onstop = () => {
+            stream.getTracks().forEach((track) => track.stop());
+            const blob = new Blob(state.chunks, { type: recorder.mimeType || "audio/webm" });
+            if (blob.size === 0) {
+              setStatus("The recording is empty; nothing to save.", "bad");
+              return;
+            }
+            state.blob = blob;
+            if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+            state.previewUrl = URL.createObjectURL(blob);
+            const preview = $("preview");
+            preview.src = state.previewUrl;
+            preview.hidden = false;
+            updateSaveEnabled();
+            setStatus(`Recorded ${(blob.size / 1024).toFixed(1)} kB. Label it, then save.`);
+          };
+          recorder.start();
+          state.startedAt = Date.now();
+          $("record").textContent = "Stop recording";
+          $("record").classList.add("live");
+          state.timer = setInterval(() => {
+            const seconds = Math.floor((Date.now() - state.startedAt) / 1000);
+            $("record-meter").textContent = `00:${String(seconds % 60).padStart(2, "0")}`;
+          }, 200);
+        } catch (error) {
+          setStatus(`Microphone refused: ${error.message}`, "bad");
+        }
+      }
+
+      function stopRecording() {
+        if (state.recorder && state.recorder.state !== "inactive") state.recorder.stop();
+        state.recorder = null;
+        clearInterval(state.timer);
+        $("record").textContent = "Start recording";
+        $("record").classList.remove("live");
+      }
+
+      function discard() {
+        state.blob = null;
+        if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+        state.previewUrl = null;
+        $("preview").hidden = true;
+        $("preview").removeAttribute("src");
+        $("upload-file").value = "";
+        $("record-meter").textContent = "00:00";
+        updateSaveEnabled();
+        setStatus("Take discarded. Nothing was stored.");
+      }
+
+      async function saveTake() {
+        const prompt = currentPrompt();
+        const payload = { mode: state.mode, labels: labels() };
+        if (state.supersedes) payload.supersedes = state.supersedes;
+
+        if (state.mode === "upload") {
+          const file = $("upload-file").files[0];
+          if (!file) { setStatus("Choose a file first.", "bad"); return; }
+          payload.upload = { filename: file.name, contentType: file.type || undefined };
+          payload.audioBase64 = await takeBase64(file);
+        } else {
+          if (!prompt) { setStatus("A prompt card is required for this mode.", "bad"); return; }
+          payload.prompt = prompt;
+          payload.audioBase64 = await takeBase64(state.blob);
+        }
+
+        $("save").disabled = true;
+        try {
+          const response = await fetch("/api/takes", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const body = await response.json();
+          if (!response.ok) throw new Error(`${body.error}: ${body.message}`);
+          const take = body.take;
+          setStatus(`Saved ${take.takeId} · sha256 ${take.audioSha256.slice(0, 12)}…`, "ok");
+          state.supersedes = null;
+          $("supersedes-note").textContent = "";
+          discard();
+          await refreshTakes();
+          if (state.mode === "dialogue" && state.dialogue && state.turnIndex < state.dialogue.turns.length - 1) {
+            state.turnIndex += 1;
+            renderDialogue();
+          }
+        } catch (error) {
+          setStatus(`Not saved: ${error.message}`, "bad");
+        } finally {
+          updateSaveEnabled();
+        }
+      }
+
+      function takeSummary(take) {
+        const article = el("article", "take");
+        const top = el("div", "top");
+        const id = el("span", "id");
+        id.textContent = take.takeId;
+        const mode = el("span", "chip");
+        mode.textContent = take.source.mode;
+        top.append(id, mode);
+        article.append(top);
+
+        if (take.source.mode !== "upload" && take.source.prompt) {
+          const prompt = el("div", "muted");
+          const card = take.source.prompt;
+          prompt.textContent = card.dialogue
+            ? `${card.dialogue} · ${card.line} (turn ${card.turn}): “${card.text}”`
+            : `“${card.text}”`;
+          article.append(prompt);
+        }
+        if (take.source.mode === "upload") {
+          const upload = el("div", "muted");
+          upload.textContent = `Uploaded ${take.source.upload.filename}`;
+          article.append(upload);
+        }
+
+        const hash = el("div", "hash");
+        hash.textContent = take.audioSha256;
+        article.append(hash);
+
+        const chips = el("div", "chips");
+        for (const field of ["intent", "emotion", "accent"]) {
+          const chip = el("span", "chip");
+          const label = el("b");
+          label.textContent = field;
+          chip.append(label, document.createTextNode(` ${take.labels[field]}`));
+          chips.append(chip);
+        }
+        article.append(chips);
+
+        const audio = document.createElement("audio");
+        audio.controls = true;
+        audio.preload = "none";
+        audio.src = `/api/takes/${take.takeId}/audio`;
+        article.append(audio);
+
+        const row = el("div", "row");
+        const rerecord = el("button");
+        rerecord.type = "button";
+        rerecord.textContent = "Re-record this take";
+        rerecord.addEventListener("click", () => beginReRecord(take));
+        const copy = el("button");
+        copy.type = "button";
+        copy.textContent = "Copy hash";
+        copy.addEventListener("click", async () => {
+          await navigator.clipboard.writeText(take.audioSha256);
+          copy.textContent = "Copied";
+          setTimeout(() => { copy.textContent = "Copy hash"; }, 1200);
+        });
+        row.append(rerecord, copy);
+        if (take.supersedes) {
+          const superseded = el("span", "chip");
+          superseded.textContent = `supersedes ${take.supersedes}`;
+          row.append(superseded);
+        }
+        article.append(row);
+        return article;
+      }
+
+      async function refreshTakes() {
+        try {
+          const response = await fetch("/api/takes");
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.message || body.error);
+          const takes = body.takes || [];
+          $("takes-count").textContent = `${takes.length} take${takes.length === 1 ? "" : "s"}`;
+          const list = $("takes");
+          list.replaceChildren(...takes.map(takeSummary));
+        } catch (error) {
+          setStatus(`Could not read takes: ${error.message}`, "bad");
+        }
+      }
+
+      function beginReRecord(take) {
+        state.supersedes = take.takeId;
+        $("supersedes-note").textContent = `Re-recording ${take.takeId}: saving creates a new take and keeps the old one.`;
+        for (const field of ["intent", "emotion", "accent"]) {
+          $(`label-${field}`).value = take.labels[field];
+        }
+        if (take.source.mode === "one-shot") {
+          setMode("one-shot");
+          $("one-shot-prompt").value = take.source.prompt.text;
+          renderOneShotCard();
+        } else if (take.source.mode === "dialogue") {
+          setMode("dialogue");
+          state.dialogue = {
+            schemaVersion: 1,
+            name: take.source.prompt.dialogue,
+            locale: "en",
+            turns: [take.source.prompt],
+          };
+          state.turnIndex = 0;
+          renderDialogue();
+        } else {
+          setMode("upload");
+          setStatus(`Choose the replacement file for ${take.takeId}.`, "");
+        }
+        discard();
+        setStatus(`Re-recording ${take.takeId}. The earlier hash stays resolvable.`, "");
+      }
+
+      // ── Wiring ────────────────────────────────────────────────────────────
+      for (const tab of document.querySelectorAll("[role=tab]")) {
+        tab.addEventListener("click", () => setMode(tab.dataset.mode));
+      }
+      $("one-shot-prompt").addEventListener("input", renderOneShotCard);
+      $("label-intent").addEventListener("input", updateSaveEnabled);
+      $("label-emotion").addEventListener("input", updateSaveEnabled);
+      $("label-accent").addEventListener("input", updateSaveEnabled);
+      $("upload-file").addEventListener("change", updateSaveEnabled);
+      $("record").addEventListener("click", () => {
+        if (state.recorder) stopRecording();
+        else startRecording();
+      });
+      $("save").addEventListener("click", saveTake);
+      $("discard").addEventListener("click", discard);
+      $("dialogue-reload").addEventListener("click", reloadDialogues);
+      $("dialogue-select").addEventListener("change", (event) => {
+        const scripts = JSON.parse(event.target.dataset.scripts || "[]");
+        const script = scripts[Number(event.target.value)];
+        if (!script) return;
+        state.dialogue = script;
+        state.turnIndex = 0;
+        renderDialogue();
+        setStatus(`Loaded ${script.name}: ${script.turns.length} prompt cards.`, "");
+      });
+      $("dialogue-load").addEventListener("click", () => {
+        try {
+          const parsed = JSON.parse($("dialogue-json").value);
+          if (!Array.isArray(parsed.turns) || parsed.turns.length === 0) throw new Error("a script needs turns");
+          state.dialogue = {
+            name: String(parsed.name || "pasted"),
+            locale: String(parsed.locale || "en"),
+            turns: parsed.turns.map((turn, index) => ({
+              line: String(turn.line || `turn-${index + 1}`),
+              text: String(turn.text || ""),
+              turn: index + 1,
+            })),
+          };
+          state.turnIndex = 0;
+          renderDialogue();
+          setStatus(`Loaded pasted script with ${state.dialogue.turns.length} prompt cards.`, "");
+        } catch (error) {
+          setStatus(`Cannot load that script: ${error.message}`, "bad");
+        }
+      });
+      $("dialogue-prev").addEventListener("click", () => {
+        if (state.dialogue && state.turnIndex > 0) { state.turnIndex -= 1; renderDialogue(); }
+      });
+      $("dialogue-next").addEventListener("click", () => {
+        if (state.dialogue && state.turnIndex < state.dialogue.turns.length - 1) { state.turnIndex += 1; renderDialogue(); }
+      });
+
+      renderOneShotCard();
+      renderDialogue();
+      reloadDialogues();
+      refreshTakes();
+    </script>
+  </body>
+</html>

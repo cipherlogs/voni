@@ -56,7 +56,8 @@
     "contract:bars": "node --import tsx scripts/contract-bars.mts",
     "parity:check": "node --env-file-if-exists=.env.local --import tsx scripts/parity-check.mts",
     "cutover:check": "node --env-file-if-exists=.env.local --import tsx scripts/cutover-check.mts",
-    "check:real-legs": "node --env-file-if-exists=.env.local --import tsx scripts/real-legs.mts"
+    "check:real-legs": "node --env-file-if-exists=.env.local --import tsx scripts/real-legs.mts",
+    "demo:studio": "node --import tsx scripts/studio/server.mts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",

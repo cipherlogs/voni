@@ -47,7 +47,7 @@ have is a defect in this map.
 | Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/real-legs.mts` (seed, via `voni/scripts/lib/real-legs.ts`) | 11 |
 | Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | not landed | 17 |
 | Evaluator families | L1–L11, T1–T10, C1–C10, K1–K8, X1–X10, A1–A8, R1–R8, S1–S6, E1–E4, H1–H7 | not landed | 18–22, 26 |
-| Studio | local-only Record, Rate and Corpus surfaces; never in the deployed build | not landed | 23, 24 |
+| Studio | local-only Record, Rate and Corpus surfaces; never in the deployed build | Record landed in `voni/scripts/studio/`: `take-store.ts` writes one immutable hashed take per landing (`voni/.studio/`, gitignored) on the shared digest in `scenarios/digest.ts`; `dialogues.ts` validates authored prompt cards; `http.ts` serves `record.html` on loopback only and refuses a production environment or host by name; no `src/` file imports it. Rate and Corpus not landed | 23, 24 |
 | Human baseline | three to five consented, hashed reference calls, blind comparison only | not landed (human gate) | 25 |
 | Panel and gold labels | blind sample, seven axes, blind A/B, signature, exit 3 | not landed | 27 |
 | CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | not landed | 28 |
