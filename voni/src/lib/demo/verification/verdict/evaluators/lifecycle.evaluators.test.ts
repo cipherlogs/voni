@@ -254,8 +254,10 @@ function connectedBeforeAdmission(): {
   marks: string;
 } {
   const root = mkdtempSync(join(tmpdir(), "dv18-bug-a-"));
+  // The WAV's first voiced sample is where the marks say the answer was:
+  // microphone_acquired at 260 ms + 1340 ms of silence = first_audible 1600 ms.
   const segments: Segment[] = [
-    { kind: "silence", ms: 150 },
+    { kind: "silence", ms: 1340 },
     { kind: "speech", ms: 1800 },
     { kind: "silence", ms: 1000 },
     { kind: "speech", ms: 1200 },
@@ -333,8 +335,9 @@ function greetingOnlyEnds(): {
   marks: string;
 } {
   const root = mkdtempSync(join(tmpdir(), "dv18-bug-b-"));
+  // microphone_acquired 200 ms + 600 ms of silence = first_audible 800 ms.
   const segments: Segment[] = [
-    { kind: "silence", ms: 100 },
+    { kind: "silence", ms: 600 },
     { kind: "speech", ms: 2500 },
     { kind: "silence", ms: 4000 },
     { kind: "speech", ms: 400 },
@@ -575,8 +578,9 @@ function cleanCall(): {
   end: string;
 } {
   const root = mkdtempSync(join(tmpdir(), "dv18-clean-"));
+  // microphone_acquired 200 ms + 700 ms of silence = first_audible 900 ms.
   const segments: Segment[] = [
-    { kind: "silence", ms: 100 },
+    { kind: "silence", ms: 700 },
     { kind: "speech", ms: 1800 },
     { kind: "silence", ms: 1200 },
     { kind: "speech", ms: 1500 },
@@ -634,7 +638,7 @@ function cleanCall(): {
 function goodbyeCall(): { evidence: EvidenceBundle; marks: MarkArtifact; wav: string } {
   const base = cleanCall();
   const segments: Segment[] = [
-    { kind: "silence", ms: 100 },
+    { kind: "silence", ms: 700 },
     { kind: "speech", ms: 1800 },
     { kind: "silence", ms: 1200 },
     { kind: "speech", ms: 1200 },
@@ -785,6 +789,69 @@ test("L8 fails when the talk clock starts before the delivered WAV's first voice
   const { verdict, measurement } = await judged("L8", early, "golden-flow-hello");
   assert.equal(verdict.status, "FAIL", "a clock that starts before any audible sample fails");
   assert.match(measurement, /first voiced sample/i);
+});
+
+test("a first_audible mark later than the WAV's first voiced sample fails L1 and L8", async () => {
+  const clean = cleanCall();
+  // The WAV puts the answer at microphone_acquired 200 ms + 700 ms = 900 ms.
+  // A mark at 1500 ms claims a second, later event, so neither property may be
+  // measured from the client's word.
+  const lying = withMarks(
+    clean.evidence,
+    marksOf(
+      clean.marks.marks.map((entry) =>
+        (entry as { name: string }).name === "first_audible"
+          ? mark("first_audible", 1500)
+          : entry,
+      ),
+      8_000,
+    ),
+  );
+  for (const id of ["L1", "L8"]) {
+    const { verdict } = await judged(id, lying, "golden-flow-hello");
+    assert.equal(verdict.status, "FAIL", `${id} must not trust a mark the WAV contradicts`);
+    assert.equal(verdict.reason, "unmeasured", `${id}: ${verdict.detail}`);
+    assert.match(verdict.detail, /first_audible mark at 1500ms/);
+    assert.match(verdict.detail, /first voiced sample at 900ms/);
+  }
+});
+
+test("a first_audible mark earlier than the WAV's first voiced sample fails L1 and L8", async () => {
+  const clean = cleanCall();
+  const lying = withMarks(
+    clean.evidence,
+    marksOf(
+      clean.marks.marks.map((entry) =>
+        (entry as { name: string }).name === "first_audible"
+          ? mark("first_audible", 300)
+          : entry,
+      ),
+      8_000,
+    ),
+  );
+  for (const id of ["L1", "L8"]) {
+    const { verdict } = await judged(id, lying, "golden-flow-hello");
+    assert.equal(verdict.status, "FAIL", `${id} must not trust a mark the WAV contradicts`);
+    assert.equal(verdict.reason, "unmeasured", `${id}: ${verdict.detail}`);
+    assert.match(verdict.detail, /first voiced sample at 900ms/);
+  }
+});
+
+test("L1 and L8 fail closed when the capture's start mark is missing", async () => {
+  const clean = cleanCall();
+  const noMic = withMarks(
+    clean.evidence,
+    marksOf(
+      clean.marks.marks.filter((entry) => (entry as { name: string }).name !== "microphone_acquired"),
+      8_000,
+    ),
+  );
+  for (const id of ["L1", "L8"]) {
+    const { verdict } = await judged(id, noMic, "golden-flow-hello");
+    assert.equal(verdict.status, "FAIL", `${id} cannot place the WAV without the capture's start`);
+    assert.equal(verdict.reason, "unmeasured", `${id}: ${verdict.detail}`);
+    assert.match(verdict.detail, /microphone_acquired/);
+  }
 });
 
 test("L6 accepts a long voice open only when the visitor sees a named unavailable state", async () => {

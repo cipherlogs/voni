@@ -50,18 +50,39 @@ function namedState(marks: CallMarksArtifact): CallMark | null {
 }
 
 /**
- * The call-clock instant of the first audible agent sample, corroborated by the
- * delivered WAV.
+ * How far the client's `first_audible` mark may sit from the delivered WAV's
+ * own first voiced sample before the two are treated as different events.
  *
- * The WAV has no absolute time; the client's `first_audible` mark is the anchor
- * for the worklet's first voiced block. The answer is therefore the mark, but it
- * is only usable when the delivered audio actually carries a voiced sample. A
- * missing WAV, a silent WAV or a missing mark fails closed: the property is
+ * The tap starts with the playout, immediately after the `microphone_acquired`
+ * mark, and it copies every rendered block, so the WAV's first voiced sample
+ * time is the answer measured on the capture's clock. The mark is written when
+ * the worklet's first `playing` level report reaches the main thread, and the
+ * worklet reports every eight render quanta (about 21 ms at 48 kHz). A quarter
+ * second is generous for one event told twice — scheduling, a slow frame, a
+ * resampled block — and far too tight to hide two different events.
+ */
+const FIRST_AUDIBLE_AGREEMENT_MS = 250;
+
+/**
+ * The call-clock instant of the first audible agent sample, measured from the
+ * delivered WAV and corroborated by the client's mark.
+ *
+ * The WAV has no absolute time, but its capture does: the playout is tapped
+ * right after `microphone_acquired`, so the capture's zero is that mark and the
+ * WAV's first voiced sample lands on the call clock at
+ * `microphone_acquired + firstSpeechMs`. That measured time is the answer L1
+ * and L8 judge; the `first_audible` mark is never the answer itself. A mark
+ * that names a different moment than the audio (later or earlier), a missing
+ * WAV, a silent WAV or a missing anchor fails closed: the property is
  * unmeasured, never a pass on the client's intent alone.
  */
 export type AudioAnswer = {
+  /** The delivered WAV's first voiced sample, on the call clock. */
   readonly answerMs: number;
+  /** The same sample's offset from the start of the capture. */
   readonly firstVoicedMs: number;
+  /** The call-clock instant the capture began (the tap follows this mark). */
+  readonly captureStartMs: number;
   readonly detail: string;
 };
 
@@ -84,12 +105,36 @@ export function audioAnswer(
         "clock; the answer time cannot be tied to the audio",
     );
   }
+  const capture = optionalMark(marks, "microphone_acquired");
+  if (capture === null) {
+    throw new LifecycleEvidenceError(
+      "malformed-marks",
+      "the delivered capture begins when the playout is tapped, immediately after " +
+        "microphone_acquired; without that mark the audio's first voiced sample cannot be " +
+        "placed on the call clock",
+    );
+  }
+  const answerMs = capture.tMs + analysis.firstSpeechMs;
+  const driftMs = Math.abs(audible.tMs - answerMs);
+  if (driftMs > FIRST_AUDIBLE_AGREEMENT_MS) {
+    throw new LifecycleEvidenceError(
+      "mark-audio-disagree",
+      `the first_audible mark at ${Math.round(audible.tMs)}ms is ${Math.round(driftMs)}ms from ` +
+        `the delivered WAV's first voiced sample at ${Math.round(answerMs)}ms ` +
+        `(capture started at ${Math.round(capture.tMs)}ms, ${Math.round(analysis.firstSpeechMs)}ms ` +
+        "of silence before it); the mark and the audio name different moments, so the answer " +
+        "time is unmeasured",
+    );
+  }
   return {
-    answerMs: audible.tMs,
+    answerMs,
     firstVoicedMs: analysis.firstSpeechMs,
+    captureStartMs: capture.tMs,
     detail:
       `the delivered WAV's first voiced sample is ${Math.round(analysis.firstSpeechMs)}ms into ` +
-      `the capture, anchored by the first_audible mark at ${Math.round(audible.tMs)}ms`,
+      `the capture that starts at ${Math.round(capture.tMs)}ms, so the answer is at ` +
+      `${Math.round(answerMs)}ms on the call clock ` +
+      `(the first_audible mark at ${Math.round(audible.tMs)}ms agrees within ${Math.round(driftMs)}ms)`,
   };
 }
 
@@ -365,8 +410,9 @@ export type ClockFacts = {
 
 /**
  * L8: the talk clock starts at or after the first agent audio.
- * `answerMs` is the delivered WAV's first voiced sample on the call clock
- * ({@link audioAnswer}); the clock is never judged against a mark alone.
+ * `answerMs` is the delivered WAV's first voiced sample, placed on the call
+ * clock by the capture's own start ({@link audioAnswer}); neither the clock nor
+ * the audio is judged from a mark alone.
  */
 export function clockFacts(marks: CallMarksArtifact, answerMs: number): ClockFacts {
   const clock = optionalMark(marks, "talk_clock_start");

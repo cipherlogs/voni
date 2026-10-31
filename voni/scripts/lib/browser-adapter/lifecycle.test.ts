@@ -113,17 +113,20 @@ function writeLifecycleEvidence(input: {
   const buggy = input.kind === "buggy";
   const endAt = buggy ? 8_010 : 31_010;
 
+  // The delivered WAV's first voiced sample sits where the marks say the
+  // answer was: microphone_acquired at 200 ms + 600 ms of silence = the
+  // first_audible mark at 800 ms.
   writeWav(
     capturePath,
     buggy
       ? [
-          { kind: "silence", ms: 100 },
+          { kind: "silence", ms: 600 },
           { kind: "speech", ms: 2_500 },
           { kind: "silence", ms: 4_000 },
           { kind: "speech", ms: 400 },
         ]
       : [
-          { kind: "silence", ms: 100 },
+          { kind: "silence", ms: 600 },
           { kind: "speech", ms: 2_500 },
           { kind: "silence", ms: 26_000 },
           { kind: "speech", ms: 1_200 },
