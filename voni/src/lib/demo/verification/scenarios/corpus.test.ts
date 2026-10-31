@@ -65,25 +65,25 @@ function wavFacts(bytes: Buffer): { sampleRate: number; channels: number; bits: 
   };
 }
 
-test("the committed fast corpus is ten English scenarios with twenty recorded takes", async () => {
+test("the committed fast corpus still holds its ten English scenarios and every take", async () => {
   const corpus = await load();
-  assert.equal(corpus.version, 1);
+  assert.equal(corpus.version, 2);
   assert.match(corpus.fingerprint, /^[0-9a-f]{64}$/);
-  assert.deepEqual(
-    corpus.scenarios.map((scenario) => scenario.name),
-    [...FAST_CONTRACT_SCENARIOS].sort(),
-  );
-  assert.equal(corpus.scenarios.length, 10);
-  assert.equal(
-    corpus.scenarios.reduce((sum, scenario) => sum + scenario.takes.length, 0),
-    20,
-    "every caller line is its own committed take",
-  );
+  const fast = corpus.scenarios
+    .filter((scenario) => (FAST_CONTRACT_SCENARIOS as readonly string[]).includes(scenario.name))
+    .map((scenario) => scenario.name)
+    .sort();
+  assert.deepEqual(fast, [...FAST_CONTRACT_SCENARIOS].sort());
+  assert.equal(fast.length, 10);
+  const fastTakes = corpus.scenarios
+    .filter((scenario) => (FAST_CONTRACT_SCENARIOS as readonly string[]).includes(scenario.name))
+    .reduce((sum, scenario) => sum + scenario.takes.length, 0);
+  assert.equal(fastTakes, 20, "every caller line is its own committed take");
 
   for (const scenario of corpus.scenarios) {
     assert.equal(scenario.locale, "en");
-    assert.equal(scenario.heldOut, false);
-    assert.ok(!(HELD_OUT_SCENARIOS as readonly string[]).includes(scenario.name));
+    const sealed = (HELD_OUT_SCENARIOS as readonly string[]).includes(scenario.name);
+    assert.equal(scenario.heldOut, sealed, `${scenario.name} declares its sealed status`);
     assert.ok(scenario.expectedProperties.length > 0);
     assert.equal(scenario.soundscape.id, "quiet-room");
     for (const take of scenario.takes) {

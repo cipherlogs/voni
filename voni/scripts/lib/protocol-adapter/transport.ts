@@ -131,6 +131,8 @@ type CallState = {
   error: string | null;
   timeline: AgentTimelineEvent[];
   spoken: { step: number; take: string; atMs: number }[];
+  /** The service's captions, kept for the tool/leak evaluators. */
+  captions: { role: "caller" | "agent"; text: string; atMs: number; final: boolean }[];
   received: Uint8Array[];
   receivedFrames: number;
   capturedFrames: number;
@@ -213,6 +215,7 @@ export async function runProtocolCall(
     error: null,
     timeline: [],
     spoken: [],
+    captions: [],
     received: [],
     receivedFrames: 0,
     capturedFrames: 0,
@@ -330,6 +333,17 @@ export async function runProtocolCall(
     if (event === null) return;
     switch (event.kind) {
       case "caption":
+        // The transcript is evidence: the bridge, the continuation and X9's
+        // leak scan read what the caller actually heard. It never reaches the
+        // service trace.
+        if (event.text.trim() !== "") {
+          state.captions.push({
+            role: event.role === "user" ? "caller" : "agent",
+            text: event.text,
+            atMs: callTime(),
+            final: event.final,
+          });
+        }
         break;
       case "interrupted":
         break;
@@ -577,6 +591,7 @@ export async function runProtocolCall(
       frames: state.receivedFrames,
       bytes: received.byteLength,
     },
+    captions: state.captions,
     endedBy,
     error: state.error,
     tracePath: null,

@@ -30,6 +30,8 @@ import { encodeMonoWav } from "@/lib/platform/recording-capture";
 import type { EvidenceSource } from "@/lib/demo/verification/contract";
 import type { LoadedScenario } from "@/lib/demo/verification/scenarios";
 import type { CallEligibilityFact, RunVerdict } from "@/lib/demo/verification/verdict";
+import type { ToolLogRow } from "@/lib/demo/tool-log";
+import type { InboxDelivery } from "@/lib/demo/verification/tools/inbox";
 
 import { ProtocolAdapterError } from "./errors";
 import type {
@@ -189,6 +191,12 @@ export async function assembleEvidence(input: {
   readonly target: ProtocolTargetLabel;
   readonly eventsDir: string;
   readonly callDir: string;
+  /** The app tool log and real inbox delivery, collected after the call. */
+  readonly toolEvidence?: {
+    readonly log: readonly ToolLogRow[];
+    readonly delivery: InboxDelivery | null;
+    readonly gap: string | null;
+  };
 }): Promise<{ assembled: AssembledEvidence; record: ProtocolCallRecord }> {
   const gaps: string[] = [];
   const stem = input.call.callId.replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^[._]+|[._]+$/g, "") || "call";
@@ -263,9 +271,36 @@ export async function assembleEvidence(input: {
   }
 
   const turns = turnRows(rows);
+  const transcript =
+    input.call.captions.length === 0
+      ? null
+      : input.call.captions.map((caption) => ({
+          role: caption.role,
+          text: caption.text,
+          atMs: caption.atMs,
+          final: caption.final,
+        }));
+  const transcriptGap =
+    transcript === null
+      ? "the service sent no captions; the spoken words were not captured, so a bridge, a " +
+        "continuation or a spoken leak cannot be judged"
+      : null;
+  if (transcriptGap !== null) gaps.push(transcriptGap);
+  if (input.toolEvidence?.gap !== undefined && input.toolEvidence.gap !== null) {
+    gaps.push(input.toolEvidence.gap);
+  }
   const tools = {
     calls: rows.filter((row) => row.type === "turn.tool_call"),
     results: rows.filter((row) => row.type === "turn.tool_result"),
+    ...(input.toolEvidence === undefined
+      ? {}
+      : {
+          ...(input.toolEvidence.log.length === 0 ? {} : { log: input.toolEvidence.log }),
+          ...(input.toolEvidence.delivery === null
+            ? {}
+            : { delivery: input.toolEvidence.delivery }),
+          ...(input.toolEvidence.gap === null ? {} : { gap: input.toolEvidence.gap }),
+        }),
   };
 
   const receivedFile = join(input.callDir, "received.wav");
@@ -298,7 +333,7 @@ export async function assembleEvidence(input: {
       marksGap:
         "the protocol adapter has no browser marks; mark-level properties require the browser adapter (ticket 17)",
     },
-    trace: { file: traceFile, rows, lineCount: rows.length },
+    trace: { file: traceFile, rows, lineCount: rows.length, transcript, transcriptGap },
     ...(wav === undefined ? {} : { wav }),
     tool: tools,
     ...(priced === null ? {} : { cost: priced }),

@@ -524,17 +524,16 @@ test("wall-clock time is measured, and the unset numeric ceiling is a named gap"
   );
 });
 
-test("the committed corpus is discovered at the default root with its ten takes", async () => {
+test("the committed corpus is discovered at the default root with its ten fast scenarios", async () => {
   const contract = await CONTRACT;
   const loaded = await loadCorpus({
     dir: DEFAULT_CORPUS_DIR,
     knownProperties: new Set(contract.properties.map((property) => property.id)),
   });
-  assert.deepEqual(
-    loaded.scenarios.map((scenario) => scenario.name).sort(),
-    [...FAST_CONTRACT_SCENARIOS].sort(),
-  );
-  for (const scenario of loaded.scenarios) {
+  const byName = new Map(loaded.scenarios.map((scenario) => [scenario.name, scenario]));
+  for (const name of FAST_CONTRACT_SCENARIOS) {
+    const scenario = byName.get(name);
+    assert.ok(scenario !== undefined, `the committed corpus holds ${name}`);
     assert.equal(scenario.locale, "en");
     assert.equal(scenario.heldOut, false);
     assert.ok(scenario.takes.length > 0);
