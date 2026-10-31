@@ -117,9 +117,10 @@ function passingEvaluators(contract: Contract): PropertyEvaluator[] {
 function oneRepetitionContract(contract: Contract): Contract {
   return {
     families: contract.families,
-    properties: contract.properties.map(({ unresolved: _unresolved, ...property }) => ({
+    properties: contract.properties.map((property) => ({
       ...property,
       repetitions: 1,
+      unresolved: undefined,
     })),
   };
 }
