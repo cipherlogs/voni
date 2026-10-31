@@ -44,6 +44,7 @@ import {
 } from "@/lib/demo/verification/certificate";
 import {
   DEFAULT_CORPUS_DIR,
+  scenarioFacts,
   type CorpusReference,
   type LoadedScenario,
   type Locale,
@@ -521,6 +522,7 @@ export async function runBrowserCertification(
     locale: scenario.locale,
     target: input.target,
     evidence: assembled.bundle,
+    facts: scenarioFacts(scenario),
   };
   const evidence = await evaluateScenarios({
     contract,

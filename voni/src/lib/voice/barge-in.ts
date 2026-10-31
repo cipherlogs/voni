@@ -34,7 +34,7 @@ function overlapFiller(recognition: CompleteRecognition): Set<string> {
 }
 
 /** Share of the caller's words found in the agent's current sentence that marks echo. */
-const ECHO_SHARE = 0.6;
+export const ECHO_SHARE = 0.6;
 
 export function judgeOverlap(
   text: string,
