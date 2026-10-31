@@ -413,6 +413,10 @@ export type FastRunTiming = {
   readonly plannedCalls: number;
   readonly measuredCalls: number;
   readonly fitsPlan: boolean;
+  /** The run's declared wall-clock bound, when the caller supplied one. */
+  readonly ceilingMs: number | null;
+  /** Null when no bound was supplied; never `true` on an unmeasured bound. */
+  readonly withinCeiling: boolean | null;
 };
 
 export type FastRunReport = FastScopedVerdict & {
@@ -448,6 +452,12 @@ export function judgeFastRun(input: {
   readonly calls: readonly FastCallCost[];
   readonly startedAt: string;
   readonly endedAt: string;
+  /**
+   * The run's declared wall-clock bound in milliseconds, when one exists (the
+   * CI browser budget). Null/absent means no bound is claimed, and the gap
+   * names the measurement rather than a permanent literal.
+   */
+  readonly wallClockCeilingMs?: number | null;
 }): FastRunReport {
   const plan = fastRunPlan(input.corpus);
   const scoped = scopeFastVerdict({
@@ -518,6 +528,7 @@ export function judgeFastRun(input: {
       `the fast run ends (${input.endedAt}) before it starts (${input.startedAt})`,
     );
   }
+  const ceilingMs = input.wallClockCeilingMs ?? null;
   const timing: FastRunTiming = {
     startedAt: input.startedAt,
     endedAt: input.endedAt,
@@ -528,12 +539,23 @@ export function judgeFastRun(input: {
       input.calls.length === plan.calls &&
       plan.repetitions === FAST_CONTRACT_REPETITIONS &&
       plan.scenarios.length === FAST_CONTRACT_SCENARIOS.length,
+    ceilingMs,
+    withinCeiling: ceilingMs === null ? null : elapsedMs <= ceilingMs,
   };
 
-  const gaps = [
-    "the fast contract's wall-clock ceiling is unset in the frozen record; elapsed time is " +
-      "measured and reported, never compared to an invented bound",
-  ];
+  const gaps: string[] = [];
+  if (ceilingMs === null) {
+    // No bound was declared, so none is compared. The gap names the measured
+    // number and the missing bound; it is not a permanent "unset" literal.
+    gaps.push(
+      `the fast run measured ${elapsedMs}ms of wall clock and was given no wall-clock ` +
+        "bound; elapsed time is reported, never compared to an invented ceiling",
+    );
+  } else if (elapsedMs > ceilingMs) {
+    gaps.push(
+      `the fast run took ${elapsedMs}ms, over its declared ${ceilingMs}ms wall-clock bound`,
+    );
+  }
   if (measuredUsd === null) gaps.push(economy.detail);
 
   const verdict: FastScopeVerdictValue =
