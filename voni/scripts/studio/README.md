@@ -1,4 +1,4 @@
-# Studio — Record, Rate and Corpus (tickets 23–24)
+# Studio — Record, Rate, Corpus and Baseline (tickets 23–25)
 
 The local-only Studio where the owner records caller takes, rates a certification
 blind, and browses the corpus. It is a script process, not a Next route: nothing
@@ -18,7 +18,8 @@ other than `localhost`, `127.0.0.1` and `::1` are refused. `NODE_ENV=production`
 `VONI_STUDIO_TARGET=production` and `STUDIO_TARGET=production` refuse to start
 (exit 2, `studio-not-local`).
 
-The three surfaces are `/` (Record), `/rate` (Rate) and `/corpus` (Corpus).
+The four surfaces are `/` (Record), `/rate` (Rate), `/corpus` (Corpus) and
+`/baseline` (the zero-typing human-baseline flow).
 
 Takes land in `voni/.studio/` (gitignored): `takes/take-000001/take.json` and
 content-addressed audio in `blobs/<sha256>.<format>`. The audio is hashed on
@@ -125,6 +126,51 @@ The consent block is written into the take at landing; a baseline take without
 complete consent is refused by name. Baseline takes are blind comparison audio,
 never a certification input, so they are never selectable by a scenario.
 
+## One-button baseline flow (`/baseline`)
+
+The owner only presses record, speaks and presses stop. The flow has no text
+field anywhere, asks for no date and no path, and never asks for a real name.
+
+1. **Setup.** Tap 3, 4 or 5 participants. Each row shows its pseudonym
+   (`participant-01` …) and a one-tap accent selector (`en-US`, `en-GB`,
+   `en-IN`, `en-NG`, `en-IE`, `en-AU`, `other`, `unspecified`; default
+   `unspecified`). Tick "Signed consent for every participant is filed outside
+   the repo", then Start.
+2. **Consent.** Start writes `voni/.studio/consent/<participantId>/consent.md`
+   from that attestation: the pseudonym, the server clock's date and "signed
+   original filed by the owner outside the repository". The pointer is written
+   once; a later session reuses the date already filed instead of re-dating it.
+3. **Recording.** One participant at a time: call 1 (scripted booking), a
+   five-minute break with a Next button, then call 2 (unscripted service
+   problem). The screen has one Record/Stop button, a live mm:ss timer and the
+   fixed labels. Stop lands the take through the same MediaRecorder →
+   `/api/takes` upload path as the other surfaces: the take store hashes it and
+   writes the baseline consent block. A call shorter than 4:00 or longer than
+   6:00 is refused by name (`wrong-duration-band`) before it is stored — the
+   page refuses on its timer, and the server measures the bytes with the
+   verifier's own durater. Stop with a little margin (about 4:10–5:50) so the
+   measured audio, not the wall clock, is comfortably inside the band.
+4. **Finish.** **Pin baseline** runs the existing `baseline.ts` pin
+   (`--record` semantics) and then the ordinary verification. Exit 0 prints the
+   hash list; a refusal is shown with its code (`manifest-exists` for a second
+   pin, `wrong-duration-band`, `missing-consent-reference`, …). Nothing is
+   reimplemented: hashing belongs to `take-store.ts` and the checks to
+   `baseline.ts`.
+
+Labels are fixed by the plan, not guessed from the audio:
+
+| Call | Intent | Emotion |
+| --- | --- | --- |
+| 1 | `booking-inquiry` | `neutral` |
+| 2 | `service-problem` | `frustrated` |
+
+The accent label is the participant's selector value, verbatim. A baseline take
+still carries `participantId`, `call` 1|2, `consentRef` `<id>/consent.md` and the
+consent date; the take store refuses an incomplete consent block.
+
+The `/corpus` **human-baseline capture** form still exists for a take recorded
+outside this flow; both paths land through the same store and the same verifier.
+
 ## Human baseline verification
 
 The baseline is three to five consenting people, two calls of four to six
@@ -166,5 +212,9 @@ overwrites a pin. The session plan and owner runbook are in
   opaque A/B serving, one-rating-per-item and gold-label export.
 - `server.test.ts` — the loopback routes, production-host refusal, label
   refusal, dialogue loading, retirement, baseline consent and the Rate routes.
+- `baseline-flow.test.ts` — the zero-typing flow: the plan for 3/4/5
+  participants, the 3:59/6:01 refusals, per-participant consent files, the
+  prefilled labels, a page with no text input and a pin that refuses a second
+  pin.
 - `build-exclusion.test.ts` — no Studio route, no `src/` import, no Next config
   entry, production-environment refusal.
