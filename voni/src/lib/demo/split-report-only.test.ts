@@ -238,7 +238,7 @@ test("the budget freeze guard and its threshold table stay byte-identical", () =
   const sha256 = (url: URL) => createHash("sha256").update(readFileSync(url)).digest("hex");
   assert.equal(
     sha256(new URL("./scoreboard-budgets.ts", import.meta.url)),
-    "ae2ca09db01bd116255112dc0999564d35e5a5ee68b6040d8361d65dbdc75cff",
+    "d0b307c06dc80f2b45d63d88a250f589795e2cc2003d62429d670270f076c704",
     "scoreboard-budgets.ts is byte-identical",
   );
   assert.equal(

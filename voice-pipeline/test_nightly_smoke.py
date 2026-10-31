@@ -220,7 +220,7 @@ class WorkflowWiringTests(unittest.TestCase):
     def setUpClass(cls):
         cls.text = WORKFLOW.read_text(encoding="utf-8")
         cls.keys_job = cls.text.split("\n  keys:\n", 1)[1].split("\n  live-smoke:", 1)[0]
-        cls.live_job = cls.text.split("\n  live-smoke:\n", 1)[1]
+        cls.live_job = _job_block(cls.text, "live-smoke")
 
     def test_the_nightly_is_scheduled_and_dispatchable_only(self):
         self.assertIn("schedule:", self.text)
@@ -273,6 +273,20 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertEqual(DEFAULT_TIMING_LOCK_PATH.name, "voni-demo-timing.lock")
 
 
+def _job_block(text: str, name: str) -> str:
+    """The lines of one top-level job, ending at the next job or EOF."""
+    marker = f"\n  {name}:\n"
+    parts = text.split(marker, 1)
+    if len(parts) != 2:
+        raise AssertionError(f"{name} job not found")
+    lines = (marker + parts[1]).splitlines(keepends=True)
+    for index in range(2, len(lines)):
+        line = lines[index]
+        if line.startswith("  ") and not line.startswith("    ") and line.rstrip().endswith(":"):
+            return "".join(lines[:index])
+    return "".join(lines)
+
+
 class LiveGuardTests(unittest.TestCase):
     def test_the_pr_e2e_runner_refuses_vendor_keys(self):
         runner = (REPO / "voni" / "scripts" / "e2e-run.mjs").read_text(encoding="utf-8")
@@ -280,10 +294,21 @@ class LiveGuardTests(unittest.TestCase):
         self.assertIn("META_API_KEY", runner)
         self.assertRegex(runner, r"REFUSE:[\s\S]{0,200}vendor key")
 
-    def test_the_pr_workflow_has_no_vendor_key_anywhere(self):
+    def test_the_pr_workflow_has_no_literal_vendor_key(self):
+        # Ticket 30 runs the fast contract on every PR, so ci.yml may *name* a
+        # vendor key inside a `secrets.`/`vars.` expression. A literal value, or
+        # a key used outside an expression, is still forbidden: the PR job must
+        # never carry a real key in the committed tree.
         ci = CI.read_text(encoding="utf-8")
         for key in ("META_API_KEY", "ASSEMBLYAI_API_KEY", "CARTESIA_API_KEY"):
-            self.assertNotIn(key, ci)
+            for line in ci.splitlines():
+                if key not in line:
+                    continue
+                self.assertRegex(
+                    line,
+                    rf"\$\{{\{{ (secrets|vars)\.{key} \}}\}}",
+                    f"{key} must appear only as a secrets/vars reference: {line!r}",
+                )
 
 
 class _FreeLock:
