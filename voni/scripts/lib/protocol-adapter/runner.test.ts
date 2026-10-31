@@ -224,10 +224,23 @@ test("every startup gap is a named refusal with exit 2 and no call", async () =>
         }),
         expected: /soundscape:street-corner/,
       },
+      {
+        name: "television soundscape",
+        input: probeRunInput({
+          corpusDir: join(root, "corpus-television"),
+          runRoot: join(root, "runs-television"),
+          eventsDir,
+          scenarioName: "soundscape-television",
+        }),
+        expected: /soundscape:television/,
+      },
     ];
 
     writeCorpus(join(root, "corpus-street"), [
       { name: "golden-flow-smoke", soundscape: { id: "street-corner" } },
+    ]);
+    writeCorpus(join(root, "corpus-television"), [
+      { name: "soundscape-television", soundscape: { id: "television" } },
     ]);
 
     for (const entry of cases) {
