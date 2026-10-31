@@ -308,8 +308,10 @@ const MEASURED: readonly FamilyId[] = [
   "tools",
   "audio",
   "resilience",
+  // E3 is run-scoped: the economics run gate judges the fast run's ceiling.
+  "economics",
 ];
-const OUT_OF_SCOPE: readonly FamilyId[] = ["comprehension", "economics", "human", "security"];
+const OUT_OF_SCOPE: readonly FamilyId[] = ["comprehension", "human", "security"];
 
 test("the fast scope names every family it does not measure out of scope", async () => {
   const contract = await CONTRACT;
@@ -474,7 +476,7 @@ test("ten calls at one repetition fit the fast plan; a missing call is refused b
   );
 });
 
-test("a run over the fast cost ceiling is not-demo-ready", async () => {
+test("the fast report measures cost but leaves the E3 verdict to the run gate", async () => {
   const contract = await CONTRACT;
   const report = judgeFastRun({
     contract,
@@ -485,9 +487,10 @@ test("a run over the fast cost ceiling is not-demo-ready", async () => {
     endedAt: "2026-10-31T10:02:00.000Z",
   });
   assert.equal(report.economy.measuredUsd, 3);
-  assert.equal(report.economy.withinCeiling, false);
-  assert.equal(report.verdict, "not-demo-ready");
+  assert.equal(report.economy.withinCeiling, false, "the over-ceiling cost is reported");
   assert.match(report.economy.detail, /3.*2|2.*3/);
+  // The economics run gate owns E3. This module never holds a second path.
+  assert.equal(report.verdict, "scoped-pass");
 });
 
 test("an unmeasured call cost fails closed; it never fits a ceiling", async () => {
@@ -504,8 +507,10 @@ test("an unmeasured call cost fails closed; it never fits a ceiling", async () =
   });
   assert.equal(report.economy.measuredUsd, null);
   assert.equal(report.economy.withinCeiling, false);
-  assert.equal(report.verdict, "not-demo-ready");
   assert.match(report.economy.detail, /tools-email-send/);
+  // The run gate settles the unmeasured total and reds E3; this module reports
+  // the measurement and does not own the verdict.
+  assert.ok(report.gaps.includes(report.economy.detail));
 });
 
 test("wall-clock time is measured, and the gap derives from the bound the run was given", async () => {

@@ -489,15 +489,22 @@ async function fastRun(
 ): Promise<VerifyResult> {
   const collected = await collectCalls(request, plan, deps);
   const endedAt = (deps.now ?? (() => new Date()))().toISOString();
-  const evidence = await evaluateScenarios({
+  // E3 is run-scoped and has one owner: the economics run gate. The fast
+  // module reports what it measured; it never holds a second verdict path.
+  const scoped = scopeRunToCeiling({
     contract,
-    evaluators,
-    attempts: [...collected.attempts],
+    evidence: await evaluateScenarios({
+      contract,
+      evaluators,
+      attempts: [...collected.attempts],
+    }),
+    kind: "fast",
+    calls: [...collected.costs],
   });
   const verdict = judgeRun({
     runId: (deps.newRunId ?? defaultRunId)(),
-    contract,
-    evidence,
+    contract: scoped.contract,
+    evidence: scoped.evidence,
     calls: [...collected.eligibility],
   });
   const calls = collected.attempts.map((attempt) => {
@@ -511,7 +518,7 @@ async function fastRun(
     return { scenario: attempt.scenario, costUsd };
   });
   const report = judgeFastRun({
-    contract,
+    contract: scoped.contract,
     corpus,
     verdict,
     calls,

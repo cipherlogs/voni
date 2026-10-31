@@ -185,6 +185,28 @@ test("a clean fast run is a scoped-pass and exit 1: it is not a certificate", as
   assert.match(result.detail, /scoped-pass|not a certificate/);
 });
 
+test("the economics run gate, not the fast module, reds a fast run over its ceiling", async () => {
+  const overCost = { ...COST_ROW, totalUsd: 0.3 };
+  const result = await fastResult({
+    runScenario: async (input) => ({
+      refusal: null,
+      attempt: {
+        scenario: input.scenario,
+        repetition: 1,
+        locale: input.locale,
+        target: input.target,
+        evidence: { ...EVIDENCE, cost: overCost },
+      },
+      eligibility: { callId: `${input.scenario}#${input.repetition}`, scenario: input.scenario },
+      pipelineImage: "pipeline-test",
+    }),
+  });
+  // Ten calls x $0.30 = $3.00, over E3's fast ceiling of $2.
+  assert.equal(result.status, "not-demo-ready");
+  assert.equal(result.exitCode, 1);
+  assert.match(result.unrun.join("\n"), /E3|run ceiling|3\.00/);
+});
+
 test("a failing fast run is not-demo-ready and exit 1", async () => {
   const contract = oneRepetitionContract(await loadContract());
   const failing = passingEvaluators(contract).map((evaluator) =>

@@ -223,7 +223,13 @@ export function fastContractScope(contract: Contract, corpus: Corpus): FastScope
   const selected = selectFastScenarios(corpus);
   // A scope over a set missing a call-path capability is not a fast scope.
   fastContractCoverage(corpus);
-  const cited = new Set(selected.flatMap((scenario) => scenario.expectedProperties));
+  // E3 is judged at run level by the economics gate, not by a scenario's
+  // expectedProperties. It is in the fast scope because the fast report reads
+  // the run's own ceiling; leaving it out would hide a red run ceiling.
+  const cited = new Set([
+    ...selected.flatMap((scenario) => scenario.expectedProperties),
+    "E3",
+  ]);
 
   const measuredFamilies = contract.families
     .filter((family) =>
@@ -558,10 +564,13 @@ export function judgeFastRun(input: {
   }
   if (measuredUsd === null) gaps.push(economy.detail);
 
+  // E3 is the economics run gate's verdict (`scopeRunToCeiling`), not a second
+  // path here. A report that measured a cost over the ceiling still reads
+  // `scoped-pass` from this module; the run gate is what turns it not-demo-ready.
   const verdict: FastScopeVerdictValue =
     scoped.verdict === "ineligible"
       ? "ineligible"
-      : scoped.verdict === "not-demo-ready" || !withinCeiling
+      : scoped.verdict === "not-demo-ready"
         ? "not-demo-ready"
         : "scoped-pass";
 
