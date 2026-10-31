@@ -5,8 +5,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  ENGLISH_SCENARIOS,
   FAST_CALLS,
   FULL_CALLS,
+  LOCALE_COUNT,
+  LOCALE_CORE_SCENARIOS,
   NIGHTLY_CALLS,
   NIGHTLY_CRON,
   WEEKLY_FULL_CRON,
@@ -98,10 +101,10 @@ test("the fast contract runs on every PR with no path filter and as a merge gate
   assert.match(fast, /demo-gate-report\.mjs fast/);
 });
 
-test("nightly is 88 calls and weekly full is 264, the same plan at three repetitions", () => {
+test("nightly is English plus four Locale cores and weekly full is the same plan at three repetitions", () => {
   assert.equal(FAST_CALLS, 10);
-  assert.equal(NIGHTLY_CALLS, 40 + 12 * 4);
-  assert.equal(FULL_CALLS, (40 + 12 * 4) * 3);
+  assert.equal(NIGHTLY_CALLS, ENGLISH_SCENARIOS + LOCALE_CORE_SCENARIOS * LOCALE_COUNT);
+  assert.equal(FULL_CALLS, NIGHTLY_CALLS * 3);
   const nightly = job(NIGHTLY, "demo-nightly-health");
   assert.match(nightly, /demo:verify -- --nightly/);
   assert.match(nightly, /demo-gate-report\.mjs nightly/);
@@ -109,11 +112,29 @@ test("nightly is 88 calls and weekly full is 264, the same plan at three repetit
   assert.match(weekly, /demo:verify -- --full/);
   assert.match(weekly, /demo-gate-report\.mjs full/);
 
-  // The gate reader's counts are the same source; a hand-edited number fails.
+  // The gate reader imports the cadence's counts; it may not carry a copy.
   const reader = readFileSync(resolve(REPO, "voni/scripts/demo-gate-report.mjs"), "utf8");
-  assert.match(reader, new RegExp(`fast:\\s*${FAST_CALLS}`));
-  assert.match(reader, new RegExp(`nightly:\\s*${NIGHTLY_CALLS}`));
-  assert.match(reader, new RegExp(`full:\\s*${FULL_CALLS}`));
+  assert.match(
+    reader,
+    /from "\.\.\/src\/lib\/demo\/verification\/cadence\.ts"/,
+    "the gate reader imports the one count source",
+  );
+  assert.doesNotMatch(
+    reader,
+    /\b(88|264)\b/,
+    "the gate reader must not restate a cadence count as a literal",
+  );
+});
+
+test("the plan imports the cadence counts, so a hand-edited copy fails", () => {
+  const plan = readFileSync(resolve(REPO, "voni/scripts/lib/verify-cli/plan.ts"), "utf8");
+  assert.match(
+    plan,
+    /from "@\/lib\/demo\/verification\/cadence"/,
+    "the plan imports the one count source",
+  );
+  assert.doesNotMatch(plan, /FULL_ENGLISH_SCENARIOS\s*=\s*40/, "no literal English count");
+  assert.doesNotMatch(plan, /LOCALE_CORE_SCENARIOS\s*=\s*12/, "no literal Locale-core count");
 });
 
 test("every new job has a timeout and a required wrapper that fails on skip, cancel or a missing artifact", () => {

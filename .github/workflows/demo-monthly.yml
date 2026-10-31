@@ -43,7 +43,7 @@ jobs:
           # A refusal (exit 2), a red run or a missing certificate fails. A
           # clean full production run may be certified or pending-human; only
           # the owner's signature makes it a pass.
-          node scripts/demo-gate-report.mjs full "$RUNNER_TEMP/demo-monthly.json"
+          node --import tsx scripts/demo-gate-report.mjs full "$RUNNER_TEMP/demo-monthly.json"
       - name: Record the month (pending-human is exit 3, never green)
         if: always()
         run: npm run demo:cutover -- --monthly

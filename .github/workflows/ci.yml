@@ -134,7 +134,7 @@ jobs:
           set -e
           cat "$RUNNER_TEMP/demo-fast.json" || true
           cat "$RUNNER_TEMP/demo-fast.err" >&2 || true
-          node scripts/demo-gate-report.mjs fast "$RUNNER_TEMP/demo-fast.json"
+          node --import tsx scripts/demo-gate-report.mjs fast "$RUNNER_TEMP/demo-fast.json"
       # Audio, traces and delivered WAVs are working files, never commits.
       - name: Run artifacts (never committed)
         if: always()

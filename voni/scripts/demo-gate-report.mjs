@@ -7,21 +7,32 @@
  * "clean scoped-pass" from "not-demo-ready", so this reader checks the report's
  * status and call count and exits 0 only for the expected clean state:
  *
- *   fast      10 calls, status "scoped-pass"      (never a certificate)
- *   nightly   88 calls, status "health-clean"     (a report, never a pass)
- *   full      264 calls, status "certified" or "pending-human"; a certificate
- *             must exist. pending-human prints a warning and is not a pass.
+ *   fast      the fast contract's calls, status "scoped-pass"  (never a certificate)
+ *   nightly   the nightly plan's calls, status "health-clean"  (a report, never a pass)
+ *   full      the full plan's calls, status "certified" or "pending-human";
+ *             a certificate must exist. pending-human prints a warning and is
+ *             not a pass.
+ *
+ * The call counts are the cadence's one source; this reader imports them
+ * instead of restating a number.
  *
  * Any refusal, not-demo-ready, ineligible, short call count or missing
  * certificate fails. The workflow's required wrapper separately fails on a
  * skipped, cancelled or artifact-less job.
  *
- *   node scripts/demo-gate-report.mjs <fast|nightly|full> <report.json>
+ *   node --import tsx scripts/demo-gate-report.mjs <fast|nightly|full> <report.json>
  */
 
 import { readFileSync, appendFileSync } from "node:fs";
 
-const EXPECTED_CALLS = { fast: 10, nightly: 88, full: 264 };
+import {
+  FAST_CALLS,
+  FULL_CALLS,
+  NIGHTLY_CALLS,
+} from "../src/lib/demo/verification/cadence.ts";
+
+// The counts are the cadence's one source; this reader never restates them.
+const EXPECTED_CALLS = { fast: FAST_CALLS, nightly: NIGHTLY_CALLS, full: FULL_CALLS };
 const EXPECTED_STATUS = {
   fast: ["scoped-pass"],
   nightly: ["health-clean"],

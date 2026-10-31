@@ -7,6 +7,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import {
+  ENGLISH_SCENARIOS,
+  FAST_CALLS,
+  FULL_CALLS,
+  LOCALE_COUNT,
+  LOCALE_CORE_SCENARIOS,
+  NIGHTLY_CALLS,
+} from "@/lib/demo/verification/cadence";
 import { loadContract } from "@/lib/demo/verification/contract";
 import {
   DEFAULT_CORPUS_DIR,
@@ -94,7 +102,7 @@ test("the fast plan is the ten English scenarios at one repetition", async () =>
     request: { mode: "fast", target: "local", json: false, help: false },
     corpus,
   });
-  assert.equal(plan.calls, 10);
+  assert.equal(plan.calls, FAST_CALLS);
   assert.equal(plan.repetitions, 1);
   assert.deepEqual(
     plan.scenarios.map((scenario) => scenario.name),
@@ -103,18 +111,20 @@ test("the fast plan is the ten English scenarios at one repetition", async () =>
   assert.deepEqual(plan.gaps, []);
 });
 
-test("full certification plans 40 English x3 plus 12 per Locale x3, and names the corpus gap", async () => {
+test("full certification plans the English corpus plus every Locale core at three repetitions", async () => {
   const corpus = await committedCorpus();
   const plan = planVerify({
     request: { mode: "full", target: "local", json: false, help: false },
     corpus,
   });
-  assert.equal(plan.calls, (40 + 12 * 4) * 3);
+  assert.equal(plan.calls, FULL_CALLS);
   assert.equal(plan.repetitions, 3);
   const english = corpus.scenarios.filter((scenario) => scenario.locale === "en").length;
-  if (english < 40) {
+  if (english < ENGLISH_SCENARIOS) {
     assert.ok(
-      plan.gaps.some((gap) => gap.includes(`English corpus holds ${english} of the 40`)),
+      plan.gaps.some((gap) =>
+        gap.includes(`English corpus holds ${english} of the ${ENGLISH_SCENARIOS}`),
+      ),
       plan.gaps.join("\n"),
     );
   } else {
@@ -135,28 +145,44 @@ test("nightly health plans one repetition, and a Locale filter narrows the plan"
     request: { mode: "nightly", target: "local", json: false, help: false },
     corpus,
   });
-  assert.equal(nightly.calls, 40 + 12 * 4);
+  assert.equal(nightly.calls, NIGHTLY_CALLS);
+  assert.equal(nightly.calls, ENGLISH_SCENARIOS + LOCALE_CORE_SCENARIOS * LOCALE_COUNT);
   assert.equal(nightly.repetitions, 1);
 
   const full = planVerify({
     request: { mode: "full", target: "local", json: false, help: false },
     corpus,
   });
-  assert.equal(full.calls, (40 + 12 * 4) * 3, "weekly full is the nightly plan at three repetitions");
-  assert.equal(full.calls, 264);
+  assert.equal(full.calls, FULL_CALLS, "weekly full is the nightly plan at three repetitions");
   assert.equal(full.repetitions, 3);
 
-  const german = planVerify({
-    request: { mode: "full", target: "local", locale: "de", json: false, help: false },
-    corpus,
-  });
-  assert.equal(german.calls, 12 * 3);
-  assert.deepEqual(german.gaps, [], "the German core is complete");
   const english = planVerify({
     request: { mode: "nightly", target: "local", locale: "en", json: false, help: false },
     corpus,
   });
-  assert.equal(english.calls, 40);
+  assert.equal(english.calls, ENGLISH_SCENARIOS);
+});
+
+test("the plan's counts are the cadence's one source, so a hand-edited copy fails", async () => {
+  const corpus = await committedCorpus();
+  const fast = planVerify({
+    request: { mode: "fast", target: "local", json: false, help: false },
+    corpus,
+  });
+  const nightly = planVerify({
+    request: { mode: "nightly", target: "local", json: false, help: false },
+    corpus,
+  });
+  const full = planVerify({
+    request: { mode: "full", target: "local", json: false, help: false },
+    corpus,
+  });
+  assert.equal(fast.calls, FAST_CALLS);
+  assert.equal(nightly.calls, NIGHTLY_CALLS);
+  assert.equal(full.calls, FULL_CALLS);
+  // The corpus holds the plan's whole shape, so a mismatch is a drift, not a gap.
+  assert.deepEqual(nightly.gaps, []);
+  assert.deepEqual(full.gaps, []);
 });
 
 test("a target without an evidence sink is refused by name before a plan exists", async () => {

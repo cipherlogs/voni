@@ -12,6 +12,10 @@
  * Spec: `.scratch/demo-verification/spec.md`, "Targets, runs and cadence".
  */
 
+import {
+  ENGLISH_SCENARIOS as FULL_ENGLISH_SCENARIOS,
+  LOCALE_CORE_SCENARIOS,
+} from "@/lib/demo/verification/cadence";
 import type { CertificateTarget } from "@/lib/demo/verification/certificate";
 import {
   LOCALES,
@@ -24,11 +28,12 @@ import {
 import type { VerifyRequest } from "./args";
 import { refuse } from "./errors";
 
-/** The spec's English corpus size; the fast ten are a subset of it. */
-export const FULL_ENGLISH_SCENARIOS = 40;
-
-/** The spec's Locale core corpus size, per Locale. */
-export const LOCALE_CORE_SCENARIOS = 12;
+/**
+ * The spec's corpus sizes come from the cadence's one source. They are
+ * re-exported here because the CLI's public surface names them; a second
+ * literal would be a drift.
+ */
+export { FULL_ENGLISH_SCENARIOS, LOCALE_CORE_SCENARIOS };
 
 /** One scenario a plan will attempt, with the Locale it speaks. */
 export type PlannedScenario = {

@@ -73,7 +73,7 @@ jobs:
           set -e
           cat "$RUNNER_TEMP/demo-full.json" || true
           cat "$RUNNER_TEMP/demo-full.err" >&2 || true
-          node scripts/demo-gate-report.mjs full "$RUNNER_TEMP/demo-full.json"
+          node --import tsx scripts/demo-gate-report.mjs full "$RUNNER_TEMP/demo-full.json"
       # The certificate is the one committed artifact. Until the owner signs,
       # it is pending-human; upload it so the panel can rate the run it names.
       - name: Certificate (for the owner's panel, not a pass)

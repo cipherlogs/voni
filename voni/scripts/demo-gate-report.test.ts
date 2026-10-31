@@ -18,10 +18,11 @@ function run(mode: string, report: unknown): { status: number | null; stdout: st
   const dir = mkdtempSync(join(tmpdir(), "demo-gate-"));
   const path = join(dir, "report.json");
   writeFileSync(path, JSON.stringify(report), "utf8");
-  const result = spawnSync(process.execPath, ["scripts/demo-gate-report.mjs", mode, path], {
-    cwd: VONI,
-    encoding: "utf8",
-  });
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "scripts/demo-gate-report.mjs", mode, path],
+    { cwd: VONI, encoding: "utf8" },
+  );
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
