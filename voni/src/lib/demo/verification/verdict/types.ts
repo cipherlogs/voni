@@ -20,6 +20,7 @@ import type {
   PropertyKind,
   ThresholdSource,
 } from "../contract";
+import type { ScenarioFacts } from "../scenarios";
 import type { Comparison, SampleSummary, Statistic } from "./statistics";
 
 /**
@@ -45,6 +46,11 @@ export type ScenarioAttempt = {
   readonly target?: string;
   /** A missing source is a failure for the property that reads it. */
   readonly evidence: EvidenceBundle;
+  /**
+   * The scenario's authored caller words in script order. Ground truth, not a
+   * measurement: an exactness bar compares measured output to it.
+   */
+  readonly facts?: ScenarioFacts;
 };
 
 /** What an evaluator is handed for one property in one scenario attempt. */
@@ -58,6 +64,8 @@ export type EvaluatorContext = {
   readonly source: unknown;
   /** Every source, when an evaluator cross-checks two. */
   readonly evidence: EvidenceBundle;
+  /** The scenario's authored caller words, when the adapter supplied them. */
+  readonly facts?: ScenarioFacts;
 };
 
 /**
