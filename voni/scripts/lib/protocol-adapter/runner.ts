@@ -67,6 +67,16 @@ import {
   runProtocolCall,
   type ProtocolCallDeps,
 } from "./transport";
+import { readDemoCallTag, readDemoToolLog } from "@/lib/demo/tool-log-store";
+import {
+  countThreadReplies,
+  findTaggedMessage,
+  probeInbox,
+} from "@/lib/demo/verification/tools/inbox";
+import {
+  collectToolEvidence,
+  type ToolEvidenceCollection,
+} from "./tool-evidence";
 import {
   DEFAULT_RUN_ROOT,
   PROTOCOL_ADAPTER,
@@ -104,6 +114,8 @@ export type ProtocolRunInput = {
   readonly vendorBuildsPath?: string;
   readonly soundscapes?: Readonly<Record<string, Uint8Array>>;
   readonly modules?: Readonly<Record<string, readonly string[]>>;
+  /** Injected by tests; production reads the app DB and the real inbox. */
+  readonly toolEvidence?: ToolEvidenceCollection;
   readonly repoRoot?: string;
   readonly runId?: string;
   readonly callId?: string;
@@ -209,6 +221,7 @@ function refusalCodeFor(missing: readonly MissingItem[]): ProtocolAdapterError["
   if (items.some((item) => item.endsWith("_KEY") || item.endsWith("_SECRET"))) return "missing-key";
   if (items.some((item) => item.startsWith("vendor-build"))) return "missing-vendor-build";
   if (items.some((item) => item.startsWith("soundscape:"))) return "missing-soundscape";
+  if (items.some((item) => item === "demo-inbox")) return "missing-inbox";
   if (items.some((item) => item === "target")) return "missing-target";
   if (items.some((item) => item.startsWith("scenario:"))) return "missing-scenario";
   return "missing-corpus";
@@ -332,6 +345,34 @@ export async function runProtocolDiagnosis(
     });
   }
 
+  // A scenario that judges the email path needs the real inbox to be reachable
+  // before a call is spent. A token that cannot read it is a named refusal, not
+  // a run whose X4/X5/X10 silently fail closed later.
+  if (
+    input.call === undefined &&
+    scenario.expectedProperties.some((id) => ["X4", "X5", "X10"].includes(id))
+  ) {
+    try {
+      await probeInbox(env, { fetch });
+    } catch (error) {
+      const refusalError = new ProtocolAdapterError(
+        "inbox-unavailable",
+        `the scenario "${scenario.name}" judges the email path, but the real test inbox ` +
+          `cannot be read: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return refused(runId, runDir, refusalError, {
+        target: input.target,
+        locale,
+        scenarioName: input.scenarioName,
+        corpus: { version: corpus.version, sha256: corpus.fingerprint },
+        scenarioFingerprint: scenario.fingerprint,
+        codeFingerprint,
+        startedAt,
+        call: null,
+      });
+    }
+  }
+
   const callId = input.callId ?? randomUUID();
   const eventsDir = input.eventsDir ?? defaultEventsDir(env);
   await mkdir(runDir, { recursive: true });
@@ -378,6 +419,18 @@ export async function runProtocolDiagnosis(
   }
 
   const callDir = join(runDir, "calls", requireSafeId(call.callId, "call id"));
+  const toolEvidence =
+    input.toolEvidence ??
+    (await collectToolEvidence({
+      callId: call.callId,
+      env,
+      deps: {
+        readLog: readDemoToolLog,
+        readTag: readDemoCallTag,
+        findTaggedMessage,
+        countThreadReplies,
+      },
+    }));
   let assembled;
   let callRecord;
   try {
@@ -387,6 +440,7 @@ export async function runProtocolDiagnosis(
       target: input.target,
       eventsDir,
       callDir,
+      toolEvidence,
       ...(input.endWaitMs === undefined ? {} : { endWaitMs: input.endWaitMs }),
     }));
   } catch (error) {
