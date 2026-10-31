@@ -222,6 +222,22 @@ function checkScenario(rule: LocaleCoreRule, locale: LocaleCoreLocale, scenario:
         `[${rule.triggers.join(", ")}] in every Locale`,
     );
   }
+  if (scenario.takes.length < 2) {
+    refuse(
+      "locale-scenario-mismatch",
+      `scenario "${name}" has ${scenario.takes.length} take(s); a Locale-core behaviour is a dialogue, not one line`,
+    );
+  }
+  const silent = scenario.takes
+    .filter((take) => take.text === undefined || take.text.trim() === "")
+    .map((take) => take.id);
+  if (silent.length > 0) {
+    refuse(
+      "locale-scenario-mismatch",
+      `scenario "${name}" take(s) ${silent.join(", ")} carry no authored words; the Locale facts ` +
+        "and the code-switch check need the caller's text",
+    );
+  }
   if (scenario.soundscape.id !== rule.soundscape) {
     refuse(
       "locale-scenario-mismatch",
