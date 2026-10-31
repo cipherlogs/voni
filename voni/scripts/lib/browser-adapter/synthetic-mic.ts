@@ -33,9 +33,15 @@ export type SyntheticMicTake = {
 
 export type SyntheticMicPlay = {
   readonly id: string;
-  /** Call-relative start, in milliseconds. */
+  /** Call-relative start on the microphone's own clock, in milliseconds. */
   readonly atMs: number;
   readonly durationMs: number;
+  /**
+   * Wall-clock start (epoch ms). The microphone's origin is its own audio
+   * context, not the marks artifact's; this is the one field that ties caller
+   * speech to the delivered audio and the browser marks.
+   */
+  readonly epochMs: number;
   /** Chunks the scenario's faults dropped; a gap, never a replay. */
   readonly droppedChunks: number;
   /** Chunks whose delivery was delayed by the scenario's jitter. */
@@ -92,6 +98,7 @@ function syntheticMicBootstrap(input: {
       id: string;
       atMs: number;
       durationMs: number;
+      epochMs: number;
       droppedChunks: number;
       delayedChunks: number;
     }[];
@@ -244,6 +251,7 @@ function syntheticMicBootstrap(input: {
           id,
           atMs: startAt,
           durationMs: (samples.length / take.sampleRate) * 1000,
+          epochMs: Date.now() + Math.max(0, delayMs),
           droppedChunks,
           delayedChunks,
         };

@@ -234,6 +234,12 @@ export type ScenarioDocument = {
   readonly expectedProperties: readonly string[];
   readonly soundscape: Soundscape;
   readonly faults: readonly Fault[];
+  /**
+   * How long the harness keeps an otherwise finished call open before it hangs
+   * up. A greeting-only scenario sets this so the line's waiting time is a real
+   * measurement rather than the harness's teardown.
+   */
+  readonly holdOpenMs?: number;
   /** Browser-edge conditions; empty for a scenario that only exercises media. */
   readonly edge: readonly EdgeCondition[];
   readonly takes: readonly ScenarioTake[];

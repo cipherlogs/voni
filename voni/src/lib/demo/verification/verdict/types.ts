@@ -53,6 +53,12 @@ export type ScenarioAttempt = {
   readonly repetition: number;
   readonly locale?: string;
   readonly target?: string;
+  /**
+   * The contract ids this scenario declares. When present, evaluators for any
+   * other property are not run against this attempt: a scenario cannot measure
+   * a property it never cites. A property no attempt cites still fails closed.
+   */
+  readonly expectedProperties?: readonly string[];
   /** A missing source is a failure for the property that reads it. */
   readonly evidence: EvidenceBundle;
   /**

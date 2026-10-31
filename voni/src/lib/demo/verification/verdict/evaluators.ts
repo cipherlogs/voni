@@ -426,7 +426,10 @@ export async function evaluateScenarios(
     const measurements: PropertyMeasurement[] = [];
     for (const [scenario, scenarioAttempts] of byScenario) {
       const planned = scenarioAttempts.filter(
-        (attempt) => attempt.repetition <= property.repetitions,
+        (attempt) =>
+          attempt.repetition <= property.repetitions &&
+          (attempt.expectedProperties === undefined ||
+            attempt.expectedProperties.includes(property.id)),
       );
       for (const attempt of planned) {
         const source = attempt.evidence[property.evidence as EvidenceSource];

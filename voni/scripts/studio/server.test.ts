@@ -40,6 +40,30 @@ function wav(samples = 8): Buffer {
 
 const LABELS = { intent: "ask a question", emotion: "neutral", accent: "Australian English" };
 
+/**
+ * A tiny PCM WAV that *declares* the requested length: 1 kHz, mono, 8-bit, so
+ * the byte rate is 1000 and the data size is the duration in milliseconds. A
+ * baseline take is now gated to 4–6 minutes at landing.
+ */
+function callWav(durationMs: number): Buffer {
+  const data = Buffer.alloc(Math.round(durationMs));
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write("WAVE", 8, "ascii");
+  header.write("fmt ", 12, "ascii");
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(1000, 24);
+  header.writeUInt32LE(1000, 28);
+  header.writeUInt16LE(1, 32);
+  header.writeUInt16LE(8, 34);
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
+
 async function withStudio(
   run: (studio: RunningStudio, root: string) => Promise<void>,
   dialoguesDir?: string,
@@ -615,7 +639,7 @@ test("a baseline take records consent metadata over HTTP and is never selectable
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         mode: "upload",
-        audioBase64: wav(32).toString("base64"),
+        audioBase64: callWav(5 * 60 * 1000).toString("base64"),
         labels: { ...LABELS, accent: "Nigerian English" },
         upload: { filename: "baseline-p02-call-1.wav" },
         baseline,

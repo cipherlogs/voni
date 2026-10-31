@@ -28,7 +28,7 @@ import type { Dirent } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 
-import type { TakeRecord, TakeStore } from "./take-store";
+import type { AudioFormat, TakeRecord, TakeStore } from "./take-store";
 import { openTakeStore, StudioError } from "./take-store";
 
 /** The spec's baseline shape: three to five people, two calls each. */
@@ -171,24 +171,46 @@ function ffprobeDurationMs(path: string): number {
     ["-v", "error", "-select_streams", "a:0", "-show_entries", "packet=pts_time,duration_time", "-of", "json", path],
     { encoding: "utf8" },
   );
+  return readFfprobe(result, path);
+}
+
+/** The same measurement for bytes that have not landed yet (the save gate). */
+function ffprobeBytesDurationMs(bytes: Buffer): number {
+  const result = spawnSync(
+    "ffprobe",
+    ["-v", "error", "-select_streams", "a:0", "-show_entries", "packet=pts_time,duration_time", "-of", "json", "pipe:0"],
+    // A six-minute WebM is well under this; the default 1 MiB spawn buffer is
+    // not, and a full-size call would fail with ENOBUFS before ffprobe saw it.
+    { input: bytes, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
+  );
+  return readFfprobe(result, "the recorded take");
+}
+
+function readFfprobe(
+  result: { error?: Error; status: number | null; stdout: string; stderr: string },
+  what: string,
+): number {
   if (result.error) {
-    throw new BaselineError(
-      "duration-unmeasurable",
-      `cannot measure ${path}: ffprobe is not on PATH (${errorText(result.error)}); ` +
-        "install ffmpeg or supply a WAV baseline take",
-    );
+    if ((result.error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new BaselineError(
+        "duration-unmeasurable",
+        `cannot measure ${what}: ffprobe is not on PATH (${errorText(result.error)}); ` +
+          "install ffmpeg or supply a WAV baseline take",
+      );
+    }
+    throw new BaselineError("duration-unmeasurable", `cannot measure ${what}: ${errorText(result.error)}`);
   }
   if (result.status !== 0) {
     throw new BaselineError(
       "duration-unmeasurable",
-      `cannot measure ${path}: ffprobe exited ${String(result.status)}: ${result.stderr.trim() || "no detail"}`,
+      `cannot measure ${what}: ffprobe exited ${String(result.status)}: ${result.stderr.trim() || "no detail"}`,
     );
   }
   let packets: { pts_time?: string; duration_time?: string }[];
   try {
     packets = (JSON.parse(result.stdout) as { packets?: typeof packets }).packets ?? [];
   } catch (error) {
-    throw new BaselineError("duration-unmeasurable", `cannot measure ${path}: ffprobe output is not JSON (${errorText(error)})`);
+    throw new BaselineError("duration-unmeasurable", `cannot measure ${what}: ffprobe output is not JSON (${errorText(error)})`);
   }
   let end = -1;
   for (const packet of packets) {
@@ -201,10 +223,30 @@ function ffprobeDurationMs(path: string): number {
   if (end < 0) {
     throw new BaselineError(
       "duration-unmeasurable",
-      `cannot measure ${path}: ffprobe found no audio packet timestamps; the file may be empty or not audio`,
+      `cannot measure ${what}: ffprobe found no audio packet timestamps; the file may be empty or not audio`,
     );
   }
   return Math.round(end * 1000);
+}
+
+/**
+ * Duration of bytes that have not been stored: the WAV header when there is
+ * one, ffprobe's packets for every other container. The Studio's save gate and
+ * the verifier share this reading, so a take is refused at landing for the same
+ * reason it would later fail the pin.
+ */
+export function audioDurationMs(bytes: Buffer, format: AudioFormat): number {
+  if (format === "wav") {
+    const duration = wavDurationMs(bytes);
+    if (duration === null) {
+      throw new BaselineError(
+        "duration-unmeasurable",
+        "cannot read the WAV header of the recorded take; a baseline take is a whole call, not a snippet",
+      );
+    }
+    return duration;
+  }
+  return ffprobeBytesDurationMs(bytes);
 }
 
 /** The production durater: WAV from its header, every other container from ffprobe. */

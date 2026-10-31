@@ -85,6 +85,9 @@ test("the Studio entry is a scripts command, not a Next route or build input", a
     "rating-store.ts",
     "rate.html",
     "corpus.html",
+    "baseline.ts",
+    "baseline-flow.ts",
+    "baseline.html",
   ]) {
     const path = join(HERE, name);
     assert.ok((await stat(path)).isFile(), `${name} is a Studio file`);
