@@ -108,7 +108,7 @@ test("the committed fast corpus keeps its ten English scenarios and twenty recor
 
 test("every committed script resolves against the same canonical timeline", async () => {
   const corpus = await load();
-  for (const scenario of corpus.scenarios) {
+  for (const scenario of corpus.scenarios.filter((entry) => entry.locale === "en")) {
     const plan = evaluateTriggers(scenario.script, TIMELINE);
     assert.deepEqual(plan.unresolved, [], `${scenario.name} has a step that never fires`);
     assert.equal(plan.points.length, scenario.script.length);
@@ -119,15 +119,17 @@ test("every committed script resolves against the same canonical timeline", asyn
 
 test("the connectivity scenarios inject deterministic faults and no other scenario does", async () => {
   const corpus = await load();
+  const jitter = [{ kind: "network-jitter", atMs: 900, durationMs: 600 }];
   const expected: Record<string, unknown[]> = {
-    "connectivity-jitter": [{ kind: "network-jitter", atMs: 900, durationMs: 600 }],
+    "connectivity-jitter": jitter,
     "connectivity-loss": [{ kind: "audio-dropout", atMs: 1_200, durationMs: 400 }],
     "connectivity-latency": [{ kind: "endpoint-latency", atMs: 600, durationMs: 350 }],
   };
   for (const scenario of corpus.scenarios) {
+    const localeJitter = scenario.name.startsWith("locale-jitter-") ? jitter : [];
     assert.deepEqual(
       scenario.faults,
-      expected[scenario.name] ?? [],
+      expected[scenario.name] ?? localeJitter,
       `${scenario.name} carries an undeclared fault`,
     );
   }

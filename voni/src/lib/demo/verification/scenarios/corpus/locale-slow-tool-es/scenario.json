@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-slow-tool-es",
+  "class": "tools",
+  "locale": "es",
+  "heldOut": false,
+  "expectedProperties": [
+    "X1",
+    "X2",
+    "X3"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "f7259696e09a8ec01d6fb50f25874e1a40332636a3670193e0aeb365a99bd5d0",
+      "text": "Hola, quiero que me enviéis el presupuesto por correo."
+    },
+    {
+      "id": "confirm",
+      "audio": "takes/confirm.wav",
+      "sha256": "4502553af92792fe66be41c31390bd9c854e80a5c5a6832d53093c55b94a0a29",
+      "text": "Sí, a mi correo de siempre."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "confirm",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
