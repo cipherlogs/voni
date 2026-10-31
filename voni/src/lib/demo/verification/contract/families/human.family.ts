@@ -3,10 +3,10 @@ import type { ContractFamily } from "../types";
 /**
  * Human qualities. Spec table "Human qualities", H1–H7.
  *
- * H6 is deliberately unresolved. The panel ticket computes H1–H5 and H7, the
- * judge ticket owns the kappa arithmetic, and no ticket owns the property that
- * joins them. It is wired to the judge evidence source and marked unresolved so
- * the verdict engine fails closed instead of passing it silently.
+ * H6 is owned here by ticket 26: `verdict/evaluators/human.evaluators.ts`
+ * calibrates the judges against the panel's gold labels and fails closed when
+ * the calibration is absent, below the 0.65 bar or scored against another
+ * rubric. H1–H5 and H7 are added by the panel ticket.
  */
 const human: ContractFamily = {
   family: "human",
@@ -69,10 +69,6 @@ const human: ContractFamily = {
       evidence: "judge",
       kind: "behaviour",
       thresholds: [{ source: "budget-record", key: "dvJudgeKappaMin" }],
-      unresolved: {
-        reason:
-          "No owning evaluator ticket: ticket 27 computes H1-H5 and H7 and ticket 26 owns the kappa arithmetic, but no ticket joins them. Wired to the judge evidence source so the verdict engine reports it unresolved and the run fails closed; ticket 27 or 26 must claim it.",
-      },
     },
     {
       id: "H7",

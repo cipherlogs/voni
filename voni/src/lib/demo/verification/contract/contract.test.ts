@@ -392,8 +392,8 @@ test("the contract exports one machine-readable document", async () => {
   const h6 = document.properties.find((entry) => entry.id === "H6");
   assert.ok(h6, "H6 is present");
   assert.equal(h6.evidence, "judge", "H6 is wired to the judge/panel evidence");
-  assert.equal(h6.unresolved, true, "H6 has no owning evaluator and fails closed");
-  assert.match(h6.unresolvedReason ?? "", /ticket 27|unresolved|kappa/i);
+  assert.equal(h6.unresolved, false, "H6 is owned by the judges calibration evaluator");
+  assert.equal(h6.unresolvedReason, undefined);
   const k8 = document.properties.find((entry) => entry.id === "K8");
   assert.ok(k8);
   assert.equal(k8.unresolved, true, "K8's unstated word-error bar fails closed");
