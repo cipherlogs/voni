@@ -517,21 +517,12 @@ async function fastRun(
     evidence: scoped.evidence,
     calls: [...collected.eligibility],
   });
-  const calls = collected.attempts.map((attempt) => {
-    let costUsd = Number.NaN;
-    try {
-      const priced = readPricedRow(attempt.evidence.cost);
-      costUsd = priced.measured && priced.totalUsd !== null ? priced.totalUsd : Number.NaN;
-    } catch {
-      costUsd = Number.NaN;
-    }
-    return { scenario: attempt.scenario, costUsd };
-  });
   const report = judgeFastRun({
     contract: scoped.contract,
     corpus,
     verdict,
-    calls,
+    calls: collected.attempts.map((attempt) => ({ scenario: attempt.scenario })),
+    ceiling: scoped.check,
     startedAt,
     endedAt,
   });

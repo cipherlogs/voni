@@ -12,14 +12,16 @@
  *   scenario record rather than a second hand-kept list;
  * - a scope in which a property no selected scenario cites is `OUT-OF-SCOPE`,
  *   never `PASS`; a fast run can be `scoped-pass` and is never a certificate;
- * - the run cost ceiling read from the contract's frozen E3 record, and the
- *   wall-clock measurement reported without inventing a bound the spec lacks.
+ * - the run cost ceiling and its boolean taken from the economics owner's
+ *   settled check, and the wall-clock measurement reported without inventing a
+ *   bound the spec lacks.
  *
  * Spec: `.scratch/demo-verification/spec.md`, "Scenario corpus and Locale
  * matrix", "Targets, runs and cadence" and "Economics" E3.
  */
 
 import type { Contract, FamilyId } from "../contract";
+import type { RunCeilingCheck } from "../economics";
 import { ScenarioError } from "./errors";
 import type { Corpus, LoadedScenario, TriggerType } from "./types";
 
@@ -385,24 +387,9 @@ export function scopeFastVerdict(input: {
   };
 }
 
-/** The E3 fast run ceiling, resolved from the frozen record the contract cites. */
-export function fastRunCeilingUsd(contract: Contract): number {
-  const e3 = contract.properties.find((property) => property.id === "E3");
-  const threshold = e3?.thresholds.find((entry) => entry.key === "dvCostFastRunMaxUsd");
-  if (threshold === undefined) {
-    throw new ScenarioError(
-      "fast-ceiling-unset",
-      "the fast run ceiling is unset: contract property E3 does not resolve " +
-        "dvCostFastRunMaxUsd from the frozen budget record. A fast run cannot claim a ceiling " +
-        "it cannot read.",
-    );
-  }
-  return threshold.value;
-}
-
-export type FastCallCost = {
+/** One fast-contract call observed, by scenario; its price is the owner's fact. */
+export type FastCallRecord = {
   readonly scenario: string;
-  readonly costUsd: number;
 };
 
 export type FastRunEconomy = {
@@ -415,14 +402,11 @@ export type FastRunEconomy = {
 export type FastRunTiming = {
   readonly startedAt: string;
   readonly endedAt: string;
+  /** Measured wall clock; the spec sets no ceiling for it, so it is not compared. */
   readonly elapsedMs: number;
   readonly plannedCalls: number;
   readonly measuredCalls: number;
   readonly fitsPlan: boolean;
-  /** The run's declared wall-clock bound, when the caller supplied one. */
-  readonly ceilingMs: number | null;
-  /** Null when no bound was supplied; never `true` on an unmeasured bound. */
-  readonly withinCeiling: boolean | null;
 };
 
 export type FastRunReport = FastScopedVerdict & {
@@ -444,26 +428,25 @@ function parseTime(value: string, name: string): number {
 }
 
 /**
- * The fast run's operational ceiling and timing, over the same ten calls.
+ * The fast run's report, over the same ten calls.
  *
- * `calls` is one priced observation per selected scenario; a missing, extra or
- * duplicate call is refused by name. Cost is copied from the call's own priced
- * row. The wall-clock time is measured, and its missing numeric ceiling is a
- * named gap: the spec has no number here and this module does not invent one.
+ * `calls` names one observed call per selected scenario; a missing, extra or
+ * duplicate call is refused by name. Cost and its ceiling are not judged here:
+ * `ceiling` is the economics owner's settled fast-run check
+ * (`settleRunCeiling`), and this module presents its total and its boolean
+ * verbatim. A run over the ceiling therefore cannot read `scoped-pass`. The
+ * wall-clock time is measured and reported; the spec sets no wall-clock bar, so
+ * no ceiling is invented or compared.
  */
 export function judgeFastRun(input: {
   readonly contract: Contract;
   readonly corpus: Corpus;
   readonly verdict: Parameters<typeof scopeFastVerdict>[0]["verdict"];
-  readonly calls: readonly FastCallCost[];
+  readonly calls: readonly FastCallRecord[];
+  /** The settled fast-run check from `economics/run-ceiling.ts`. */
+  readonly ceiling: RunCeilingCheck;
   readonly startedAt: string;
   readonly endedAt: string;
-  /**
-   * The run's declared wall-clock bound in milliseconds, when one exists (the
-   * CI browser budget). Null/absent means no bound is claimed, and the gap
-   * names the measurement rather than a permanent literal.
-   */
-  readonly wallClockCeilingMs?: number | null;
 }): FastRunReport {
   const plan = fastRunPlan(input.corpus);
   const scoped = scopeFastVerdict({
@@ -472,7 +455,7 @@ export function judgeFastRun(input: {
     verdict: input.verdict,
   });
 
-  const seen = new Map<string, FastCallCost>();
+  const seen = new Map<string, FastCallRecord>();
   for (const call of input.calls) {
     if (!FAST_CONTRACT_SCENARIOS.includes(call.scenario as FastScenarioName)) {
       throw new ScenarioError(
@@ -498,31 +481,13 @@ export function judgeFastRun(input: {
     );
   }
 
-  const unmeasured = plan.scenarios.filter((scenario) => {
-    const call = seen.get(scenario);
-    return call === undefined || !Number.isFinite(call.costUsd) || call.costUsd < 0;
-  });
-
-  const ceilingUsd = fastRunCeilingUsd(input.contract);
-  const measuredUsd =
-    unmeasured.length === 0
-      ? // Millions of a dollar: far finer than a vendor's priced row, and it
-        // keeps ten additions from turning $3.00 into $2.9999999999999996.
-        Math.round(
-          plan.scenarios.reduce((sum, scenario) => sum + (seen.get(scenario)?.costUsd ?? 0), 0) *
-            1_000_000,
-        ) / 1_000_000
-      : null;
-  const withinCeiling = measuredUsd !== null && measuredUsd <= ceilingUsd;
+  // The economics owner settled this run: the total, the ceiling and the
+  // boolean are its measurements. This module only presents them.
   const economy: FastRunEconomy = {
-    ceilingUsd,
-    measuredUsd,
-    withinCeiling,
-    detail:
-      measuredUsd === null
-        ? `the fast run cannot claim its ceiling: ${unmeasured.join(", ")} has no measured ` +
-          "priced row. An unmeasured cost fails closed."
-        : `the ten calls cost $${measuredUsd} against the fast ceiling $${ceilingUsd}`,
+    ceilingUsd: input.ceiling.ceilingUsd,
+    measuredUsd: input.ceiling.usd,
+    withinCeiling: input.ceiling.passed,
+    detail: input.ceiling.detail,
   };
 
   const startedMs = parseTime(input.startedAt, "startedAt");
@@ -534,7 +499,6 @@ export function judgeFastRun(input: {
       `the fast run ends (${input.endedAt}) before it starts (${input.startedAt})`,
     );
   }
-  const ceilingMs = input.wallClockCeilingMs ?? null;
   const timing: FastRunTiming = {
     startedAt: input.startedAt,
     endedAt: input.endedAt,
@@ -545,32 +509,21 @@ export function judgeFastRun(input: {
       input.calls.length === plan.calls &&
       plan.repetitions === FAST_CONTRACT_REPETITIONS &&
       plan.scenarios.length === FAST_CONTRACT_SCENARIOS.length,
-    ceilingMs,
-    withinCeiling: ceilingMs === null ? null : elapsedMs <= ceilingMs,
   };
 
-  const gaps: string[] = [];
-  if (ceilingMs === null) {
-    // No bound was declared, so none is compared. The gap names the measured
-    // number and the missing bound; it is not a permanent "unset" literal.
-    gaps.push(
-      `the fast run measured ${elapsedMs}ms of wall clock and was given no wall-clock ` +
-        "bound; elapsed time is reported, never compared to an invented ceiling",
-    );
-  } else if (elapsedMs > ceilingMs) {
-    gaps.push(
-      `the fast run took ${elapsedMs}ms, over its declared ${ceilingMs}ms wall-clock bound`,
-    );
-  }
-  if (measuredUsd === null) gaps.push(economy.detail);
+  const gaps: string[] = [
+    `the fast run measured ${elapsedMs}ms of wall clock; the spec sets no wall-clock bar, ` +
+      "so elapsed time is reported and never compared to an invented ceiling",
+  ];
+  if (economy.measuredUsd === null) gaps.push(economy.detail);
 
-  // E3 is the economics run gate's verdict (`scopeRunToCeiling`), not a second
-  // path here. A report that measured a cost over the ceiling still reads
-  // `scoped-pass` from this module; the run gate is what turns it not-demo-ready.
+  // E3's boolean is the economics owner's (`input.ceiling.passed`). A report
+  // over the ceiling cannot read `scoped-pass`: the same owner fact that turns
+  // E3 red is presented here once.
   const verdict: FastScopeVerdictValue =
     scoped.verdict === "ineligible"
       ? "ineligible"
-      : scoped.verdict === "not-demo-ready"
+      : scoped.verdict === "not-demo-ready" || !economy.withinCeiling
         ? "not-demo-ready"
         : "scoped-pass";
 

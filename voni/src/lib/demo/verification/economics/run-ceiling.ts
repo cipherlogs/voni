@@ -184,7 +184,9 @@ export function settleRunCeiling(input: {
   const kind = kindOf(input.kind);
   const ceiling = runCeilingFor(input.contract, kind);
   const unmeasured: { callId: string; reason: string }[] = [];
-  let spent = 0;
+  // Whole micro-dollars: far finer than a vendor's priced row, and it keeps ten
+  // additions from turning $3.00 into $2.9999999999999996.
+  let spentMicros = 0;
   for (const call of input.calls) {
     try {
       if (call.cost === undefined || call.cost === null) {
@@ -198,7 +200,7 @@ export function settleRunCeiling(input: {
         });
         continue;
       }
-      spent += priced.totalUsd;
+      spentMicros += Math.round(priced.totalUsd * 1_000_000);
     } catch (error) {
       unmeasured.push({
         callId: call.callId,
@@ -229,6 +231,7 @@ export function settleRunCeiling(input: {
         `(${reasons}); the ${usd(ceiling.value)} ceiling is not judged`,
     };
   }
+  const spent = spentMicros / 1_000_000;
   const passed = spent <= ceiling.value;
   return {
     phase: "end",
