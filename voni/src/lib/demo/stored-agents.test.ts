@@ -4,8 +4,6 @@ import { readFileSync } from "node:fs";
 import {
   buildDemoAgentBody,
   DEMO_AGENT_VARIANT,
-  DEMO_LLM_BASE_URL,
-  DEMO_LLM_MODEL,
   DEMO_TURN_INTERRUPTION_DELAY,
   DEMO_TURN_MAX_SILENCE,
   DEMO_TURN_MIN_SILENCE,
@@ -13,7 +11,6 @@ import {
   demoAgentName,
   demoAgentStorageKey,
   demoAgentVariantFromEnv,
-  demoLlmOverride,
   demoTurnWindowsFromEnv,
   InvalidResumeHistory,
   isServedDemoAgentBody,
@@ -532,11 +529,11 @@ test("fingerprints are stable and move with platform content", () => {
   assert.notEqual(demoAgentFingerprint(changed), a);
 });
 
-test("the fast LLM override rides the body only when supplied", () => {
+test("an explicitly supplied LLM override still rides the body", () => {
   const llm = [
     {
-      base_url: DEMO_LLM_BASE_URL,
-      model: DEMO_LLM_MODEL,
+      base_url: "https://llm.example.test/v1",
+      model: "example-model",
       api_key: "sk-write-only",
     },
   ];
@@ -574,42 +571,6 @@ test("the fast LLM override rides the body only when supplied", () => {
   const resume = buildDemoAgentBody("anna", { resume: true, llm });
   assert.deepEqual(resume.llm, llm);
   assert.ok(!("greeting" in resume), "resume still drops the greeting");
-});
-
-test("the LLM override comes from the gateway key, with the fast model by default", async () => {
-  const keys = ["AI_GATEWAY_API_KEY", "DEMO_LLM_BASE_URL", "DEMO_LLM_MODEL", "DEMO_LLM_REASONING_EFFORT"] as const;
-  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  try {
-    for (const key of keys) delete process.env[key];
-    assert.equal(await demoLlmOverride(), null, "no key, no override: managed model");
-
-    process.env.AI_GATEWAY_API_KEY = "gw-key";
-    assert.deepEqual(await demoLlmOverride(), [
-      {
-        base_url: DEMO_LLM_BASE_URL,
-        model: DEMO_LLM_MODEL,
-        api_key: "gw-key",
-        reasoning_effort: "none",
-      },
-    ]);
-    assert.equal(DEMO_LLM_MODEL, "google/gemini-2.5-flash");
-
-    process.env.DEMO_LLM_MODEL = "google/gemini-2.5-flash";
-    process.env.DEMO_LLM_BASE_URL = "https://llm.example.test/v1";
-    assert.deepEqual(await demoLlmOverride(), [
-      {
-        base_url: "https://llm.example.test/v1",
-        model: "google/gemini-2.5-flash",
-        api_key: "gw-key",
-        reasoning_effort: "none",
-      },
-    ]);
-  } finally {
-    for (const key of keys) {
-      if (saved[key] === undefined) delete process.env[key];
-      else process.env[key] = saved[key];
-    }
-  }
 });
 
 test("the browser never receives the write-only LLM key", () => {

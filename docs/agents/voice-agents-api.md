@@ -27,10 +27,10 @@ this file records the shapes that are easy to get wrong. Code: `voni/src/lib/dem
 - `api_key` is write-only: it is never returned by GET and must never reach the
   browser. `base_url` must be https. Model access is entitlement-dependent; a
   wrong model can return 200 on write and fail on the first call.
-- Demo default: Vercel AI Gateway (`https://ai-gateway.vercel.sh/v1`) with
-  `google/gemini-2.5-flash` and `reasoning_effort: "none"`, read from
-  `AI_GATEWAY_API_KEY` / optional `DEMO_LLM_*`. It is hashed into the agent
-  fingerprint so a change refreshes the cached agent.
+- Demo default: no model override. The public demo call runs the cascade's own
+  direct Meta client (`META_API_KEY` against `https://api.meta.ai/v1`), and the
+  managed demo body runs the platform's managed model. The Vercel AI Gateway is
+  Jev's judge key only and is never written into an agent body.
 
 ## Input tuning
 
