@@ -4,16 +4,18 @@ import type { Page, WebSocketRoute } from "@playwright/test";
 
 /**
  * Deterministic fake cascade service for the browser E2E seam (ticket 149,
- * extended by ticket 150).
+ * extended by ticket 150, pointed at the landing demo by ticket 16).
  *
- * A real Chromium runs the real `CascadeSession`, mic path and playout worklet;
- * this module plays the service's part over Playwright's WebSocket routing.
- * The frames come from the committed script in
+ * A real Chromium runs the real demo client (`CascadeSession`), mic path and
+ * playout worklet; this module plays the service's part over Playwright's
+ * WebSocket routing. The frames come from the committed script in
  * `tests/e2e/fixtures/cascade-call.json` (regenerate with
- * `scripts/make-cascade-e2e-fixture.mjs`): captions, numbered base64 PCM at a
- * stamped rate, a barge-in, a replayed frame, an `end_call`, and a clean
- * close. The wire shapes follow `voice-pipeline/transport.py`; the audio is a
- * deterministic tone, not a vendor recording. No vendor, no network, no clock.
+ * `scripts/make-cascade-e2e-fixture.mjs`): Voni's greeting caption and audio,
+ * the visitor's barge-in, the pipeline's tagged `show_test_address` final line,
+ * numbered base64 PCM at a stamped rate, a replayed frame, an `end_call`, and
+ * a clean close. The wire shapes follow `voice-pipeline/transport.py`; the
+ * audio is a deterministic tone, not a vendor recording. No vendor, no
+ * network, no clock.
  */
 
 const FIXTURE_RELATIVE = "tests/e2e/fixtures/cascade-call.json";
@@ -42,6 +44,12 @@ export type ScriptedFrame = {
   reply?: string;
   hz?: number;
   duplicate?: boolean;
+  /**
+   * The server-side demo tool whose result produced this frame (ticket 16).
+   * Label-only, like `reply`: the pipeline runs the tool, and the tagged final
+   * agent line is the browser's signal to put the invite chip up.
+   */
+  tool?: string;
   frame: Record<string, unknown>;
 };
 
@@ -50,6 +58,8 @@ export type ScriptedService = {
   sampleRate: number;
   audioSeconds: number;
   interruptAfterMs: number;
+  /** The call's Test tag, as the mint returns it; the invite line carries it. */
+  testTag?: string;
   frames: ScriptedFrame[];
 };
 
