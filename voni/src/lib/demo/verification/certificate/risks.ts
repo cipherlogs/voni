@@ -9,8 +9,8 @@
  * its closure evidence.
  *
  * RR-01 and RR-07 always apply (accent coverage is TTS-only; held-out
- * scenarios are process-sealed). All seven are open as of the register's
- * version 1, so every certificate cites all seven.
+ * scenarios are process-sealed). All eight are open as of the register's
+ * version 1, so every certificate cites all eight.
  */
 
 export type ResidualRisk = {
@@ -53,6 +53,11 @@ export const RESIDUAL_RISKS: readonly ResidualRisk[] = [
   },
   {
     id: "RR-07",
+    owner: "engineer",
+    opened: "2026-10-31",
+  },
+  {
+    id: "RR-08",
     owner: "engineer",
     opened: "2026-10-31",
   },

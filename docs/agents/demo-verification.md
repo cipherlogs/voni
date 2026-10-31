@@ -455,6 +455,7 @@ one; an entry with two owners is a defect in this register.
 | RR-05 | Staging can drift from production; the post-flip confirmation is short | operator | 2026-10-31 |
 | RR-06 | A one-instance deploy window refuses new calls; a visitor arriving mid-deploy is out of contract | operator | 2026-10-31 |
 | RR-07 | Held-out scenarios are sealed by process, not by machine | engineer | 2026-10-31 |
+| RR-08 | The class census is not the spec's shape: six resilience-edge scenarios are counted under `connectivity` (9, not 3) and no scenario uses the spec's `locale` class | engineer | 2026-10-31 |
 
 ### RR-01 — Accent coverage is TTS-only until Studio takes exist
 
@@ -591,6 +592,34 @@ the seal's weakness is never implicit.
 **Owner:** engineer. **Opened:** 2026-10-31.
 **Closure:** continuous — the seal is re-established by retiring and promoting,
 never by editing a held-out scenario in place.
+
+### RR-08 — The class census deviates from the spec
+
+**Risk.** The spec's ten-class census (golden flow 4, turn-taking 8,
+comprehension 5, emotion 5, soundscape 4, connectivity 3, meta/security 3,
+ending 3, tools 3, Locale 2) is not the committed corpus's shape. Two deviations
+are deliberate and named here instead of hidden: ticket 20's six resilience-edge
+scenarios (R2–R7) are filed under `connectivity`, which therefore holds nine
+rather than three, and no scenario uses the spec's `locale` class at all: the
+Locale core is the 48 non-English scenarios on es, fr, de and pt, and each is
+classed by its behaviour (`emotion`, `turn-taking`, and so on). The sealed
+additions also move comprehension to 6 and emotion to 7, and the turn-taking
+class holds 4 against the spec's 8.
+
+**What it costs.** A reader comparing the certificate's coverage to the spec's
+census table sees a different shape. A coverage claim must be read from the
+corpus and the certificate, not from the spec's class counts, and no class
+count in this map is a coverage promise.
+
+**Fail-closed.** `class-corpus.test.ts` asserts the committed shape exactly, so
+a class cannot silently grow or shrink. The reviews and the certificate report
+the corpus's own classes; they never restate the spec's census as if it were the
+committed set.
+
+**Owner:** engineer. **Opened:** 2026-10-31.
+**Closure:** the corpus either matches the spec's census (scenarios moved or
+added so each class holds its spec count) or the spec's census table is amended
+to the committed shape; until then this entry stays open.
 
 ## How a certificate cites these
 

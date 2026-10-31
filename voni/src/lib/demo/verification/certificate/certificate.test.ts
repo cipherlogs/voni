@@ -522,7 +522,7 @@ test("the compact render states the verdict, the panel and the gap count", () =>
   assert.match(rendered, /panel panel-2026-10-31 reviewer owner/);
   assert.match(rendered, /no property failures/);
   assert.match(rendered, /no coverage gaps/);
-  assert.match(rendered, /risks RR-01 RR-02 RR-03 RR-04 RR-05 RR-06 RR-07/);
+  assert.match(rendered, /risks RR-01 RR-02 RR-03 RR-04 RR-05 RR-06 RR-07 RR-08/);
 
   const unsigned = renderCertificate(buildCertificate(buildInput({ panel: null })));
   assert.match(unsigned, /^CERTIFICATE PENDING-HUMAN \(NOT A PASS\)/);

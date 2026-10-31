@@ -86,6 +86,48 @@ test("the English corpus holds four soundscape, nine connectivity and three meta
   ]);
 });
 
+test("the English class shape is documented, including the census deviations (RR-08)", async () => {
+  const corpus = await load();
+  const shape: Record<string, number> = {};
+  for (const scenario of corpus.scenarios) {
+    if (scenario.locale !== "en") continue;
+    shape[scenario.class] = (shape[scenario.class] ?? 0) + 1;
+  }
+  // The committed shape, not the spec's census: the six resilience-edge
+  // scenarios (R2–R7) are filed under connectivity, and there is no English
+  // locale class. The spec census and this table are named apart in RR-08.
+  assert.deepEqual(shape, {
+    comprehension: 6,
+    connectivity: 9,
+    emotion: 7,
+    ending: 3,
+    "golden-flow": 4,
+    "meta-security": 3,
+    soundscape: 4,
+    tools: 3,
+    "turn-taking": 4,
+  });
+  assert.equal(
+    namesOf(corpus.scenarios, "locale").length,
+    0,
+    "no English scenario is Locale class",
+  );
+  assert.equal(
+    corpus.scenarios.filter((scenario) => scenario.class === "locale").length,
+    0,
+    "no scenario uses the spec's locale class at all; the Locale core is classed by behaviour",
+  );
+  assert.equal(
+    corpus.scenarios.filter((scenario) => scenario.locale !== "en").length,
+    48,
+    "the Locale core is the 48 non-English scenarios, classed by behaviour (RR-08)",
+  );
+  const byName = new Map(corpus.scenarios.map((scenario) => [scenario.name, scenario]));
+  for (const name of EDGE_CONNECTIVITY) {
+    assert.equal(byName.get(name)?.class, "connectivity", `${name} is the documented fold into connectivity`);
+  }
+});
+
 test("the new scenarios cite the S, R and audio properties they exist to feed", async () => {
   const corpus = await load();
   const byName = new Map(corpus.scenarios.map((scenario) => [scenario.name, scenario]));
