@@ -26,9 +26,13 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
+  INGRESS_FRAME_BYTES,
+  INGRESS_FRAME_MS,
   KEY_SKIP_REASON,
+  TURN_TAIL_MS,
   UsageError,
   assessTrace,
+  createIngressPump,
   defaultCallerClip,
   formatRealLegsReport,
   loadCallerAudio,
@@ -487,6 +491,141 @@ test("a missing trace is a failure locally and a named skip remotely", () => {
 });
 
 // --------------------------------------------------------------------------
+// The caller ingress pump: cadence, no-early, and a whole caller turn
+// --------------------------------------------------------------------------
+
+/** Yield macrotasks until a fake-clock driver reaches its predicate. */
+function driveUntil(predicate: () => boolean, turns = 10_000): Promise<void> {
+  return new Promise<void>((resolvePromise, reject) => {
+    let left = turns;
+    const step = () => {
+      if (predicate()) return resolvePromise();
+      if (left-- <= 0) return reject(new Error("the fake clock never reached the predicate"));
+      setImmediate(step);
+    };
+    step();
+  });
+}
+
+test("the caller pump sends one browser-quantum frame per due instant and never early", async () => {
+  const start = 5_000;
+  let clock = start;
+  const sent: { at: number; frame: Uint8Array }[] = [];
+  const pump = createIngressPump({
+    send: (frame) => sent.push({ at: clock, frame: frame.slice() }),
+    now: () => clock,
+    sleep: (ms) =>
+      new Promise<void>((resolvePromise) => {
+        clock += ms;
+        setImmediate(resolvePromise);
+      }),
+  });
+  pump.start();
+  await driveUntil(() => sent.length >= 40);
+  await pump.stop();
+
+  assert.ok(sent.length >= 40, `expected at least 40 frames, got ${sent.length}`);
+  assert.equal(pump.frames(), sent.length);
+  sent.forEach((entry, index) => {
+    const due = start + index * INGRESS_FRAME_MS;
+    assert.equal(entry.frame.length, INGRESS_FRAME_BYTES, `frame ${index} is not one quantum`);
+    assert.ok(
+      entry.frame.every((byte) => byte === 0),
+      `frame ${index} must be silence while no caller turn is queued`,
+    );
+    // The cadence is absolute: frame N is sent at start + N * frame_ms, never
+    // before it. A timer that woke early would fail here.
+    assert.ok(entry.at >= due - 1e-9, `frame ${index} sent ${due - entry.at} ms early`);
+    assert.ok(
+      Math.abs(entry.at - due) < 1e-6,
+      `frame ${index} sent at ${entry.at}, expected ${due}`,
+    );
+  });
+});
+
+test("a late wake resumes the absolute schedule without ever sending ahead of it", async () => {
+  const start = 0;
+  let clock = start;
+  let wakes = 0;
+  const sent: { at: number }[] = [];
+  const pump = createIngressPump({
+    send: () => sent.push({ at: clock }),
+    now: () => clock,
+    sleep: (ms) =>
+      new Promise<void>((resolvePromise) => {
+        clock += ms;
+        wakes += 1;
+        // One stalled wake, as a busy event loop would produce.
+        if (wakes === 10) clock += 100;
+        setImmediate(resolvePromise);
+      }),
+  });
+  pump.start();
+  await driveUntil(() => sent.length >= 40);
+  await pump.stop();
+
+  sent.forEach((entry, index) => {
+    const due = start + index * INGRESS_FRAME_MS;
+    assert.ok(
+      entry.at >= due - 1e-9,
+      `frame ${index} sent ahead of its due instant (${entry.at} < ${due})`,
+    );
+  });
+  // The stall is repaid from the absolute schedule, not by resetting the clock:
+  // by frame 39 the frame index is still exactly the count sent.
+  assert.equal(pump.frames(), sent.length);
+});
+
+test("a queued caller turn is paced frame by frame and resolved after its tail silence", async () => {
+  let clock = 0;
+  const sent: Uint8Array[] = [];
+  const pump = createIngressPump({
+    send: (frame) => sent.push(frame.slice()),
+    now: () => clock,
+    sleep: (ms) =>
+      new Promise<void>((resolvePromise) => {
+        clock += ms;
+        setImmediate(resolvePromise);
+      }),
+  });
+  pump.start();
+  await driveUntil(() => sent.length >= 3);
+  const before = sent.length;
+
+  const clip = new Uint8Array(INGRESS_FRAME_BYTES + 100);
+  clip.fill(0x22);
+  let saidAt: number | null = null;
+  void pump.say(clip).then(() => {
+    saidAt = clock;
+  });
+  await driveUntil(() => saidAt !== null);
+
+  const during = sent.slice(before);
+  assert.ok(during.length >= 2);
+  assert.deepEqual(
+    Array.from(during[0]),
+    Array.from(clip.subarray(0, INGRESS_FRAME_BYTES)),
+    "the first frame after the queue starts with the caller's first quantum",
+  );
+  assert.deepEqual(
+    Array.from(during[1].subarray(0, 100)),
+    Array.from(clip.subarray(INGRESS_FRAME_BYTES)),
+    "the clip's remainder is carried, not dropped",
+  );
+  assert.ok(
+    during[1].subarray(100).every((byte) => byte === 0),
+    "the rest of the quantum is silence, never a short frame",
+  );
+  // The turn is not "sent" until the vendor has heard its trailing silence.
+  const expected = (clip.length / (24_000 * 2)) * 1_000 + TURN_TAIL_MS;
+  assert.ok(
+    Number(saidAt) >= expected - INGRESS_FRAME_MS,
+    `resolved at ${saidAt} ms, before the ${expected} ms of audio plus tail`,
+  );
+  await pump.stop();
+});
+
+// --------------------------------------------------------------------------
 // The two-turn flow against a fake service (no keys)
 // --------------------------------------------------------------------------
 
@@ -499,6 +638,8 @@ type FakeService = {
   config(): Record<string, unknown> | null;
   /** Every accepted call-body payload, in arrival order. */
   deliveries(): Record<string, unknown>[];
+  /** Ingress frames the caller pump had sent before the first caller turn. */
+  framesBeforeFirstTurn(): number;
   close(): Promise<void>;
 };
 
@@ -509,6 +650,7 @@ async function startFakeService(options: {
   const delivered: Record<string, unknown>[] = [];
   let config: Record<string, unknown> | null = null;
   let state: { callId: string; subject: string; eventsPath: string } | null = null;
+  let framesBeforeFirstTurn = -1;
 
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     if (request.method !== "POST" || request.url !== "/v1/call-body") {
@@ -584,8 +726,9 @@ async function startFakeService(options: {
       on: (event: string, handler: (data: Buffer) => void) => void;
     };
     let turn = 0;
-    let burstTimer: NodeJS.Timeout | null = null;
     let greeted = false;
+    let ingressFrames = 0;
+    let speechEndTimer: NodeJS.Timeout | null = null;
 
     const sendAudio = (seqStart: number) => {
       for (let index = 0; index < 2; index += 1) {
@@ -600,13 +743,16 @@ async function startFakeService(options: {
       }
     };
 
+    // The greeting is not a turn and carries no caption, exactly as the live
+    // service does it: only its audio reaches the browser, and the caller's
+    // pump must already be feeding silence while it renders.
     const greet = () => {
-      ws.send(JSON.stringify({ type: "caption", role: "agent", text: "Hallo!", final: true }));
       sendAudio(1);
       greeted = true;
     };
 
     const answerTurn = () => {
+      if (framesBeforeFirstTurn < 0) framesBeforeFirstTurn = ingressFrames;
       turn += 1;
       ws.send(
         JSON.stringify({
@@ -635,11 +781,16 @@ async function startFakeService(options: {
         return;
       }
       if (message.type === "audio") {
-        if (burstTimer) clearTimeout(burstTimer);
-        // A caller burst ends after the trailing silence; answer it once.
-        burstTimer = setTimeout(() => {
+        ingressFrames += 1;
+        // The pump is continuous: silence between the turns, the clip inside
+        // them. A turn ends where the caller's speech gives way to silence,
+        // which is what the live service's endpointing sees too.
+        const pcm = Buffer.from(String(message.data ?? ""), "base64");
+        if (!pcm.some((byte) => byte !== 0)) return;
+        if (speechEndTimer) clearTimeout(speechEndTimer);
+        speechEndTimer = setTimeout(() => {
           if (turn < 2) answerTurn();
-        }, 120);
+        }, 150);
         return;
       }
       if (message.type === "stop") {
@@ -692,6 +843,7 @@ async function startFakeService(options: {
     wsUrl: `ws://${host}/v1/browser-call`,
     config: () => config,
     deliveries: () => delivered,
+    framesBeforeFirstTurn: () => framesBeforeFirstTurn,
     close: async () => {
       wss.close();
       await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
@@ -758,6 +910,10 @@ test("the two-turn flow passes every assertion against a fake service", async ()
     );
     assert.equal(realLegsExitCode(checks), 0);
     assert.equal(service.deliveries().length, 1);
+    assert.ok(
+      service.framesBeforeFirstTurn() > 0,
+      "the caller pump must already be feeding silence while the greeting renders",
+    );
     assert.deepEqual(Object.keys(service.config() ?? {}).sort(), [
       "agentId",
       "callToken",
@@ -767,7 +923,11 @@ test("the two-turn flow passes every assertion against a fake service", async ()
     assert.equal(service.config()?.agentId, "demo:jorg");
     assert.match(
       checks.find((entry) => entry.code === "captions")?.detail ?? "",
-      /caller finals and 3 agent finals/,
+      /caller finals and 2 agent caption lines/,
+    );
+    assert.match(
+      checks.find((entry) => entry.code === "captions")?.detail ?? "",
+      /greeting is not a turn/,
     );
     assert.match(checks.find((entry) => entry.code === "trace")?.detail ?? "", /call-real-legs-test/);
     assert.match(checks.find((entry) => entry.code === "cost")?.detail ?? "", /\$0\.000123/);

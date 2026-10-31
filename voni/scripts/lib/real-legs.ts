@@ -594,6 +594,165 @@ function transcodeToPcm(path: string): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
+// Caller ingress: one continuous, drift-corrected pump
+// ---------------------------------------------------------------------------
+
+/**
+ * The cadence is the browser mic path's, not an invented one.
+ *
+ * `startAudioGraph` opens the shared context at the app's 24 kHz contract rate
+ * where the platform allows it, and `public/pcm-processor.js` posts exactly one
+ * frame per 128-sample render quantum. On that 24 kHz context the browser sends
+ * 128 samples (256 bytes of PCM16) every 128 / 24000 s ≈ 5.333 ms, continuously,
+ * for the whole call — the microphone never stops. The vendor's policy is
+ * real-time ingress: a stream that stops or lags is closed with "Ingress audio
+ * slower than real-time", and a stream delivered as one burst is closed with
+ * "Audio processing backlog too large".
+ */
+export const INGRESS_SAMPLE_RATE = 24_000;
+export const INGRESS_FRAME_SAMPLES = 128;
+export const INGRESS_FRAME_BYTES = INGRESS_FRAME_SAMPLES * 2;
+export const INGRESS_FRAME_MS = (INGRESS_FRAME_SAMPLES / INGRESS_SAMPLE_RATE) * 1_000;
+
+/** One caller turn's trailing silence: the vendor's endpointing needs it. */
+export const TURN_TAIL_MS = 1_000;
+
+const BYTES_PER_MS = (INGRESS_SAMPLE_RATE * 2) / 1_000;
+
+export type IngressPump = {
+  /** Start the frame clock at this instant and send frame 0. */
+  start(): void;
+  /** Queue a caller turn; resolves after it and its tail silence are sent. */
+  say(pcm: Uint8Array): Promise<void>;
+  /** Stop the clock; resolves once the loop has left. */
+  stop(): Promise<void>;
+  /** Frames sent, for the operator report and the cadence tests. */
+  frames(): number;
+};
+
+export type IngressPumpDeps = {
+  /** Send one frame: 256 bytes of 24 kHz mono PCM16. */
+  send: (pcm: Uint8Array<ArrayBuffer>) => void;
+  /** A monotonic millisecond clock (the wall clock is enough at this scale). */
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+};
+
+/**
+ * A caller-side microphone, without a microphone: silence between the turns,
+ * the queued clip inside them, always at the browser's frame cadence.
+ *
+ * Frame N is due at `startedAt + N * INGRESS_FRAME_MS`, absolute. Each wake
+ * sleeps until its own due instant and re-checks, so a late timer never
+ * accumulates drift and an early one never sends ahead of real time. Exactly
+ * one frame goes out per due instant: a stalled loop resumes the schedule
+ * without a catch-up burst beyond the stall itself, which is the same shape a
+ * browser's render quanta take after a main-thread pause.
+ */
+export function createIngressPump(deps: IngressPumpDeps): IngressPump {
+  let running = false;
+  let loop: Promise<void> | null = null;
+  let startedAt = 0;
+  let frameIndex = 0;
+  let queue = new Uint8Array(0);
+  /** Audio-timeline position through which caller speech is queued, in ms. */
+  let queueEndMs = 0;
+  /** Audio-timeline position already sent (silence included), in ms. */
+  let sentMs = 0;
+  let waiters: { atMs: number; resolve: () => void }[] = [];
+
+  function takeFrame(): Uint8Array<ArrayBuffer> {
+    const frame = new Uint8Array(INGRESS_FRAME_BYTES);
+    const take = Math.min(queue.length, INGRESS_FRAME_BYTES);
+    if (take > 0) {
+      frame.set(queue.subarray(0, take));
+      queue = queue.subarray(take);
+    }
+    return frame;
+  }
+
+  function resolveDue(): void {
+    if (waiters.length === 0) return;
+    const due = waiters.filter((waiter) => waiter.atMs <= sentMs);
+    if (due.length === 0) return;
+    waiters = waiters.filter((waiter) => waiter.atMs > sentMs);
+    for (const waiter of due) waiter.resolve();
+  }
+
+  async function run(): Promise<void> {
+    while (running) {
+      const due = startedAt + frameIndex * INGRESS_FRAME_MS;
+      let wait = due - deps.now();
+      // Re-check after every sleep: an early wake must not send ahead of the
+      // schedule, and a late one sends the next frame now, not two at once.
+      while (running && wait > 0) {
+        await deps.sleep(wait);
+        wait = due - deps.now();
+      }
+      if (!running) return;
+      try {
+        deps.send(takeFrame());
+      } catch {
+        // The socket died under the pump. Stop quietly: the call's own waits
+        // name the failure; a rejected pump would only become an unhandled
+        // rejection after this function returned.
+        running = false;
+        const left = waiters;
+        waiters = [];
+        for (const waiter of left) waiter.resolve();
+        return;
+      }
+      frameIndex += 1;
+      sentMs = (frameIndex * INGRESS_FRAME_SAMPLES * 1_000) / INGRESS_SAMPLE_RATE;
+      resolveDue();
+    }
+  }
+
+  return {
+    start() {
+      if (running) return;
+      running = true;
+      startedAt = deps.now();
+      frameIndex = 0;
+      sentMs = 0;
+      loop = run();
+    },
+    say(pcm) {
+      if (!running) {
+        return Promise.reject(
+          new RealLegsError(
+            "ingress-not-started",
+            "the caller pump must be started before a turn is queued",
+          ),
+        );
+      }
+      if (pcm.length === 0) return Promise.resolve();
+      const startMs = Math.max(queueEndMs, sentMs);
+      queueEndMs = startMs + pcm.length / BYTES_PER_MS;
+      const next = new Uint8Array(queue.length + pcm.length);
+      next.set(queue);
+      next.set(pcm, queue.length);
+      queue = next;
+      return new Promise<void>((resolvePromise) => {
+        waiters.push({ atMs: queueEndMs + TURN_TAIL_MS, resolve: resolvePromise });
+      });
+    },
+    async stop() {
+      running = false;
+      const pending = loop;
+      loop = null;
+      if (pending) await pending;
+      const left = waiters;
+      waiters = [];
+      for (const waiter of left) waiter.resolve();
+    },
+    frames() {
+      return frameIndex;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The two-turn flow
 // ---------------------------------------------------------------------------
 
@@ -615,6 +774,8 @@ export type RealLegsDeps = {
   readTrace?: (path: string) => string;
   traceExists?: (path: string) => boolean;
   sleep?: (ms: number) => Promise<void>;
+  /** The ingress pump's monotonic clock; injectable so tests pin the cadence. */
+  now?: () => number;
   callId?: string;
 };
 
@@ -649,19 +810,19 @@ function defaultConnect(url: string): RealLegsSocket {
 }
 
 const STATE_POLL_MS = 25;
-const TURN_FRAME_BYTES = 4_800; // 100 ms of 24 kHz mono PCM16
-const TURN_TAIL_MS = 1_000;
+/** The greeting's audio arrives with sub-250 ms gaps; this is its end. */
+const GREETING_QUIET_MS = 1_200;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
-function pcmSilence(ms: number): Uint8Array {
-  return new Uint8Array(Math.round((24_000 * 2 * ms) / 1_000));
+function defaultNow(): number {
+  return performance.now();
 }
 
-function countAgentFinals(state: CallState): number {
-  return state.captions.filter((caption) => caption.role === "agent" && caption.final).length;
+function countUserFinals(state: CallState): number {
+  return state.captions.filter((caption) => caption.role === "user" && caption.final).length;
 }
 
 async function waitFor(
@@ -694,8 +855,8 @@ async function waitFor(
 
 /**
  * Let the agent finish speaking before the next caller turn: wait until no new
- * audio frame has arrived for a short quiet window. A caller that talks over
- * the agent would barge in, which is a different test; this check is about two
+ * audio frame has arrived for a quiet window. A caller that talks over the
+ * agent would barge in, which is a different test; this check is about two
  * clean turns. Bounded, so a stuck stream still ends the check by name.
  */
 async function settleAudio(
@@ -703,6 +864,7 @@ async function settleAudio(
   sleep: (ms: number) => Promise<void>,
   timeoutMs: number,
   label: string,
+  quietMs = 800,
 ): Promise<void> {
   const deadline = Date.now() + Math.min(timeoutMs, 20_000);
   let seen = state.audioFrames;
@@ -723,24 +885,63 @@ async function settleAudio(
       quietSince = Date.now();
       continue;
     }
-    if (Date.now() - quietSince >= 800) return;
+    if (Date.now() - quietSince >= quietMs) return;
   }
 }
 
-async function sendPaced(
-  socket: RealLegsSocket,
-  pcm: Uint8Array,
+/**
+ * Wait for the opening to finish.
+ *
+ * The greeting is not a turn and carries no caption (`cascade/greeting.py`), so
+ * there is no "greeting finished" frame. The service's `greeting.done` trace row
+ * is written only when the call ends (`_flush_operational_events`), so polling
+ * the artifact would deadlock a live call. The wire's own signal is the greeting
+ * audio: the service streams it as fast as the voice leg synthesizes it, with
+ * sub-second gaps (measured under 250 ms), and nothing follows it until a
+ * caller turn. Waiting for the first frame first keeps a slow-starting call
+ * from being mistaken for a finished one; the quiet window is its end.
+ */
+async function waitForGreeting(
+  state: CallState,
   sleep: (ms: number) => Promise<void>,
+  timeoutMs: number,
 ): Promise<void> {
-  for (let offset = 0; offset < pcm.length; offset += TURN_FRAME_BYTES) {
-    const chunk = pcm.subarray(offset, offset + TURN_FRAME_BYTES);
-    socket.send(encodeAudioFrame(chunk.slice().buffer));
-    await sleep(100);
-  }
-  const silence = pcmSilence(TURN_TAIL_MS);
-  for (let offset = 0; offset < silence.length; offset += TURN_FRAME_BYTES) {
-    socket.send(encodeAudioFrame(silence.slice(offset, offset + TURN_FRAME_BYTES).buffer));
-    await sleep(100);
+  await waitFor(
+    state,
+    () => state.audioFrames >= 1,
+    timeoutMs,
+    sleep,
+    "greeting",
+  );
+  const deadline = Date.now() + timeoutMs;
+  let lastFrames = state.audioFrames;
+  let quietSince = Date.now();
+  for (;;) {
+    if (state.error) {
+      throw new RealLegsError(
+        "call-error",
+        `greeting: the service refused the call: ${state.error}`,
+      );
+    }
+    if (state.closed && !state.end) {
+      throw new RealLegsError(
+        "call-closed",
+        "greeting: the socket closed before the greeting finished",
+      );
+    }
+    if (state.audioFrames !== lastFrames) {
+      lastFrames = state.audioFrames;
+      quietSince = Date.now();
+    } else if (Date.now() - quietSince >= GREETING_QUIET_MS) {
+      return;
+    }
+    if (Date.now() > deadline) {
+      throw new RealLegsError(
+        "call-timeout",
+        `greeting: the greeting audio did not settle within ${timeoutMs} ms`,
+      );
+    }
+    await sleep(STATE_POLL_MS);
   }
 }
 
@@ -895,6 +1096,7 @@ export async function runRealLegs(
   const env = deps.env ?? process.env;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? defaultSleep;
+  const now = deps.now ?? defaultNow;
   const connect = deps.connect ?? defaultConnect;
   const loadAudio = deps.loadCallerAudio ?? loadCallerAudio;
   const traceExists = deps.traceExists ?? existsSync;
@@ -1018,7 +1220,22 @@ export async function runRealLegs(
   }
 
   const opened = new Promise<void>((resolvePromise) => socket.onOpen(() => resolvePromise()));
+  // The caller's microphone, without a microphone: silence between the turns,
+  // the queued clip inside them, paced at the browser worklet's cadence. It
+  // starts on the service's first frame, not at config: the service does not
+  // read the socket until its three vendor legs are open, so frames sent during
+  // setup are buffered and then drained in one burst while the service also
+  // fills the same wall-clock gap with silence — a double-count that puts the
+  // vendor's audio timeline >5 s ahead and fails the call at the greeting.
+  // The first server frame proves the receive loop is running; from there the
+  // pump never stops until the call ends.
+  const ingress = createIngressPump({
+    send: (frame) => socket.send(encodeAudioFrame(frame.buffer)),
+    now,
+    sleep,
+  });
   socket.onMessage((raw) => {
+    ingress.start();
     const audioFrame = decodeAudioMessage(raw);
     if (audioFrame) {
       state.audioFrames += 1;
@@ -1084,37 +1301,52 @@ export async function runRealLegs(
     state.configKeys = Object.keys(configRecord).sort();
     socket.send(config);
 
-    await waitFor(
-      state,
-      () => countAgentFinals(state) >= 1,
-      options.timeoutMs,
-      sleep,
-      "greeting",
-    );
-    await settleAudio(state, sleep, options.timeoutMs, "greeting");
+    await waitForGreeting(state, sleep, options.timeoutMs);
 
-    const beforeTurnOne = countAgentFinals(state);
-    await sendPaced(socket, audio.pcm, sleep);
+    const beforeTurnOneUser = countUserFinals(state);
+    const beforeTurnOneAudio = state.audioFrames;
+    // `say` paces the clip at the pump's cadence and resolves after the
+    // trailing silence, so the vendor has heard a whole caller turn.
+    await ingress.say(audio.pcm);
     await waitFor(
       state,
-      () => countAgentFinals(state) > beforeTurnOne,
+      () => countUserFinals(state) > beforeTurnOneUser,
       options.timeoutMs,
       sleep,
       "turn 1",
     );
-    await settleAudio(state, sleep, options.timeoutMs, "turn 1");
-    const agentFinalsAfterTurnOne = countAgentFinals(state);
-
-    await sendPaced(socket, audio.pcm, sleep);
+    // The agent's turn has no final caption (`turn_stream._speak` emits agent
+    // lines as partials); its audio going quiet is the turn's end. The demo
+    // reply may cross a tool round, so the window is wider than a sentence gap.
     await waitFor(
       state,
-      () => countAgentFinals(state) > agentFinalsAfterTurnOne,
+      () => state.audioFrames > beforeTurnOneAudio,
+      options.timeoutMs,
+      sleep,
+      "turn 1 reply",
+    );
+    await settleAudio(state, sleep, options.timeoutMs, "turn 1", 2_500);
+    const userFinalsAfterTurnOne = countUserFinals(state);
+    const audioFramesAfterTurnOne = state.audioFrames;
+
+    await ingress.say(audio.pcm);
+    await waitFor(
+      state,
+      () => countUserFinals(state) > userFinalsAfterTurnOne,
       options.timeoutMs,
       sleep,
       "turn 2",
     );
-    await settleAudio(state, sleep, options.timeoutMs, "turn 2");
+    await waitFor(
+      state,
+      () => state.audioFrames > audioFramesAfterTurnOne,
+      options.timeoutMs,
+      sleep,
+      "turn 2 reply",
+    );
+    await settleAudio(state, sleep, options.timeoutMs, "turn 2", 2_500);
 
+    await ingress.stop();
     socket.send(JSON.stringify({ type: "stop" }));
     await waitFor(state, () => state.end !== null, options.timeoutMs, sleep, "end message");
   } catch (error) {
@@ -1125,12 +1357,14 @@ export async function runRealLegs(
         `${(error as Error).name}: ${(error as Error).message}`,
       ),
     );
+    await ingress.stop().catch(() => undefined);
     socket.close();
     checks.push(
       ...assessTraceAfterCall(options, target, callId, traceExists, readTrace, null, env),
     );
     return checks;
   } finally {
+    await ingress.stop().catch(() => undefined);
     socket.close();
   }
 
@@ -1142,24 +1376,21 @@ export async function runRealLegs(
     ),
   );
 
-  const userFinals = state.captions.filter(
-    (caption) => caption.role === "user" && caption.final,
-  ).length;
-  const agentFinals = countAgentFinals(state);
+  const userFinals = countUserFinals(state);
   const agentLines = state.captions
-    .filter((caption) => caption.role === "agent" && caption.final)
+    .filter((caption) => caption.role === "agent" && caption.text.trim() !== "")
     .map((caption) => caption.text);
   checks.push(
-    userFinals >= 1 && agentFinals >= 3
+    userFinals >= 2 && agentLines.length >= 2
       ? passed(
           "captions",
           "captions",
-          `${userFinals} caller finals and ${agentFinals} agent finals (greeting plus two turns); first agent line: ${JSON.stringify(agentLines[0] ?? "").slice(0, 120)}`,
+          `${userFinals} caller finals and ${agentLines.length} agent caption lines (the service streams agent lines as partials; the greeting is not a turn and carries no caption); first agent line: ${JSON.stringify(agentLines[0] ?? "").slice(0, 120)}`,
         )
       : failed(
           "captions",
           "captions",
-          `expected at least one caller final and three agent finals (greeting plus two turns); got ${userFinals} caller and ${agentFinals} agent finals`,
+          `expected at least two caller finals and two agent caption lines (one per turn; the greeting carries no caption); got ${userFinals} caller finals and ${agentLines.length} agent lines`,
         ),
   );
 
