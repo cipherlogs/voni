@@ -43,17 +43,36 @@ have is a defect in this map.
 | Verdict and statistics | pooling, per-scenario tails, fail-closed unknowns, ineligibility | `voni/src/lib/demo/verification/verdict/` — `statistics.ts` pools, `judge.ts` judges, `evaluators.ts` discovers one `evaluators/*.evaluators.ts` module per family | 07 |
 | Certificate | schema, builder, validator, target binding, residual-risk ids, panel signature | `voni/src/lib/demo/verification/certificate/` — `types.ts` is the schema, `build.ts` turns one verdict-core run into one certificate, `validate.ts` refuses an unknown schema, a mismatched target/fingerprint/corpus, an uncited verdict and a certified claim with no panel signature, `risks.ts` mirrors this register's ids (drift-tested), `render.ts` is the compact view; committed files live in `voni/evidence/certificates/` | 08 |
 | Defect cards | one card per failed property with turn, excerpt, bar and replay command | `voni/src/lib/demo/verification/cards/` — `build.ts` refuses a card without a session, a turn (for turn-level evidence) or an existing evidence file; `wav.ts` bounds every excerpt inside the named take/WAV; `replay.ts` is the one parser the runner must accept unchanged; `render.ts` is the compact card | 09 |
-| Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take. English and Locale corpora not landed | 10, 12–16 |
+| Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest, the ten-scenario English fast contract | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take; `corpus/` is the committed English fast corpus (ten scenarios, twenty real TTS takes, version 1) and `generate.ts` + `scripts/generate-caller-takes.mts` (`npm run corpus:takes`) record a take once or a deliberate `--retake`; `fast.ts` selects the ten, proves the six call-path capabilities, scopes the verdict (uncited families are `OUT-OF-SCOPE`, never green), and reads the fast cost ceiling from E3. `CALLER-CORPUS.md` records the voice, model and retake rule. Locale corpora and the remaining thirty English scenarios are not landed | 10, 12–16 |
 | Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/lib/protocol-adapter/` — `refusals.ts` names a missing key, corpus, scenario, vendor build or soundscape before any vendor opens, `transport.ts` drives `POST /v1/call-body` + `WS /v1/browser-call` at the browser's 128-sample cadence, `faults.ts` applies the scenario's media faults, `evidence.ts` writes the per-run directory under `voni/.demo-runs/`, `runner.ts` turns one call into one verdict and any provable card; `voni/scripts/protocol-diagnose.mts` accepts a card's replay command unchanged and never returns 0 | 11 |
 | Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | not landed | 17 |
-| Evaluator families | L1–L11, T1–T10, C1–C10, K1–K8, X1–X10, A1–A8, R1–R8, S1–S6, E1–E4, H1–H7 | H6 landed in `voni/src/lib/demo/verification/verdict/evaluators/human.evaluators.ts` (judge calibration); the other families are not landed | 18–22, 26 |
+| Evaluator families | L1–L11, T1–T10, C1–C10, K1–K8, X1–X10, A1–A8, R1–R8, S1–S6, E1–E4, H1–H7 | H6 landed in `voni/src/lib/demo/verification/verdict/evaluators/human.evaluators.ts` (judge calibration). E1–E4 landed in `verdict/evaluators/economics.evaluators.ts`: E1/E2/E4 judge one call from its own `cost.priced` row and persisted `end` message; E3 is run-scoped and is judged by the run gate in `voni/src/lib/demo/verification/economics/run-ceiling.ts` (`preflightRunCeiling` before the run, `scopeRunToCeiling` at the end), which narrows E3 to the plan's own ceiling. The other families are not landed | 18–22, 26 |
 | Machine judges and calibration | two transcript-grounded judges, third-judge/panel escalation, vendor independence, weighted-kappa gate | `voni/src/lib/demo/verification/judges/` — `panel.ts` refuses a judge on the agent's vendor (`AGENT_VENDOR = meta`), scores two judges independently and reconciles a disagreement above one point through a third judge to the panel; `kappa.ts` is the linear weighted-kappa arithmetic; `rubric.ts` hashes the rubric; `calibration.ts` verifies every judge/axis at the frozen `dvJudgeKappaMin` bar and refuses a changed rubric hash; a live judge transport is not landed and is key-gated by `AI_GATEWAY_API_KEY` | 26 |
 | Studio | local-only Record, Rate and Corpus surfaces; never in the deployed build | Record landed in `voni/scripts/studio/`: `take-store.ts` writes one immutable hashed take per landing (`voni/.studio/`, gitignored) on the shared digest in `scenarios/digest.ts`; `dialogues.ts` validates authored prompt cards; `http.ts` serves `record.html` on loopback only and refuses a production environment or host by name; no `src/` file imports it. Rate and Corpus landed in the same process: `rate.ts` builds the blind queue (every failing call ahead of the clean sample, seeded per-session order, A/B sides with a private answer key, seven axes, free text and defect tags), `rating-store.ts` persists attributable sessions and gold labels under `voni/.studio/rating/` and rehashes evidence on every serving, `rate.html` and `corpus.html` are the surfaces, `take-store.ts` retires a take with `retired.json` (never editing the take) and records baseline consent metadata; `selectable()` excludes retired and baseline takes | 23, 24 |
-| Human baseline | three to five consented, hashed reference calls, blind comparison only | not landed (human gate) | 25 |
+| Human baseline | three to five consented, hashed reference calls, blind comparison only | prepared, **not captured** (human gate): session plan and owner runbook in `docs/demo-human-baseline.md`; `voni/scripts/studio/baseline.ts` verifies consent references, the 4–6 minute band, rehashed takes, a pinned hash list and non-use as certification input, exposed as `npm run demo:baseline:verify`; `take-store.ts` lists active baseline takes with `baselineTakes()` | 25 |
 | Panel and gold labels | blind sample, seven axes, blind A/B, signature, exit 3 | `voni/src/lib/demo/verification/panel/` — `types.ts` fixes the twelve-call sample (two per Locale plus the two worst remaining failing calls, every failing call mandatory) and the gold-label/signature vocabulary; `verdict.ts` computes H1–H5 and H7 from the panel's gold labels against the contract's frozen bars; `run.ts` merges those verdicts into the run. The local-only orchestration is `voni/scripts/studio/panel/` — `session.ts` builds the blind session (every failing call mandatory), `gold-labels.ts` exports attributable labels and their digest, `signature.ts` signs/verifies and completes H7. `voni/scripts/lib/demo-certificate.ts` is `demo:certificate`; an unsigned certificate is `pending-human` and exits 3 | 27 |
 | CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | not landed | 28 |
 | Streak and cutover | three-clean streak, staging gate, post-flip confirmation, monthly full production | not landed | 29 |
 | CI cadence | fast contract, nightly health, weekly full certification, Locale matrix | not landed | 30 |
+
+### The fast contract
+
+The English fast contract is ten committed scenarios at one repetition:
+`golden-flow-hello`, `golden-flow-substantive`, `golden-flow-greeting-only`,
+`turn-taking-barge`, `turn-taking-filler`, `soundscape-quiet-room`,
+`connectivity-jitter`, `tools-email-send`, `ending-goodbye`,
+`ending-caller-silence`. It proves greeting, a substantive turn, a barge-in, a
+filler, one tool and a goodbye, derived from each scenario's triggers and
+expected property ids rather than a second list.
+
+A fast run is deliberately **not** a certificate. It measures the union of the
+ten scenarios' expected properties; every other property is reported
+`OUT-OF-SCOPE`, grouped by family (comprehension, economics, human, security
+today), and a `scoped-pass` carries `certifiable: false`. The cost ceiling is
+the contract's E3 `dvCostFastRunMaxUsd`; the wall-clock number is measured and
+its missing frozen bound is recorded as a gap, never invented. The corpus is
+recorded through `npm run corpus:takes` and a changed take refuses by name
+unless `--retake <scenario>/<take>` moves the manifest version deliberately.
 
 The defect-card replay command is the one parser in
 `voni/src/lib/demo/verification/cards/replay.ts`:
@@ -190,6 +209,13 @@ samples 12 calls per certification — two per Locale, with every failing call
 mandatory. Below the judgment floor the property is unverified, which is a
 failure; a certificate without a named, dated panel signature is `pending-human`,
 never certified.
+
+**Capture status (2026-10-31).** The baseline is **not captured**. The agent
+side is prepared: the session plan and owner runbook are in
+`docs/demo-human-baseline.md`, and `npm run demo:baseline:verify` rehashes and
+checks a recorded set. The recording is the owner's human gate. Capturing it
+does not close this risk: the sample stays three to five people and the panel
+one rater.
 
 **Owner:** owner (the rater). **Opened:** 2026-10-31.
 **Closure:** the baseline and panel widen beyond one rater — a later decision.

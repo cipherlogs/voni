@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "name": "turn-taking-barge",
+  "class": "turn-taking",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "T3",
+    "T6",
+    "T7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "d511706af032a30d258dab44e5cce859e3f2b640a18ddc970baebd068a57ef4c",
+      "text": "Hi, is this Voni?"
+    },
+    {
+      "id": "barge",
+      "audio": "takes/barge.wav",
+      "sha256": "cec95ad636eaa583774d6fb849de98409db2a3f9cd253e4813114fe88a0994ac",
+      "text": "Sorry, wait, before you go on."
+    },
+    {
+      "id": "resume",
+      "audio": "takes/resume.wav",
+      "sha256": "e78224890f17ad911057715f74d58d14a44e23b100cb44cf4072ae4acf50436b",
+      "text": "Okay, go ahead."
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "barge",
+      "trigger": {
+        "type": "agent-speech-start",
+        "delayMs": 120
+      }
+    },
+    {
+      "take": "resume",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

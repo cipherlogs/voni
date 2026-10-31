@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "name": "soundscape-quiet-room",
+  "class": "soundscape",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "A3",
+    "A8"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "room",
+      "audio": "takes/room.wav",
+      "sha256": "3cd63bdf7c8ad4aa8b25d4ff0e658032f8f498c3dd5978e91f6fdf545888608d",
+      "text": "Hi, can you hear me okay?"
+    }
+  ],
+  "script": [
+    {
+      "take": "room",
+      "trigger": {
+        "type": "call-open"
+      }
+    }
+  ]
+}

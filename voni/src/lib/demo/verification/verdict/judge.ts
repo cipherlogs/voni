@@ -611,13 +611,25 @@ export function judgeProperty(
 
   const failing = checks.filter((item) => !item.passed);
   if (failing.length > 0) {
+    // A failed check names the bar and the observed value; the evaluator's own
+    // measurement detail carries what the check cannot (a cost's leg breakdown,
+    // a stop's reason), so one failure is triageable without a second read.
+    const failingScenarios = new Set(
+      failing.flatMap((item) => (item.scenario === null ? [] : [item.scenario])),
+    );
+    const measuredDetail = unique(
+      selected
+        .filter((item) => failingScenarios.has(item.scenario))
+        .map((item) => (item.detail ?? "").trim()),
+    );
     return {
       ...baseVerdict(property),
       status: "FAIL",
       reason: "below-bar",
       detail:
         `${property.id}: ${failing.map((item) => item.detail).join("; ")} ` +
-        `(n=${summary.count})`,
+        `(n=${summary.count})` +
+        (measuredDetail.length === 0 ? "" : `; ${measuredDetail.join("; ")}`),
       sampleCount: summary.count,
       smallSample,
       summary,

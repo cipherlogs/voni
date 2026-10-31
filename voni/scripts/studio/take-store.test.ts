@@ -298,7 +298,7 @@ test("the store has no edit or delete surface: a take is appended, never mutated
 
     assert.deepEqual(
       Object.keys(store).sort(),
-      ["assertSelectable", "corpus", "get", "land", "list", "read", "retire", "retirement", "root", "selectable", "verify"],
+      ["assertSelectable", "baselineTakes", "corpus", "get", "land", "list", "read", "retire", "retirement", "root", "selectable", "verify"],
       "re-recording is the only change a take has: no update, patch, rename or delete",
     );
     assert.deepEqual(await store.get(first.takeId), first);
@@ -422,6 +422,23 @@ test("a baseline take is blind comparison audio, never a scenario take", async (
       store.assertSelectable(baseline.takeId),
       assertRefusal("baseline-take", /blind comparison/),
     );
+  });
+});
+
+test("baselineTakes lists only active baseline takes, never scenario takes", async () => {
+  await withStore(async (store) => {
+    const baseline = await store.land({
+      mode: "one-shot",
+      audio: wav(8),
+      labels: LABELS,
+      prompt: { text: "I would like to book a table." },
+      baseline: BASELINE,
+    });
+    await store.land({ mode: "one-shot", audio: wav(16), labels: LABELS, prompt: { text: "Hi" } });
+
+    assert.deepEqual((await store.baselineTakes()).map((take) => take.takeId), [baseline.takeId]);
+    await store.retire(baseline.takeId, { reviewer: "owner", reason: "fixture: superseded call" });
+    assert.deepEqual(await store.baselineTakes(), [], "a retired baseline take is not part of the pinned list");
   });
 });
 
