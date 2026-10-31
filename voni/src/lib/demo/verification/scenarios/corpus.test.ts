@@ -65,17 +65,18 @@ function wavFacts(bytes: Buffer): { sampleRate: number; channels: number; bits: 
   };
 }
 
-test("the committed fast corpus is ten English scenarios with twenty recorded takes", async () => {
+test("the committed fast corpus keeps its ten English scenarios and twenty recorded takes", async () => {
   const corpus = await load();
   assert.equal(corpus.version, 1);
   assert.match(corpus.fingerprint, /^[0-9a-f]{64}$/);
-  assert.deepEqual(
-    corpus.scenarios.map((scenario) => scenario.name),
-    [...FAST_CONTRACT_SCENARIOS].sort(),
-  );
-  assert.equal(corpus.scenarios.length, 10);
+  const byName = new Map(corpus.scenarios.map((scenario) => [scenario.name, scenario]));
+  const fast = FAST_CONTRACT_SCENARIOS.map((name) => {
+    const scenario = byName.get(name);
+    assert.ok(scenario, `the fast corpus is missing ${name}`);
+    return scenario;
+  });
   assert.equal(
-    corpus.scenarios.reduce((sum, scenario) => sum + scenario.takes.length, 0),
+    fast.reduce((sum, scenario) => sum + scenario.takes.length, 0),
     20,
     "every caller line is its own committed take",
   );

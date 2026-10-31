@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "comprehension-numbers",
+  "class": "comprehension",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "K2",
+    "K8"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "46703d200fa09df4abb964848b3f7a6644d5360f008425439a23f75dafe2d7ab",
+      "text": "Hello, I need to move my appointment."
+    },
+    {
+      "id": "number",
+      "audio": "takes/number.wav",
+      "sha256": "716b34cffb4538f64fc578a91214e47ae9fe254970209afff7212abe60f5e696",
+      "text": "My reference number is 4 1 5 2 0 8 7 6."
+    },
+    {
+      "id": "readback",
+      "audio": "takes/readback.wav",
+      "sha256": "9c2c621712c3aafd4cdd54cf0eec2ca07797670cedae9df30ff6458835d10b87",
+      "text": "Yes. 4 1 5 2 0 8 7 6. Please read it back to me."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "number",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "readback",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
