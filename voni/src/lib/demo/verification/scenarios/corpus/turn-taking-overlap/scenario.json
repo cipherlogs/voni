@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "name": "turn-taking-overlap",
+  "class": "turn-taking",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "T7",
+    "T9",
+    "T10"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "edge": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "61a51787c9420138888560c0a60381adeebf813310a6ffce2ef238021176c75d",
+      "text": "Hi, is this Voni?"
+    },
+    {
+      "id": "overlap",
+      "audio": "takes/overlap.wav",
+      "sha256": "0177ae5fd7da3bd3c96c7bf73e5ee6cc6d5fdd50f272460f6315389dd4d8e12f",
+      "text": "Mm, right, sorry, go on."
+    },
+    {
+      "id": "resume",
+      "audio": "takes/resume.wav",
+      "sha256": "65ad2989e0e24b3ff61283d588bcb484bee9c749f11d0516b7d0149a2fcbaa4a",
+      "text": "Okay. So how does the demo work?"
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "overlap",
+      "trigger": {
+        "type": "agent-speech-start",
+        "delayMs": 2000
+      }
+    },
+    {
+      "take": "resume",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

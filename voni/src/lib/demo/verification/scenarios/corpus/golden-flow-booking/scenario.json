@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "name": "golden-flow-booking",
+  "class": "golden-flow",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "L4",
+    "T2",
+    "C1",
+    "C7",
+    "C8",
+    "L9",
+    "L11"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "edge": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "21a8e4cf1cb295a4f160d3439a2cf9f9ba2febfe9b3dd63f0383c76c24342b20",
+      "text": "Hi, is this Voni?"
+    },
+    {
+      "id": "request",
+      "audio": "takes/request.wav",
+      "sha256": "41d9e4ac42c8d228ee55cb8da905f8e3011a20d32af93f52a8bd0f68414b802a",
+      "text": "I'd like to book a cleaning appointment for next week."
+    },
+    {
+      "id": "confirm",
+      "audio": "takes/confirm.wav",
+      "sha256": "54c04ede72e2bb5daddc952366e80951ce53297808d311d181dfe75a943685de",
+      "text": "Tuesday at ten works. My name is Sam."
+    },
+    {
+      "id": "goodbye",
+      "audio": "takes/goodbye.wav",
+      "sha256": "94a7eeb967b45c441af321e1fbda6dfbf76699c750777b7f477f760fb258b562",
+      "text": "Perfect, thank you. Goodbye."
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "request",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "confirm",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "goodbye",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

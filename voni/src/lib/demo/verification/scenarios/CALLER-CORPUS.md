@@ -11,14 +11,17 @@ not fixtures. This file records how it was produced and how it may change.
   `language` is the scenario's own Locale (`en`, `es`, `fr`, `de` or `pt`), so
   the Locale core is real speech in its target language.
 - Format: 24 kHz mono PCM16 WAV, the pipeline's ingress format.
-- Corpus version **1**: seventy-six scenarios, 189 takes, recorded **2026-10-31**
+- Corpus version **2**: eighty-eight scenarios, 218 takes, recorded **2026-10-31**
   with `npm run corpus:takes` and the local `CARTESIA_API_KEY`. Ticket 12's ten
   fast-contract scenarios carry twenty takes; ticket 13's five comprehension and
   five emotion scenarios carry thirty; ticket 14's soundscape, connectivity and
   meta-security scenarios carry nineteen; ticket 16's forty-eight Locale-core
   scenarios carry 120 takes (twelve behaviours on es, fr, de and pt, thirty per
-  Locale). Adding a scenario directory does not move the version; only a
-  deliberate retake does.
+  Locale); ticket 15's tools and ticket 20's resilience edge scenarios carry the
+  rest. The last three English scenarios — `golden-flow-booking`,
+  `turn-taking-overlap` and `caller-hangup-mid-word` — carry nine takes and bring
+  English to the spec's 40. Adding a scenario directory does not move the
+  version; only a deliberate retake does.
 - Every take's exact bytes are pinned by its `sha256` in `scenario.json`. The
   loader hashes the file on every load; a mismatch is a named `take-drift`
   refusal with exit 2.
@@ -48,3 +51,16 @@ not fixtures. This file records how it was produced and how it may change.
 - The four `locale-television-*` scenarios name the `television` bed, the same
   gap ticket 14 records in `SOUNDSCAPES.md`: until a real bed is committed the
   adapters refuse that soundscape by name rather than mixing digital silence.
+- Held-out names still without a committed scenario: `sarcastic`, `distressed`
+  and `mispronounced-email`. The corpus seals five of the spec's eight
+  (`second-voice`, `speakerphone`, `prompt-injection`, `two-tools-in-turn` and
+  `caller-hangup-mid-word`). The absent three stay a recorded gap; the corpus
+  does not add a stand-in under another name.
+- `turn-taking-overlap` starts its second take two seconds after the agent's
+  first speech onset, so one caller turn overlaps the greeting's tail and then
+  yields. It cites T7, T9 and T10, never T3: a barge cut is
+  `turn-taking-barge`'s property.
+- `caller-hangup-mid-word` expresses its hangup in the trigger list, not as a
+  media fault: the final step is an `at-offset` take whose line breaks off
+  mid-word, with no reply or goodbye step after it, so the harness ends the
+  call as the caller's own hangup.
