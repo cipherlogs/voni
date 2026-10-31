@@ -158,6 +158,10 @@ export type StudioErrorCode =
   | "missing-baseline-consent"
   | "invalid-baseline-consent"
   | "unknown-baseline-consent-field"
+  | "missing-attestation"
+  | "invalid-baseline-session"
+  | "malformed-consent"
+  | "wrong-duration-band"
   | "missing-reviewer"
   | "missing-reason"
   | "already-retired"
@@ -373,6 +377,15 @@ function parseBaseline(value: unknown): BaselineCapture {
     );
   }
   return { participantId, consentRef, consentedAt, call: baseline.call };
+}
+
+/**
+ * Validate a baseline consent block without landing a take. The Studio's save
+ * gate checks consent before it measures the call, so a missing reference is
+ * refused as missing consent, not as a wrong duration.
+ */
+export function validateBaselineCapture(value: unknown): BaselineCapture {
+  return parseBaseline(value);
 }
 
 function retirementText(value: unknown, field: "reviewer" | "reason", max: number): string {

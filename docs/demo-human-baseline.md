@@ -16,7 +16,9 @@ scenario, and never committed: takes and consent stay in `voni/.studio/`
 
 - A quiet room, one microphone, and the same setup for both calls of a person.
 - The Studio running locally: `cd voni && npm run demo:studio` (record/corpus at
-  <http://127.0.0.1:4317>; the Corpus surface has the baseline capture form).
+  <http://127.0.0.1:4317>; the one-button baseline flow is at
+  <http://127.0.0.1:4317/baseline>, and the Corpus surface keeps the manual
+  baseline capture form).
 - `ffmpeg`/`ffprobe` on `PATH` if a baseline take is WebM, Ogg, MP3 or M4A. WAV
   is measured from its header and needs nothing else.
 - A pseudonym per participant (`participant-01` … `participant-05`). The repo
@@ -31,7 +33,9 @@ For each participant, before recording:
 2. Write a short text pointer beside the takes at
    `voni/.studio/consent/<participantId>/consent.md`. It must contain the
    participant pseudonym and the consent date, and where the signed original
-   lives. Example:
+   lives. The `/baseline` setup screen writes this pointer for every participant
+   from the owner's one-tap attestation, using the server clock's date; the
+   pointer is written once and never re-dated. Example:
 
    ```text
    participant-01 consented on 2026-11-02 for baseline comparison audio.
@@ -62,9 +66,12 @@ Run two sessions of two people, with an optional fifth person in either:
   caller booking a table or a viewing, speaking at a natural pace.
 - **Call 2** is unscripted: the caller describes a real service problem in their
   own words. No agent speaks on either call; this is human reference audio.
-- Land each call through **Corpus → Human baseline capture** with the
-  participant pseudonym, `call` 1 or 2, consent reference, consent date and all
-  three labels (`intent`, `emotion`, `accent`). Never default or guess a label.
+- Land each call through the **`/baseline`** one-button flow: tap the
+  participant count, tap each participant's accent, tick the consent
+  attestation, then press Record and speak. Stop lands the take with the plan's
+  labels and the participant's consent block. The manual **Corpus → Human
+  baseline capture** form remains for a take recorded outside the flow; both
+  paths use the same take store. Never default or guess a label.
 - Record call 1, then take the break, then call 2. A tired or rushed call is
   outside the band or unusable; stop and reschedule rather than speed up.
 - If a call is bad (clipping, wrong length, interruption), record it again (the
@@ -90,10 +97,21 @@ the take and is allowed only before pinning.
 ## Owner runbook
 
 1. Start the Studio: `cd voni && npm run demo:studio`.
-2. Consent each participant and file `voni/.studio/consent/<id>/consent.md`.
-3. Record both calls per participant, in the order above, through the Corpus
-   baseline form. Use `participant-01`…`participant-05`; never a real name.
-4. When the last call lands, pin the list **once**:
+2. Open <http://127.0.0.1:4317/baseline>. There is no text field in this flow: tap
+   the participant count, tap each participant's accent, tick "Signed consent
+   for every participant is filed outside the repo", then Start. Start writes
+   `voni/.studio/consent/<id>/consent.md` for every participant.
+3. Record both calls per participant, in the order above, one participant at a
+   time. Call 1 is the scripted booking, then a five-minute break with Next,
+   then the unscripted service problem. Each call has one Record/Stop button and
+   a live timer; Stop saves through the same take store and refuses a call
+   shorter than 4:00 or longer than 6:00 by name (`wrong-duration-band`). Stop
+   with a little margin (about 4:10–5:50) so the measured audio is comfortably
+   inside the band. Use `participant-01`…`participant-05`; the flow never asks
+   for a real name.
+4. When the last call lands, press **Pin baseline** on the finish screen. It
+   pins the list once and re-verifies it: exit 0 prints the hash list, a refusal
+   is shown with its code. The equivalent command is:
 
    ```sh
    cd voni
