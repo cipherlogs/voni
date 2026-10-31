@@ -29,6 +29,8 @@ export type ScenarioErrorCode =
   | "unsafe-take-path"
   | "unknown-fault"
   | "invalid-fault"
+  | "unknown-edge-condition"
+  | "invalid-edge-condition"
   | "held-out-mismatch"
   | "duplicate-scenario"
   | "empty-scenario"
@@ -46,6 +48,12 @@ export type ScenarioErrorCode =
   | "fast-ceiling-unset"
   | "fast-verdict-incomplete"
   | "fast-run-incomplete"
+  | "missing-locale-scenario"
+  | "locale-scenario-mismatch"
+  | "locale-coverage-gap"
+  | "locale-ceiling-unset"
+  | "locale-evidence-missing"
+  | "locale-residual-risk"
   | "invalid-audio"
   | "tts-failed";
 

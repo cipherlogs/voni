@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-backchannel-pt",
+  "class": "turn-taking",
+  "locale": "pt",
+  "heldOut": false,
+  "expectedProperties": [
+    "T4"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "22ad5e7eeca48949d92d5d0dbc60d3bbcbe4082320bd3b4f07df51c9b7de3020",
+      "text": "Olá, quero remarcar a minha consulta."
+    },
+    {
+      "id": "back",
+      "audio": "takes/back.wav",
+      "sha256": "5af3c44f793db2f6e38f79d066401a8182c5cbfcfae0488fa3e6563420b0925b",
+      "text": "Tá bom, claro."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "20a9106f474466e50476297c9c8b29c0f24f2aefb0834e2916193f0fdbdecd81",
+      "text": "Sim, prefiro quinta de manhã."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "back",
+      "trigger": {
+        "type": "agent-speech-start",
+        "delayMs": 200
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

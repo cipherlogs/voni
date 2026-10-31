@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-angry-es",
+  "class": "emotion",
+  "locale": "es",
+  "heldOut": false,
+  "expectedProperties": [
+    "C4",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "03e47831dd4336185623051ddf151ef4da8ec903a94128ffdbb4c1ec10108712",
+      "text": "Estoy harto, llevo tres días esperando."
+    },
+    {
+      "id": "angry",
+      "audio": "takes/angry.wav",
+      "sha256": "0fc9637e6cf02726e8124ba3a6fee289afb9c6811e1660f437e2bb4481806904",
+      "text": "¡Esto es ridículo! ¡Nadie me llama!"
+    },
+    {
+      "id": "settle",
+      "audio": "takes/settle.wav",
+      "sha256": "cd4927fe11b1fbe812e48a025568e40a2cbb8b8a166b0aa206499c39974d4f77",
+      "text": "Bueno... vale, decidme qué pasa."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "angry",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "settle",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

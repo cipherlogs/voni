@@ -269,6 +269,37 @@ test("the parser refuses an unknown fault kind and an invalid fault window by na
   );
 });
 
+test("browser-edge conditions are a closed vocabulary and default to none", () => {
+  const parsed = parseScenario(
+    scenario({ edge: [{ kind: "page-freeze", atMs: 2_500, durationMs: 4_000 }] }),
+    { knownProperties: new Set(["L1", "T1"]) },
+  );
+  assert.deepEqual(parsed.edge, [{ kind: "page-freeze", atMs: 2_500, durationMs: 4_000 }]);
+  assert.deepEqual(
+    parseScenario(scenario(), { knownProperties: new Set(["L1", "T1"]) }).edge,
+    [],
+    "a scenario with no edge field carries no edge condition",
+  );
+  assertRefusal(
+    () =>
+      parseScenario(
+        scenario({ edge: [{ kind: "sleep", atMs: 10 }] }),
+        { knownProperties: new Set(["L1", "T1"]) },
+      ),
+    "unknown-edge-condition",
+    /sleep/,
+  );
+  assertRefusal(
+    () =>
+      parseScenario(
+        scenario({ edge: [{ kind: "mic-denied" }] }),
+        { knownProperties: new Set(["L1", "T1"]) },
+      ),
+    "invalid-edge-condition",
+    /atMs/,
+  );
+});
+
 test("a held-out name must carry the mark, and only a held-out name may carry it", async () => {
   const sealed = await parse({
     name: "sarcastic",

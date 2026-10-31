@@ -20,6 +20,7 @@ function scenario(script: readonly string[], texts: Readonly<Record<string, stri
     expectedProperties: ["K1"],
     soundscape: { id: "quiet-room" },
     faults: [],
+    edge: [],
     takes: Object.entries(texts).map(([id, text]) => ({
       id,
       audio: `takes/${id}.wav`,

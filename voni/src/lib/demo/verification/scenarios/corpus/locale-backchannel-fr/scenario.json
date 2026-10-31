@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-backchannel-fr",
+  "class": "turn-taking",
+  "locale": "fr",
+  "heldOut": false,
+  "expectedProperties": [
+    "T4"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "daf7cb48d9aca3142e7eeb4b9bc67aff084c1f98a6f0f5eecaf89861513f2989",
+      "text": "Bonjour, je voudrais déplacer mon rendez-vous."
+    },
+    {
+      "id": "back",
+      "audio": "takes/back.wav",
+      "sha256": "ba3e3a7c0eac6bd96ab7782472a0949bb332bff65dfb6ceac0a0b4f75bce98b9",
+      "text": "D'accord, oui."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "eafef7375ea8352ee52a028f42cda2528fa1131a5a754857b60287ab3d9e76f8",
+      "text": "Oui, plutôt jeudi matin."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "back",
+      "trigger": {
+        "type": "agent-speech-start",
+        "delayMs": 200
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

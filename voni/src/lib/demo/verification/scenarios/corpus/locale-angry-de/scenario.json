@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-angry-de",
+  "class": "emotion",
+  "locale": "de",
+  "heldOut": false,
+  "expectedProperties": [
+    "C4",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "cceb84b262287c7e7e3945e23f8dca95111cbcdf9654c3c0780d1228d551a122",
+      "text": "Ich habe genug, ich warte seit drei Tagen."
+    },
+    {
+      "id": "angry",
+      "audio": "takes/angry.wav",
+      "sha256": "9d233b8a3aa78165d70c9c12dfb58601bdaf33a4fd2d3ec13eef1168f87afdb1",
+      "text": "Das ist lächerlich! Niemand ruft mich zurück!"
+    },
+    {
+      "id": "settle",
+      "audio": "takes/settle.wav",
+      "sha256": "5f4b028f755a723d71ac9d92228e2a2d414fdf4689aecffe9345a47d57d8ebdd",
+      "text": "Na gut... sagen Sie mir, was los ist."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "angry",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "settle",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

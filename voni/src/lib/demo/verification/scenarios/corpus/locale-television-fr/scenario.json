@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-television-fr",
+  "class": "soundscape",
+  "locale": "fr",
+  "heldOut": false,
+  "expectedProperties": [
+    "A3",
+    "A8"
+  ],
+  "soundscape": {
+    "id": "television",
+    "levelDb": -18
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "393c95985a7d62805c78eefab8ad6157914dfd80ac9e15feb4b041b4059d1076",
+      "text": "Bonjour, vous m'entendez ? La télévision est allumée."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "3de9aeeae631c9ab774a8b9e8292cc0840721f047bd76c4af18c71b98c63b4de",
+      "text": "Oui, je voudrais un rendez-vous vendredi."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

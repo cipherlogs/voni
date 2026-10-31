@@ -3,12 +3,18 @@ import { basename } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 
 import { evaluateTriggers } from "../../src/lib/demo/verification/scenarios/triggers";
-import type { AgentTimelineEvent } from "../../src/lib/demo/verification/scenarios/types";
+import type {
+  AgentTimelineEvent,
+  EdgeCondition,
+  Fault,
+} from "../../src/lib/demo/verification/scenarios/types";
 import {
   installSyntheticMic,
+  micAppliedFaults,
   readSyntheticMicReport,
   type SyntheticMicTake,
 } from "../../scripts/lib/browser-adapter/synthetic-mic";
+import type { EdgeObservation } from "../../scripts/lib/browser-adapter/types";
 
 /**
  * The browser adapter's one Playwright spec: a certifying call on the real
@@ -56,7 +62,8 @@ type Invocation = {
       | { type: "silence"; silenceMs: number; delayMs?: number }
       | { type: "at-offset"; atMs: number };
   }[];
-  faults: readonly { kind: string; atMs: number; durationMs?: number }[];
+  faults: readonly Fault[];
+  edge: readonly EdgeCondition[];
   holdOpenMs: number | null;
 };
 
@@ -74,6 +81,7 @@ type Report = {
   };
   triggerPlan: ReturnType<typeof evaluateTriggers>;
   faultsApplied: readonly unknown[];
+  edge: EdgeObservation | null;
   syntheticMic: {
     method: "getUserMedia";
     installedAt: number;
@@ -217,6 +225,205 @@ async function waitUntilCallMs(page: Page, targetMs: number, timeoutMs: number):
   return false;
 }
 
+type StatusRead = {
+  state: string;
+  status: string;
+  holding: boolean;
+  elapsedS: number | null;
+};
+
+/** The visitor's own status line, read from the real rendered page. */
+async function readStatus(page: Page): Promise<StatusRead> {
+  return page.evaluate(() => {
+    const state =
+      document.querySelector("[data-voice-state]")?.getAttribute("data-voice-state") ?? "unknown";
+    const holding =
+      document.querySelector("[data-holding]")?.getAttribute("data-holding") === "true";
+    const text = document.body.innerText;
+    const line =
+      text.match(/(On hold · [^\n]+|Reconnecting…|Connecting · [^\n]+|Listening · [^\n]+|Speaking · [^\n]+|Call didn't connect)/)?.[0] ??
+      "";
+    const clock = line.match(/(\d+):(\d{2})/);
+    return {
+      state,
+      status: line,
+      holding,
+      elapsedS: clock === null ? null : Number(clock[1]) * 60 + Number(clock[2]),
+    };
+  });
+}
+
+async function waitForCallMs(page: Page, targetMs: number, timeoutMs: number): Promise<void> {
+  await waitUntilCallMs(page, targetMs, timeoutMs);
+}
+
+async function setVisibility(page: Page, hidden: boolean): Promise<void> {
+  await page.evaluate((nextHidden) => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: nextHidden ? "hidden" : "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    document.dispatchEvent(new Event(nextHidden ? "freeze" : "resume"));
+  }, hidden);
+}
+
+type EdgeRunner = {
+  observation: EdgeObservation | null;
+  faultReport: () => readonly unknown[];
+};
+
+/**
+ * Apply the scenario's browser-edge conditions on the visitor's side: the page
+ * goes away, the device changes. The deploy drain cannot be produced by a
+ * browser alone; the condition is recorded as not applied rather than faked.
+ */
+async function applyEdgeConditions(
+  page: Page,
+  spec: Invocation,
+  callOpenedAtMs: number,
+  timeoutMs: number,
+  openSocketCount: () => number,
+): Promise<EdgeRunner> {
+  const conditions = spec.edge ?? [];
+  if (conditions.length === 0) {
+    return { observation: null, faultReport: () => [] };
+  }
+  const applied: {
+    kind: string;
+    atMs: number;
+    durationMs?: number;
+    applied: boolean;
+    observed: string;
+  }[] = [];
+  let hold: NonNullable<EdgeObservation["hold"]> | null = null;
+  let micDenied: NonNullable<EdgeObservation["micDenied"]> | null = null;
+  let deviceSwitch: NonNullable<EdgeObservation["deviceSwitch"]> | null = null;
+  let drain: NonNullable<EdgeObservation["drain"]> | null = null;
+
+  for (const condition of conditions) {
+    const duration = condition.durationMs ?? 3_000;
+    if (condition.kind === "mic-denied") {
+      const started = Date.now();
+      let status = await readStatus(page);
+      while (Date.now() - started < 8_000 && status.state !== "ended") {
+        await page.waitForTimeout(150);
+        status = await readStatus(page);
+      }
+      const text = await page.evaluate(() => document.body.innerText);
+      const denied =
+        /microphone|mic access|allow mic/i.test(text) || status.status.includes("didn't connect");
+      const openSockets = openSocketCount();
+      micDenied = {
+        namedState: status.status,
+        errorText: text.slice(0, 400),
+        socketOpenAfterMs: 8_000,
+        openSockets,
+        teardownObserved: status.state === "ended",
+      };
+      applied.push({
+        kind: condition.kind,
+        atMs: condition.atMs,
+        applied: true,
+        observed: denied
+          ? `the denial named the microphone state (${status.state})`
+          : `the denial did not name the microphone state (${status.state})`,
+      });
+      continue;
+    }
+
+    await waitForCallMs(page, callOpenedAtMs + condition.atMs, timeoutMs);
+
+    if (condition.kind === "page-freeze" || condition.kind === "page-hidden") {
+      const before = await readStatus(page);
+      await setVisibility(page, true);
+      await page.waitForTimeout(250);
+      const during = await readStatus(page);
+      await page.waitForTimeout(duration);
+      await setVisibility(page, false);
+      const returnedAt = Date.now();
+      let sawConnecting = false;
+      let after = await readStatus(page);
+      while (Date.now() - returnedAt < Math.min(duration, timeoutMs)) {
+        if (after.state === "connecting") sawConnecting = true;
+        if (after.state === "listening" || after.state === "speaking" || after.state === "ended") break;
+        await page.waitForTimeout(50);
+        after = await readStatus(page);
+      }
+      hold = {
+        enteredAtMs: condition.atMs,
+        returnedAtMs: condition.atMs + duration,
+        holdingObserved: during.holding,
+        talkClockAtEnterS: before.elapsedS ?? 0,
+        talkClockAtReturnS: after.elapsedS,
+        stateAtEnter: before.state,
+        stateAtReturn: after.state,
+        ringbackObserved: sawConnecting,
+        greetingCountAtEnter: before.status.includes("Listening") || before.status.includes("Speaking") ? 1 : 0,
+        greetingCountAtReturn: after.status.includes("Listening") || after.status.includes("Speaking") ? 1 : 0,
+      };
+      applied.push({
+        kind: condition.kind,
+        atMs: condition.atMs,
+        durationMs: duration,
+        applied: true,
+        observed: `${during.holding ? "held" : "did not hold"}; return state ${after.state}`,
+      });
+      continue;
+    }
+
+    if (condition.kind === "device-switch") {
+      await page.evaluate(() => {
+        (
+          window as unknown as { __voniSyntheticMic?: { switchDevice(): void } }
+        ).__voniSyntheticMic?.switchDevice();
+      });
+      await page.waitForTimeout(duration);
+      const status = await readStatus(page);
+      const mic = await readSyntheticMicReport(page).catch(() => null);
+      const reacquired = mic?.reacquiredSinceSwitch === true;
+      const endedHonestly = status.state === "ended" || /didn't connect|could not|no microphone/i.test(status.status);
+      deviceSwitch = {
+        atMs: condition.atMs,
+        reacquired,
+        state: status.state,
+        endedHonestly,
+      };
+      applied.push({
+        kind: condition.kind,
+        atMs: condition.atMs,
+        durationMs: duration,
+        applied: true,
+        observed: `${reacquired ? "reacquired" : "no reacquisition"}; state ${status.state}`,
+      });
+      continue;
+    }
+
+    // Deploy drain is a service fact. A browser cannot start the drain, so it
+    // records the condition as unapplied and leaves R7 to fail closed rather
+    // than inventing a refusal.
+    drain = {
+      liveCallFinished: false,
+      newCallAttempted: false,
+      newCallRefused: false,
+      refusalCode: null,
+      refusalText: "the harness has no drain control for this service",
+    };
+    applied.push({
+      kind: condition.kind,
+      atMs: condition.atMs,
+      durationMs: duration,
+      applied: false,
+      observed: "the harness cannot start the service drain; R7 fails closed",
+    });
+  }
+
+  return {
+    observation: { conditions: applied, hold, micDenied, deviceSwitch, drain },
+    faultReport: () => [],
+  };
+}
+
 type Resolved = { atMs: number; after: number };
 
 /**
@@ -293,12 +500,18 @@ test("a certifying browser call on the real stack", async ({ page }) => {
   const events: TimelineEntry[] = [];
   const spoken: { step: number; take: string; atMs: number }[] = [];
   const socketUrls: string[] = [];
+  const openSockets = new Set<unknown>();
+  const micDenied = (spec.edge ?? []).some((condition) => condition.kind === "mic-denied");
   let marksResponse: { path: string | null } | null = null;
   let captureResponse: { path: string | null } | null = null;
   let endedBy: Report["endedBy"] = "timeout";
   let error: string | null = null;
 
-  page.on("websocket", (socket) => socketUrls.push(socket.url()));
+  page.on("websocket", (socket) => {
+    socketUrls.push(socket.url());
+    openSockets.add(socket);
+    socket.on("close", () => openSockets.delete(socket));
+  });
   page.on("pageerror", (pageError) => {
     error = `page error: ${pageError.message}`;
     console.log(`[browser pageerror] ${pageError.message}`);
@@ -328,8 +541,12 @@ test("a certifying browser call on the real stack", async ({ page }) => {
     )
     .catch(() => null);
 
-  // Before any app code: the mic and the timeline. Both are harness-owned.
-  await installSyntheticMic(page, micTakes);
+  // Before any app code: the mic and the timeline. Both are harness-owned. The
+  // scenario's media faults and mic denial are applied here, at the edge.
+  await installSyntheticMic(page, micTakes, {
+    faults: spec.faults ?? [],
+    denyMicrophone: micDenied,
+  });
   await page.addInitScript({ content: `(${timelineBootstrap.toString()})();` });
 
   await page.goto(`/?delivercapture=1`, { waitUntil: "domcontentloaded" });
@@ -378,50 +595,67 @@ test("a certifying browser call on the real stack", async ({ page }) => {
     );
   }
 
-  // The caller cannot speak into a line whose mic has not been served. The
-  // synthetic stream is handed to the real mic path at getUserMedia; a
-  // call-open take waits for that handoff instead of playing into a dead bus.
-  await page.waitForFunction(
-    () => {
-      const api = (
-        window as unknown as { __voniSyntheticMic?: { acquired?: () => boolean } }
-      ).__voniSyntheticMic;
-      return api?.acquired?.() === true;
-    },
-    undefined,
-    { timeout: 20_000 },
+  const callOpenedAtMs =
+    (await readTimeline(page)).events.find((event) => event.type === "call-open")?.atMs ?? 0;
+  // The edge runs alongside the caller's script: a hidden page, a device
+  // change and a denial are the visitor's machine changing, not a fake stack.
+  const edgeTask = applyEdgeConditions(
+    page,
+    spec,
+    callOpenedAtMs,
+    30_000,
+    () => openSockets.size,
   );
 
-  let cursor = 0;
-  const stepTimeoutMs = 30_000;
-  for (const [stepIndex, step] of spec.script.entries()) {
-    const resolved = await resolveTrigger(page, spec.script, stepIndex, cursor, stepTimeoutMs);
-    if (resolved === null) {
-      error = `trigger for step ${stepIndex} ("${step.take}", ${step.trigger.type}) never arrived`;
-      break;
+  if (!micDenied) {
+    // The caller cannot speak into a line whose mic has not been served. The
+    // synthetic stream is handed to the real mic path at getUserMedia; a
+    // call-open take waits for that handoff instead of playing into a dead bus.
+    await page.waitForFunction(
+      () => {
+        const api = (
+          window as unknown as { __voniSyntheticMic?: { acquired?: () => boolean } }
+        ).__voniSyntheticMic;
+        return api?.acquired?.() === true;
+      },
+      undefined,
+      { timeout: 20_000 },
+    );
+
+    let cursor = 0;
+    const stepTimeoutMs = 30_000;
+    for (const [stepIndex, step] of spec.script.entries()) {
+      const resolved = await resolveTrigger(page, spec.script, stepIndex, cursor, stepTimeoutMs);
+      if (resolved === null) {
+        error = `trigger for step ${stepIndex} ("${step.take}", ${step.trigger.type}) never arrived`;
+        break;
+      }
+      cursor = resolved.after;
+      await waitUntilCallMs(page, resolved.atMs, stepTimeoutMs);
+      const timeline = await readTimeline(page);
+      const played = await page.evaluate((id) => {
+        const api = (
+          window as unknown as {
+            __voniSyntheticMic: {
+              play(takeId: string, delayMs: number): Promise<unknown>;
+            };
+          }
+        ).__voniSyntheticMic;
+        return api.play(id, 0);
+      }, step.take);
+      spoken.push({ step: stepIndex, take: step.take, atMs: timeline.now });
+      void played;
     }
-    cursor = resolved.after;
-    await waitUntilCallMs(page, resolved.atMs, stepTimeoutMs);
-    const timeline = await readTimeline(page);
-    const played = await page.evaluate((id) => {
-      const api = (
-        window as unknown as {
-          __voniSyntheticMic: {
-            play(takeId: string, delayMs: number): Promise<unknown>;
-          };
-        }
-      ).__voniSyntheticMic;
-      return api.play(id, 0);
-    }, step.take);
-    spoken.push({ step: stepIndex, take: step.take, atMs: timeline.now });
-    void played;
+  } else {
+    // A denied microphone never serves the caller; the refusal has to paint.
+    await page.waitForTimeout(2_000);
   }
 
   // Let the caller finish the last take, then let the agent answer it, then
   // hang up as a caller would. A take cut by the harness would be a measured
   // failure caused by the harness; a service that already ended is an
   // agent-end.
-  if (error === null) {
+  if (error === null && !micDenied) {
     const last = spoken[spoken.length - 1];
     const lastTake = spec.takes.find((take) => take.id === last?.take);
     if (last !== undefined) {
@@ -547,6 +781,7 @@ test("a certifying browser call on the real stack", async ({ page }) => {
     if (!existsSync(endPath)) error = error ?? "the pipeline wrote no end document";
   }
 
+  const edgeResult = await edgeTask;
   const report: Report = {
     callId,
     voice: spec.voice,
@@ -555,7 +790,9 @@ test("a certifying browser call on the real stack", async ({ page }) => {
     endedAt: new Date().toISOString(),
     timeline: { events, spoken },
     triggerPlan: evaluateTriggers(spec.script, events),
-    faultsApplied: [],
+    faultsApplied:
+      mic === null ? [] : micAppliedFaults(spec.faults ?? [], mic.played),
+    edge: edgeResult.observation,
     syntheticMic: {
       method: "getUserMedia",
       installedAt: mic?.installedAt ?? 0,

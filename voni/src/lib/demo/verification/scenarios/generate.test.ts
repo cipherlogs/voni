@@ -10,6 +10,7 @@ import {
   applyTakeGeneration,
   parseCartesiaSse,
   planTakeGeneration,
+  synthesizeCartesia,
   wavFromPcm,
 } from "./generate";
 import type { ScenarioDocument } from "./types";
@@ -45,6 +46,7 @@ function document(overrides: Record<string, unknown> = {}): ScenarioDocument {
     expectedProperties: ["L4"],
     soundscape: { id: "quiet-room" },
     faults: [],
+    edge: [],
     takes: [
       {
         id: "hello",
@@ -120,6 +122,21 @@ test("the Cartesia SSE parser keeps audio chunks and refuses an error event", ()
       return true;
     },
   );
+});
+
+test("the generator speaks the Locale the scenario declares, never English by default", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const fakeFetch = (async (_url: string, init: RequestInit) => {
+    bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+    return new Response(`data: ${JSON.stringify({ data: Buffer.from([1, 0]).toString("base64") })}\n`, {
+      status: 200,
+    });
+  }) as unknown as typeof globalThis.fetch;
+
+  await synthesizeCartesia({ text: "Bonjour, j'ai besoin d'aide.", apiKey: "test", fetch: fakeFetch, language: "fr" });
+  assert.equal(bodies[0]?.language, "fr");
+  await synthesizeCartesia({ text: "Hola, necesito ayuda.", apiKey: "test", fetch: fakeFetch });
+  assert.equal(bodies[1]?.language, "en", "an omitted Locale keeps the English caller voice");
 });
 
 test("the plan names a missing, an unhashed, a recorded and a drifted take", async () => {
@@ -250,6 +267,7 @@ test("a take path may not escape its scenario directory, even at generation time
           expectedProperties: ["L4"],
           soundscape: { id: "quiet-room" },
           faults: [],
+          edge: [],
           takes: [{ id: "hello", audio: "../outside.wav", sha256: UNHASHED_TAKE_SHA256 }],
           script: [{ take: "hello", trigger: { type: "call-open" } }],
         },

@@ -31,6 +31,16 @@ const NEW_SOUNDSCAPE = [
 
 const NEW_CONNECTIVITY = ["connectivity-loss", "connectivity-latency"] as const;
 
+/** Ticket 20's browser-edge scenarios: one producing scenario per R2–R7. */
+const EDGE_CONNECTIVITY = [
+  "resilience-deploy-drain",
+  "resilience-device-switch",
+  "resilience-hidden-page",
+  "resilience-hold-return",
+  "resilience-mic-denied",
+  "resilience-reconnect",
+] as const;
+
 const NEW_META_SECURITY = [
   "prompt-injection",
   "cross-call-tool",
@@ -46,16 +56,16 @@ async function load() {
 }
 
 function namesOf(
-  scenarios: readonly { name: string; class: string }[],
+  scenarios: readonly { name: string; class: string; locale: string }[],
   classId: string,
 ): string[] {
   return scenarios
-    .filter((scenario) => scenario.class === classId)
+    .filter((scenario) => scenario.locale === "en" && scenario.class === classId)
     .map((scenario) => scenario.name)
     .sort();
 }
 
-test("the corpus holds four soundscape, three connectivity and three meta/security scenarios", async () => {
+test("the English corpus holds four soundscape, nine connectivity and three meta/security scenarios", async () => {
   const corpus = await load();
   assert.deepEqual(namesOf(corpus.scenarios, "soundscape"), [
     "second-voice",
@@ -67,6 +77,7 @@ test("the corpus holds four soundscape, three connectivity and three meta/securi
     "connectivity-jitter",
     "connectivity-latency",
     "connectivity-loss",
+    ...EDGE_CONNECTIVITY,
   ]);
   assert.deepEqual(namesOf(corpus.scenarios, "meta-security"), [
     "cross-call-tool",
@@ -103,6 +114,32 @@ test("the new scenarios cite the S, R and audio properties they exist to feed", 
       assert.deepEqual(scenario.faults, [], `${name} carries no undeclared fault`);
     }
   }
+});
+
+test("ticket 20's edge scenarios each produce one R property and no media fault", async () => {
+  const corpus = await load();
+  const byName = new Map(corpus.scenarios.map((scenario) => [scenario.name, scenario]));
+  const expected: Record<(typeof EDGE_CONNECTIVITY)[number], string> = {
+    "resilience-reconnect": "R2",
+    "resilience-hold-return": "R3",
+    "resilience-hidden-page": "R4",
+    "resilience-mic-denied": "R5",
+    "resilience-device-switch": "R6",
+    "resilience-deploy-drain": "R7",
+  };
+  for (const name of EDGE_CONNECTIVITY) {
+    const scenario = byName.get(name);
+    assert.ok(scenario, `${name} is missing`);
+    assert.deepEqual(scenario.expectedProperties, [expected[name]]);
+    assert.deepEqual(scenario.faults, [], `${name} is an edge condition, not a media fault`);
+    assert.equal(scenario.edge.length, 1, `${name} injects exactly one edge condition`);
+    for (const take of scenario.takes) {
+      const bytes = readFileSync(take.path);
+      assert.equal(take.sha256, sha256Hex(bytes));
+    }
+  }
+  // The same rejoin produces R2 and R3: one edge condition, two properties.
+  assert.equal(byName.get("resilience-hold-return")?.edge[0]?.kind, "page-freeze");
 });
 
 test("the held-out seals are exactly the spec's names, never a broader class seal", async () => {

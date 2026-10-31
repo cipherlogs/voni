@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-backchannel-de",
+  "class": "turn-taking",
+  "locale": "de",
+  "heldOut": false,
+  "expectedProperties": [
+    "T4"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "fa58f9132b01954e71cd68d73c20cc3a8b0eeccf8864bc21e337916c9b27fb65",
+      "text": "Hallo, ich möchte meinen Termin verschieben."
+    },
+    {
+      "id": "back",
+      "audio": "takes/back.wav",
+      "sha256": "5df54b6b4a13b320ab4fd92e5c2a43a417358bb03748f544aa15f077f36f13db",
+      "text": "Aha, klar."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "3795e3c7401017f3234b1742b6d563564e99af1cd53018f829728f573539968c",
+      "text": "Ja, lieber Donnerstagvormittag."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "back",
+      "trigger": {
+        "type": "agent-speech-start",
+        "delayMs": 200
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

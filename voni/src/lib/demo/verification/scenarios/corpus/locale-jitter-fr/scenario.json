@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-jitter-fr",
+  "class": "connectivity",
+  "locale": "fr",
+  "heldOut": false,
+  "expectedProperties": [
+    "A6",
+    "R1",
+    "T7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [
+    {
+      "kind": "network-jitter",
+      "atMs": 900,
+      "durationMs": 600
+    }
+  ],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "de4e0662f345648ba9a66099780b31a405998fff71cb53b1422209d92f073df2",
+      "text": "Bonjour, vous m'entendez bien ?"
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "daae05205c1bc552a71ee4c7fd78fa4c9794344c81a20121db59c44fa41db37e",
+      "text": "Je veux changer l'adresse de livraison."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

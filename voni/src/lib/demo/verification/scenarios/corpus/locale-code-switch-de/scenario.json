@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-code-switch-de",
+  "class": "comprehension",
+  "locale": "de",
+  "heldOut": false,
+  "expectedProperties": [
+    "K5",
+    "K6",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "ac9068122796b9d7852b65598c4443cbf81d8c6a0569d955809d52d50615e8aa",
+      "text": "Hallo, ich brauche Hilfe mit meinem Konto."
+    },
+    {
+      "id": "switch",
+      "audio": "takes/switch.wav",
+      "sha256": "050206aca37e98d5f35beb80d34a2b307ca2924fd12d76b76c1ec1aa49dc2f82",
+      "text": "Ja, aber ich muss die Adresse ändern. Can you help me?"
+    },
+    {
+      "id": "confirm",
+      "audio": "takes/confirm.wav",
+      "sha256": "203a11631f8c24297fb6d613b8e2a0850310669f516c439a0d55eb79b96cda96",
+      "text": "Perfekt, danke. That is all."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "switch",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "confirm",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

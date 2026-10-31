@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-television-pt",
+  "class": "soundscape",
+  "locale": "pt",
+  "heldOut": false,
+  "expectedProperties": [
+    "A3",
+    "A8"
+  ],
+  "soundscape": {
+    "id": "television",
+    "levelDb": -18
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "f275b4c21c6b42b397a6d91ea530e39d3a0efe9f3a1739fd69d654aba1e8f0f0",
+      "text": "Olá, está me ouvindo? A televisão está ligada."
+    },
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "d6909eca66306901ad6deaad0303e6a1ce894652eab157622b6888e29c503e8b",
+      "text": "Sim, queria marcar uma consulta para sexta."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

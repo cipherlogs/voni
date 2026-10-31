@@ -68,7 +68,7 @@ function wavFacts(bytes: Buffer): { sampleRate: number; channels: number; bits: 
 
 test("the committed fast corpus keeps its ten English scenarios and twenty recorded takes", async () => {
   const corpus = await load();
-  assert.equal(corpus.version, 1);
+  assert.equal(corpus.version, 2);
   assert.match(corpus.fingerprint, /^[0-9a-f]{64}$/);
   const byName = new Map(corpus.scenarios.map((scenario) => [scenario.name, scenario]));
   const fast = FAST_CONTRACT_SCENARIOS.map((name) => {
@@ -89,8 +89,8 @@ test("the committed fast corpus keeps its ten English scenarios and twenty recor
 
   for (const scenario of fast) {
     assert.equal(scenario.locale, "en");
-    assert.equal(scenario.heldOut, false);
-    assert.ok(!(HELD_OUT_SCENARIOS as readonly string[]).includes(scenario.name));
+    const sealed = (HELD_OUT_SCENARIOS as readonly string[]).includes(scenario.name);
+    assert.equal(scenario.heldOut, sealed, `${scenario.name} declares its sealed status`);
     assert.ok(scenario.expectedProperties.length > 0);
     assert.equal(scenario.soundscape.id, "quiet-room");
     for (const take of scenario.takes) {
@@ -120,7 +120,7 @@ test("the greeting-only scenario holds the line open for the waiting bar", async
 
 test("every committed script resolves against the same canonical timeline", async () => {
   const corpus = await load();
-  for (const scenario of corpus.scenarios) {
+  for (const scenario of corpus.scenarios.filter((entry) => entry.locale === "en")) {
     const plan = evaluateTriggers(scenario.script, TIMELINE);
     assert.deepEqual(plan.unresolved, [], `${scenario.name} has a step that never fires`);
     assert.equal(plan.points.length, scenario.script.length);
@@ -131,15 +131,17 @@ test("every committed script resolves against the same canonical timeline", asyn
 
 test("the connectivity scenarios inject deterministic faults and no other scenario does", async () => {
   const corpus = await load();
+  const jitter = [{ kind: "network-jitter", atMs: 900, durationMs: 600 }];
   const expected: Record<string, unknown[]> = {
-    "connectivity-jitter": [{ kind: "network-jitter", atMs: 900, durationMs: 600 }],
+    "connectivity-jitter": jitter,
     "connectivity-loss": [{ kind: "audio-dropout", atMs: 1_200, durationMs: 400 }],
     "connectivity-latency": [{ kind: "endpoint-latency", atMs: 600, durationMs: 350 }],
   };
   for (const scenario of corpus.scenarios) {
+    const localeJitter = scenario.name.startsWith("locale-jitter-") ? jitter : [];
     assert.deepEqual(
       scenario.faults,
-      expected[scenario.name] ?? [],
+      expected[scenario.name] ?? localeJitter,
       `${scenario.name} carries an undeclared fault`,
     );
   }

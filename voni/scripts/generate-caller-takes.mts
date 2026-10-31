@@ -145,7 +145,7 @@ async function main(): Promise<void> {
     const result = await applyTakeGeneration({
       scenarioDir: join(CORPUS_DIR, name),
       document,
-      synthesize: (text) => synthesizeCartesia({ text, apiKey }),
+      synthesize: (text) => synthesizeCartesia({ text, apiKey, language: document.locale }),
       retake: retakes,
     });
     if (result.wrote > 0) {
