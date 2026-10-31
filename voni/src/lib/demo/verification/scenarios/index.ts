@@ -17,6 +17,7 @@ export {
   TRIGGER_TYPES,
   AGENT_EVENT_TYPES,
   FAULT_KINDS,
+  EDGE_CONDITION_KINDS,
   type ScenarioClass,
   type Locale,
   type HeldOutScenario,
@@ -29,6 +30,8 @@ export {
   type TriggerPlan,
   type FaultKind,
   type Fault,
+  type EdgeConditionKind,
+  type EdgeCondition,
   type Soundscape,
   type ScenarioTake,
   type ScriptStep,
@@ -73,6 +76,23 @@ export {
   type TakeGenerator,
   type TakeGenerationResult,
 } from "./generate";
+
+export {
+  LOCALE_CORE_LOCALES,
+  LOCALE_CORE_SLUGS,
+  LOCALE_CORE_RULES,
+  LOCALE_CORE_REPETITIONS,
+  localeCoreContract,
+  localeCorePlan,
+  localeCorePropertyIds,
+  localeCoreRunCeiling,
+  localeCoreScenarioName,
+  type LocaleCoreLocale,
+  type LocaleCoreSlug,
+  type LocaleCoreRule,
+  type LocaleCorePlan,
+  type LocaleCorePlanEntry,
+} from "./locale";
 
 export {
   FAST_CONTRACT_SCENARIOS,

@@ -62,7 +62,8 @@
     "demo:baseline:verify": "node --import tsx scripts/studio/verify-baseline.mts",
     "demo:certify:browser": "node --env-file-if-exists=.env.local --import tsx scripts/browser-verify.mts",
     "demo:diagnose:protocol": "node --env-file-if-exists=.env.local --import tsx scripts/protocol-diagnose.mts",
-    "corpus:takes": "node --env-file-if-exists=.env.local --import tsx scripts/generate-caller-takes.mts"
+    "corpus:takes": "node --env-file-if-exists=.env.local --import tsx scripts/generate-caller-takes.mts",
+    "demo:inbox:probe": "node --env-file-if-exists=.env.local --import tsx scripts/demo-inbox-probe.mts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",

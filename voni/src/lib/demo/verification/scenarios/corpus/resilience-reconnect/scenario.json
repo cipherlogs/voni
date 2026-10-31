@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "name": "resilience-reconnect",
+  "class": "connectivity",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "R2"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "edge": [
+    {
+      "kind": "page-freeze",
+      "atMs": 2500,
+      "durationMs": 4000
+    }
+  ],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "2fe3d11dc1622f0c566a8c5894a5446d03ee13c4b247583b163eaf3df1efde5c",
+      "text": "Hi, is this Voni?"
+    },
+    {
+      "id": "again",
+      "audio": "takes/again.wav",
+      "sha256": "292abd440f85251eab47b71683cb79c513453d5c305ccb8b9ee79b878b7b43b0",
+      "text": "Sorry, you cut out. What did you say?"
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "again",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

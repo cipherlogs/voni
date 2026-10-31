@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-goodbye-drain-fr",
+  "class": "ending",
+  "locale": "fr",
+  "heldOut": false,
+  "expectedProperties": [
+    "C7",
+    "C8",
+    "L11",
+    "L9"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "b892c8654012ecbcaa24598b50323bd36e429b94d53b7d66ee214fb19ae31952",
+      "text": "Bonjour, j'appelais juste pour confirmer le rendez-vous."
+    },
+    {
+      "id": "bye",
+      "audio": "takes/bye.wav",
+      "sha256": "54887b9379da013aaa3b3e64a5ca78020a1699ad8cb580fa35accebe2b8ad892",
+      "text": "Parfait, merci beaucoup. Au revoir."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "bye",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

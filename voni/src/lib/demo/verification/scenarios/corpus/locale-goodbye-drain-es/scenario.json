@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-goodbye-drain-es",
+  "class": "ending",
+  "locale": "es",
+  "heldOut": false,
+  "expectedProperties": [
+    "C7",
+    "C8",
+    "L11",
+    "L9"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "3a3af02fe1373c2a6273c570010b4533011907fc4cbb5efd5b48c8dff1283699",
+      "text": "Hola, solo llamaba para confirmar la cita."
+    },
+    {
+      "id": "bye",
+      "audio": "takes/bye.wav",
+      "sha256": "da4d6df64800a3b3a0818b9481f1742c89e22acdfdd166e4b6e5b8f9eb938c18",
+      "text": "Perfecto, muchas gracias. Adiós."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "bye",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}
