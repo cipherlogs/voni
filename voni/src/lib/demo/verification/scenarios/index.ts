@@ -52,3 +52,48 @@ export {
   loadCorpus,
   type LoadCorpusOptions,
 } from "./corpus";
+
+export { sha256Hex } from "./digest";
+
+export {
+  UNHASHED_TAKE_SHA256,
+  TAKE_SAMPLE_RATE,
+  CALLER_VOICE,
+  CARTESIA_TTS_URL,
+  CARTESIA_VERSION,
+  planTakeGeneration,
+  wavFromPcm,
+  parseCartesiaSse,
+  applyTakeGeneration,
+  synthesizeCartesia,
+  type TakeState,
+  type TakeGenerationPlan,
+  type TakeGenerator,
+  type TakeGenerationResult,
+} from "./generate";
+
+export {
+  FAST_CONTRACT_SCENARIOS,
+  FAST_CONTRACT_REPETITIONS,
+  FAST_CONTRACT_LOCALE,
+  CALL_PATH_CAPABILITIES,
+  fastContractCoverage,
+  fastContractScope,
+  fastRunCeilingUsd,
+  fastRunPlan,
+  judgeFastRun,
+  scopeFastVerdict,
+  type FastScenarioName,
+  type CallPathCapability,
+  type FastRunPlan,
+  type FastCoverageEntry,
+  type FastOutOfScopeFamily,
+  type FastScope,
+  type FastScopeProperty,
+  type FastScopeVerdictValue,
+  type FastScopedVerdict,
+  type FastCallCost,
+  type FastRunEconomy,
+  type FastRunTiming,
+  type FastRunReport,
+} from "./fast";

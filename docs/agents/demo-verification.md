@@ -43,7 +43,7 @@ have is a defect in this map.
 | Verdict and statistics | pooling, per-scenario tails, fail-closed unknowns, ineligibility | `voni/src/lib/demo/verification/verdict/` — `statistics.ts` pools, `judge.ts` judges, `evaluators.ts` discovers one `evaluators/*.evaluators.ts` module per family | 07 |
 | Certificate | schema, builder, validator, target binding, residual-risk ids, panel signature | `voni/src/lib/demo/verification/certificate/` — `types.ts` is the schema, `build.ts` turns one verdict-core run into one certificate, `validate.ts` refuses an unknown schema, a mismatched target/fingerprint/corpus, an uncited verdict and a certified claim with no panel signature, `risks.ts` mirrors this register's ids (drift-tested), `render.ts` is the compact view; committed files live in `voni/evidence/certificates/` | 08 |
 | Defect cards | one card per failed property with turn, excerpt, bar and replay command | `voni/src/lib/demo/verification/cards/` — `build.ts` refuses a card without a session, a turn (for turn-level evidence) or an existing evidence file; `wav.ts` bounds every excerpt inside the named take/WAV; `replay.ts` is the one parser the runner must accept unchanged; `render.ts` is the compact card | 09 |
-| Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take. English and Locale corpora not landed | 10, 12–16 |
+| Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest, the ten-scenario English fast contract | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take; `corpus/` is the committed English fast corpus (ten scenarios, twenty real TTS takes, version 1) and `generate.ts` + `scripts/generate-caller-takes.mts` (`npm run corpus:takes`) record a take once or a deliberate `--retake`; `fast.ts` selects the ten, proves the six call-path capabilities, scopes the verdict (uncited families are `OUT-OF-SCOPE`, never green), and reads the fast cost ceiling from E3. `CALLER-CORPUS.md` records the voice, model and retake rule. Locale corpora and the remaining thirty English scenarios are not landed | 10, 12–16 |
 | Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/lib/protocol-adapter/` — `refusals.ts` names a missing key, corpus, scenario, vendor build or soundscape before any vendor opens, `transport.ts` drives `POST /v1/call-body` + `WS /v1/browser-call` at the browser's 128-sample cadence, `faults.ts` applies the scenario's media faults, `evidence.ts` writes the per-run directory under `voni/.demo-runs/`, `runner.ts` turns one call into one verdict and any provable card; `voni/scripts/protocol-diagnose.mts` accepts a card's replay command unchanged and never returns 0 | 11 |
 | Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | not landed | 17 |
 | Evaluator families | L1–L11, T1–T10, C1–C10, K1–K8, X1–X10, A1–A8, R1–R8, S1–S6, E1–E4, H1–H7 | H6 landed in `voni/src/lib/demo/verification/verdict/evaluators/human.evaluators.ts` (judge calibration); the other families are not landed | 18–22, 26 |
@@ -54,6 +54,25 @@ have is a defect in this map.
 | CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | not landed | 28 |
 | Streak and cutover | three-clean streak, staging gate, post-flip confirmation, monthly full production | not landed | 29 |
 | CI cadence | fast contract, nightly health, weekly full certification, Locale matrix | not landed | 30 |
+
+### The fast contract
+
+The English fast contract is ten committed scenarios at one repetition:
+`golden-flow-hello`, `golden-flow-substantive`, `golden-flow-greeting-only`,
+`turn-taking-barge`, `turn-taking-filler`, `soundscape-quiet-room`,
+`connectivity-jitter`, `tools-email-send`, `ending-goodbye`,
+`ending-caller-silence`. It proves greeting, a substantive turn, a barge-in, a
+filler, one tool and a goodbye, derived from each scenario's triggers and
+expected property ids rather than a second list.
+
+A fast run is deliberately **not** a certificate. It measures the union of the
+ten scenarios' expected properties; every other property is reported
+`OUT-OF-SCOPE`, grouped by family (comprehension, economics, human, security
+today), and a `scoped-pass` carries `certifiable: false`. The cost ceiling is
+the contract's E3 `dvCostFastRunMaxUsd`; the wall-clock number is measured and
+its missing frozen bound is recorded as a gap, never invented. The corpus is
+recorded through `npm run corpus:takes` and a changed take refuses by name
+unless `--retake <scenario>/<take>` moves the manifest version deliberately.
 
 The defect-card replay command is the one parser in
 `voni/src/lib/demo/verification/cards/replay.ts`:
