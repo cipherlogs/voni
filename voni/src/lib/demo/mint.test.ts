@@ -354,9 +354,46 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
 
   assert.notEqual(second.demoCallToken, first.demoCallToken, "a fresh token, never the old one");
   assert.equal(verifyDemoCall(KEY, String(second.demoCallToken), now)?.callId, callId);
+  assert.equal(
+    verifyDemoCall(KEY, String(second.demoCallToken), now)?.startedAt,
+    NOW,
+    "the hold return keeps the call's first start (the inbox lookback does not move)",
+  );
   assert.notEqual(second.callToken, first.callToken, "a fresh single-use call token");
   assert.equal(second.agentId, "demo:jorg");
   assert.equal(second.testTag, first.testTag);
+  assert.deepEqual(
+    [...new Set(app.recorded.map((row) => row.callId))],
+    [callId],
+    "one call id, one row",
+  );
+
+  // A second hold return continues from the returned token: the start is
+  // still the call's, and each return is a new token.
+  now = NOW + 60_000;
+  const third = await readJson(
+    await app.handler(
+      mintRequest({
+        voiceId: "jorg",
+        resume: true,
+        callToken: second.demoCallToken,
+        tagToken: second.tagToken,
+        history,
+      }),
+    ),
+  );
+  assert.notEqual(third.demoCallToken, second.demoCallToken, "every return signs fresh");
+  assert.equal(verifyDemoCall(KEY, String(third.demoCallToken), now)?.callId, callId);
+  assert.equal(
+    verifyDemoCall(KEY, String(third.demoCallToken), now)?.startedAt,
+    NOW,
+    "a chain of holds never resets the start",
+  );
+  assert.deepEqual(
+    [...new Set(app.recorded.map((row) => row.callId))],
+    [callId],
+    "still one call id and one row",
+  );
 
   const [firstDelivery, secondDelivery] = app.deliveries;
   assert.equal(secondDelivery.callId, callId, "the delivery names the resumed call");

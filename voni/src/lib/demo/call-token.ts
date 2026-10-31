@@ -6,9 +6,11 @@ import { TAG_TTL_S } from "./test-tag";
 /**
  * The call-scoped credential for a public demo call's server routes (tools,
  * judge). `/api/demo/token` mints one alongside each cascade call token:
- * `<callId>.<expSeconds>.<hmac>`. It names one call and expires just after
- * that call's wall cap (plus the socket-open window), so a token lifted from
- * the network tab cannot drive these routes beyond that one call's lifetime.
+ * `<callId>.<expSeconds>.<startSeconds>.<nonce>[.<tagId>].<hmac>`. It names one
+ * call and expires just after that call's wall cap (plus the socket-open
+ * window), from the call's first start, so a token lifted from the network tab
+ * (or a hold return's fresh one) cannot drive these routes beyond that one
+ * call's lifetime.
  *
  * ponytail: expiry-only, not revoked on hang-up. The one side effect (Voni's
  * reply, reply.ts) goes out once per call, only to the email the call's tag
@@ -34,35 +36,78 @@ function unseal(key: string, token: string, label: string): string[] | null {
 
 export type DemoCall = { callId: string; startedAt: number; tagId: string | null };
 
-/** `tagId` names the call's Test tag (test-tag.ts): `<callId>.<exp>[.<tagId>].<hmac>`. */
-export function signDemoCall(key: string, now = Date.now(), tagId: string | null = null): string {
-  const payload = [randomUUID(), Math.floor(now / 1000) + CALL_TOKEN_TTL_S, ...(tagId ? [tagId] : [])].join(".");
+/**
+ * One call token: `<callId>.<expSeconds>.<startSeconds>.<nonce>[.<tagId>].<hmac>`.
+ *
+ * The start is signed rather than inferred from the expiry, so a hold return
+ * can expire its token from the call's first start while remaining a different
+ * token: the nonce keeps every signature fresh even when id, window and tag all
+ * match a predecessor. `startedAt` defaults to `now`, a new call's start.
+ */
+function signCall(
+  key: string,
+  callId: string,
+  now: number,
+  tagId: string | null,
+  startedAt = now,
+): string {
+  const startSeconds = Math.floor(startedAt / 1000);
+  const payload = [
+    callId,
+    startSeconds + CALL_TOKEN_TTL_S,
+    startSeconds,
+    randomUUID(),
+    ...(tagId ? [tagId] : []),
+  ].join(".");
   return `${payload}.${mac(key, payload)}`;
+}
+
+/** `tagId` names the call's Test tag (test-tag.ts): a fresh call starts now. */
+export function signDemoCall(key: string, now = Date.now(), tagId: string | null = null): string {
+  return signCall(key, randomUUID(), now, tagId);
 }
 
 /**
  * A fresh token for a call id that already exists. A hold return continues the
  * same call (same row, same trace, same budgets) but never reuses the old
  * token: the previous one may already be short-dated or bound to a tag the
- * visitor no longer holds. Signed fresh, the call id is the only carried part.
+ * visitor no longer holds. Signed fresh, the call id and its first start are
+ * the carried parts, so a return never narrows the call's inbox lookback
+ * (`runCheckEmail` reads `call.startedAt`) nor extends its credential lifetime.
  */
 export function signDemoCallFor(
   key: string,
   callId: string,
   now = Date.now(),
   tagId: string | null = null,
+  startedAt?: number,
 ): string {
-  const payload = [callId, Math.floor(now / 1000) + CALL_TOKEN_TTL_S, ...(tagId ? [tagId] : [])].join(".");
-  return `${payload}.${mac(key, payload)}`;
+  return signCall(key, callId, now, tagId, startedAt);
 }
 
+/**
+ * Read a token. Tokens signed before the start was carried
+ * (`<callId>.<exp>[.<tagId>]`) still verify for their short life; their start
+ * is the expiry's TTL offset, which is where it always came from.
+ */
 export function verifyDemoCall(key: string, token: string, now = Date.now()): DemoCall | null {
   const parts = unseal(key, token, "demo-call");
-  if (!parts || parts.length > 3) return null;
-  const [callId, exp, tagId] = parts;
-  if (!callId || !exp || (parts.length === 3 && !tagId)) return null;
-  if (Number(exp) * 1000 <= now) return null;
-  return { callId, startedAt: (Number(exp) - CALL_TOKEN_TTL_S) * 1000, tagId: tagId ?? null };
+  if (!parts) return null;
+  if (parts.length === 2 || parts.length === 3) {
+    const [callId, exp, tagId] = parts;
+    if (!callId || !exp || (parts.length === 3 && !tagId)) return null;
+    const expSeconds = Number(exp);
+    if (!Number.isFinite(expSeconds) || expSeconds * 1000 <= now) return null;
+    return { callId, startedAt: (expSeconds - CALL_TOKEN_TTL_S) * 1000, tagId: tagId ?? null };
+  }
+  if (parts.length !== 4 && parts.length !== 5) return null;
+  const [callId, exp, start, nonce, tagId] = parts;
+  if (!callId || !exp || !start || !nonce || (parts.length === 5 && !tagId)) return null;
+  const expSeconds = Number(exp);
+  const startSeconds = Number(start);
+  if (!Number.isFinite(expSeconds) || !Number.isFinite(startSeconds)) return null;
+  if (expSeconds * 1000 <= now) return null;
+  return { callId, startedAt: startSeconds * 1000, tagId: tagId ?? null };
 }
 
 /** The browser's handle on its Test tag: `<tagId>.<issuedAtSeconds>.<hmac>`, valid for TAG_TTL_S. */

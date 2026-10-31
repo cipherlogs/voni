@@ -159,10 +159,12 @@ async function mint(request: Request, deps: MintDeps): Promise<Response> {
 
   // The demo call's existing identity: a hold return always continues the
   // held call id with a fresh token (a changed tag must never start a second
-  // call); every other mint carries the token while it is valid.
+  // call); every other mint carries the token while it is valid. The return
+  // keeps the call's first start: its inbox lookback and credential window do
+  // not move when the visitor comes back.
   const demoCallToken =
     resume && previous
-      ? signDemoCallFor(callKey, previous.callId, now, tag.id)
+      ? signDemoCallFor(callKey, previous.callId, now, tag.id, previous.startedAt)
       : carryDemoCall(callKey, body.callToken, now, tag.id);
   const demoCall = verifyDemoCall(callKey, demoCallToken, now);
   if (!demoCall) return unavailable();
