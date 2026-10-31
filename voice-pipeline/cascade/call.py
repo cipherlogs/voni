@@ -105,7 +105,7 @@ from cascade.cost import CallCost, LegCost as PricedLeg, RateTable, cost_call
 from cascade.counter import limit_amount
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
-from cascade.events import COST_PRICED_EVENT_TYPE, EndEvidenceError, OperationalEvents
+from cascade.events import COST_PRICED_EVENT_TYPE, OperationalEvents
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
 from cascade.meta_stt import SpeechPartial, SpeechStart
 from cascade.reconnect import ReconnectBudget
@@ -2391,13 +2391,17 @@ class CallLifecycle:
         )
         # The end evidence is written before the message goes out, so the
         # sidecar and the wire carry the same document. An unwritable
-        # directory is named on that document, never skipped in silence.
+        # directory is named on that document, never skipped in silence, and
+        # the end message still goes out (it is the call's primary contract).
         if events is not None:
             try:
                 events.end(end.to_document())
-            except EndEvidenceError as failure:
-                _log.error("the end evidence could not be written: %s", failure)
-                end = replace(end, end_evidence_error=str(failure))
+            except Exception as failure:
+                _log.exception("the end evidence could not be written")
+                end = replace(
+                    end,
+                    end_evidence_error=f"{type(failure).__name__}: {failure}",
+                )
         try:
             await self._transport.send(end.to_document())
         except Exception:
