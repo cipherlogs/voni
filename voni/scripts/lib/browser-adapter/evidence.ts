@@ -40,14 +40,17 @@ import {
 
 import {
   eligibilityOf,
-  firstRow,
   parseTrace,
+  pricedRow,
+  requireSafeId as requireSafeIdWith,
+  runDirectory as runDirectoryWith,
+  toolBundle,
   turnIds,
   turnRows,
+  writeJson,
   type AdapterErrorFactory,
 } from "../adapter-evidence";
 import { BrowserAdapterError } from "./errors";
-import { requireSafeId, runDirectory, writeJson } from "../protocol-adapter/evidence";
 import type {
   AssembledBrowserEvidence,
   BrowserCallRecord,
@@ -56,8 +59,6 @@ import type {
   BrowserEvidenceBundle,
   BrowserTargetLabel,
 } from "./types";
-
-export { requireSafeId, runDirectory, writeJson };
 
 /** A standard RIFF/WAVE PCM header, read from the file's own bytes. */
 export type WavFacts = {
@@ -179,6 +180,21 @@ const browserError: AdapterErrorFactory = (code, message) =>
     code as ConstructorParameters<typeof BrowserAdapterError>[0],
     message,
   );
+
+/**
+ * The shared run-directory rule, bound to this adapter's own named refusal.
+ * The rule and the JSON writer live in `../adapter-evidence`; this adapter no
+ * longer borrows the protocol adapter's copy.
+ */
+export function requireSafeId(value: string, what: string): string {
+  return requireSafeIdWith(value, what, browserError);
+}
+
+export function runDirectory(runRoot: string, runId: string): string {
+  return runDirectoryWith(runRoot, runId, browserError);
+}
+
+export { writeJson };
 
 type BrowserTranscriptEntry = {
   readonly role: "caller" | "agent";
@@ -415,30 +431,12 @@ export async function assembleBrowserEvidence(input: {
   await copyFile(captureSource, wavFile);
   await copyFile(marksSource, marksFile);
 
-  const priced = firstRow(rows, "cost.priced");
   const gaps: string[] = [];
-  if (priced === null) {
-    gaps.push("the trace carries no cost.priced row; cost is never recomputed by the runner");
-  }
+  const priced = pricedRow(rows, gaps);
   const turns = turnRows(rows);
   const speech = browserTranscript(input.call.captions, marks);
   if (speech.gap !== null) gaps.push(speech.gap);
-  if (input.toolEvidence?.gap !== undefined && input.toolEvidence.gap !== null) {
-    gaps.push(input.toolEvidence.gap);
-  }
-  const tools = {
-    calls: rows.filter((row) => row.type === "turn.tool_call"),
-    results: rows.filter((row) => row.type === "turn.tool_result"),
-    ...(input.toolEvidence === undefined
-      ? {}
-      : {
-          ...(input.toolEvidence.log.length === 0 ? {} : { log: input.toolEvidence.log }),
-          ...(input.toolEvidence.delivery === null
-            ? {}
-            : { delivery: input.toolEvidence.delivery }),
-          ...(input.toolEvidence.gap === null ? {} : { gap: input.toolEvidence.gap }),
-        }),
-  };
+  const tools = toolBundle(rows, input.toolEvidence, gaps);
 
   const bundle: BrowserEvidenceBundle = {
     ledger: {

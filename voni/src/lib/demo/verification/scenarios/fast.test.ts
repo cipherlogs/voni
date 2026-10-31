@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadContract, type Contract } from "../contract";
+import { settleRunCeiling, type RunCeilingCheck, type RunCostRow } from "../economics";
 import {
   DEFAULT_CORPUS_DIR,
   FAST_CONTRACT_REPETITIONS,
@@ -12,7 +13,6 @@ import {
   ScenarioError,
   fastContractCoverage,
   fastContractScope,
-  fastRunCeilingUsd,
   fastRunPlan,
   judgeFastRun,
   loadCorpus,
@@ -425,20 +425,35 @@ test("an ineligible call set stays ineligible even when every in-scope property 
 
 // ── Run ceilings and timing ────────────────────────────────────────────────
 
-test("the fast run cost ceiling is read from the contract's E3 record, not copied", async () => {
-  const contract = await CONTRACT;
-  assert.equal(fastRunCeilingUsd(contract), 2);
-  const without = {
-    ...contract,
-    properties: contract.properties.map((property) =>
-      property.id === "E3" ? { ...property, thresholds: [] } : property,
-    ),
+/** One measured priced row, the shape the pipeline writes. */
+function priced(totalUsd: number): Record<string, unknown> {
+  return {
+    type: "cost.priced",
+    producer: "cascade",
+    rateTableVersion: "cascade v1",
+    measured: true,
+    totalUsd,
+    legs: {
+      stt: { unit: "audio_seconds", quantity: 10, measured: true, amountUsd: totalUsd },
+    },
   };
-  assertRefusal(() => fastRunCeilingUsd(without), "fast-ceiling-unset", /dvCostFastRunMaxUsd|E3/);
-});
+}
 
-function calls(costUsd = 0.012): Array<{ scenario: string; costUsd: number }> {
-  return FAST_CONTRACT_SCENARIOS.map((scenario) => ({ scenario, costUsd }));
+/** The economics owner's settled fast-run check over the ten calls. */
+function settled(
+  contract: Contract,
+  costs: readonly (number | null)[] = [],
+): RunCeilingCheck {
+  const rows: RunCostRow[] = FAST_CONTRACT_SCENARIOS.map((scenario, index) => ({
+    callId: scenario,
+    scenario,
+    cost: costs[index] === null ? { measured: false, totalUsd: null, legs: {} } : priced(costs[index] ?? 0.012),
+  }));
+  return settleRunCeiling({ kind: "fast", contract, calls: rows });
+}
+
+function calls(): Array<{ scenario: string }> {
+  return FAST_CONTRACT_SCENARIOS.map((scenario) => ({ scenario }));
 }
 
 test("ten calls at one repetition fit the fast plan; a missing call is refused by name", async () => {
@@ -449,6 +464,7 @@ test("ten calls at one repetition fit the fast plan; a missing call is refused b
     corpus: loaded,
     verdict: verdictFor(contract),
     calls: calls(),
+    ceiling: settled(contract),
     startedAt: "2026-10-31T10:00:00.000Z",
     endedAt: "2026-10-31T10:01:00.000Z",
   });
@@ -468,6 +484,7 @@ test("ten calls at one repetition fit the fast plan; a missing call is refused b
         corpus: loaded,
         verdict: verdictFor(contract),
         calls: calls().slice(1),
+        ceiling: settled(contract),
         startedAt: "2026-10-31T10:00:00.000Z",
         endedAt: "2026-10-31T10:01:00.000Z",
       }),
@@ -476,76 +493,66 @@ test("ten calls at one repetition fit the fast plan; a missing call is refused b
   );
 });
 
-test("the fast report measures cost but leaves the E3 verdict to the run gate", async () => {
+test("an over-ceiling run can never read scoped-pass beside its economy", async () => {
   const contract = await CONTRACT;
+  const ceiling = settled(contract, FAST_CONTRACT_SCENARIOS.map(() => 0.3));
+  assert.equal(ceiling.passed, false);
   const report = judgeFastRun({
     contract,
     corpus: await corpus(),
     verdict: verdictFor(contract),
-    calls: calls(0.3),
+    calls: calls(),
+    ceiling,
     startedAt: "2026-10-31T10:00:00.000Z",
     endedAt: "2026-10-31T10:02:00.000Z",
   });
   assert.equal(report.economy.measuredUsd, 3);
-  assert.equal(report.economy.withinCeiling, false, "the over-ceiling cost is reported");
+  assert.equal(report.economy.withinCeiling, false, "the owner's over-ceiling boolean is presented");
   assert.match(report.economy.detail, /3.*2|2.*3/);
-  // The economics run gate owns E3. This module never holds a second path.
-  assert.equal(report.verdict, "scoped-pass");
+  assert.notEqual(report.verdict, "scoped-pass", "a false ceiling and a pass cannot coexist");
+  assert.equal(report.verdict, "not-demo-ready");
 });
 
 test("an unmeasured call cost fails closed; it never fits a ceiling", async () => {
   const contract = await CONTRACT;
+  const costs = FAST_CONTRACT_SCENARIOS.map((scenario) =>
+    scenario === "tools-email-send" ? null : 0.012,
+  );
   const report = judgeFastRun({
     contract,
     corpus: await corpus(),
     verdict: verdictFor(contract),
-    calls: calls().map((call) =>
-      call.scenario === "tools-email-send" ? { ...call, costUsd: Number.NaN } : call,
-    ),
+    calls: calls(),
+    ceiling: settled(contract, costs),
     startedAt: "2026-10-31T10:00:00.000Z",
     endedAt: "2026-10-31T10:01:00.000Z",
   });
   assert.equal(report.economy.measuredUsd, null);
   assert.equal(report.economy.withinCeiling, false);
   assert.match(report.economy.detail, /tools-email-send/);
-  // The run gate settles the unmeasured total and reds E3; this module reports
-  // the measurement and does not own the verdict.
   assert.ok(report.gaps.includes(report.economy.detail));
+  assert.equal(report.verdict, "not-demo-ready");
 });
 
-test("wall-clock time is measured, and the gap derives from the bound the run was given", async () => {
+test("wall-clock time is measured and reported; the spec's missing bar is a named gap, never a bound", async () => {
   const contract = await CONTRACT;
-  const base = {
+  const report = judgeFastRun({
     contract,
     corpus: await corpus(),
     verdict: verdictFor(contract),
     calls: calls(),
+    ceiling: settled(contract),
     startedAt: "2026-10-31T10:00:00.000Z",
     endedAt: "2026-10-31T10:04:00.000Z",
-  };
-
-  const unbounded = judgeFastRun(base);
-  assert.equal(unbounded.timing.elapsedMs, 240_000);
-  assert.equal(unbounded.timing.ceilingMs, null);
-  assert.equal(unbounded.timing.withinCeiling, null, "an unmeasured bound is never within");
+  });
+  assert.equal(report.timing.elapsedMs, 240_000);
   assert.ok(
-    unbounded.gaps.some((gap) => /measured 240000ms/.test(gap) && /no wall-clock bound/.test(gap)),
-    unbounded.gaps.join("\n"),
+    report.gaps.some((gap) => /measured 240000ms/.test(gap) && /no wall-clock bar/.test(gap)),
+    report.gaps.join("\n"),
   );
   assert.ok(
-    unbounded.gaps.every((gap) => !/ceiling is unset/.test(gap)),
-    "the old permanent literal is gone",
-  );
-
-  const within = judgeFastRun({ ...base, wallClockCeilingMs: 300_000 });
-  assert.equal(within.timing.withinCeiling, true);
-  assert.deepEqual(within.gaps, [], "a within-bound run carries no wall-clock gap");
-
-  const over = judgeFastRun({ ...base, wallClockCeilingMs: 120_000 });
-  assert.equal(over.timing.withinCeiling, false);
-  assert.ok(
-    over.gaps.some((gap) => /240000ms/.test(gap) && /120000ms/.test(gap) && /over/.test(gap)),
-    over.gaps.join("\n"),
+    report.gaps.every((gap) => !/ceiling is unset/.test(gap)),
+    "no permanent unset literal",
   );
 });
 

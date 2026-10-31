@@ -22,6 +22,7 @@ export const LIFECYCLE_EVIDENCE_ERROR_CODES = [
   "malformed-end",
   "missing-wav",
   "malformed-wav",
+  "mark-audio-disagree",
 ] as const;
 
 export type LifecycleEvidenceErrorCode = (typeof LIFECYCLE_EVIDENCE_ERROR_CODES)[number];

@@ -16,7 +16,7 @@
 
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import {
   buildDefectCards,
@@ -37,8 +37,13 @@ import {
   eligibilityOf,
   firstRow,
   parseTrace,
+  pricedRow,
+  requireSafeId as requireSafeIdWith,
+  runDirectory as runDirectoryWith,
+  toolBundle,
   turnIds,
   turnRows,
+  writeJson,
   type AdapterErrorFactory,
 } from "../adapter-evidence";
 import { ProtocolAdapterError } from "./errors";
@@ -59,8 +64,6 @@ const CALL_LEVEL_SOURCES: ReadonlySet<EvidenceSource> = new Set([
   "judge",
   "pytest",
 ]);
-
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** How long the adapter waits for the service's end sidecar after the socket closes. */
 export const END_SIDECAR_WAIT_MS = 5_000;
@@ -99,26 +102,25 @@ async function waitForTraceEnd(path: string, timeoutMs: number): Promise<boolean
   }
 }
 
-/** A run id and call id become directory names; anything else is refused. */
-export function requireSafeId(value: string, what: string): string {
-  if (!SAFE_ID.test(value) || value.includes("..")) {
-    throw new ProtocolAdapterError(
-      "run-dir-invalid",
-      `${what} "${value}" is not a safe directory name; use letters, digits, dot, dash or underscore`,
-    );
-  }
-  return value;
-}
-
-export function runDirectory(runRoot: string, runId: string): string {
-  return resolve(runRoot, requireSafeId(runId, "run id"));
-}
-
 const protocolError: AdapterErrorFactory = (code, message) =>
   new ProtocolAdapterError(
     code as ConstructorParameters<typeof ProtocolAdapterError>[0],
     message,
   );
+
+/**
+ * The shared run-directory rule, bound to this adapter's named refusal. The
+ * rule lives in `../adapter-evidence`; only the error type is the adapter's.
+ */
+export function requireSafeId(value: string, what: string): string {
+  return requireSafeIdWith(value, what, protocolError);
+}
+
+export function runDirectory(runRoot: string, runId: string): string {
+  return runDirectoryWith(runRoot, runId, protocolError);
+}
+
+export { writeJson };
 
 function readJsonFile(file: string, what: string): Record<string, unknown> {
   let bytes: Buffer;
@@ -237,10 +239,7 @@ export async function assembleEvidence(input: {
     }
   }
 
-  const priced = firstRow(rows, "cost.priced");
-  if (priced === null) {
-    gaps.push("the trace carries no cost.priced row; cost is never recomputed by the runner");
-  }
+  const priced = pricedRow(rows, gaps);
 
   const turns = turnRows(rows);
   const transcript =
@@ -258,22 +257,7 @@ export async function assembleEvidence(input: {
         "continuation or a spoken leak cannot be judged"
       : null;
   if (transcriptGap !== null) gaps.push(transcriptGap);
-  if (input.toolEvidence?.gap !== undefined && input.toolEvidence.gap !== null) {
-    gaps.push(input.toolEvidence.gap);
-  }
-  const tools = {
-    calls: rows.filter((row) => row.type === "turn.tool_call"),
-    results: rows.filter((row) => row.type === "turn.tool_result"),
-    ...(input.toolEvidence === undefined
-      ? {}
-      : {
-          ...(input.toolEvidence.log.length === 0 ? {} : { log: input.toolEvidence.log }),
-          ...(input.toolEvidence.delivery === null
-            ? {}
-            : { delivery: input.toolEvidence.delivery }),
-          ...(input.toolEvidence.gap === null ? {} : { gap: input.toolEvidence.gap }),
-        }),
-  };
+  const tools = toolBundle(rows, input.toolEvidence, gaps);
 
   const receivedFile = join(input.callDir, "received.wav");
   let wav: ProtocolEvidenceBundle["wav"];
@@ -349,9 +333,6 @@ export async function assembleEvidence(input: {
   return { assembled: { bundle, eligibility, gaps }, record };
 }
 
-export async function writeJson(file: string, value: unknown): Promise<void> {
-  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
 
 /**
  * Build the card evidence and the attributions the verdict itself can prove.
