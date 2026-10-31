@@ -122,7 +122,7 @@ reference beside the takes, requires exactly calls 1 and 2 for each participant,
 and refuses a baseline take that is selectable or appears in a committed
 certification artifact. Exit 0 pass, 2 named refusal. `--record` never
 overwrites a pin. The session plan and owner runbook are in
-[`docs/demo-human-baseline.md`](../../docs/demo-human-baseline.md).
+[`docs/demo-human-baseline.md`](../../../docs/demo-human-baseline.md).
 
 ## What is deliberately not here
 
