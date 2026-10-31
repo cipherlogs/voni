@@ -86,6 +86,25 @@ function writeBehaviorEvidence() {
 const NEXT_PORT = 3100;
 const CF_PORT = 3101;
 
+/**
+ * Install the candidate's dependencies.
+ *
+ * `--offline` first: the platform tarballs (notably `@esbuild/linux-x64`) are
+ * already in the npm cache on a warmed machine, and the registry path was
+ * failing in this sandbox. A cache miss falls back to the registry, so CI is
+ * unchanged.
+ */
+function installCandidate(cand) {
+  console.log(`[e2e] npm ci --offline (candidate)…`);
+  const offline = spawnSync("npm", ["ci", "--offline", "--no-audit", "--no-fund"], {
+    cwd: cand,
+    stdio: "inherit",
+  });
+  if (offline.status === 0) return;
+  console.log(`[e2e] offline install missed the cache; retrying with the registry…`);
+  sh("npm", ["ci", "--no-audit", "--no-fund"], { cwd: cand });
+}
+
 function sh(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { stdio: "inherit", ...opts });
   // Throw instead of process.exit so `finally` cleanup (server stop + temp
@@ -243,8 +262,7 @@ async function serveNext(cand, port, options = {}) {
     console.error(`[e2e] REFUSE: port ${port} occupied — not attaching to unknown server.`);
     process.exit(1);
   }
-  console.log(`[e2e] npm ci (candidate)…`);
-  sh("npm", ["ci", "--no-audit", "--no-fund"], { cwd: cand });
+  installCandidate(cand);
   console.log(`[e2e] next build (VONI_INSTANT_TEST_BUILD=1, ephemeral boot secret)…`);
   sh("npm", ["run", "build"], { cwd: cand, env: bootEnv(`http://localhost:${port}`, options) });
   const server = spawn("npm", ["run", "start", "--", "-p", String(port)], {
@@ -347,8 +365,7 @@ async function modeCloudflare() {
     console.error(`[e2e] REFUSE: port ${CF_PORT} occupied.`);
     process.exit(1);
   }
-  console.log(`[e2e] npm ci (candidate)…`);
-  sh("npm", ["ci", "--no-audit", "--no-fund"], { cwd: cand });
+  installCandidate(cand);
   console.log(`[e2e] opennext build…`);
   sh("npx", ["@opennextjs/cloudflare", "build"], { cwd: cand, env: bootEnv(`http://localhost:${CF_PORT}`) });
   // Separate preview config: local R2 emulation, cache bucket isolated from
