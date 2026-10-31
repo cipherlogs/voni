@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "speakerphone",
+  "class": "soundscape",
+  "locale": "en",
+  "heldOut": true,
+  "expectedProperties": [
+    "A4",
+    "A1",
+    "A8"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "8a0c331af9727d30c6cd4416b5a0208f29aeef71c15186de2439e60a2c0fa1b2",
+      "text": "Hi, you're on speakerphone and I'm across the room."
+    },
+    {
+      "id": "again",
+      "audio": "takes/again.wav",
+      "sha256": "0c039986c860ae3c2c28251910d27b59f2c468e5574eb076c6afd7030b698045",
+      "text": "Sorry, say that again a bit louder."
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "again",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

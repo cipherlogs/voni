@@ -58,7 +58,9 @@
     "cutover:check": "node --env-file-if-exists=.env.local --import tsx scripts/cutover-check.mts",
     "check:real-legs": "node --env-file-if-exists=.env.local --import tsx scripts/real-legs.mts",
     "demo:studio": "node --import tsx scripts/studio/server.mts",
+    "demo:certificate": "node --import tsx scripts/demo-certificate.mts",
     "demo:baseline:verify": "node --import tsx scripts/studio/verify-baseline.mts",
+    "demo:certify:browser": "node --env-file-if-exists=.env.local --import tsx scripts/browser-verify.mts",
     "demo:diagnose:protocol": "node --env-file-if-exists=.env.local --import tsx scripts/protocol-diagnose.mts",
     "corpus:takes": "node --env-file-if-exists=.env.local --import tsx scripts/generate-caller-takes.mts"
   },

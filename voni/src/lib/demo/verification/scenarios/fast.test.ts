@@ -530,11 +530,15 @@ test("the committed corpus is discovered at the default root and holds the ten f
     dir: DEFAULT_CORPUS_DIR,
     knownProperties: new Set(contract.properties.map((property) => property.id)),
   });
-  const names = loaded.scenarios.map((scenario) => scenario.name);
-  for (const fast of FAST_CONTRACT_SCENARIOS) {
-    assert.ok(names.includes(fast), `the default corpus is missing ${fast}`);
-  }
-  for (const scenario of loaded.scenarios.filter((entry) => entry.locale === "en")) {
+  const fast = loaded.scenarios.filter((scenario) =>
+    (FAST_CONTRACT_SCENARIOS as readonly string[]).includes(scenario.name),
+  );
+  assert.deepEqual(
+    fast.map((scenario) => scenario.name).sort(),
+    [...FAST_CONTRACT_SCENARIOS].sort(),
+  );
+  for (const scenario of fast) {
+    assert.equal(scenario.locale, "en");
     assert.equal(scenario.heldOut, false);
     assert.ok(scenario.takes.length > 0);
     assert.ok(scenario.takes.every((take) => take.bytes > 44));

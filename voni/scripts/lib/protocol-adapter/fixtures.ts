@@ -424,6 +424,7 @@ export function probeRunInput(input: {
     soundscapes: input.soundscapes ?? {},
     modules: input.modules ?? PROBE_MODULES,
     repoRoot: basename(process.cwd()) === "voni" ? resolve(process.cwd(), "..") : process.cwd(),
+    endWaitMs: 0,
     callId: "11111111-1111-4111-8111-111111111111",
   };
 }

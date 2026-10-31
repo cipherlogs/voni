@@ -11,10 +11,11 @@ not fixtures. This file records how it was produced and how it may change.
   `language` is the scenario's own Locale (`en`, `es`, `fr`, `de` or `pt`), so
   the Locale core is real speech in its target language.
 - Format: 24 kHz mono PCM16 WAV, the pipeline's ingress format.
-- Corpus version **1**: sixty-eight scenarios, 170 takes, recorded **2026-10-31**
+- Corpus version **1**: seventy-six scenarios, 189 takes, recorded **2026-10-31**
   with `npm run corpus:takes` and the local `CARTESIA_API_KEY`. Ticket 12's ten
   fast-contract scenarios carry twenty takes; ticket 13's five comprehension and
-  five emotion scenarios carry thirty; ticket 16's forty-eight Locale-core
+  five emotion scenarios carry thirty; ticket 14's soundscape, connectivity and
+  meta-security scenarios carry nineteen; ticket 16's forty-eight Locale-core
   scenarios carry 120 takes (twelve behaviours on es, fr, de and pt, thirty per
   Locale). Adding a scenario directory does not move the version; only a
   deliberate retake does.

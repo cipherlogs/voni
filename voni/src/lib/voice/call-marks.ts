@@ -81,6 +81,25 @@ export type CallMarksArtifact = {
   marks: CallMark[];
 };
 
+/** A call id that is a bare, safe component; the same rule the dev sink uses. */
+const SAFE_CALL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * The call id the mint carries, read from the browser's demo call token.
+ *
+ * The token is `<callId>.<exp>.<start>.<nonce>[.<tagId>].<hmac>`; the first
+ * segment is the call id the mint signed and the pipeline traces. The browser
+ * cannot verify the HMAC, and does not need to: it only needs the id to bind
+ * the WAV and the marks to the call the service will run. A token that does not
+ * begin with a safe id returns null, and the caller keeps its own id rather
+ * than inventing one.
+ */
+export function callIdFromDemoToken(token: string): string | null {
+  const first = token.split(".")[0] ?? "";
+  if (!SAFE_CALL_ID.test(first) || first.includes("..")) return null;
+  return first;
+}
+
 /** One artifact write; the dev route by default, a fake in tests. */
 export type CallMarksWrite = (artifact: CallMarksArtifact) => void | Promise<void>;
 
@@ -103,7 +122,7 @@ function newCallId(): string {
  * call-relative time stay honest.
  */
 export class CallMarks {
-  readonly callId: string;
+  private _callId: string;
   private readonly now: () => number;
   private readonly post: CallMarksWrite;
   private readonly warn: (line: string) => void;
@@ -114,12 +133,30 @@ export class CallMarks {
   private finished = false;
 
   constructor(opts: CallMarksOptions = {}) {
-    this.callId = opts.callId ?? newCallId();
+    this._callId = opts.callId ?? newCallId();
     this.now = opts.now ?? (() => Date.now());
     this.post = opts.post ?? postCallMarks;
     this.warn = opts.warn ?? ((line) => console.warn(line));
     this.startEpochMs = this.now();
     this.startedAt = new Date(this.startEpochMs).toISOString();
+  }
+
+  /** The call id the artifact will carry. */
+  get callId(): string {
+    return this._callId;
+  }
+
+  /**
+   * Bind this call's evidence to the call id the mint named. A mark written
+   * before the mint (the start request) keeps its own time; only the identity
+   * moves, so the WAV and the marks share the trace's call. A finished
+   * recorder, or an id that is not a safe path component, refuses the rebind.
+   */
+  adoptCallId(callId: string): boolean {
+    if (this.finished) return false;
+    if (!SAFE_CALL_ID.test(callId) || callId.includes("..")) return false;
+    this._callId = callId;
+    return true;
   }
 
   /** Append one mark. A late mark after `finish` is dropped, never thrown. */
