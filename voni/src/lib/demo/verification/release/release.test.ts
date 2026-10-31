@@ -5,6 +5,7 @@ import type { Contract, ContractPropertyEntry } from "../contract";
 import { LOCALES } from "../scenarios";
 import {
   OPEN_RESIDUAL_RISK_IDS,
+  deriveCertificateVerdict,
   buildCertificate,
   type Certificate,
   type CertificateBuildInput,
@@ -260,6 +261,49 @@ test("fewer than three certifications, or a non-certified run between them, is n
   });
   assert.equal(interrupted.ok, false);
   assert.ok(interrupted.breaks.some((entry) => entry.code === "not-certified"));
+});
+
+test("an unsigned panel property is pending-human only when it was not measured", () => {
+  const base = STAGING_1;
+  const withH = (reason: "no-evaluator" | "below-bar") => ({
+    ...base,
+    panel: null,
+    verdict: "pending-human" as const,
+    pass: false,
+    properties: [
+      {
+        ...base.properties[0],
+        propertyId: "H1",
+        family: "human",
+        status: "FAIL" as const,
+        reason,
+        citations: ["panel:item-1"],
+      },
+    ],
+  });
+  const pending = withH("no-evaluator");
+  assert.equal(
+    deriveCertificateVerdict({
+      eligibility: pending.eligibility,
+      properties: pending.properties,
+      runFailures: pending.runFailures,
+      coverage: pending.coverage,
+      panel: null,
+    }),
+    "pending-human",
+  );
+  const failed = withH("below-bar");
+  assert.equal(
+    deriveCertificateVerdict({
+      eligibility: failed.eligibility,
+      properties: failed.properties,
+      runFailures: failed.runFailures,
+      coverage: failed.coverage,
+      panel: null,
+    }),
+    "not-demo-ready",
+    "a measured panel failure is never excused as pending-human",
+  );
 });
 
 test("the cutover gate opens only on a clean staging certificate for the same image plus a streak", () => {

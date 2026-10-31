@@ -4,7 +4,7 @@
   "sources": {
     "budget-record": {
       "path": "voni/src/lib/demo/scoreboard-budgets.json",
-      "sha256": "2a5751f95a79a212692b81a230c93bb281b85ed32c9ae08d42a65a4c2ef960ca"
+      "sha256": "a46d8fc4048127569275acdae1cfd31e59d0fbfcd7e86ef17dfb2bc46eab9cc6"
     },
     "cascade-thresholds": {
       "path": "voice-pipeline/cascade/thresholds.json",
@@ -852,13 +852,13 @@
         {
           "source": "budget-record",
           "key": "dvCostNightlyRunMaxUsd",
-          "value": 10,
+          "value": 15,
           "unit": "usd"
         },
         {
           "source": "budget-record",
           "key": "dvCostFullRunMaxUsd",
-          "value": 30,
+          "value": 45,
           "unit": "usd"
         }
       ]

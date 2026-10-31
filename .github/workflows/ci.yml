@@ -10,6 +10,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: voni
@@ -98,6 +99,71 @@ jobs:
         run: |
           echo "browser-e2e result: ${{ needs.browser-e2e.result }}"
           test "${{ needs.browser-e2e.result }}" = "success"
+
+  # Ticket 30: the fast contract is the merge gate on every change to the call
+  # path. It runs unconditionally (no paths filter): running it on every PR is
+  # the superset of "every call-path change". A clean scoped-pass exits 1 by
+  # contract, so scripts/demo-gate-report.mjs is what turns it into a gate.
+  # Without the vendor keys or the committed vendor-build record the run
+  # refuses by name (exit 2) and this gate fails; it never skips green.
+  demo-fast-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: voni
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voni/package-lock.json
+      - run: npm ci
+      - name: Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Fast contract (ten scenarios, one repetition)
+        env:
+          META_API_KEY: ${{ secrets.META_API_KEY }}
+          ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+          VOICE_PIPELINE_ENVELOPE_SECRET: ${{ secrets.VOICE_PIPELINE_ENVELOPE_SECRET }}
+          VOICE_PIPELINE_URL: ${{ vars.VOICE_PIPELINE_URL }}
+        run: |
+          set +e
+          npm run demo:verify -- --fast --target local --json > "$RUNNER_TEMP/demo-fast.json" 2> "$RUNNER_TEMP/demo-fast.err"
+          set -e
+          cat "$RUNNER_TEMP/demo-fast.json" || true
+          cat "$RUNNER_TEMP/demo-fast.err" >&2 || true
+          node scripts/demo-gate-report.mjs fast "$RUNNER_TEMP/demo-fast.json"
+      # Audio, traces and delivered WAVs are working files, never commits.
+      - name: Run artifacts (never committed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-fast-run
+          path: voni/.demo-runs/
+          if-no-files-found: error
+          retention-days: 7
+
+  # A skipped, cancelled or artifact-less fast job must not report success.
+  # Require this gate in branch protection, not the job.
+  required-demo-fast-contract:
+    runs-on: ubuntu-latest
+    needs: [demo-fast-contract]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: fast contract job must have succeeded
+        run: |
+          echo "demo-fast-contract result: ${{ needs.demo-fast-contract.result }}"
+          test "${{ needs.demo-fast-contract.result }}" = "success"
+      - name: the run artifact must exist
+        uses: actions/download-artifact@v4
+        with:
+          name: demo-fast-run
+          path: demo-fast-run
+      - name: artifact must not be empty
+        run: test -d demo-fast-run
 
   # The Python suites: telephony-bot/ plus voice-pipeline/, which includes the
   # three recorded provider fixture suites and their manifest. No vendor key

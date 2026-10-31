@@ -26,7 +26,6 @@ import {
   CertificateError,
   readCertificate,
   type Certificate,
-  type CertificateTarget,
 } from "../src/lib/demo/verification/certificate";
 import {
   CutoverUsageError,
@@ -222,7 +221,7 @@ async function main(argv: readonly string[]): Promise<number> {
         ]).join("\n")}\n`,
       );
     }
-    return streak.ok ? 0 : streak.count < 3 ? 2 : 1;
+    return streak.ok ? 0 : streak.runIds.length < 3 ? 2 : 1;
   }
 
   if (options.action === "--gate") {

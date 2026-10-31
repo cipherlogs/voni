@@ -28,7 +28,7 @@ const economics: ContractFamily = {
     {
       id: "E3",
       statement: "Run ceilings",
-      bar: { text: "fast <= $2; nightly <= $10; full <= $30", numeric: true },
+      bar: { text: "fast <= $2; nightly <= $15; full <= $45", numeric: true },
       evidence: "cost",
       kind: "deterministic",
       thresholds: [

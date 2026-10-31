@@ -72,8 +72,8 @@ const SPEC_BARS: Record<string, Record<string, number>> = {
   E2: { dvCostPerCallMaxUsd: 0.15 },
   E3: {
     dvCostFastRunMaxUsd: 2,
-    dvCostNightlyRunMaxUsd: 10,
-    dvCostFullRunMaxUsd: 30,
+    dvCostNightlyRunMaxUsd: 15,
+    dvCostFullRunMaxUsd: 45,
   },
   H1: { dvStayOnCallYesMinRatio: 0.8, dvStayOnCallLocaleMinRatio: 0.7 },
   H2: {

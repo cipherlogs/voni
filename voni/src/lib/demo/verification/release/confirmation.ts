@@ -10,6 +10,7 @@
  * rather than allowed to drift into a second certification.
  */
 
+import { LOCALES } from "../scenarios";
 import { ReleaseError } from "./errors";
 
 /** The fast contract's ten-call core: a post-flip check, never a full run. */
@@ -72,10 +73,17 @@ function iso(value: unknown, field: string): string {
 
 function call(value: unknown, index: number): PostFlipCall {
   const entry = record(value);
+  const locale = text(entry.locale, `calls[${index}].locale`);
+  if (!(LOCALES as readonly string[]).includes(locale)) {
+    throw new ReleaseError(
+      "invalid-record",
+      `post-flip call ${index} Locale "${locale}" is not one of ${LOCALES.join(", ")}`,
+    );
+  }
   return {
     callId: text(entry.callId, `calls[${index}].callId`),
     scenario: text(entry.scenario, `calls[${index}].scenario`),
-    locale: text(entry.locale, `calls[${index}].locale`) as PostFlipCall["locale"],
+    locale: locale as PostFlipCall["locale"],
   };
 }
 
