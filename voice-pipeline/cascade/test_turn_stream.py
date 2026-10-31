@@ -123,6 +123,7 @@ class StreamTest(unittest.TestCase):
         sleep=None,
         stall_guard_ms=None,
         on_end_call=None,
+        on_caption=None,
     ):
         self.llm = ScriptedLLM(replies)
         self.tts = FakeTTS() if tts is None else tts
@@ -138,6 +139,7 @@ class StreamTest(unittest.TestCase):
             sleep=sleep,
             stall_guard_ms=stall_guard_ms,
             on_end_call=on_end_call,
+            on_caption=on_caption,
         )
         return stream
 
@@ -149,6 +151,26 @@ class StreamTest(unittest.TestCase):
             await stream.drain()
 
         asyncio.run(run())
+
+    def test_a_reply_ends_with_one_final_agent_caption(self):
+        captions: list[tuple[str, str, bool]] = []
+
+        async def collect(role, text, final):
+            captions.append((role, text, final))
+
+        stream = self.make(
+            replies=[{"deltas": ["Hello there. ", "How can I help?"]}],
+            on_caption=collect,
+        )
+        self.run_events(
+            stream,
+            [SpeechStart("t1"), SpeechComplete("book a demo", turn_id="t1")],
+        )
+
+        agent = [c for c in captions if c[0] == "agent"]
+        self.assertTrue(any(not final for _, _, final in agent), "streams partials")
+        finals = [text for _, text, final in agent if final]
+        self.assertEqual(["Hello there. How can I help?"], finals)
 
     def test_a_completion_is_answered_and_spoken_through_the_call_audio_seam(self):
         stream = self.make(replies=[{"deltas": ["Hello there. ", "How can I help?"]}])

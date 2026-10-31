@@ -443,6 +443,19 @@ class BrowserCallTests(unittest.TestCase):
             any(c["role"] == "agent" and c["final"] is False for c in captions),
             "agent caption streams while speaking",
         )
+        self.assertTrue(
+            any(c["role"] == "agent" and c["final"] is True for c in captions),
+            "the reply ends with one final agent caption",
+        )
+        self.assertTrue(
+            any(
+                c["role"] == "agent"
+                and c["final"] is True
+                and c["text"] == "Hola."
+                for c in captions
+            ),
+            "the greeting is the first final agent caption",
+        )
         audio = by_type.get("audio", [])
         self.assertTrue(audio, "expected playout audio")
         for chunk in audio:

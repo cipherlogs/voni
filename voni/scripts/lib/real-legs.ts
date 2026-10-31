@@ -824,6 +824,9 @@ type CallState = {
   error: string | null;
   closed: boolean;
   configKeys: string[] | null;
+  turnLatencies: number[];
+  pendingFinalAt: number | null;
+  pendingAudioSeen: boolean;
 };
 
 function defaultConnect(url: string): RealLegsSocket {
@@ -1215,6 +1218,9 @@ export async function runRealLegs(
       error: null,
       closed: false,
       configKeys: null,
+      turnLatencies: [],
+      pendingFinalAt: null,
+      pendingAudioSeen: false,
     };
     let socket: RealLegsSocket;
     try {
@@ -1239,6 +1245,10 @@ export async function runRealLegs(
       if (audioFrame) {
         state.audioFrames += 1;
         state.audioBytes += audioFrame.pcm.length;
+        if (state.pendingFinalAt !== null && !state.pendingAudioSeen) {
+          state.pendingAudioSeen = true;
+          state.turnLatencies.push(Date.now() - state.pendingFinalAt);
+        }
         return;
       }
       const event = parseServerMessage(raw);
@@ -1246,6 +1256,10 @@ export async function runRealLegs(
       switch (event.kind) {
         case "caption":
           state.captions.push({ role: event.role, text: event.text, final: event.final });
+          if (event.role === "user" && event.final) {
+            state.pendingFinalAt = Date.now();
+            state.pendingAudioSeen = false;
+          }
           break;
         case "end":
           try {
@@ -1551,6 +1565,16 @@ export async function runRealLegs(
   );
 
   checks.push(
+    state.turnLatencies.length > 0
+      ? passed(
+          "reply gaps",
+          "reply-gap",
+          `caller-final → first agent audio (ms): ${state.turnLatencies.join(", ")}`,
+        )
+      : failed("reply gaps", "reply-gap", "no completed caller turn produced a timed reply"),
+  );
+
+  checks.push(
     state.audioFrames > 0 && state.audioBytes > 0
       ? passed(
           "audio",
@@ -1563,6 +1587,7 @@ export async function runRealLegs(
   const end = state.end ?? {};
   const endCost = recordFrom(end.cost);
   const endTurns = typeof end.turns === "number" ? end.turns : 0;
+  const gaps = (end.metrics as { gaps_ms?: unknown } | undefined)?.gaps_ms;
   const endOk =
     end.callId === callId &&
     endTurns >= 2 &&
@@ -1573,7 +1598,7 @@ export async function runRealLegs(
       ? passed(
           "end message",
           "end-message",
-          `callId "${callId}" ended after ${endTurns} turns; cost ${endCost?.measured === true ? `measured $${String(endCost.totalUsd)}` : `unmeasured (${String(endCost?.unmeasuredReason ?? "")})`}`,
+          `callId "${callId}" ended after ${endTurns} turns; cost ${endCost?.measured === true ? `measured $${String(endCost.totalUsd)}` : `unmeasured (${String(endCost?.unmeasuredReason ?? "")})`}; gaps ${JSON.stringify(gaps)}`,
         )
       : failed(
           "end message",

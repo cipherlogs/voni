@@ -1104,6 +1104,7 @@ class CallLifecycle:
         eligibility: EligibilityDecision | None = None,
         chime: Callable[[], None] | None = None,
         reconnect_budget: ReconnectBudget | None = None,
+        on_caption: Callable[[str, str, bool], Any] | None = None,
     ) -> None:
         self._message = message
         self._secret = secret
@@ -1117,6 +1118,7 @@ class CallLifecycle:
         #: The call-level audio sequence and every frame this call emitted.
         self.sequence = CallSequence()
         self.audio_frames: list[OutboundAudio] = []
+        self._on_caption = on_caption
         self._clock = clock if clock is not None else time.monotonic
         self._ledger = (
             ledger if ledger is not None else TimingLedger(now=self._clock)
@@ -1451,6 +1453,16 @@ class CallLifecycle:
                         self._greeting = result
                     else:
                         self._greeting = await greeting_task
+                if (
+                    self._greeting is not None
+                    and self._greeting.text
+                    and self._on_caption is not None
+                ):
+                    # The greeting is not a turn, but it is the first agent
+                    # line the caller hears: give the browser one final caption
+                    # after the audio so the transcript opens with it and the
+                    # UI moves from "connecting" to "listening".
+                    await self._on_caption("agent", self._greeting.text, True)
                 if failure_event.is_set():
                     # The leg failed while the greeting sounded: the call is
                     # already over, so the turn layer is never started.
@@ -1569,6 +1581,10 @@ class CallLifecycle:
             kind=kind,
             flush_id=flush_id,
         )
+        if kind == "reply":
+            # The first reply frame is the caller-perceived end of the reply
+            # gap; `mark` is first-wins, so every later frame is free.
+            self._ledger.mark("first_playout")
         self.audio_frames.append(outbound)
         if self._send_audio is not None:
             await self._send_audio(outbound)

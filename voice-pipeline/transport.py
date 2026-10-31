@@ -607,6 +607,7 @@ async def handle_browser_call(
                 operational_events=events,
                 events_path=str(events.path) if events is not None and events.path else None,
                 reconnect_budget=budget,
+                on_caption=browser.caption,
             )
         except BaseException:
             call_tokens.release(claim)

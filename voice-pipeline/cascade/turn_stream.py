@@ -138,6 +138,9 @@ class CascadeTurnStream:
         self._reply_task: asyncio.Task | None = None
         self._active: TurnState | None = None
         self._speaking = False
+        #: The text spoken in the current reply, so the browser gets one final
+        #: caption after the audio (not only sentence partials).
+        self._reply_text = ""
         self._buffer = ""
         self._failure: BaseException | None = None
         self._records: dict[str, MetaLLMTurn] = {}
@@ -229,6 +232,7 @@ class CascadeTurnStream:
         if self._may_request is not None and not self._may_request("llm"):
             return
         self._active = state
+        self._ledger.mark("floor_take")
         self._reply_task = asyncio.ensure_future(self._reply(state))
         self._reply_task.add_done_callback(self._reply_done)
 
@@ -261,6 +265,12 @@ class CascadeTurnStream:
                 self._completed.append(key)
             self._speaking = False
             self._active = None
+            # One final agent caption per reply: the browser appends the turn
+            # once, after the audio, instead of holding a partial forever.
+            spoken = self._reply_text.strip()
+            self._reply_text = ""
+            if spoken:
+                await self._caption("agent", spoken, True)
             if not cancelled:
                 # The turn's usage chunk exists now: the call records and
                 # prices it before the next utterance, not at the next event.
@@ -474,6 +484,7 @@ class CascadeTurnStream:
             and not self._may_request("tts")
         ):
             return
+        self._reply_text = f"{self._reply_text} {text}".strip()
         await self._caption("agent", text, False)
         async for audio in self._tts.speak(text):
             self._speaking = True

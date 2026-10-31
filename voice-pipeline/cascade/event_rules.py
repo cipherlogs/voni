@@ -560,6 +560,9 @@ class EventRules:
                 IgnoreReason.DUPLICATE_COMPLETE, event, turn=state
             )
         self._mark("speech_complete")
+        # The generic summary gap uses `final`; the cascade's own gate uses
+        # `speech_complete`. Mark both so the end message reports the gap.
+        self._mark("final")
         if state.is_empty_final:
             self._no_speech_turns += 1
             return EventOutcome(EventKind.NO_SPEECH, turn=state)
