@@ -111,10 +111,15 @@ test("full certification plans 40 English x3 plus 12 per Locale x3, and names th
   });
   assert.equal(plan.calls, (40 + 12 * 4) * 3);
   assert.equal(plan.repetitions, 3);
-  assert.ok(
-    plan.gaps.some((gap) => /English corpus holds 30 of the 40/.test(gap)),
-    plan.gaps.join("\n"),
-  );
+  const english = corpus.scenarios.filter((scenario) => scenario.locale === "en").length;
+  if (english < 40) {
+    assert.ok(
+      plan.gaps.some((gap) => gap.includes(`English corpus holds ${english} of the 40`)),
+      plan.gaps.join("\n"),
+    );
+  } else {
+    assert.ok(plan.gaps.every((gap) => !gap.includes("English corpus")), plan.gaps.join("\n"));
+  }
   // The Locale core landed (twelve per Locale), so only English is short.
   for (const locale of ["es", "fr", "de", "pt"] as const) {
     assert.ok(

@@ -334,7 +334,7 @@ test("full and nightly refuse by name while the corpora are incomplete", async (
     const result = await runVerify(request(["--target", "local", flag]), baseDeps());
     assert.equal(result.exitCode, 2, flag);
     assert.equal(result.status, "refused");
-    assert.match(result.refusals.join("\n"), /English corpus holds 30 of the 40/);
+    assert.match(result.refusals.join("\n"), /English corpus holds \d+ of the 40/);
   }
 });
 
