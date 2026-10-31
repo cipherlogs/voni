@@ -20,6 +20,7 @@ export const VERIFY_ERROR_CODES = [
   "missing-scenario",
   "missing-key",
   "missing-corpus",
+  "missing-locale-corpus",
   "missing-vendor-build",
   "run-ceiling",
   "timing-lock-held",

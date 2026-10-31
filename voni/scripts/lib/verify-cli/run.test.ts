@@ -183,6 +183,8 @@ test("a clean fast run is a scoped-pass and exit 1: it is not a certificate", as
   assert.equal(result.calls, 10);
   assert.equal(result.certificate, null, "a fast run never writes a certificate");
   assert.match(result.detail, /scoped-pass|not a certificate/);
+  assert.deepEqual(result.failedPropertyIds, [], "the artifact carries the zero-failure evidence");
+  assert.equal(result.ineligible, false);
 });
 
 test("the economics run gate, not the fast module, reds a fast run over its ceiling", async () => {
@@ -220,6 +222,7 @@ test("a failing fast run is not-demo-ready and exit 1", async () => {
   const result = await fastResult({ loadEvaluators: async () => failing });
   assert.equal(result.status, "not-demo-ready");
   assert.equal(result.exitCode, 1);
+  assert.ok(result.failedPropertyIds.includes("T3"), "the report names the failed property");
   assert.ok(result.unrun.some((line) => line.includes("T3")), result.unrun.join("\n"));
 });
 

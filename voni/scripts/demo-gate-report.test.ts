@@ -38,6 +38,8 @@ test("a clean fast scoped-pass is a merge-gate success", () => {
     status: "scoped-pass",
     calls: FAST_CALLS,
     exitCode: 1,
+    failedPropertyIds: [],
+    ineligible: false,
   });
   assert.equal(result.status, 0, result.stderr);
 });
@@ -48,6 +50,8 @@ test("a clean nightly health report is a success; the plan's call count is the c
     status: "health-clean",
     calls: NIGHTLY_CALLS,
     exitCode: 1,
+    failedPropertyIds: [],
+    ineligible: false,
   });
   assert.equal(result.status, 0, result.stderr);
 });
@@ -58,14 +62,60 @@ test("a short or red run fails the gate by name", () => {
     status: "health-clean",
     calls: NIGHTLY_CALLS - 1,
     exitCode: 1,
+    failedPropertyIds: [],
+    ineligible: false,
   });
   assert.equal(short.status, 1);
   assert.match(short.stderr, new RegExp(`${NIGHTLY_CALLS}`));
-  const red = run("fast", { mode: "fast", status: "not-demo-ready", calls: 10, exitCode: 1 });
+  const red = run("fast", {
+    mode: "fast",
+    status: "not-demo-ready",
+    calls: 10,
+    exitCode: 1,
+    failedPropertyIds: ["T1"],
+    ineligible: false,
+  });
   assert.equal(red.status, 1);
-  assert.match(red.stderr, /not-demo-ready/);
+  assert.match(red.stderr, /T1/);
   const refused = run("fast", { mode: "fast", status: "refused", calls: 0, exitCode: 2 });
   assert.equal(refused.status, 1);
+});
+
+test("a scoped-pass whose artifact names a failed property is red, whatever the exit code", () => {
+  const lying = run("fast", {
+    mode: "fast",
+    status: "scoped-pass",
+    calls: FAST_CALLS,
+    exitCode: 1,
+    failedPropertyIds: ["T1"],
+    ineligible: false,
+  });
+  assert.equal(lying.status, 1, "a property failure cannot green on status alone");
+  assert.match(lying.stderr, /T1/);
+});
+
+test("an ineligible run is red even with a clean status", () => {
+  const contaminated = run("nightly", {
+    mode: "nightly",
+    status: "health-clean",
+    calls: NIGHTLY_CALLS,
+    exitCode: 1,
+    failedPropertyIds: [],
+    ineligible: true,
+  });
+  assert.equal(contaminated.status, 1);
+  assert.match(contaminated.stderr, /ineligible/);
+});
+
+test("a report with no failed-property evidence cannot green", () => {
+  const noEvidence = run("fast", {
+    mode: "fast",
+    status: "scoped-pass",
+    calls: FAST_CALLS,
+    exitCode: 1,
+  });
+  assert.equal(noEvidence.status, 1);
+  assert.match(noEvidence.stderr, /failed-property list/);
 });
 
 test("a full run needs a certificate and names pending-human as not a pass", () => {
@@ -74,6 +124,8 @@ test("a full run needs a certificate and names pending-human as not a pass", () 
     status: "pending-human",
     calls: FULL_CALLS,
     exitCode: 3,
+    failedPropertyIds: [],
+    ineligible: false,
     certificate: null,
   });
   assert.equal(noCertificate.status, 1);
@@ -84,6 +136,8 @@ test("a full run needs a certificate and names pending-human as not a pass", () 
     status: "pending-human",
     calls: FULL_CALLS,
     exitCode: 3,
+    failedPropertyIds: [],
+    ineligible: false,
     certificate: { verdict: "pending-human" },
   });
   assert.equal(pending.status, 0, pending.stderr);
@@ -95,6 +149,8 @@ test("a full run needs a certificate and names pending-human as not a pass", () 
     status: "certified",
     calls: FULL_CALLS,
     exitCode: 0,
+    failedPropertyIds: [],
+    ineligible: false,
     certificate: { verdict: "certified" },
   });
   assert.equal(certified.status, 0);

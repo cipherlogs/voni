@@ -59,17 +59,30 @@ try {
 
 const expectedCalls = EXPECTED_CALLS[mode];
 if (report.mode !== mode) fail(`the report is a "${report.mode}" run, not "${mode}"`);
+if (report.exitCode === 2 || report.status === "refused") {
+  fail(`the ${mode} run refused: ${(report.refusals ?? []).join("; ")}`);
+}
 if (report.calls !== expectedCalls) {
   fail(`the ${mode} run made ${report.calls} calls; the plan is ${expectedCalls}`);
+}
+
+// The gate reads the artifact, not the exit code. `demo:verify` exits 1 for a
+// clean fast scoped-pass and for a property failure alike, so a green needs
+// the verdict's own evidence: a zero failed-property list and an eligible run.
+if (!Array.isArray(report.failedPropertyIds)) {
+  fail(`the ${mode} report carries no failed-property list; a gate cannot green on prose`);
+}
+if (report.failedPropertyIds.length > 0) {
+  fail(`the ${mode} run failed ${report.failedPropertyIds.join(", ")}; a property failure is red`);
+}
+if (report.ineligible === true) {
+  fail(`the ${mode} run is ineligible; a contaminated call can never green`);
 }
 if (!EXPECTED_STATUS[mode].includes(report.status)) {
   fail(
     `the ${mode} run reports "${report.status}" (exit ${report.exitCode}); ` +
       `expected ${EXPECTED_STATUS[mode].join(" or ")}`,
   );
-}
-if (report.exitCode === 2 || report.status === "refused") {
-  fail(`the ${mode} run refused: ${(report.refusals ?? []).join("; ")}`);
 }
 if (mode === "full" && !report.certificate) {
   fail("the full run produced no certificate; a panel-signed claim needs one");
