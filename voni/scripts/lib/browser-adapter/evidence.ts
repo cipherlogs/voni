@@ -30,6 +30,8 @@ import {
 } from "@/lib/demo/verification/cards";
 import type { LoadedScenario } from "@/lib/demo/verification/scenarios";
 import type { CallEligibilityFact, RunVerdict } from "@/lib/demo/verification/verdict";
+import type { ToolLogRow } from "@/lib/demo/tool-log";
+import type { InboxDelivery } from "@/lib/demo/verification/tools/inbox";
 import {
   isCallMarksArtifact,
   type CallMarksArtifact,
@@ -295,6 +297,12 @@ export async function assembleBrowserEvidence(input: {
   readonly target: BrowserTargetLabel;
   readonly eventsDir: string;
   readonly callDir: string;
+  /** The app tool log and real inbox delivery, collected after the call. */
+  readonly toolEvidence?: {
+    readonly log: readonly ToolLogRow[];
+    readonly delivery: InboxDelivery | null;
+    readonly gap: string | null;
+  };
 }): Promise<{ assembled: AssembledBrowserEvidence; record: BrowserCallRecord }> {
   if (input.call.callId === null) {
     throw new BrowserAdapterError(
@@ -430,9 +438,25 @@ export async function assembleBrowserEvidence(input: {
     gaps.push("the trace carries no cost.priced row; cost is never recomputed by the runner");
   }
   const turns = turnRows(rows);
+  const transcriptGap =
+    "the browser marks carry no caption text (call-marks.ts keeps text out of production " +
+    "evidence); the spoken words were not captured, so a bridge, a continuation or a spoken " +
+    "leak cannot be judged on this adapter";
+  if (input.toolEvidence?.gap !== undefined && input.toolEvidence.gap !== null) {
+    gaps.push(input.toolEvidence.gap);
+  }
   const tools = {
     calls: rows.filter((row) => row.type === "turn.tool_call"),
     results: rows.filter((row) => row.type === "turn.tool_result"),
+    ...(input.toolEvidence === undefined
+      ? {}
+      : {
+          ...(input.toolEvidence.log.length === 0 ? {} : { log: input.toolEvidence.log }),
+          ...(input.toolEvidence.delivery === null
+            ? {}
+            : { delivery: input.toolEvidence.delivery }),
+          ...(input.toolEvidence.gap === null ? {} : { gap: input.toolEvidence.gap }),
+        }),
   };
 
   const bundle: BrowserEvidenceBundle = {
@@ -445,7 +469,13 @@ export async function assembleBrowserEvidence(input: {
       marks,
       marksGap: "",
     },
-    trace: { file: traceFile, rows, lineCount: rows.length },
+    trace: {
+      file: traceFile,
+      rows,
+      lineCount: rows.length,
+      transcript: null,
+      transcriptGap,
+    },
     wav: {
       file: wavFile,
       sampleRate: wav.sampleRate,
