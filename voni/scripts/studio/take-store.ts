@@ -527,6 +527,8 @@ export type TakeStore = {
   retirement(takeId: string): Promise<RetirementRecord | null>;
   /** Every take with its retirement and whether a new scenario may select it. */
   corpus(): Promise<CorpusTake[]>;
+  /** Active human-baseline takes: consent metadata present and not retired. */
+  baselineTakes(): Promise<TakeRecord[]>;
   /** Takes a new scenario may select: not retired and not baseline audio. */
   selectable(): Promise<TakeRecord[]>;
   /** Refuse by name when a take may not be selected by a new scenario. */
@@ -779,6 +781,16 @@ export async function openTakeStore(options: OpenTakeStoreOptions): Promise<Take
     return rows;
   }
 
+  async function baselineTakes(): Promise<TakeRecord[]> {
+    const active: TakeRecord[] = [];
+    for (const record of await list()) {
+      if (record.baseline === undefined) continue;
+      if (await readRetirement(record.takeId, record)) continue;
+      active.push(record);
+    }
+    return active;
+  }
+
   async function selectable(): Promise<TakeRecord[]> {
     return (await corpus()).filter((entry) => entry.selectable).map((entry) => entry.record);
   }
@@ -814,6 +826,7 @@ export async function openTakeStore(options: OpenTakeStoreOptions): Promise<Take
     retire,
     retirement,
     corpus,
+    baselineTakes,
     selectable,
     assertSelectable,
   };

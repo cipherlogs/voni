@@ -105,6 +105,25 @@ The consent block is written into the take at landing; a baseline take without
 complete consent is refused by name. Baseline takes are blind comparison audio,
 never a certification input, so they are never selectable by a scenario.
 
+## Human baseline verification
+
+The baseline is three to five consenting people, two calls of four to six
+minutes each, used only as blind comparison audio. The owner records it; the
+verifier proves it is complete and unchanged:
+
+```sh
+cd voni
+npm run demo:baseline:verify -- --record   # pin the hash list once, after capture
+npm run demo:baseline:verify               # reproduce the pinned list
+```
+
+It rehashes every baseline take, measures each call's length, checks the consent
+reference beside the takes, requires exactly calls 1 and 2 for each participant,
+and refuses a baseline take that is selectable or appears in a committed
+certification artifact. Exit 0 pass, 2 named refusal. `--record` never
+overwrites a pin. The session plan and owner runbook are in
+[`docs/demo-human-baseline.md`](../../../docs/demo-human-baseline.md).
+
 ## What is deliberately not here
 
 - No take editing, renaming or deletion; retirement is a mark, and promotion
