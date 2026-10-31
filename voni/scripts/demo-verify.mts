@@ -175,7 +175,9 @@ function print(result: VerifyResult, json: boolean): void {
   if (result.runId !== null) lines.push(`[verify] run ${result.runId}`);
   if (result.calls > 0) lines.push(`[verify] calls ${result.calls}`);
   if (result.certificatePath !== null) lines.push(`[verify] certificate ${result.certificatePath}`);
-  if (result.detail !== "") lines.push(`[verify] ${result.detail}`);
+  if (result.detail !== "" && result.status !== "refused") {
+    lines.push(`[verify] ${result.detail}`);
+  }
   if (result.refusals.length > 0) {
     lines.push("[verify] refused:");
     for (const line of result.refusals) lines.push(`  - ${line}`);

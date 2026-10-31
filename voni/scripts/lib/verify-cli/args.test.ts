@@ -76,6 +76,10 @@ test("the npm script prefix is accepted, with or without the separator", () => {
 
   const bareProgram = parseVerifyArgs(["demo:verify", "--target", "local", "--fast"]);
   assert.equal(bareProgram.mode, "fast");
+
+  // npm also forwards flags without the separator; the contract is the same.
+  const noSeparator = parseVerifyArgs(["npm", "run", "demo:verify", "--target", "local", "--fast"]);
+  assert.equal(noSeparator.mode, "fast");
 });
 
 test("every mode flag is a mode, and two modes are bad input", () => {

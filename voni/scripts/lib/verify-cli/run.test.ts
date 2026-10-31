@@ -338,6 +338,12 @@ test("staging and production refuse by name for every mode", async () => {
       assert.equal(result.status, "refused");
       assert.match(result.refusals.join("\n"), new RegExp(`target "${target}"`));
     }
+    const diagnose = await runVerify(
+      request(["--scenario", "golden-flow-hello", "--target", target, "--diagnose"]),
+      baseDeps(),
+    );
+    assert.equal(diagnose.exitCode, 2, `${target} --diagnose`);
+    assert.match(diagnose.refusals.join("\n"), new RegExp(`target "${target}"`));
   }
 });
 
