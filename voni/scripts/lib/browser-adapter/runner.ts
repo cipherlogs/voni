@@ -185,15 +185,27 @@ function budgetOf(
         "(never an invented ceiling)",
     };
   }
-  const measured = measuredMs ?? 0;
-  const over = measured > ceilingS * 1000;
+  if (measuredMs === null) {
+    // No elapsed time was measured, so the ceiling was never compared. This
+    // is INFO, never `within`: an unmeasured budget cannot read as a pass.
+    return {
+      bound: "ci.browser_e2e_budget_s",
+      ceilingS,
+      measuredMs: null,
+      status: "unknown",
+      line:
+        `the browser run's elapsed time was not measured against the declared ` +
+        `${ceilingS * 1000}ms ceiling; the budget is unknown (INFO, never within)`,
+    };
+  }
+  const over = measuredMs > ceilingS * 1000;
   return {
     bound: "ci.browser_e2e_budget_s",
     ceilingS,
     measuredMs,
     status: over ? "over" : "within",
     line:
-      `browser run ${measured}ms ${over ? ">" : "≤"} ${ceilingS * 1000}ms ` +
+      `browser run ${measuredMs}ms ${over ? ">" : "≤"} ${ceilingS * 1000}ms ` +
       `(${over ? "OVER" : "within"} the declared ceiling)`,
   };
 }
@@ -264,7 +276,11 @@ async function refused(
     verdict: null,
     cards: { file: null, count: 0, gaps: [] },
     browserBudget: context.budget,
-    unrun: [...context.previous, error.message],
+    unrun: [
+      ...context.previous,
+      ...(context.budget.status === "unknown" ? [context.budget.line] : []),
+      error.message,
+    ],
     parity: null,
     refusal: { code: error.code, message: error.message },
   };
@@ -736,6 +752,7 @@ export async function runBrowserCertification(
     );
   }
   unrun.push(...unrunBefore);
+  if (browserBudget.status === "unknown") unrun.push(browserBudget.line);
   unrun.push(...assembled.gaps);
   if (certificationReason !== null) {
     unrun.push(`certificate withheld: ${certificationReason}`);

@@ -394,7 +394,12 @@ export type BrowserRunRecord = {
     readonly bound: string;
     readonly ceilingS: number | null;
     readonly measuredMs: number | null;
-    readonly status: "within" | "over" | "unset";
+    /**
+     * `within`/`over` need a measured elapsed time. A run with a declared
+     * ceiling but no measurement is `unknown` (INFO), never `within`: an
+     * unmeasured budget is not a pass.
+     */
+    readonly status: "within" | "over" | "unknown" | "unset";
     readonly line: string;
   };
   /** Exactly what stayed unrun, and why. Never empty merely because it looks green. */

@@ -482,6 +482,38 @@ test("an over-budget browser run cannot certify, even when every property passed
   }
 });
 
+test("a refused path with a declared ceiling records the budget unknown, never within", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), GOLDEN);
+    const result = await runBrowserCertification(
+      input(root, {
+        elapsedBudgetS: 5,
+        call: async () => {
+          throw new Error("the harness never got a call");
+        },
+      }),
+    );
+    assert.equal(result.exitCode, 2);
+    const budget = runJson(result).browserBudget as {
+      status: string;
+      measuredMs: number | null;
+      line: string;
+    };
+    assert.equal(budget.status, "unknown", "an unmeasured budget is never within");
+    assert.notEqual(budget.status, "within");
+    assert.equal(budget.measuredMs, null);
+    assert.match(budget.line, /not measured/);
+    assert.match(budget.line, /INFO/);
+    assert.ok(
+      (runJson(result).unrun as string[]).includes(budget.line),
+      "the unknown budget is recorded as INFO, not hidden",
+    );
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("an open browser ceiling makes no runtime claim, never an invented one", async () => {
   const root = tempRoot();
   try {
