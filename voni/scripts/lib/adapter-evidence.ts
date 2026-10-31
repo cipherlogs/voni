@@ -13,10 +13,40 @@
  * named error type; the parse rule itself is shared.
  */
 
+import { writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+import type { ToolLogRow } from "@/lib/demo/tool-log";
 import type { CallEligibilityFact } from "@/lib/demo/verification/verdict";
+import type { InboxDelivery } from "@/lib/demo/verification/tools/inbox";
 
 /** The adapter's own error type, so a refusal keeps its family's code. */
 export type AdapterErrorFactory = (code: string, message: string) => Error;
+
+/** A run id and call id become directory names; anything else is refused. */
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export function requireSafeId(value: string, what: string, error: AdapterErrorFactory): string {
+  if (!SAFE_ID.test(value) || value.includes("..")) {
+    throw error(
+      "run-dir-invalid",
+      `${what} "${value}" is not a safe directory name; use letters, digits, dot, dash or underscore`,
+    );
+  }
+  return value;
+}
+
+export function runDirectory(
+  runRoot: string,
+  runId: string,
+  error: AdapterErrorFactory,
+): string {
+  return resolve(runRoot, requireSafeId(runId, "run id", error));
+}
+
+export async function writeJson(file: string, value: unknown): Promise<void> {
+  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
 
 /** Parse one JSONL trace; a malformed line is a named refusal, never skipped. */
 export function parseTrace(
@@ -45,7 +75,8 @@ export function parseTrace(
   return rows;
 }
 
-export function stringField(row: Record<string, unknown>, field: string): string | null {
+/** One trimmed non-empty string field; a missing or blank value is null. */
+function stringField(row: Record<string, unknown>, field: string): string | null {
   const value = row[field];
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
@@ -117,4 +148,58 @@ export function eligibilityOf(input: EligibilityInput): CallEligibilityFact {
     providerFallback,
     budgetStop,
   };
+}
+
+/** The tool log and inbox delivery an adapter collected after the call. */
+export type ToolEvidenceCollection = {
+  readonly log: readonly ToolLogRow[];
+  readonly delivery: InboxDelivery | null;
+  readonly gap: string | null;
+};
+
+/** The tool block both adapters put in a bundle, with its named absence. */
+export type ToolBundle = {
+  readonly calls: readonly Record<string, unknown>[];
+  readonly results: readonly Record<string, unknown>[];
+  readonly log?: readonly ToolLogRow[];
+  readonly delivery?: InboxDelivery;
+  readonly gap?: string;
+};
+
+/**
+ * The tool rows, the demo tool log and the real inbox delivery, in one place.
+ * Both adapters read the same three facts and must present them the same way;
+ * a gap is appended to the caller's gaps so it can never be silently dropped.
+ */
+export function toolBundle(
+  rows: readonly Record<string, unknown>[],
+  evidence: ToolEvidenceCollection | undefined,
+  gaps: string[],
+): ToolBundle {
+  const gap = evidence?.gap ?? null;
+  if (gap !== null) gaps.push(gap);
+  return {
+    calls: rows.filter((row) => row.type === "turn.tool_call"),
+    results: rows.filter((row) => row.type === "turn.tool_result"),
+    ...(evidence === undefined || evidence.log.length === 0 ? {} : { log: evidence.log }),
+    ...(evidence === undefined || evidence.delivery === null
+      ? {}
+      : { delivery: evidence.delivery }),
+    ...(gap === null ? {} : { gap }),
+  };
+}
+
+/**
+ * The call's own priced row, copied verbatim — the harness never recomputes a
+ * price. A trace with no priced row records that as a named gap, never a zero.
+ */
+export function pricedRow(
+  rows: readonly Record<string, unknown>[],
+  gaps: string[],
+): Record<string, unknown> | null {
+  const priced = firstRow(rows, "cost.priced");
+  if (priced === null) {
+    gaps.push("the trace carries no cost.priced row; cost is never recomputed by the runner");
+  }
+  return priced;
 }
