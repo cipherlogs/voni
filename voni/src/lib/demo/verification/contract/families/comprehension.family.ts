@@ -75,8 +75,12 @@ const comprehension: ContractFamily = {
       evidence: "wav",
       kind: "deterministic",
       thresholds: [{ source: "budget-record", key: "dvTranscriptEntityMismatchMaxCount" }],
+      unresolved: {
+        reason:
+          "The spec states 'word error within bar' without a number, so K8 cannot be judged against its stated bar. Ticket 13 must record the word-error bar in a frozen record; until then the property is unresolved and the run fails closed.",
+      },
       gaps: [
-        "The spec states 'word error within bar' without a number. Ticket 13 must record the word-error bar in a frozen record before K8 can pass; an unrecorded bar fails closed.",
+        "K8's word-error bar is unstated: only the entity check is recorded, so the property may not be called a pass on the entity result alone.",
       ],
     },
   ],

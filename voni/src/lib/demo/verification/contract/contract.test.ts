@@ -396,7 +396,12 @@ test("the contract exports one machine-readable document", async () => {
   assert.match(h6.unresolvedReason ?? "", /ticket 27|unresolved|kappa/i);
   const k8 = document.properties.find((entry) => entry.id === "K8");
   assert.ok(k8);
-  assert.ok((k8.gaps ?? []).some((gap) => /word error/i.test(gap)), "K8's unstated word-error bar is recorded");
+  assert.equal(k8.unresolved, true, "K8's unstated word-error bar fails closed");
+  assert.match(k8.unresolvedReason ?? "", /word error/i);
+  assert.ok(
+    (k8.gaps ?? []).some((gap) => /word[- ]error/i.test(gap)),
+    "K8's gap is also recorded",
+  );
   const t1 = document.properties.find((entry) => entry.id === "T1");
   assert.ok(t1);
   assert.equal(t1.repetitions, 3);

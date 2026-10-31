@@ -58,8 +58,9 @@ An **unresolved** property is a recorded gap with no owning evaluator. Today
 that is H6 (judge agreement with gold labels): it is wired to the `judge`
 evidence source and the registry marks it unresolved, so the verdict engine
 reports it unverified and the run fails closed until ticket 26 or 27 claims it.
-The registry also records K8's missing word-error number as a gap; ticket 13
-must add that bar to a frozen record before K8 can pass.
+K8 is unresolved for the same reason: the spec states "word error within bar"
+without a number, so ticket 13 must add that bar to a frozen record before K8
+can pass. Its entity check is recorded, but it may not carry a pass alone.
 
 The one seam is the call boundary. If a proposed change adds a second seam
 inside the call lifecycle or the turn stream, it contradicts ADR 0013 and needs
