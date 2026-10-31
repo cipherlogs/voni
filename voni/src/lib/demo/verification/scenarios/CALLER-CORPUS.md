@@ -11,7 +11,7 @@ not fixtures. This file records how it was produced and how it may change.
   `language` is the scenario's own Locale (`en`, `es`, `fr`, `de` or `pt`), so
   the Locale core is real speech in its target language.
 - Format: 24 kHz mono PCM16 WAV, the pipeline's ingress format.
-- Corpus version **2**: eighty-eight scenarios, 218 takes, recorded **2026-10-31**
+- Corpus version **2**: ninety-one scenarios, 227 takes, recorded **2026-10-31**
   with `npm run corpus:takes` and the local `CARTESIA_API_KEY`. Ticket 12's ten
   fast-contract scenarios carry twenty takes; ticket 13's five comprehension and
   five emotion scenarios carry thirty; ticket 14's soundscape, connectivity and
@@ -20,8 +20,9 @@ not fixtures. This file records how it was produced and how it may change.
   Locale); ticket 15's tools and ticket 20's resilience edge scenarios carry the
   rest. The last three English scenarios — `golden-flow-booking`,
   `turn-taking-overlap` and `caller-hangup-mid-word` — carry nine takes and bring
-  English to the spec's 40. Adding a scenario directory does not move the
-  version; only a deliberate retake does.
+  English to the spec's 40; the sealed trio `sarcastic`, `distressed` and
+  `mispronounced-email` adds nine takes and brings English to 43. Adding a
+  scenario directory does not move the version; only a deliberate retake does.
 - Every take's exact bytes are pinned by its `sha256` in `scenario.json`. The
   loader hashes the file on every load; a mismatch is a named `take-drift`
   refusal with exit 2.
@@ -51,11 +52,11 @@ not fixtures. This file records how it was produced and how it may change.
 - The four `locale-television-*` scenarios name the `television` bed, the same
   gap ticket 14 records in `SOUNDSCAPES.md`: until a real bed is committed the
   adapters refuse that soundscape by name rather than mixing digital silence.
-- Held-out names still without a committed scenario: `sarcastic`, `distressed`
-  and `mispronounced-email`. The corpus seals five of the spec's eight
-  (`second-voice`, `speakerphone`, `prompt-injection`, `two-tools-in-turn` and
-  `caller-hangup-mid-word`). The absent three stay a recorded gap; the corpus
-  does not add a stand-in under another name.
+- All eight held-out names are committed and sealed: `sarcastic`, `distressed`,
+  `second-voice`, `speakerphone`, `prompt-injection`, `two-tools-in-turn`,
+  `mispronounced-email` and `caller-hangup-mid-word`. The corpus never adds a
+  stand-in under another name, and a fix may not read a sealed scenario in
+  place (RR-07).
 - `turn-taking-overlap` starts its second take two seconds after the agent's
   first speech onset, so one caller turn overlaps the greeting's tail and then
   yields. It cites T7, T9 and T10, never T3: a barge cut is

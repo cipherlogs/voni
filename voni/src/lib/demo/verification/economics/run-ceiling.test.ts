@@ -133,14 +133,14 @@ test("a planned run is checked before it starts, against its own ceiling", async
   assert.equal(fast.passed, true);
   close(fast.usd, 1.5);
 
-  const nightly = preflightRunCeiling({ kind: "nightly", contract, plannedCalls: 88 });
+  const nightly = preflightRunCeiling({ kind: "nightly", contract, plannedCalls: 91 });
   assert.equal(nightly.passed, true);
-  close(nightly.usd, 13.2);
+  close(nightly.usd, 13.65);
   assert.ok(nightly.usd !== null && nightly.usd <= 15);
 
-  const full = preflightRunCeiling({ kind: "full", contract, plannedCalls: 264 });
+  const full = preflightRunCeiling({ kind: "full", contract, plannedCalls: 273 });
   assert.equal(full.passed, true);
-  close(full.usd, 39.6);
+  close(full.usd, 40.95);
   assert.ok(full.usd !== null && full.usd <= 45);
 });
 

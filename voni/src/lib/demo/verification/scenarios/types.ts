@@ -24,7 +24,7 @@ export const SCENARIO_FILE = "scenario.json";
 export const CORPUS_MANIFEST_FILE = "manifest.json";
 
 /**
- * The spec's ten scenario classes. The corpus is 40 English scenarios in these
+ * The spec's ten scenario classes. The corpus is 43 English scenarios in these
  * classes; tickets 12–16 add the scenarios, this file only names the classes.
  */
 export const SCENARIO_CLASSES = [

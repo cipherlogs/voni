@@ -20,6 +20,7 @@ import {
   validateCertificate,
   type PanelSignature,
 } from "@/lib/demo/verification/certificate";
+import { ENGLISH_SCENARIOS } from "@/lib/demo/verification/cadence";
 import { loadContract, type Contract } from "@/lib/demo/verification/contract";
 import type { PanelJudgementInput } from "@/lib/demo/verification/panel";
 import {
@@ -357,8 +358,8 @@ test("full and nightly plan over the complete corpus and carry no corpus gap", a
   });
   assert.equal(
     corpus.scenarios.filter((scenario) => scenario.locale === "en").length,
-    40,
-    "English holds all forty scenarios",
+    ENGLISH_SCENARIOS,
+    "English holds every scenario the plan is defined over",
   );
   for (const mode of ["full", "nightly"] as const) {
     const plan = planVerify({ request: request(["--target", "local", `--${mode}`]), corpus });

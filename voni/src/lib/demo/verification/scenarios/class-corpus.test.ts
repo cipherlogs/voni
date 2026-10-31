@@ -142,10 +142,24 @@ test("ticket 20's edge scenarios each produce one R property and no media fault"
   assert.equal(byName.get("resilience-hold-return")?.edge[0]?.kind, "page-freeze");
 });
 
-test("the corpus is 40 English scenarios, and the last three fill golden flow, turn-taking and ending", async () => {
+test("the corpus is 43 English scenarios, and the closing six fill golden flow, turn-taking, ending and the seal", async () => {
   const corpus = await load();
   const english = corpus.scenarios.filter((scenario) => scenario.locale === "en");
-  assert.equal(english.length, 40, "English runs all 40 scenarios the nightly/full plan is defined over");
+  assert.equal(
+    english.length,
+    43,
+    "English runs the spec's 40 plus the three sealed held-out scenarios the plan is defined over",
+  );
+  assert.equal(
+    english.filter((scenario) => scenario.class === "emotion").length,
+    7,
+    "five ticket-13 emotion scenarios plus the sealed sarcastic and distressed",
+  );
+  assert.equal(
+    english.filter((scenario) => scenario.class === "comprehension").length,
+    6,
+    "five ticket-13 comprehension scenarios plus the sealed mispronounced-email",
+  );
 
   assert.deepEqual(namesOf(corpus.scenarios, "golden-flow"), [
     "golden-flow-booking",
@@ -181,12 +195,15 @@ test("the corpus is 40 English scenarios, and the last three fill golden flow, t
   assert.equal(hangup.script.at(-1)?.trigger.type, "at-offset", "the caller leaves at its own fixed time");
 });
 
-test("the held-out seals are exactly the spec's names, never a broader class seal", async () => {
+test("the held-out seals are exactly the spec's eight names, never a broader class seal", async () => {
   const corpus = await load();
-  const held = corpus.scenarios.filter((scenario) => scenario.heldOut).map((scenario) => scenario.name);
-  for (const name of ["prompt-injection", "second-voice", "speakerphone", "caller-hangup-mid-word"]) {
-    assert.ok(held.includes(name), `${name} must be sealed`);
+  const held = new Set(
+    corpus.scenarios.filter((scenario) => scenario.heldOut).map((scenario) => scenario.name),
+  );
+  for (const name of HELD_OUT_SCENARIOS) {
+    assert.ok(held.has(name), `${name} must be sealed (all eight names are committed)`);
   }
+  assert.deepEqual([...held].sort(), [...HELD_OUT_SCENARIOS].sort());
   for (const name of held) {
     assert.ok((HELD_OUT_SCENARIOS as readonly string[]).includes(name), `${name} is a sealed name`);
   }

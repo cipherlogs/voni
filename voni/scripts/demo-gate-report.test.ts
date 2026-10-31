@@ -6,6 +6,12 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import {
+  FAST_CALLS,
+  FULL_CALLS,
+  NIGHTLY_CALLS,
+} from "../src/lib/demo/verification/cadence";
+
 /**
  * The CI gate over a demo:verify report: a clean scoped-pass and a clean
  * nightly health report are job successes even though both exit 1; a full run
@@ -27,19 +33,34 @@ function run(mode: string, report: unknown): { status: number | null; stdout: st
 }
 
 test("a clean fast scoped-pass is a merge-gate success", () => {
-  const result = run("fast", { mode: "fast", status: "scoped-pass", calls: 10, exitCode: 1 });
+  const result = run("fast", {
+    mode: "fast",
+    status: "scoped-pass",
+    calls: FAST_CALLS,
+    exitCode: 1,
+  });
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("a clean nightly health report is a success; 88 calls is the plan", () => {
-  const result = run("nightly", { mode: "nightly", status: "health-clean", calls: 88, exitCode: 1 });
+test("a clean nightly health report is a success; the plan's call count is the cadence", () => {
+  const result = run("nightly", {
+    mode: "nightly",
+    status: "health-clean",
+    calls: NIGHTLY_CALLS,
+    exitCode: 1,
+  });
   assert.equal(result.status, 0, result.stderr);
 });
 
 test("a short or red run fails the gate by name", () => {
-  const short = run("nightly", { mode: "nightly", status: "health-clean", calls: 87, exitCode: 1 });
+  const short = run("nightly", {
+    mode: "nightly",
+    status: "health-clean",
+    calls: NIGHTLY_CALLS - 1,
+    exitCode: 1,
+  });
   assert.equal(short.status, 1);
-  assert.match(short.stderr, /88/);
+  assert.match(short.stderr, new RegExp(`${NIGHTLY_CALLS}`));
   const red = run("fast", { mode: "fast", status: "not-demo-ready", calls: 10, exitCode: 1 });
   assert.equal(red.status, 1);
   assert.match(red.stderr, /not-demo-ready/);
@@ -51,7 +72,7 @@ test("a full run needs a certificate and names pending-human as not a pass", () 
   const noCertificate = run("full", {
     mode: "full",
     status: "pending-human",
-    calls: 264,
+    calls: FULL_CALLS,
     exitCode: 3,
     certificate: null,
   });
@@ -61,7 +82,7 @@ test("a full run needs a certificate and names pending-human as not a pass", () 
   const pending = run("full", {
     mode: "full",
     status: "pending-human",
-    calls: 264,
+    calls: FULL_CALLS,
     exitCode: 3,
     certificate: { verdict: "pending-human" },
   });
@@ -72,7 +93,7 @@ test("a full run needs a certificate and names pending-human as not a pass", () 
   const certified = run("full", {
     mode: "full",
     status: "certified",
-    calls: 264,
+    calls: FULL_CALLS,
     exitCode: 0,
     certificate: { verdict: "certified" },
   });

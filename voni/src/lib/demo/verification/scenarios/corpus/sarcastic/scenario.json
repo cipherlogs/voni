@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "name": "sarcastic",
+  "class": "emotion",
+  "locale": "en",
+  "heldOut": true,
+  "expectedProperties": [
+    "C4",
+    "C5",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "edge": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "1924055604ed8f273664f867b144fdaf62cecc9b45b85ba4271e4d6f898fa9dc",
+      "text": "Oh, fantastic. Another robot. Just what I needed today."
+    },
+    {
+      "id": "sarcasm",
+      "audio": "takes/sarcasm.wav",
+      "sha256": "7b61eb88a1cca4d2f9e5686beeff3701b8c0c3e40689a165669de6b7489fd9eb",
+      "text": "No, no, don't apologise. I am sure you are doing your very best."
+    },
+    {
+      "id": "pivot",
+      "audio": "takes/pivot.wav",
+      "sha256": "cac237ee0f2cb9ff0df05e3d3a43f6c2279f2e6a0245793b17795dff803fdc85",
+      "text": "Fine. Can you actually tell me when you open?"
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "sarcasm",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "pivot",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

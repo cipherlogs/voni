@@ -214,7 +214,7 @@ export const VERIFY_USAGE = `usage: npm run demo:verify -- --target <local|stagi
   --target T          local | staging | production (default local)
   --full              full certification (default)
   --fast              the ten-scenario English fast contract
-  --nightly           nightly health (English 40 + Locale core 12)
+  --nightly           nightly health (English 43 + Locale core 12)
   --diagnose          one scenario's diagnosis; never a certificate
   --scenario NAME     the scenario --diagnose runs
   --locale L          en | es | fr | de | pt (a Locale filter)

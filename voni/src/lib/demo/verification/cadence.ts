@@ -5,11 +5,11 @@
  * The counts are the spec's written coverage, not a tuning knob:
  *
  * - fast: the ten-scenario English contract, one repetition;
- * - nightly: English 40 x 1 plus the Locale core 12 x 1 on es, fr, de, pt;
- * - full: the same 88-call plan at three repetitions, with a panel.
+ * - nightly: English 43 x 1 plus the Locale core 12 x 1 on es, fr, de, pt;
+ * - full: the same 91-call plan at three repetitions, with a panel.
  *
- * At the frozen E2 per-call cap ($0.15) nightly is 88 x $0.15 = $13.20 and
- * full is 264 x $0.15 = $39.60; the amended E3 ceilings are $15 and $45.
+ * At the frozen E2 per-call cap ($0.15) nightly is 91 x $0.15 = $13.65 and
+ * full is 273 x $0.15 = $40.95; the amended E3 ceilings are $15 and $45.
  * Changing a number here is a spec change and must move the plan test, the CI
  * gate reader and the docs together. Nothing else may declare these counts:
  * `voni/scripts/lib/verify-cli/plan.ts` and `voni/scripts/demo-gate-report.mjs`
@@ -18,10 +18,12 @@
 
 export const FAST_CALLS = 10;
 
-/** The English scenarios a nightly/full run is defined over. */
-export const ENGLISH_SCENARIOS = 40;
-
-// The sealed set is completed in the corpus ticket; this stays 40 until then.
+/**
+ * The English scenarios a nightly/full run is defined over. The corpus holds
+ * the spec's 40 plus the three sealed held-out scenarios `sarcastic`,
+ * `distressed` and `mispronounced-email` that completed the eight-name seal.
+ */
+export const ENGLISH_SCENARIOS = 43;
 
 /** The Locale core, per non-English Locale. */
 export const LOCALE_CORE_SCENARIOS = 12;
