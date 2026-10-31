@@ -209,10 +209,10 @@ function buildCoverage(
     const measuredScenarios = localeRows.filter((row) => row.status === "measured").length;
     const gapRows = localeRows.length - measuredScenarios;
     const gap =
-      gapRows === 0
-        ? null
-        : localeRows.length === 0
-          ? "no scenario for this Locale in the corpus"
+      localeRows.length === 0
+        ? "no scenario for this Locale in the corpus"
+        : gapRows === 0
+          ? null
           : `${gapRows} of ${localeRows.length} scenarios not measured`;
     byLocale.push({
       locale,

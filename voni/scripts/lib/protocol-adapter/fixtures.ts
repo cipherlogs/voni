@@ -181,25 +181,13 @@ export const E1: ContractPropertyEntry = {
   thresholds: [E1_BAR],
 };
 
-export const X4: ContractPropertyEntry = {
-  id: "X4",
-  family: "tools",
-  statement: "The emailed item is real and found by its tag.",
-  bar: { text: "pass", numeric: false },
-  evidence: "tool",
-  kind: "deterministic",
-  repetitions: 1,
-  thresholds: [],
-};
-
 export function probeContract(): Contract {
   return {
     families: [
       { id: "conduct", title: "probe conduct", propertyCount: 1 },
       { id: "economics", title: "probe economics", propertyCount: 1 },
-      { id: "tools", title: "probe tools", propertyCount: 1 },
     ],
-    properties: [G1, E1, X4],
+    properties: [G1, E1],
   };
 }
 
@@ -221,17 +209,6 @@ export function probeEvaluators(): PropertyEvaluator[] {
             : "the agent answered",
         };
       },
-    },
-    {
-      propertyId: "X4",
-      bars: [],
-      source: "probe.evaluators.ts",
-      evaluate: () => ({
-        kind: "measured",
-        passed: true,
-        citations: ["tool:probe"],
-        detail: "the probe tool found its email",
-      }),
     },
     {
       propertyId: "E1",
@@ -453,6 +430,7 @@ export function probeRunInput(input: {
     soundscapes: input.soundscapes ?? {},
     modules: input.modules ?? PROBE_MODULES,
     repoRoot: basename(process.cwd()) === "voni" ? resolve(process.cwd(), "..") : process.cwd(),
+    endWaitMs: 0,
     callId: "11111111-1111-4111-8111-111111111111",
   };
 }
