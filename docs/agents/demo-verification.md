@@ -215,10 +215,10 @@ production evaluators and turned into defect cards:
   `caller_end`, a caller hangup, the clock, a budget stop, a refusal, a leg
   failure or a `turn.user_final` that asked to end, and counts an `end_call`
   without any of them. The red fixture ends at 8 s with
-  `turn.hangup reason=end_call` and no caller end request. L9 additionally measures the delivered WAV's last run against the
-  goodbye's synthesized length in the end message and reports both the played
-  percentage and the drop delay; the fixture's 1200 ms goodbye is cut after
-  400 ms.
+  `turn.hangup reason=end_call` and no caller end request. L9 additionally
+  measures the delivered WAV's last run against the goodbye's synthesized length
+  in the end message and reports both the played percentage and the drop delay;
+  the fixture's 1200 ms goodbye is cut after 400 ms.
 
 The browser adapter's diagnose run makes one call. A timing/behaviour property
 whose contract plan is three repetitions therefore fails with
