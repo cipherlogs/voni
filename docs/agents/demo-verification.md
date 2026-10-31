@@ -255,7 +255,7 @@ and IBAN shapes are scanned today.
 ### Audio evidence gaps
 
 Ticket 21 measures A1–A8 from the delivered WAV and the committed voice
-reference. Four limits are recorded rather than papered over:
+reference. Five limits are recorded rather than papered over:
 
 - **A4 has no caller words to read.** The turn ledger records a caller final's
   length and emptiness, never its text (a deliberate privacy rule), and no

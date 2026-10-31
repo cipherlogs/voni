@@ -83,6 +83,17 @@ test("a sidecar that misdescribes the WAV is refused", () => {
   );
 });
 
+test("a sidecar from another render method is refused by name", () => {
+  const record = sidecar(VOICE_REFERENCE_DIR);
+  assert.throws(
+    () => parseVoiceReferenceSidecar({ ...record, method: "silent-greeting-session" }, "fixture"),
+    (error: unknown) =>
+      error instanceof VoiceReferenceError &&
+      error.code === "reference-sidecar-invalid" &&
+      /"method"/.test(error.message),
+  );
+});
+
 test("a sidecar that names another voice is refused by name", () => {
   assert.throws(
     () =>

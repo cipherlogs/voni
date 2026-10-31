@@ -143,6 +143,12 @@ export function parseVoiceReferenceSidecar(
   if (!/^[0-9a-f]{64}$/.test(sha256)) {
     throw invalid(where, '"audio.sha256" must be 64 lowercase hex characters');
   }
+  if (root.method !== "cascade-reference-render") {
+    throw invalid(where, '"method" must be "cascade-reference-render"');
+  }
+  if (format.transport !== "browser") {
+    throw invalid(where, '"format.transport" must be "browser"');
+  }
   if (format.encoding !== "pcm_s16le") {
     throw invalid(where, '"format.encoding" must be "pcm_s16le"');
   }
