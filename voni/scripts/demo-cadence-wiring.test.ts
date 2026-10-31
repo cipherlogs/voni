@@ -121,7 +121,7 @@ test("nightly is English plus four Locale cores and weekly full is the same plan
   );
   assert.doesNotMatch(
     reader,
-    /\b(88|264)\b/,
+    new RegExp(`\\b(${NIGHTLY_CALLS}|${FULL_CALLS})\\b`),
     "the gate reader must not restate a cadence count as a literal",
   );
 });
@@ -133,8 +133,16 @@ test("the plan imports the cadence counts, so a hand-edited copy fails", () => {
     /from "@\/lib\/demo\/verification\/cadence"/,
     "the plan imports the one count source",
   );
-  assert.doesNotMatch(plan, /FULL_ENGLISH_SCENARIOS\s*=\s*40/, "no literal English count");
-  assert.doesNotMatch(plan, /LOCALE_CORE_SCENARIOS\s*=\s*12/, "no literal Locale-core count");
+  assert.doesNotMatch(
+    plan,
+    new RegExp(`FULL_ENGLISH_SCENARIOS\\s*=\\s*${ENGLISH_SCENARIOS}`),
+    "no literal English count",
+  );
+  assert.doesNotMatch(
+    plan,
+    new RegExp(`LOCALE_CORE_SCENARIOS\\s*=\\s*${LOCALE_CORE_SCENARIOS}`),
+    "no literal Locale-core count",
+  );
 });
 
 test("every new job has a timeout and a required wrapper that fails on skip, cancel or a missing artifact", () => {
