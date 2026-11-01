@@ -26,7 +26,7 @@ import {
   type Corpus,
 } from "./index";
 import type { FamilyId } from "../contract";
-import type { RunVerdict } from "../verdict";
+import type { PropertyVerdictReason, RunVerdict } from "../verdict";
 
 /**
  * Ticket 12's acceptance, pinned to the corpus and the contract.
@@ -340,6 +340,7 @@ function verdictFor(
   contract: Contract,
   statuses: ReadonlyMap<string, "PASS" | "FAIL"> = new Map(),
   eligible = true,
+  reasons: ReadonlyMap<string, PropertyVerdictReason> = new Map(),
 ): RunVerdict {
   const properties = contract.properties.map((property) => {
     const status = statuses.get(property.id) ?? "PASS";
@@ -352,7 +353,10 @@ function verdictFor(
       kind: property.kind,
       evidence: property.evidence,
       status,
-      reason: status === "PASS" ? ("pass" as const) : ("below-bar" as const),
+      reason:
+        status === "PASS"
+          ? ("pass" as const)
+          : (reasons.get(property.id) ?? "below-bar"),
       detail: status === "PASS" ? "passed" : "below the bar",
       sampleCount: 1,
       requiredRepetitions: property.repetitions,
@@ -629,4 +633,27 @@ test("the committed corpus is discovered at the default root and holds the ten f
     assert.ok(scenario.takes.length > 0);
     assert.ok(scenario.takes.every((take) => take.bytes > 44));
   }
+});
+
+test("a property the run could not sample three times is out of scope, not failed", async () => {
+  // The fast contract runs one repetition by the cadence. A timing property the
+  // verdict could not sample three times is unmeasured, so blaming the call path
+  // for it would make a scoped-pass unreachable and would report a sample-size
+  // fact as a defect.
+  const contract = await CONTRACT;
+  const scoped = scopeFastVerdict({
+    contract,
+    corpus: await corpus(),
+    verdict: verdictFor(
+      contract,
+      new Map([["T2", "FAIL"]]),
+      true,
+      new Map([["T2", "repetition-shortfall"]]),
+    ),
+  });
+  assert.equal(scoped.verdict, "scoped-pass", "a shortfall never reds the fast scope");
+  assert.ok(!scoped.failedPropertyIds.includes("T2"));
+  const entry = scoped.properties.find((property) => property.propertyId === "T2");
+  assert.equal(entry?.status, "OUT-OF-SCOPE");
+  assert.equal(entry?.reason, "repetition-plan");
 });

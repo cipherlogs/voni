@@ -350,6 +350,22 @@ export function scopeFastVerdict(input: {
         `the verdict has no entry for in-scope property ${property.id}`,
       );
     }
+    // A property the run could not measure because one call cannot satisfy its
+    // three-repetition plan is unmeasured, not failed. The fast contract runs
+    // one repetition by the cadence, so judging such a property FAIL here would
+    // make a scoped-pass unreachable and would blame the call path for the
+    // run's own sample size.
+    if (entry.reason === "repetition-shortfall") {
+      return {
+        propertyId: property.id,
+        family: property.family,
+        status: "OUT-OF-SCOPE" as const,
+        reason: "repetition-plan",
+        detail:
+          `${property.id} needs three repetitions; the fast contract runs one, ` +
+          "so it is unmeasured here rather than failed",
+      };
+    }
     if (entry.status === "FAIL") failed.push(property.id);
     return {
       propertyId: property.id,
