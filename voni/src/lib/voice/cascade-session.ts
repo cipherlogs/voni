@@ -52,6 +52,14 @@ export const DEMO_PLAYOUT_CUSHION_S = 0.25;
 export const CASCADE_PROTOCOL_VERSION = 1;
 
 /**
+ * How long the microphone waits for the service's first audio before it speaks
+ * anyway. The greeting opens the gate in every normal call; this only covers a
+ * resumed call, which deliberately speaks no greeting, so the caller is never
+ * left unheard.
+ */
+export const MIC_GATE_FALLBACK_MS = 8_000;
+
+/**
  * What the browser is allowed to tell the service: identity only. The prompt
  * and the tool list are assembled and signed by the app (ticket 64) and reach
  * the service over the app channel; the browser never holds them.
@@ -292,6 +300,20 @@ export class CascadeSession {
   private ended = false;
   private configSent = false;
   private inputMuted = false;
+  /**
+   * The service is live: its first audio frame has arrived. Microphone frames
+   * sent before this are held, never queued:
+   *
+   * The connect takes seconds (mint, admission, the vendor handshake), and the
+   * mic is live for all of it. Whatever the caller says in that window cannot
+   * be heard by a session that does not exist yet; forwarding it made the
+   * service deliver seconds of backlog at once when the session opened, and the
+   * vendor closes a stream that arrives ahead of real time ("Audio processing
+   * backlog too large"). A resumed call speaks no greeting, so a bounded timer
+   * opens the gate even when no audio ever arrives.
+   */
+  private micLive = false;
+  private micGateTimer: ReturnType<typeof setTimeout> | null = null;
   /** The service accepted the call: any valid server frame arrived. */
   private accepted = false;
   /** The connect failure was already reported (one report per connect). */
@@ -338,6 +360,7 @@ export class CascadeSession {
     this.ended = false;
     this.inputMuted = false;
     this.configSent = false;
+    this.micLive = false;
     this.accepted = false;
     this.connectFailureReported = false;
     this.highestPlayedSeq = 0;
@@ -371,7 +394,7 @@ export class CascadeSession {
     };
     const startMic = this.deps.startMic ?? defaultStartMic;
     const handle = await startMic(micOwner, (data) => {
-      if (this.started && !this.inputMuted && ws.readyState === ws.OPEN) {
+      if (this.started && this.micLive && !this.inputMuted && ws.readyState === ws.OPEN) {
         this.send(encodeAudioFrame(data));
       }
     });
@@ -413,6 +436,9 @@ export class CascadeSession {
       };
     }
     this.started = true;
+    // A resumed call speaks no greeting, so nothing may ever open the gate; the
+    // bound keeps that call able to speak rather than silent forever.
+    this.micGateTimer = setTimeout(() => this.openMicGate(), MIC_GATE_FALLBACK_MS);
     // Socket may already be open (fake sockets, fast localhost): flush config now.
     if (ws.readyState === ws.OPEN) this.sendConfig(config);
   }
@@ -465,6 +491,7 @@ export class CascadeSession {
     const audio = decodeAudioMessage(raw);
     if (audio) {
       this.admit("audio");
+      this.openMicGate();
       if (audio.seq !== undefined) {
         if (audio.seq <= this.highestPlayedSeq) {
           // The call-level contract: an audio frame that is not newer is never
@@ -595,6 +622,16 @@ export class CascadeSession {
     this.teardown();
   }
 
+  /** The service is live: release the microphone frames from here on. */
+  private openMicGate(): void {
+    if (this.micLive) return;
+    this.micLive = true;
+    if (this.micGateTimer !== null) {
+      clearTimeout(this.micGateTimer);
+      this.micGateTimer = null;
+    }
+  }
+
   private send(message: string): void {
     try {
       this.ws?.send(message);
@@ -627,6 +664,11 @@ export class CascadeSession {
   }
 
   private teardown(): void {
+    if (this.micGateTimer !== null) {
+      clearTimeout(this.micGateTimer);
+      this.micGateTimer = null;
+    }
+    this.micLive = false;
     if (!this.teardownMarked) {
       this.teardownMarked = true;
       this.marks?.mark("teardown");

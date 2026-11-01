@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -12,6 +12,7 @@ import {
   encodeAudioFrame,
   encodeContextMessage,
   parseServerMessage,
+  MIC_GATE_FALLBACK_MS,
   type CascadeCallConfig,
 } from "./cascade-session";
 import {
@@ -384,7 +385,7 @@ test("session sends config on open and dispatches server events", async () => {
   assert.equal(socket.closed, true);
 });
 
-test("mic frames are forwarded as audio messages", async () => {
+test("mic frames wait for the service's first audio, then are forwarded", async () => {
   const socket = makeSocket();
   const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
   const session = new CascadeSession(
@@ -401,12 +402,58 @@ test("mic frames are forwarded as audio messages", async () => {
   await session.start(CONFIG, "test-owner");
   socket.readyState = socket.OPEN;
   socket.onopen?.();
+
+  // The connect is not over: the caller speaking here cannot be heard by a
+  // session that does not exist yet, and forwarding it floods the vendor.
   mic.onFrame?.(new Uint8Array([5, 6]).buffer);
-  assert.equal(socket.sent.length, 2);
-  const frame = JSON.parse(socket.sent[1]);
-  assert.equal(frame.type, "audio");
-  assert.equal(Buffer.from(frame.data, "base64").length, 2);
+  assert.equal(socket.sent.length, 1, "only the config frame went out");
+
+  socket.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([1, 2, 3]).toString("base64"),
+      sample_rate: 24000,
+    }),
+  );
+  mic.onFrame?.(new Uint8Array([7, 8]).buffer);
+  const frames = socket.sent.map((raw) => JSON.parse(raw));
+  const audio = frames.filter((frame) => frame.type === "audio");
+  assert.equal(audio.length, 1);
+  assert.equal(Buffer.from(audio[0].data, "base64").length, 2);
   await session.stop();
+});
+
+test("a call that never speaks still opens the mic after the bound", async () => {
+  // A resumed call deliberately speaks no greeting; without the fallback the
+  // caller would be heard by nobody. The bound is the only thing that opens it.
+  const socket = makeSocket();
+  const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async (_owner, onFrame) => {
+        mic.onFrame = onFrame;
+        return { stop: () => {} };
+      },
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  const clock = mock.timers;
+  clock.enable({ apis: ["setTimeout"] });
+  try {
+    await session.start(CONFIG, "test-owner");
+    socket.readyState = socket.OPEN;
+    socket.onopen?.();
+    mic.onFrame?.(new Uint8Array([1]).buffer);
+    assert.equal(socket.sent.length, 1, "held before the bound");
+    clock.tick(MIC_GATE_FALLBACK_MS);
+    mic.onFrame?.(new Uint8Array([2]).buffer);
+    assert.equal(socket.sent.length, 2, "released at the bound");
+    await session.stop();
+  } finally {
+    clock.reset();
+  }
 });
 
 test("muting cascade drops mic frames and sends context without stopping playback", async () => {
@@ -426,6 +473,14 @@ test("muting cascade drops mic frames and sends context without stopping playbac
   await session.start(CONFIG, "test-owner");
   socket.readyState = socket.OPEN;
   socket.onopen?.();
+  // The service is live, so the mic gate is open for the mute test itself.
+  socket.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([0]).toString("base64"),
+      sample_rate: 24000,
+    }),
+  );
   mic.onFrame?.(new Uint8Array([1]).buffer);
   session.setInputMuted(true);
   mic.onFrame?.(new Uint8Array([2]).buffer);

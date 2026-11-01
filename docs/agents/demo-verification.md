@@ -250,6 +250,13 @@ artifact disappears.
   missing, records an `unknown` id, or reports a `unversioned` pipeline build
   (RR-03). The 2026-10-31 live rehearsal refused there; the committed record
   landed on 2026-11-01, so only a missing pipeline key still stops a local run.
+- **The microphone is gated on the service's first audio.** The connect takes
+  seconds (mint, admission, vendor handshake) and the mic is live for all of it.
+  Frames from that window are now held rather than forwarded: the service used
+  to deliver them as one backlog when the session opened, and the vendor closes
+  a stream that arrives ahead of real time ("Audio processing backlog too
+  large"). A resumed call speaks no greeting, so `MIC_GATE_FALLBACK_MS` (8 s)
+  opens the gate even when no audio ever arrives.
 - **Two rate limits bound a local run, and neither is a defect.** The app's
   demo token limiter is per IP per hour (`DEMO_MAX_PER_IP_PER_HOUR`, 3 by
   default); a verification stack must raise it above the plan's call count, or
