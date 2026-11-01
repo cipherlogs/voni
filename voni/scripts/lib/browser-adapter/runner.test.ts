@@ -392,6 +392,11 @@ test("a missing marks artifact refuses to certify, by name", async () => {
     const refusal = runJson(result).refusal as { code: string; message: string };
     assert.equal(refusal.code, "marks-missing");
     assert.match(refusal.message, /marks/);
+    assert.match(
+      refusal.message,
+      new RegExp(BROWSER_CALL_ID),
+      "the refusal names the call whose marks were lost",
+    );
   } finally {
     removeTree(root);
   }

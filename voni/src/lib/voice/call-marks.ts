@@ -64,6 +64,11 @@ export const CALL_MARK_NAMES = [
   "start_failed",
   "teardown",
   "delivered_capture",
+  /**
+   * The capture did not close inside the teardown bound. Its absence is named
+   * rather than inventing a `delivered_capture` outcome the client never saw.
+   */
+  "delivered_capture_absent",
 ] as const;
 
 export type CallMarkName = (typeof CALL_MARK_NAMES)[number];

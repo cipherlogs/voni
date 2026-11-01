@@ -250,8 +250,8 @@ function readMarks(file: string, callId: string): CallMarksArtifact {
   if (!existsSync(file)) {
     throw new BrowserAdapterError(
       "marks-missing",
-      `no browser marks at ${file}; the call's marks are posted beside the delivered ` +
-        "WAV on teardown, and a certifying run has no evidence without them",
+      `no browser marks for call "${callId}" at ${file}; the call's marks are posted ` +
+        "beside the delivered WAV on teardown, and a certifying run has no evidence without them",
     );
   }
   const parsed = (() => {
@@ -320,8 +320,8 @@ export async function assembleBrowserEvidence(input: {
   if (marksSource === null) {
     throw new BrowserAdapterError(
       "marks-missing",
-      "the browser harness recorded no marks artifact for this call; the marks are " +
-        "posted by the app on teardown and a certifying run has no evidence without them",
+      `the browser harness recorded no marks artifact for call "${callId}"; the marks ` +
+        "are posted by the app on teardown and a certifying run has no evidence without them",
     );
   }
   if (captureSource === null) {

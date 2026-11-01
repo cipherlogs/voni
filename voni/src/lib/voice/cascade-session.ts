@@ -68,6 +68,32 @@ export const MIC_GATE_FALLBACK_MS = 8_000;
 export const CALLER_END_WAIT_MS = 500;
 
 /**
+ * How long teardown waits for the delivered capture's close before it posts the
+ * marks without it. The tap's own ack bound is 250 ms and the dev sink is
+ * local; 500 ms covers both. A hung tap or upload must never strand the marks
+ * behind a page that is already closing.
+ */
+export const MARKS_CAPTURE_WAIT_MS = 500;
+
+/** Resolve true when `promise` settles inside `ms`; false at the bound. */
+function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (inside: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(inside);
+    };
+    const timer = setTimeout(() => finish(false), ms);
+    void promise.then(
+      () => finish(true),
+      () => finish(true),
+    );
+  });
+}
+
+/**
  * What the browser is allowed to tell the service: identity only. The prompt
  * and the tool list are assembled and signed by the app (ticket 64) and reach
  * the service over the app channel; the browser never holds them.
@@ -648,12 +674,11 @@ export class CascadeSession {
     }
     // Start the tap flush first: it must keep the graph alive while the socket
     // stays open for the service's end, and neither may wait on the other.
-    const captureClosed = this.closeCapture();
+    void this.closeCapture();
     // The service writes its end after our stop and then closes. Waiting for
     // it is what turns a caller hang-up into an end_received mark instead of a
     // teardown with no ending; the bound never holds a dead line open.
     if (this.ws?.readyState === this.ws?.OPEN) await this.awaitEnd();
-    await captureClosed;
     await this.teardown();
   }
 
@@ -759,8 +784,9 @@ export class CascadeSession {
     }
     // A socket drop or the end message can land without an awaited stop;
     // start the capture close before the playout reference goes away. The one
-    // marks artifact posts once the capture outcome is known, and is never
-    // awaited by a caller: a slow or dead sink cannot hold up a hang-up.
+    // marks artifact posts once the capture outcome is known, or once the
+    // bound expires, and is never awaited by a caller: a slow or dead sink
+    // cannot hold up a hang-up and a closing page still sends it.
     const captureClosed = this.closeCapture();
     try {
       this.ws?.close();
@@ -769,16 +795,25 @@ export class CascadeSession {
     }
     this.ws = null;
     this.playout = null;
-    this.teardownPromise = captureClosed.then(() => {
+    this.teardownPromise = (async () => {
+      const closed = await settlesWithin(captureClosed, MARKS_CAPTURE_WAIT_MS);
+      if (!closed) {
+        // The outcome may still arrive after this post; it cannot be added to
+        // a finished artifact, so the absence is named now, never invented.
+        this.marks?.mark("delivered_capture_absent", {
+          reason: "not-closed",
+          waitedMs: MARKS_CAPTURE_WAIT_MS,
+        });
+      }
+      // Never awaited: a slow or dead sink cannot hold up a hang-up.
+      void this.marks?.finish();
       try {
         this.micStop?.();
       } catch {
         // Mic already released on competing teardown paths.
       }
       this.micStop = null;
-      // Never awaited: a slow or dead sink cannot hold up a hang-up.
-      void this.marks?.finish();
-    });
+    })();
     return this.teardownPromise;
   }
 

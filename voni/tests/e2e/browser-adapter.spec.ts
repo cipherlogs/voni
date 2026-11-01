@@ -15,6 +15,7 @@ import {
   type SyntheticMicTake,
 } from "../../scripts/lib/browser-adapter/synthetic-mic";
 import type { EdgeObservation } from "../../scripts/lib/browser-adapter/types";
+import { reportCallId } from "../../scripts/lib/browser-adapter/call-id";
 
 /**
  * The browser adapter's one Playwright spec: a certifying call on the real
@@ -504,6 +505,7 @@ test("a certifying browser call on the real stack", async ({ page }) => {
   const micDenied = (spec.edge ?? []).some((condition) => condition.kind === "mic-denied");
   let marksResponse: { path: string | null } | null = null;
   let captureResponse: { path: string | null } | null = null;
+  let mintedCallToken: string | null = null;
   let endedBy: Report["endedBy"] = "timeout";
   let error: string | null = null;
 
@@ -536,6 +538,17 @@ test("a certifying browser call on the real stack", async ({ page }) => {
     .waitForResponse(
       (response) =>
         new URL(response.url()).pathname === "/api/dev/delivered-capture" &&
+        response.request().method() === "POST",
+      { timeout: 60_000 },
+    )
+    .catch(() => null);
+  // The mint is where the call id is signed, before any call exists. This wait
+  // is registered before the page runs, so the report names its call even when
+  // the marks upload is lost; the marks receipt only confirms the delivery.
+  const mintWait = page
+    .waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/demo/token" &&
         response.request().method() === "POST",
       { timeout: 60_000 },
     )
@@ -593,6 +606,15 @@ test("a certifying browser call on the real stack", async ({ page }) => {
     throw new Error(
       `the browser call socket is ${callSocket}, not the configured pipeline ${spec.pipelineUrl}`,
     );
+  }
+
+  // The call id is signed into the demo call token the mint returned, before
+  // the socket and the marks exist. Read it here, not from the marks receipt:
+  // a lost upload must still leave the report naming its call.
+  const mint = await mintWait;
+  if (mint !== null && mint.ok()) {
+    const body = (await mint.json().catch(() => null)) as { demoCallToken?: unknown } | null;
+    if (typeof body?.demoCallToken === "string") mintedCallToken = body.demoCallToken;
   }
 
   const callOpenedAtMs =
@@ -733,9 +755,10 @@ test("a certifying browser call on the real stack", async ({ page }) => {
     })
     .catch(() => [] as { role: "caller" | "agent"; text: string }[]);
 
-  // Read the marks artifact to bind the report's call id. A missing marks file
-  // is reported, not invented: the runner refuses it by name.
-  let callId: string | null = null;
+  // Read the marks artifact for its evidence (count, capture mark, transcript
+  // clock). A missing marks file is reported, not invented: the runner refuses
+  // it by name, with the call id from the mint.
+  let marksCallId: string | null = null;
   let markCount: number | null = null;
   let captureName: string | null = null;
   let installedBeforeAppCode = false;
@@ -745,7 +768,7 @@ test("a certifying browser call on the real stack", async ({ page }) => {
         callId?: string;
         marks?: { name: string; at: string; detail?: { name?: string } }[];
       };
-      callId = typeof artifact.callId === "string" ? artifact.callId : null;
+      marksCallId = typeof artifact.callId === "string" ? artifact.callId : null;
       markCount = Array.isArray(artifact.marks) ? artifact.marks.length : null;
       const captureMark = [...(artifact.marks ?? [])]
         .reverse()
@@ -755,6 +778,10 @@ test("a certifying browser call on the real stack", async ({ page }) => {
       error = `cannot read the marks artifact: ${(readError as Error).message}`;
     }
   }
+  const callId = reportCallId({
+    mintedDemoCallToken: mintedCallToken,
+    marksCallId,
+  });
   const mic = await readSyntheticMicReport(page).catch(() => null);
   if (mic !== null && marksResponse?.path) {
     try {
