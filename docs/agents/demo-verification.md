@@ -445,7 +445,15 @@ and IBAN shapes are scanned today.
 ### Audio evidence gaps
 
 Ticket 21 measures A1–A8 from the delivered WAV and the committed voice
-reference. Five limits are recorded rather than papered over:
+reference. Six limits are recorded rather than papered over:
+
+- **A3/A5/A8 name a call that ended mid-line.** The capture holds what the
+  playout rendered, so a call that hangs up with audio still queued delivers a
+  complete, short file. The comparison reads the end document's
+  `greeting.audioBytes` at `sampleRate` and the `delivered_capture` mark's
+  `complete` report and refuses with `call-ended` ("the line was cut by the
+  call's end, not lost by the tap"); a capture that did not report complete
+  still refuses as `truncated`. Both are unmeasured; neither is a pass.
 
 - **A4 has no caller words to read.** The turn ledger records a caller final's
   length and emptiness, never its text (a deliberate privacy rule), and no

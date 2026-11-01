@@ -50,7 +50,23 @@ export type TimbreComparisonErrorCode =
   | "format-mismatch"
   | "no-onset"
   | "truncated"
+  | "call-ended"
   | "unmeasured";
+
+/**
+ * How the call ended, read from the persisted end document and the capture's
+ * own report. A capture that reported itself complete holds every sample the
+ * playout rendered; if that is still shorter than the line the pipeline
+ * produced, the call ended while audio was queued — not the tap losing a tail.
+ */
+export type LineEnding = {
+  /** `endedBy` as the end document names it (`stop`, `end_call`, ...). */
+  readonly endedBy: string | null;
+  /** The `delivered_capture` mark's own `complete` report. */
+  readonly captureComplete: boolean;
+  /** The line the pipeline produced for this delivery, in seconds. */
+  readonly producedSeconds: number | null;
+};
 
 /** A pair that cannot be compared sample-for-sample, named. */
 export class TimbreComparisonError extends Error {
@@ -175,6 +191,7 @@ export function alignToReference(
   delivered: DecodedAudio,
   referencePath: string,
   deliveredPath: string,
+  ending?: LineEnding,
 ): AlignedPair {
   if (
     reference.facts.sampleRate !== delivered.facts.sampleRate ||
@@ -213,10 +230,27 @@ export function alignToReference(
     );
   }
   if (deliveredRemaining < lineFrames - toleranceFrames) {
+    const deliveredSeconds = deliveredRemaining / delivered.facts.sampleRate;
+    const shortSeconds = (lineFrames - deliveredRemaining) / reference.facts.sampleRate;
+    if (
+      ending !== undefined &&
+      ending.captureComplete &&
+      ending.endedBy !== null &&
+      ending.producedSeconds !== null &&
+      ending.producedSeconds - deliveredSeconds > TRUNCATION_TOLERANCE_S
+    ) {
+      throw new TimbreComparisonError(
+        "call-ended",
+        `the call ended (${ending.endedBy}) with the line still queued: ${deliveredSeconds.toFixed(3)} s ` +
+          `of the ${ending.producedSeconds.toFixed(3)} s the service produced reached the delivered ` +
+          `capture, which reported complete; ${shortSeconds.toFixed(3)} s short of the reference line ` +
+          "means the line was cut by the call's end, not lost by the tap",
+      );
+    }
     throw new TimbreComparisonError(
       "truncated",
       `the delivered capture ${deliveredPath} is ` +
-        `${((lineFrames - deliveredRemaining) / reference.facts.sampleRate).toFixed(3)} s short of ` +
+        `${shortSeconds.toFixed(3)} s short of ` +
         `the reference line; a truncated line is not a timbre measurement`,
     );
   }
@@ -273,8 +307,9 @@ export function compareTimbre(
   referencePath: string,
   delivered: DecodedAudio,
   deliveredPath: string,
+  ending?: LineEnding,
 ): ComparedAxes {
-  const alignment = alignToReference(reference, delivered, referencePath, deliveredPath);
+  const alignment = alignToReference(reference, delivered, referencePath, deliveredPath, ending);
   const timbre = measureTimbre({
     reference: { path: referencePath, audio: alignment.reference.audio },
     delivered: { path: deliveredPath, audio: alignment.delivered.audio },
