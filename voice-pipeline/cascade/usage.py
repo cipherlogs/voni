@@ -9,15 +9,18 @@ is that meter. It reads only vendor reports:
 * the synthesis ``Termination`` summary's billed characters, and its audio and
   session seconds as facts, recorded per session through
   :meth:`UsageMeter.record_tts`;
-* the speech vendor's usage frame, recorded per session through
-  :meth:`UsageMeter.record_stt`, in whole seconds because that is how the
-  vendor bills speech.
+* the speech audio the pipeline actually sent, counted from its own outbound
+  frames and recorded per session through :meth:`UsageMeter.record_stt`, in
+  whole seconds because that is how the speech rate is priced. The realtime
+  protocol reports no usage frame, so this is the one unit whose number comes
+  from the pipeline rather than a vendor report; its source says so.
 
-The invariant is one sentence: a quantity is a number only when a vendor frame
-carried it. A unit the vendor did not report is ``quantity: None`` with
-``measured: false`` and a source naming the absence — never zero, because zero
-is a price the vendor did not quote. A measured zero (``cached_tokens: 0``) is
-kept as zero: it says "none were cached", which is a measurement.
+The invariant is one sentence: a quantity is a number only when a record carried
+it — a vendor frame, or the speech pipeline's own count of frames it actually
+wrote. A unit with no record is ``quantity: None`` with ``measured: false`` and
+a source naming the absence — never zero, because zero is a price nobody
+quoted. A measured zero (``cached_tokens: 0``) is kept as zero: it says "none
+were cached", which is a measurement.
 
 A call total is a sum of measured contributions, and one unmeasured contribution
 makes the whole unit unmeasured: a partial sum is never presented as complete.
@@ -48,8 +51,8 @@ TOKEN_UNITS: tuple[str, ...] = (
     "reasoning_tokens",
 )
 
-#: The speech vendor's unit. No usage frame is in the realtime protocol today,
-#: so this stays unmeasured until the vendor supplies one.
+#: The speech unit. The realtime protocol reports no usage frame, so the
+#: adapter counts the audio frames it actually sent and names that source.
 STT_UNITS: tuple[str, ...] = ("audio_seconds",)
 
 #: The voice vendor's units: the billed characters, and the two durations it
@@ -315,13 +318,13 @@ class UsageMeter:
         self._tts.append(units)
 
     def record_stt(self, usage: Mapping[str, Any] | None) -> None:
-        """Record one speech session's audio units from the vendor's usage frame.
+        """Record one speech session's audio from the adapter's own count.
 
-        Speech is billed in whole seconds, so the reported duration is metered
-        down to whole seconds — that is the vendor's billing granularity, not an
-        estimate. A session with no usage frame records absence: the realtime
-        protocol has no usage frame today, and the audio we sent is not the
-        vendor's meter.
+        The realtime protocol has no usage frame, so the adapter reports the
+        seconds it actually sent (the frames it wrote, never a wall-clock
+        estimate) and names that provenance in ``source``. The duration is
+        metered down to whole seconds because that is how the speech rate is
+        priced, not an estimate. A session with no record stays unmeasured.
 
         One call per session: a planned reconnect or a retry is a second session
         and is summed, because the vendor bills both.
@@ -414,8 +417,14 @@ def _speech_seconds(usage: Mapping[str, Any] | None) -> Unit:
             f"speech audio_duration_seconds must be finite and non-negative, "
             f"got {seconds!r}"
         )
+    source = usage.get("source")
+    label = (
+        source.strip()
+        if isinstance(source, str) and source.strip()
+        else "usage frame: audio_duration_seconds, billed in whole seconds"
+    )
     return Unit(
         "audio_seconds",
         math.floor(seconds),
-        "usage frame: audio_duration_seconds, billed in whole seconds",
+        label,
     )
