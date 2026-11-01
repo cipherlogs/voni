@@ -170,6 +170,7 @@ class SentAudioUsageTest(unittest.TestCase):
         self.assertEqual(
             backend.usage["audio_duration_seconds"], sent / BYTES_PER_SECOND
         )
+        self.assertIn("frames sent by the pipeline", backend.usage["source"])
 
     def test_usage_counts_filled_silence_as_sent_audio(self):
         clock = FakeClock()

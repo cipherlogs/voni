@@ -470,16 +470,24 @@ class MetaStreamingSTT(StreamingSTT):
         return self._dropped_frames
 
     @property
-    def usage(self) -> dict[str, float]:
+    def usage(self) -> dict[str, Any]:
         """The audio seconds this call sent, counted from the frames themselves.
 
         The realtime protocol reports no usage frame, so the pipeline's own
         record of what it wrote is the measurement: every accepted caller frame
         and every PCM silence frame, at the session's declared 24 kHz s16le
         rate. A frame the lead budget dropped never reached the vendor and is
-        not counted, and the clock is never consulted for a duration.
+        not counted, and the clock is never consulted for a duration. ``source``
+        says exactly that, so the meter never labels a sent-frame count as a
+        vendor report.
         """
-        return {"audio_duration_seconds": self._audio_bytes_sent / BYTES_PER_SECOND}
+        return {
+            "audio_duration_seconds": self._audio_bytes_sent / BYTES_PER_SECOND,
+            "source": (
+                "meta speech: audio frames sent by the pipeline, "
+                "billed in whole seconds"
+            ),
+        }
 
     @property
     def last_close_code(self) -> int | None:
