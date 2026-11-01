@@ -21,7 +21,9 @@ opened voice (ticket 77) only after the synthesis session acknowledged
 ``Begin``, and the opening is a listening window. Caller frames reach STT and
 provider events are buffered while the greeting sounds; a ``speechStart`` or a
 taking-the-floor partial cuts the greeting with ``Cancel`` (ticket 79) so the
-caller's turn wins, and nothing reaches the turn layer before that boundary. A
+caller's turn wins, and the client is told to drop the audio it has already
+queued, or the caller keeps hearing the line they interrupted. Nothing reaches
+the turn layer before that boundary. A
 greeting synthesis failure ends the call with the voice's own trigger on the
 end message (ticket 80); there is no silent opening.
 
@@ -204,6 +206,9 @@ class CallTransport(Protocol):
 
     async def send(self, message: Mapping[str, Any]) -> None:
         """Send the one end message."""
+
+    async def interrupted(self) -> None:
+        """Tell the browser to drop and fade the playout it has queued."""
 
     async def close(self) -> None:
         """Release the socket."""
@@ -1452,6 +1457,14 @@ class CallLifecycle:
                     if barge.is_set() and not greeting.done:
                         self._greeting = await greeting.cancel(barge_causes[0])
                         await asyncio.gather(greeting_task, return_exceptions=True)
+                        # The producer's frames are not the whole line: the
+                        # browser plays the queue it already holds. Cancel
+                        # stops new frames but leaves that queue sounding, so
+                        # the caller would keep hearing the opening they just
+                        # interrupted. The client drops its playout on
+                        # ``interrupted`` (the same instruction a reply cut
+                        # sends), which is the only way the cut reaches the ear.
+                        await self._interrupt_browser()
                     elif greeting_gate is not None:
                         result, outcome = await greeting_gate
                         if not outcome.ok:
@@ -2055,6 +2068,24 @@ class CallLifecycle:
         """The per-call ceiling breach, once one has happened."""
         return self._budget_stop
 
+    async def _interrupt_browser(self) -> None:
+        """Tell the client to drop the playout it has queued (a barge-in).
+
+        The turn layer sends this through ``on_interrupted`` when it cuts a
+        reply. A greeting cut takes the same floor, and it needs the same
+        instruction: synthesis runs ahead of real time, so the browser can hold
+        seconds of the opening when the caller starts talking (the delivered
+        capture proves it: 4.96 s of greeting played after the cut). A
+        transport without the seam (a test double, a non-browser path) records
+        nothing, and the cut still stops new frames.
+        """
+        interrupt = getattr(self._transport, "interrupted", None)
+        if not callable(interrupt):
+            return
+        result = interrupt()
+        if inspect.isawaitable(result):
+            await result
+
     def _emit_operational(
         self,
         name: str,
@@ -2545,6 +2576,17 @@ def _failure(stage: str, error: BaseException) -> CallFailure:
 
 
 def _closer(session: Any) -> Callable[[], Any] | None:
-    """A session's ``close`` when it has one; an LLM stream may not."""
-    close = getattr(session, "close", None)
-    return close if callable(close) else None
+    """A session's deliberate end, or ``None`` when it has neither.
+
+    ``finish`` comes first: it is the synthesis adapter's bounded ``Terminate``
+    that reads the vendor's billing summary before the socket closes. A plain
+    ``close`` would discard that summary and leave the call's cost unmeasured.
+    ``terminate`` is honoured for an adapter that names the operation that way,
+    and ``close`` remains the end for speech and model sessions, which own no
+    summary.
+    """
+    for name in ("finish", "terminate", "close"):
+        closer = getattr(session, name, None)
+        if callable(closer):
+            return closer
+    return None

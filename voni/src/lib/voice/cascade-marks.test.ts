@@ -7,7 +7,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CallMarks, type CallMarksArtifact } from "./call-marks";
-import { CascadeSession, type CascadeCallConfig } from "./cascade-session";
+import {
+  CALLER_END_WAIT_MS,
+  CascadeSession,
+  type CascadeCallConfig,
+} from "./cascade-session";
 import type { Playout } from "./playout";
 
 const CONFIG: CascadeCallConfig = {
@@ -126,6 +130,16 @@ test("a cascade call names every lifecycle mark in order", async () => {
   });
   playout.onFirstAudible?.();
   socket.onmessage?.({ data: JSON.stringify({ type: "end_call" }) });
+  // The caller-side stop that follows the drain; the service answers it with
+  // its end, as the real one does.
+  assert.equal(
+    socket.sent.some((frame) => JSON.parse(frame).type === "stop"),
+    true,
+    "the drain sent the stop",
+  );
+  socket.onmessage?.({
+    data: JSON.stringify({ type: "end", turns: 0, metrics: {}, protocolVersion: 1 }),
+  });
   await settleMarks();
 
   assert.equal(posted.length, 1, "one marks artifact per call");
@@ -138,6 +152,7 @@ test("a cascade call names every lifecycle mark in order", async () => {
       "admitted",
       "first_audible",
       "end_call_received",
+      "end_received",
       "teardown",
     ],
   );
@@ -284,6 +299,78 @@ test("the delivered WAV and the marks artifact share the call id", async () => {
   });
   assert.equal(posted[0]!.callId, "call-marks-05");
   assert.ok(written[0]!.name.includes(posted[0]!.callId), "the WAV name carries the same call id");
+});
+
+test("a caller hang-up waits (bounded) for the service's end and marks it", async () => {
+  const socket = makeSocket();
+  const { marks, posted } = recorder();
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => makePlayout(),
+      marks,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+
+  const stopping = session.stop();
+  // The real service writes its end after the caller's stop, then closes.
+  // Only a client that keeps the socket open can receive it.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  if (!socket.closed) {
+    socket.onmessage?.({
+      data: JSON.stringify({ type: "end", turns: 3, metrics: {}, protocolVersion: 1 }),
+    });
+  }
+  await stopping;
+  await settleMarks();
+
+  const names = posted[0]!.marks.map((mark) => mark.name);
+  assert.ok(names.includes("end_received"), "the service's end is the ending mark");
+  assert.equal(names.includes("end_missing"), false, "a received end is never also named missing");
+  assert.deepEqual(
+    posted[0]!.marks.find((mark) => mark.name === "end_received")!.detail,
+    { turns: 3 },
+    "the mark carries the service's real turn count",
+  );
+  assert.equal(names.at(-1), "teardown");
+});
+
+test("a caller hang-up whose end never arrives is named, never invented", async () => {
+  const socket = makeSocket();
+  const { marks, posted } = recorder();
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => makePlayout(),
+      marks,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+
+  const started = Date.now();
+  await session.stop();
+  assert.ok(
+    Date.now() - started < CALLER_END_WAIT_MS + 500,
+    "the wait for the end is bounded, never an open-ended hang",
+  );
+  await settleMarks();
+
+  const names = posted[0]!.marks.map((mark) => mark.name);
+  assert.equal(names.includes("end_received"), false, "no end was received, so none is claimed");
+  const missing = posted[0]!.marks.find((mark) => mark.name === "end_missing");
+  assert.ok(missing, "the absent end is named instead of silently omitted");
+  assert.deepEqual(missing.detail, { after: "stop" });
+  assert.equal(missing.tMs >= 0, true);
+  assert.equal(names.at(-1), "teardown");
 });
 
 test("a hanging marks writer never blocks hang-up", async () => {

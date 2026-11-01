@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildConfigMessage,
+  CALLER_END_WAIT_MS,
   CASCADE_PROTOCOL_VERSION,
   CascadeSession,
   decodeAudioMessage,
@@ -15,6 +16,7 @@ import {
   MIC_GATE_FALLBACK_MS,
   type CascadeCallConfig,
 } from "./cascade-session";
+import { createWorkletPlayout } from "./playout";
 import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
@@ -450,7 +452,10 @@ test("a call that never speaks still opens the mic after the bound", async () =>
     clock.tick(MIC_GATE_FALLBACK_MS);
     mic.onFrame?.(new Uint8Array([2]).buffer);
     assert.equal(socket.sent.length, 2, "released at the bound");
-    await session.stop();
+    const stopping = session.stop();
+    // The fake clock also owns the bounded wait for the service's end.
+    clock.tick(CALLER_END_WAIT_MS);
+    await stopping;
   } finally {
     clock.reset();
   }
@@ -690,6 +695,135 @@ test("delivered capture: a cascade tap that never acks is a named failure on the
     name: "delivered-20261029-140506.wav",
     samples: 1,
     bytes: 46,
+  });
+});
+
+// ── The tap's final block must be acked before the graph closes ──────────
+// A caller hang-up sends `stop`; the service's `end` can land while the tap's
+// final block is still in flight. Teardown then closed the mic's AudioContext
+// before the worklet acked, so the WAV lost the last block and the session
+// reported a false `tap-timeout`. The graph has to outlive the ack (bounded by
+// the tap's own timeout), never the other way round.
+
+/** The AudioWorkletNode surface `createWorkletPlayout` uses, speakable from a test. */
+function fakeAudioWorkletNode() {
+  let handler: ((e: { data: unknown }) => void) | null = null;
+  const port = {
+    get onmessage() {
+      return handler;
+    },
+    set onmessage(fn: ((e: { data: unknown }) => void) | null) {
+      handler = fn;
+    },
+    postMessage: () => {},
+    close: () => {
+      handler = null;
+    },
+  } as unknown as MessagePort;
+  return {
+    node: { port } as unknown as AudioWorkletNode,
+    send: (data: unknown) => handler?.({ data }),
+    close: () => {
+      handler = null;
+    },
+  };
+}
+
+test("caller hang-up: the worklet's final block is acked before the graph closes", async () => {
+  const socket = makeSocket();
+  const worklet = fakeAudioWorkletNode();
+  const playout = createWorkletPlayout(worklet.node);
+  const written: Uint8Array[] = [];
+  let graphStops = 0;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {
+          graphStops += 1;
+          // A closed context can no longer deliver a worklet message.
+          worklet.close();
+        },
+        audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+        playout,
+      }),
+      writeCapture: (_name, bytes) => {
+        written.push(bytes);
+      },
+    },
+  );
+  session.setDeliveredCapture(true);
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  worklet.send({ type: "tap", samples: new Float32Array([0.25, -0.25]) });
+  const stopping = session.stop();
+  // The service's end frame lands first (the race the live run surfaced).
+  socket.emit(JSON.stringify({ type: "end", turns: 0, metrics: {} }));
+  // The ack and its final block arrive just after that teardown began.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  worklet.send({ type: "tap", samples: new Float32Array([0.5]) });
+  worklet.send({ type: "tap-end" });
+  await stopping;
+
+  assert.equal(graphStops, 1, "the graph is still released exactly once");
+  assert.deepEqual(
+    session.deliveredCaptureResult(),
+    {
+      complete: true,
+      reason: "",
+      name: session.deliveredCaptureResult()!.name,
+      samples: 3,
+      bytes: written[0]!.length,
+    },
+    "the final block is in the delivered WAV, never a false timeout",
+  );
+  assert.deepEqual(Array.from(decodeWav(written[0]!).samples), [8192, -8192, 16384]);
+});
+
+test("caller hang-up: a suspended worklet still reports tap-timeout, not a complete capture", async () => {
+  // The complement: the graph is kept only until the tap's bound, and a
+  // context that emits no final block is still named as a truncation.
+  const socket = makeSocket();
+  const worklet = fakeAudioWorkletNode();
+  const playout = createWorkletPlayout(worklet.node);
+  const written: Uint8Array[] = [];
+  let graphStops = 0;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {
+          graphStops += 1;
+          worklet.close();
+        },
+        audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+        playout,
+      }),
+      writeCapture: (_name, bytes) => {
+        written.push(bytes);
+      },
+    },
+  );
+  session.setDeliveredCapture(true);
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  worklet.send({ type: "tap", samples: new Float32Array([0.5]) });
+  const stopping = session.stop();
+  socket.emit(JSON.stringify({ type: "end", turns: 0, metrics: {} }));
+  // No tap block and no ack: the context is suspended for the tap's purposes.
+  await stopping;
+
+  assert.equal(graphStops, 1, "the suspended graph is released, never held forever");
+  assert.deepEqual(session.deliveredCaptureResult(), {
+    complete: false,
+    reason: "tap-timeout",
+    name: session.deliveredCaptureResult()!.name,
+    samples: 1,
+    bytes: written[0]!.length,
   });
 });
 
