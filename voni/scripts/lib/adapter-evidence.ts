@@ -14,11 +14,31 @@
  */
 
 import { writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { ToolLogRow } from "@/lib/demo/tool-log";
 import type { CallEligibilityFact } from "@/lib/demo/verification/verdict";
 import type { InboxDelivery } from "@/lib/demo/verification/tools/inbox";
+
+/** The repository root, resolved from this module (`voni/scripts/lib/`). */
+const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+
+/**
+ * The pipeline's per-call trace directory.
+ *
+ * Both adapters must resolve it the same way: the service writes
+ * `<repo>/voice-pipeline/.events` (its own `DEFAULT_EVENTS_DIR`), so a reader
+ * that looks under `voni/voice-pipeline/.events` finds no trace at all. That
+ * is not a short run — it is a refusal, and it names this path.
+ */
+export function defaultEventsDir(
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  const configured = env.VOICE_PIPELINE_EVENTS_DIR?.trim();
+  if (configured !== undefined && configured !== "") return configured;
+  return join(REPO_ROOT, "voice-pipeline", ".events");
+}
 
 /** The adapter's own error type, so a refusal keeps its family's code. */
 export type AdapterErrorFactory = (code: string, message: string) => Error;

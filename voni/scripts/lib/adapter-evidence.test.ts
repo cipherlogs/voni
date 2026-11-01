@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
 
 import {
+  defaultEventsDir,
   eligibilityOf,
   firstRow,
   parseTrace,
@@ -108,4 +111,22 @@ test("both adapters import the one rule; neither declares its own copy", () => {
     assert.doesNotMatch(text, /function\s+turnIds\s*\(/, `${file} must not carry a second turnIds`);
     assert.doesNotMatch(text, /function\s+firstRow\s*\(/, `${file} must not carry a second firstRow`);
   }
+});
+
+test("both adapters resolve the pipeline's own trace directory, not a voni/ copy", () => {
+  // The service writes `<repo>/voice-pipeline/.events` (its DEFAULT_EVENTS_DIR).
+  // A reader that looks under `voni/voice-pipeline/.events` finds no trace and
+  // refuses a real call as if it had produced no evidence.
+  const resolved = defaultEventsDir({});
+  assert.match(resolved, /(^|[/\\])voice-pipeline[/\\]\.events$/, resolved);
+  assert.doesNotMatch(resolved, /voni[/\\]voice-pipeline/, resolved);
+  assert.ok(
+    existsSync(join(resolved, "..", "server.py")),
+    `the resolved directory must sit beside voice-pipeline/server.py: ${resolved}`,
+  );
+  assert.equal(
+    defaultEventsDir({ VOICE_PIPELINE_EVENTS_DIR: "/tmp/elsewhere" }),
+    "/tmp/elsewhere",
+    "a configured directory still wins",
+  );
 });

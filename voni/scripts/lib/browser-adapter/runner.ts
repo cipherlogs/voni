@@ -29,6 +29,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { defaultEventsDir } from "../adapter-evidence";
 import { readCodeFingerprint } from "@/lib/demo/scoreboard";
 import { loadContract, type Contract } from "@/lib/demo/verification/contract";
 import { parseReplayCommand, renderDefectCards } from "@/lib/demo/verification/cards";
@@ -154,12 +155,6 @@ const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 /** The app's gitignored dev capture directory, relative to `voni/`. */
 export function defaultCapturesDir(): string {
   return join(VONI_ROOT, ".captures");
-}
-
-function defaultEventsDir(env: Readonly<Record<string, string | undefined>>): string {
-  const configured = env.VOICE_PIPELINE_EVENTS_DIR?.trim();
-  if (configured !== undefined && configured !== "") return configured;
-  return join(VONI_ROOT, "..", "voice-pipeline", ".events");
 }
 
 function defaultAppUrl(env: Readonly<Record<string, string | undefined>>): string {
@@ -305,6 +300,7 @@ async function refused(
     target: context.target,
     locale: context.locale,
     parity: null,
+    refusal: { code: error.code, message: error.message },
   };
 }
 
@@ -843,6 +839,7 @@ export async function runBrowserCertification(
     target: input.target as CardTarget,
     locale: scenario.locale,
     parity,
+    refusal: null,
   };
 }
 

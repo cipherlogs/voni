@@ -40,6 +40,7 @@ import {
   type VerifyResult,
 } from "./lib/verify-cli";
 import { readBrowserE2eBudget } from "./browser-e2e-budget.mjs";
+import { adapterRefusalFor } from "./lib/verify-cli/adapter-refusal";
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -95,13 +96,12 @@ function realDeps(): VerifyDeps {
         exitCode: result.exitCode,
         runId: result.runId,
         runDir: result.runDir,
-        refusal:
-          result.status === "refused"
-            ? {
-                code: "adapter-refused",
-                message: result.unrun[0] ?? "the protocol adapter refused without a reason",
-              }
-            : null,
+        refusal: adapterRefusalFor({
+          refused: result.status === "refused",
+          refusal: result.refusal,
+          unrun: result.unrun,
+          fallback: "the protocol adapter refused without a reason",
+        }),
       };
     },
     runScenario: async (input) => {
@@ -138,13 +138,12 @@ function realDeps(): VerifyDeps {
       };
       const result = await runBrowserCertification(runInput);
       return {
-        refusal:
-          result.exitCode === 2
-            ? {
-                code: "adapter-refused",
-                message: result.unrun[0] ?? "the browser adapter refused without a reason",
-              }
-            : null,
+        refusal: adapterRefusalFor({
+          refused: result.exitCode === 2,
+          refusal: result.refusal,
+          unrun: result.unrun,
+          fallback: "the browser adapter refused without a reason",
+        }),
         attempt: result.attempt,
         eligibility: result.eligibility,
         pipelineImage: result.pipelineImage,

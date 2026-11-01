@@ -317,6 +317,12 @@ export const PROTOCOL_RUN_STATUSES = [
 
 export type ProtocolRunStatus = (typeof PROTOCOL_RUN_STATUSES)[number];
 
+/** An adapter's named refusal, as the CLI reports it. */
+export type AdapterRefusal = {
+  readonly code: string;
+  readonly message: string;
+};
+
 export type ProtocolRunResult = {
   readonly runId: string;
   readonly runDir: string;
@@ -332,6 +338,11 @@ export type ProtocolRunResult = {
   readonly scenario: LoadedScenario | null;
   readonly target: ProtocolTargetLabel;
   readonly locale: Locale;
+  /**
+   * The adapter's own named refusal. Null when the run produced a verdict.
+   * A caller reports this, never a gap line from `unrun`.
+   */
+  readonly refusal: AdapterRefusal | null;
 };
 
 /** The startup facts a preflight reads; injectable so tests never need vendors. */
