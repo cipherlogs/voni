@@ -48,13 +48,17 @@ test("bad input exits 2 and names the offending token", () => {
   assert.match(result.stderr, /unknown target "qa"/);
 });
 
-test("a local fast run with no keys or vendor build refuses by name with exit 2", () => {
+test("a local fast run with no keys refuses by name with exit 2", () => {
+  // The committed vendor-build record (`evidence/vendor-builds.json`) landed on
+  // 2026-11-01, so the environment refusal a keyless checkout sees is the key,
+  // not the record. The record's own refusals are covered where the runner is
+  // fed a missing or invalid one.
   const result = run(["--target", "local", "--fast"]);
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stdout, /refused/);
   assert.match(result.stdout, /META_API_KEY/);
   assert.match(result.stdout, /ASSEMBLYAI_API_KEY/);
-  assert.match(result.stdout, /vendor-builds/);
+  assert.doesNotMatch(result.stdout, /vendor-builds/);
   assert.doesNotMatch(result.stdout, /certified/);
 });
 
