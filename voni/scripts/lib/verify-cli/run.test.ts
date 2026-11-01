@@ -39,6 +39,8 @@ import { parseVerifyArgs, type VerifyRequest } from "./args";
 import { VerifyCliError } from "./errors";
 import { planVerify, type VerifyPlan } from "./plan";
 import {
+  DEFAULT_CALL_INTERVAL_MS,
+  callIntervalMs,
   exitForCertificate,
   runVerify,
   type VerifyDeps,
@@ -134,6 +136,10 @@ function noLock(): ReturnType<VerifyDeps["acquireLock"]> {
 function baseDeps(overrides: Partial<VerifyDeps> = {}): VerifyDeps {
   return {
     env: { ...KEYS },
+    // Dispatch tests never wait for real: the pacing clock is virtual unless a
+    // test injects its own (see the pacing test).
+    clock: () => 0,
+    sleep: async () => {},
     loadContract: () => loadContract(),
     loadCorpus: (options) => loadCorpus(options),
     loadEvaluators: async (contract) => passingEvaluators(contract),
@@ -175,6 +181,58 @@ async function fastResult(overrides: Partial<VerifyDeps> = {}): Promise<VerifyRe
   });
   return runVerify(fastRequest(), deps);
 }
+
+test("calls are paced so the vendor's session allowance is never reached", async () => {
+  const starts: number[] = [];
+  const sleeps: number[] = [];
+  let clock = 0;
+  const result = await fastResult({
+    clock: () => clock,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      clock += ms;
+    },
+    runScenario: async (input) => {
+      starts.push(clock);
+      // A call's own work: the clock advances, so pacing is measured between
+      // starts, not between the ends of identical stubs.
+      clock += 5_000;
+      return {
+        refusal: null,
+        attempt: {
+          scenario: input.scenario,
+          repetition: 1,
+          locale: input.locale,
+          target: input.target,
+          evidence: EVIDENCE,
+        },
+        eligibility: { callId: `${input.scenario}#${input.repetition}`, scenario: input.scenario },
+        pipelineImage: "pipeline-test",
+      };
+    },
+  });
+
+  assert.equal(result.status, "scoped-pass");
+  assert.equal(starts.length, FAST_CONTRACT_SCENARIOS.length);
+  for (let index = 1; index < starts.length; index += 1) {
+    assert.ok(
+      starts[index]! - starts[index - 1]! >= DEFAULT_CALL_INTERVAL_MS,
+      `call ${index} started ${starts[index]! - starts[index - 1]!}ms after the previous one`,
+    );
+  }
+  assert.ok(sleeps.length > 0, "the run waited between calls rather than bursting them");
+});
+
+test("the pacing interval defaults to 30s and reads its override, refusing a bad one", () => {
+  assert.equal(callIntervalMs({}), DEFAULT_CALL_INTERVAL_MS);
+  assert.equal(DEFAULT_CALL_INTERVAL_MS, 30_000);
+  assert.equal(callIntervalMs({ DEMO_VERIFY_CALL_INTERVAL_MS: "45000" }), 45_000);
+  assert.equal(callIntervalMs({ DEMO_VERIFY_CALL_INTERVAL_MS: "0" }), 0);
+  assert.equal(
+    callIntervalMs({ DEMO_VERIFY_CALL_INTERVAL_MS: "soon" }),
+    DEFAULT_CALL_INTERVAL_MS,
+  );
+});
 
 test("a clean fast run is a scoped-pass and exit 1: it is not a certificate", async () => {
   const result = await fastResult();

@@ -79,6 +79,25 @@ import type { VerifyRequest } from "./args";
 import { VerifyCliError, refuse } from "./errors";
 import { planVerify, runKindOf, type VerifyPlan } from "./plan";
 
+/**
+ * The minimum interval between two calls' starts. The TTS vendor allows five
+ * synthesis sessions per minute per account and a call opens at least one; 30 s
+ * keeps the contract's own call rate under that allowance with room for a
+ * session that reopens. A run may set `DEMO_VERIFY_CALL_INTERVAL_MS`; zero is
+ * accepted only to make the pacing explicit in a test.
+ */
+export const DEFAULT_CALL_INTERVAL_MS = 30_000;
+
+export function callIntervalMs(env: Readonly<Record<string, string | undefined>>): number {
+  const raw = env.DEMO_VERIFY_CALL_INTERVAL_MS?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_CALL_INTERVAL_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_CALL_INTERVAL_MS;
+}
+
+const sleepMs = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+
 const DEFAULT_RUN_ID = (): string =>
   `verify-${new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15)}-${randomUUID().slice(0, 8)}`;
 
@@ -132,6 +151,9 @@ export type ScenarioCallOutcome = {
 export type VerifyDeps = {
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly now?: () => Date;
+  /** A monotonic millisecond clock for call pacing; tests inject it. */
+  readonly clock?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
   readonly loadContract: () => Promise<Contract>;
   readonly loadCorpus: (options: {
     readonly knownProperties: ReadonlySet<string>;
@@ -310,9 +332,20 @@ async function collectCalls(
   const eligibility: CallEligibilityFact[] = [];
   const costs: RunCostRow[] = [];
   let pipelineImage: string | null = null;
+  let lastStart: number | null = null;
 
   for (const scenario of plan.scenarios) {
     for (let repetition = 1; repetition <= plan.repetitions; repetition += 1) {
+      // TTS sessions are vendor-limited (five a minute per account), and a call
+      // opens at least one. Pacing the starts keeps a run inside that allowance
+      // instead of retrying a call that never had a chance to exist; a retry
+      // would have to stand as a failure under the no-retry-to-green rule.
+      if (lastStart !== null) {
+        const interval = callIntervalMs(deps.env);
+        const waited = (deps.clock?.() ?? Date.now()) - lastStart;
+        if (waited < interval) await (deps.sleep?.((interval - waited) | 0) ?? sleepMs(interval - waited));
+      }
+      lastStart = deps.clock?.() ?? Date.now();
       const outcome = await deps.runScenario({
         request,
         scenario: scenario.name,

@@ -259,7 +259,10 @@ artifact disappears.
   minute, and a full run at about one and a half, but back-to-back short calls
   (or a diagnose loop beside a run) trip it and the call ends with the vendor's
   `3009` refusal. One run at a time, with its calls at natural length, stays
-  inside both.
+  inside both. `collectCalls` therefore paces call starts at
+  `DEFAULT_CALL_INTERVAL_MS` (30 s, override `DEMO_VERIFY_CALL_INTERVAL_MS`);
+  the wait is pacing before a call, never a retry of one, so it cannot turn a
+  failure green.
 - A completed run whose `cost.priced` row is unmeasured **withholds** the
   certificate (`cost-missing`) and keeps the verdict and cards. The 2026-10-31
   live rehearsal observed the STT `audio_seconds` and the TTS termination summary
