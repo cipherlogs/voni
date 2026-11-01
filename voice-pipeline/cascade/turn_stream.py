@@ -183,6 +183,10 @@ class CascadeTurnStream:
         self._failure: BaseException | None = None
         self._records: dict[str, MetaLLMTurn] = {}
         self._completed: list[str] = []
+        #: How many model requests this call actually made. A greeting-only
+        #: call makes none, so the cost meter can price that leg as a measured
+        #: zero from the pipeline's own count.
+        self._requests = 0
         #: ``end_call`` won: no model request or spoken content follows it.
         self._ending = False
         #: The hangup the turn layer asked for, once the closing line played.
@@ -267,6 +271,15 @@ class CascadeTurnStream:
             for turn in self._completed
             if turn in self._records
         }
+
+    def request_count(self) -> int:
+        """How many model requests this call actually made.
+
+        A greeting-only call makes none: the count is the pipeline's own fact,
+        so the call can price that leg as a measured zero. A request that ended
+        before its usage chunk still counts, which keeps that leg unmeasured.
+        """
+        return self._requests
 
     # -- the reply --------------------------------------------------------
 
@@ -392,11 +405,16 @@ class CascadeTurnStream:
 
     def _complete(self, record: MetaLLMTurn):
         """One model request for this logical turn, streaming its deltas."""
+        self._count_request()
         return self._llm.complete(
             messages=self._history.request_messages(),
             tools=list(self._tools) or None,
             turn=record,
         )
+
+    def _count_request(self) -> None:
+        """One model request is about to be made: count it as the pipeline's."""
+        self._requests += 1
 
     async def _continue_after_tools(self, record: MetaLLMTurn, outcomes: Any):
         next_record = MetaLLMTurn()
@@ -409,6 +427,7 @@ class CascadeTurnStream:
             record=next_record,
             ledger=self._ledger,
             loop=self._loop(),
+            on_request=self._count_request,
         ):
             if isinstance(item, TokenDelta):
                 await self._say(item.text)
