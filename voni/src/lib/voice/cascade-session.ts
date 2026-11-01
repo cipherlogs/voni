@@ -60,6 +60,14 @@ export const CASCADE_PROTOCOL_VERSION = 1;
 export const MIC_GATE_FALLBACK_MS = 8_000;
 
 /**
+ * How long a caller's hang-up keeps the socket open for the service's `end`.
+ * The service writes its end after the stop and then closes; the measured
+ * caller-hangup latency is ~250-300 ms, so 500 ms leaves margin without
+ * holding a hung-up line open.
+ */
+export const CALLER_END_WAIT_MS = 500;
+
+/**
  * What the browser is allowed to tell the service: identity only. The prompt
  * and the tool list are assembled and signed by the app (ticket 64) and reach
  * the service over the app channel; the browser never holds them.
@@ -339,6 +347,17 @@ export class CascadeSession {
   private captureOutcome: CaptureResult | null = null;
   private captureCallId: string | null = null;
   private teardownMarked = false;
+  /** The one capture close, so teardown can wait for an in-flight tap ack. */
+  private captureClosing: Promise<void> | null = null;
+  /** Teardown runs once; all paths await the same completion. */
+  private teardownPromise: Promise<void> | null = null;
+  /** The service's end frame arrived (never inferred). */
+  private endSeen = false;
+  /** The caller's `stop` started this ending. */
+  private callerStop = false;
+  private endMissingMarked = false;
+  /** A `stop` waiter for the service's end, resolved by the frame or the bound. */
+  private endWaiters: Array<(received: boolean) => void> = [];
   private readonly writeCapture: CaptureWrite;
   private readonly captureNow: (() => Date) | undefined;
   private readonly marks: CallMarks | null;
@@ -365,6 +384,12 @@ export class CascadeSession {
     this.connectFailureReported = false;
     this.highestPlayedSeq = 0;
     this.teardownMarked = false;
+    this.captureClosing = null;
+    this.teardownPromise = null;
+    this.endSeen = false;
+    this.callerStop = false;
+    this.endMissingMarked = false;
+    this.endWaiters = [];
     const socketFactory = this.deps.socketFactory ?? ((url: string) => new WebSocket(url));
     const ws = socketFactory(config.serviceUrl);
     this.ws = ws;
@@ -527,6 +552,8 @@ export class CascadeSession {
         this.drainThenStop();
         break;
       case "end":
+        this.endSeen = true;
+        this.releaseEndWaiters(true);
         this.marks?.mark("end_received", { turns: event.turns });
         // The service reports the version it spoke (ticket 138). A half-
         // deployed pair fails loudly here too, not only at connect.
@@ -613,13 +640,49 @@ export class CascadeSession {
   async stop(): Promise<void> {
     if (!this.started) return;
     this.started = false;
+    this.callerStop = true;
     try {
       if (this.ws?.readyState === this.ws?.OPEN) this.send(JSON.stringify({ type: "stop" }));
     } catch {
       // Socket already gone; local teardown below still runs.
     }
-    await this.closeCapture();
-    this.teardown();
+    // Start the tap flush first: it must keep the graph alive while the socket
+    // stays open for the service's end, and neither may wait on the other.
+    const captureClosed = this.closeCapture();
+    // The service writes its end after our stop and then closes. Waiting for
+    // it is what turns a caller hang-up into an end_received mark instead of a
+    // teardown with no ending; the bound never holds a dead line open.
+    if (this.ws?.readyState === this.ws?.OPEN) await this.awaitEnd();
+    await captureClosed;
+    await this.teardown();
+  }
+
+  /**
+   * Wait, bounded, for the service's end after a caller's stop. The frame
+   * resolves this early; a socket close resolves it as "not received" at once;
+   * otherwise the bound releases it.
+   */
+  private awaitEnd(): Promise<boolean> {
+    if (this.endSeen) return Promise.resolve(true);
+    if (this.ended) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const waiter = (received: boolean) => {
+        clearTimeout(timer);
+        resolve(received);
+      };
+      const timer = setTimeout(() => {
+        this.endWaiters = this.endWaiters.filter((entry) => entry !== waiter);
+        resolve(false);
+      }, CALLER_END_WAIT_MS);
+      this.endWaiters.push(waiter);
+    });
+  }
+
+  /** Release every stop waiter; a frame is the service's answer, a close is not. */
+  private releaseEndWaiters(received: boolean): void {
+    const waiters = this.endWaiters;
+    this.endWaiters = [];
+    for (const waiter of waiters) waiter(received);
   }
 
   /** The service is live: release the microphone frames from here on. */
@@ -646,11 +709,15 @@ export class CascadeSession {
    * best-effort, and idempotent — observation never fails a hang-up.
    */
   private closeCapture(): Promise<void> {
+    if (this.captureClosing) return this.captureClosing;
     const capture = this.deliveredCapture;
     const playout = this.playout;
     this.deliveredCapture = null;
-    if (!capture) return Promise.resolve();
-    return (async () => {
+    if (!capture) {
+      this.captureClosing = Promise.resolve();
+      return this.captureClosing;
+    }
+    this.captureClosing = (async () => {
       try {
         this.captureOutcome = await finishDeliveredCapture(
           isTappable(playout) ? playout : null,
@@ -661,14 +728,31 @@ export class CascadeSession {
         /* capture is dev instrumentation */
       }
     })();
+    return this.captureClosing;
   }
 
-  private teardown(): void {
+  /**
+   * End the call. The socket and the playout references go at once, but the
+   * audio graph (which owns the tap's worklet) is released only after the
+   * capture's final block has been acked. Closing it first was the truncation:
+   * a caller hang-up's `end` frame tore the context down while the tap's last
+   * block was still in flight, so the WAV lost its tail and the session
+   * reported a false `tap-timeout`. The tap's own bound keeps this wait finite,
+   * and a genuinely suspended context still reports `tap-timeout`.
+   */
+  private teardown(): Promise<void> {
+    if (this.teardownPromise) return this.teardownPromise;
     if (this.micGateTimer !== null) {
       clearTimeout(this.micGateTimer);
       this.micGateTimer = null;
     }
     this.micLive = false;
+    // A caller hang-up whose end never arrived has an honest ending mark: the
+    // absence itself. A received end is marked in `receive` and never guessed.
+    if (this.callerStop && !this.endSeen && !this.endMissingMarked) {
+      this.endMissingMarked = true;
+      this.marks?.mark("end_missing", { after: "stop" });
+    }
     if (!this.teardownMarked) {
       this.teardownMarked = true;
       this.marks?.mark("teardown");
@@ -676,14 +760,8 @@ export class CascadeSession {
     // A socket drop or the end message can land without an awaited stop;
     // start the capture close before the playout reference goes away. The one
     // marks artifact posts once the capture outcome is known, and is never
-    // awaited: a slow or dead sink cannot hold up a hang-up.
-    void this.closeCapture().then(() => void this.marks?.finish());
-    try {
-      this.micStop?.();
-    } catch {
-      // Mic already released on competing teardown paths.
-    }
-    this.micStop = null;
+    // awaited by a caller: a slow or dead sink cannot hold up a hang-up.
+    const captureClosed = this.closeCapture();
     try {
       this.ws?.close();
     } catch {
@@ -691,13 +769,25 @@ export class CascadeSession {
     }
     this.ws = null;
     this.playout = null;
+    this.teardownPromise = captureClosed.then(() => {
+      try {
+        this.micStop?.();
+      } catch {
+        // Mic already released on competing teardown paths.
+      }
+      this.micStop = null;
+      // Never awaited: a slow or dead sink cannot hold up a hang-up.
+      void this.marks?.finish();
+    });
+    return this.teardownPromise;
   }
 
   private finish(turns: number): void {
     if (this.ended) return;
     this.ended = true;
     this.started = false;
-    this.teardown();
+    this.releaseEndWaiters(false);
+    void this.teardown();
     this.handlers.onEnd?.({ turns });
   }
 
@@ -726,6 +816,7 @@ export class CascadeSession {
     if (this.ended) return;
     this.ended = true;
     this.started = false;
-    this.teardown();
+    this.releaseEndWaiters(false);
+    void this.teardown();
   }
 }
