@@ -68,6 +68,21 @@ test("a clean copy of the reference reports no residual", () => {
   assert.equal(report.verdict, "pass");
 });
 
+test("the residual carries its pair's correlation, so a copy and another line differ", () => {
+  const reference = decoded(toPcm(tone(1000, 0.5, 12_000)));
+  const quieter = decoded(toPcm(tone(1000, 0.2, 12_000)));
+  const copy = measureDistortionAndCrest(reference, quieter);
+  assert.ok(Math.abs(copy.distortion.correlation - 1) < 1e-6, "a gain change is one waveform");
+
+  // An 800 Hz line where the reference says 1000 Hz: no shared samples.
+  const otherLine = decoded(toPcm(tone(800, 0.5, 12_000)));
+  const other = measureDistortionAndCrest(reference, otherLine);
+  assert.ok(
+    Math.abs(other.distortion.correlation) < 0.1,
+    `a different line correlates at ${other.distortion.correlation.toFixed(3)}`,
+  );
+});
+
 test("a known third-harmonic residual is reported at its true level and fails", () => {
   const reference = toPcm(tone(1000, 0.5, 12_000));
   const delivered = new Float64Array(reference.length);

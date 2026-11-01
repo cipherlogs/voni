@@ -121,6 +121,24 @@ export function detectDropouts(audio: DecodedAudio): EventReport {
 }
 
 /**
+ * The first non-zero sample. The delivered capture is the worklet's rendered
+ * output, and an idle playout renders digital zero, so this is the first sample
+ * of the first utterance — more precise than the speech floor, which a soft
+ * word attack crosses 50 ms late.
+ */
+export function firstNonSilentMs(audio: DecodedAudio): number | null {
+  const { channels, sampleRate } = audio.facts;
+  for (let frame = 0; frame < audio.facts.frameCount; frame += 1) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      if ((audio.samples[frame * channels + channel] ?? 0) !== 0) {
+        return (frame / sampleRate) * 1000;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * A click (or a seam) is one adjacent output jump above the worklet's own
  * POP_JUMP, debounced so the up and down edges of one impulse are one event.
  */

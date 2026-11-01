@@ -460,6 +460,16 @@ reference. Five limits are recorded rather than papered over:
   Locale whose voice has no committed pair fails closed by name rather than
   borrowing audrey's audio. The loader is
   `voni/src/lib/audio/voice-reference.ts`.
+- **A5's distortion residual needs the same waveform, and a live greeting is a
+  fresh synthesis.** The residual subtracts the reference from the delivered
+  signal, so it is defined only for a copy (resampled, delayed, at another
+  gain); the axis now reports `unmeasured` with the measured correlation when
+  the pair shares no waveform. That is the live case: the streaming vendor is
+  not reproducible — two live greetings of the same line, minutes apart, agree
+  at |ρ| ≈ 0.005, and a live greeting against the committed reference at
+  |ρ| ≈ 0.05–0.16 — so no committed reference can carry this axis until a
+  same-PCM reference is pinned per render. The bar is unchanged; the axis
+  refuses instead of reporting `1/correlation` as distortion.
 - **A2 checks the capture's exact format, not a semantic stream rate.** The
   delivered file must be PCM16 mono and its declared description must agree
   with its header; a trace naming more than one stream rate is a mismatch. The
@@ -469,6 +479,12 @@ reference. Five limits are recorded rather than papered over:
   overruns as runs of full-scale samples. It does not have a playout level-report
   artifact: the worklet's queue/cushion reports are not persisted with the call,
   so a starvation that leaves no audible hole cannot be named as an underrun.
+  The underrun leg also ignores the silence a *cancelled greeting* leaves: when
+  the end document says the greeting was cancelled and the hole begins where
+  the greeting's produced audio (`audioBytes` at `sampleRate`) ran out from its
+  first non-zero sample, that hole is a turn boundary — a caller who spoke over
+  the greeting — and the detail names it. A hole anywhere else is still counted,
+  and the bar stays zero.
 - **A7 needs a recorded barge-in.** A7 reads the fade only when the trace has a
   `turn.cut` row with `reason: "barge_in"`; a call with no cut is
   `no barge-in cut was recorded`, never a pass. The fade is measured on the

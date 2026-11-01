@@ -62,6 +62,15 @@ export type DistortionResidual = {
   referenceRms: number;
   /** Least-squares gain that best maps the reference onto the delivered signal. */
   gain: number;
+  /**
+   * Worst channel's normalized cross-correlation of the delivered signal with
+   * the reference, in [-1, 1]. A copy — resampled, delayed or at another gain —
+   * sits at ±1; two independent renderings of the same text sit near 0. The
+   * residual is only defined for a pair near ±1: it subtracts one waveform from
+   * another, so two files that share no waveform measure their own difference,
+   * not distortion. Consumers refuse below a same-recording floor.
+   */
+  correlation: number;
   /** Frames of the reference with no delivered sample behind them. */
   missingFrames: number;
   /** The channel that produced `residualDb`. */
@@ -131,6 +140,7 @@ export function distortionResidual(
   const deliveredFrames = delivered.facts.frameCount;
   const frames = Math.max(referenceFrames, deliveredFrames);
   const channelResidualsDb: number[] = [];
+  const channelCorrelations: number[] = [];
   let worstChannel = 0;
   let worstRms = 0;
   let worstReferenceRms = 0;
@@ -139,14 +149,18 @@ export function distortionResidual(
   for (let channel = 0; channel < channels; channel++) {
     let gainNumerator = 0;
     let referenceSquares = 0;
+    let deliveredSquares = 0;
     for (let frame = 0; frame < referenceFrames; frame++) {
       const r = reference.samples[frame * channels + channel] / FULL_SCALE;
       const d =
         frame < deliveredFrames ? delivered.samples[frame * channels + channel] / FULL_SCALE : 0;
       gainNumerator += r * d;
       referenceSquares += r * r;
+      deliveredSquares += d * d;
     }
     const gain = referenceSquares > 0 ? gainNumerator / referenceSquares : 0;
+    const overlap = referenceSquares * deliveredSquares;
+    const correlation = overlap > 0 ? gainNumerator / Math.sqrt(overlap) : 0;
     let residualSquares = 0;
     for (let frame = 0; frame < frames; frame++) {
       const r = frame < referenceFrames ? reference.samples[frame * channels + channel] / FULL_SCALE : 0;
@@ -167,6 +181,7 @@ export function distortionResidual(
             ? -Infinity
             : 20 * Math.log10(residualRms / scale);
     channelResidualsDb.push(db);
+    channelCorrelations.push(correlation);
     if (channel === 0 || db > channelResidualsDb[worstChannel]) {
       worstChannel = channel;
       worstRms = residualRms;
@@ -180,6 +195,7 @@ export function distortionResidual(
     residualRms: worstRms,
     referenceRms: worstReferenceRms,
     gain: worstGain,
+    correlation: channelCorrelations[worstChannel],
     missingFrames: Math.max(0, referenceFrames - deliveredFrames),
     worstChannel,
     channelResidualsDb,

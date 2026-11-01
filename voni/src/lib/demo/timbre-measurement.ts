@@ -137,6 +137,16 @@ const CREST_MIN = SCOREBOARD_BUDGETS.timbreMeasuredCrestMin.value;
 const BAND_DELTA_MAX_DB = SCOREBOARD_BUDGETS.timbreMeasuredBandDeltaDb.value;
 const BREAKUP_MAX = SCOREBOARD_BUDGETS.timbreMeasuredBreakupMax.value;
 
+/**
+ * The normalized correlation at which two files are still the same recording.
+ * The residual subtracts one waveform from another, so it is only defined for a
+ * copy (resampled, delayed or at another gain): a copy sits above 0.99, while a
+ * fresh synthesis of the same line — same voice, same words, different
+ * waveform — sits near 0. This is a comparability floor, not a quality bar: the
+ * `timbreMeasuredDistortionDb` bar still decides whether the copy is reshaped.
+ */
+export const DISTORTION_COMPARABLE_CORRELATION = 0.5;
+
 /** How close two breakups must start to be the same hole in both files. */
 export const BREAKUP_MATCH_SECONDS = SCOREBOARD_BUDGETS.timbreMeasuredBreakupMatchSeconds.value;
 
@@ -271,6 +281,20 @@ function distortionAxis(input: MeasuredLevelInput | null, deliveredOk: boolean):
   }
   try {
     const residual = distortionResidual(input.reference.audio, input.delivered.audio);
+    if (Math.abs(residual.correlation) < DISTORTION_COMPARABLE_CORRELATION) {
+      return {
+        axis: "distortion",
+        verdict: "unmeasured",
+        value: null,
+        bar: DISTORTION_MAX_DB,
+        unit: "db",
+        detail:
+          `unmeasured distortion: the delivered capture is an independent rendering of the ` +
+          `reference line (normalized correlation ${residual.correlation.toFixed(3)}, below the ` +
+          `${DISTORTION_COMPARABLE_CORRELATION} same-recording floor); two waveforms that share ` +
+          `no samples have no residual, so the ${DISTORTION_MAX_DB} dB bar cannot be read against them`,
+      };
+    }
     const db = residual.residualDb;
     return {
       axis: "distortion",
