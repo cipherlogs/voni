@@ -32,6 +32,7 @@ import {
   detectClippedRuns,
   detectDropouts,
   detectFades,
+  firstNonSilentMs,
   measureContinuity,
   silentFramesAgainstReference,
   type AudioEvent,
@@ -308,6 +309,58 @@ const a5: PropertyEvaluator = {
   },
 };
 
+/**
+ * How far apart the delivered greeting's end and the produced greeting's length
+ * may be and still be one event: both are read on a 10 ms grid, and the worklet
+ * fades the last block out over a few milliseconds.
+ */
+const CANCELLED_GREETING_TOLERANCE_MS = 50;
+
+/** The greeting the pipeline produced, when the call cancelled it. */
+type CancelledGreeting = { readonly producedMs: number };
+
+/**
+ * The produced greeting, when the call recorded cancelling it. A caller who
+ * speaks over the greeting ends it on purpose: the pipeline stops sending
+ * frames and the playout falls silent wherever the audio it had ran out. That
+ * silence is a turn boundary, not a starvation, and A6 must not read it as one.
+ */
+function cancelledGreeting(context: EvaluatorContext): CancelledGreeting | null {
+  const ledger = context.evidence.ledger;
+  if (typeof ledger !== "object" || ledger === null) return null;
+  const end = (ledger as Row).end;
+  if (typeof end !== "object" || end === null) return null;
+  const greeting = (end as Row).greeting;
+  if (typeof greeting !== "object" || greeting === null) return null;
+  const record = greeting as Row;
+  if (record.cancelled !== true) return null;
+  const sampleRate = record.sampleRate;
+  const audioBytes = record.audioBytes;
+  if (typeof sampleRate !== "number" || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+    return null;
+  }
+  if (typeof audioBytes !== "number" || !Number.isFinite(audioBytes) || audioBytes <= 0) {
+    return null;
+  }
+  return { producedMs: (audioBytes / 2 / sampleRate) * 1000 };
+}
+
+/**
+ * A hole that begins where the cancelled greeting's produced audio ran out,
+ * counted from the greeting's first voiced sample. The length is what
+ * separates a cancellation from a starvation: a starved greeting resumes and
+ * goes on, so the hole cannot sit exactly at the end of the audio produced.
+ */
+function isCancelledGreetingEnd(
+  hole: AudioEvent,
+  firstSampleMs: number | null,
+  greeting: CancelledGreeting | null,
+): boolean {
+  if (greeting === null || firstSampleMs === null) return false;
+  const playedMs = hole.atMs - firstSampleMs;
+  return Math.abs(playedMs - greeting.producedMs) <= CANCELLED_GREETING_TOLERANCE_MS;
+}
+
 /** A6: no playout underrun and no overrun. */
 const a6: PropertyEvaluator = {
   propertyId: "A6",
@@ -321,17 +374,33 @@ const a6: PropertyEvaluator = {
       const capture = captureOf(context);
       const underruns = detectDropouts(capture.audio);
       const overruns = detectClippedRuns(capture.audio);
+      const greeting = cancelledGreeting(context);
+      const firstSampleMs = firstNonSilentMs(capture.audio);
+      const counted: AudioEvent[] = [];
+      const cancelled: AudioEvent[] = [];
+      for (const hole of underruns.events) {
+        if (isCancelledGreetingEnd(hole, firstSampleMs, greeting)) cancelled.push(hole);
+        else counted.push(hole);
+      }
+      const cancellation =
+        cancelled.length === 0
+          ? ""
+          : `; the ${cancelled
+              .map((hole) => `${hole.durationMs}ms silence at ${hole.atMs}ms`)
+              .join(", ")} is the cancelled greeting's end ` +
+            `(produced ${Math.round(greeting!.producedMs)}ms, played ` +
+            `${Math.round(cancelled[0]!.atMs - firstSampleMs!)}ms), not a starvation`;
       return {
         kind: "measured",
-        samples: [underruns.count, overruns.count],
+        samples: [counted.length, overruns.count],
         citations: [
-          ...eventCitations(capture.file, underruns.events),
+          ...eventCitations(capture.file, counted),
           ...eventCitations(capture.file, overruns.events),
         ],
         detail:
-          `${underruns.count} underrun${underruns.count === 1 ? "" : "s"}` +
-          `${firstEvent(underruns.events)}; ${overruns.count} overrun` +
-          `${overruns.count === 1 ? "" : "s"}${firstEvent(overruns.events)}`,
+          `${counted.length} underrun${counted.length === 1 ? "" : "s"}` +
+          `${firstEvent(counted)}; ${overruns.count} overrun` +
+          `${overruns.count === 1 ? "" : "s"}${firstEvent(overruns.events)}${cancellation}`,
       };
     } catch (error) {
       return refused(error);

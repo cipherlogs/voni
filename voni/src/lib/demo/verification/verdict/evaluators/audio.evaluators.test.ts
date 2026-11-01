@@ -17,6 +17,8 @@ import {
   clipped,
   fade,
   hole,
+  silence,
+  tone,
   writeWav,
 } from "../audio/test-pcm";
 
@@ -212,10 +214,14 @@ withAudio("A5 maps every timbre axis to its own frozen bar", async () => {
   assert.ok(samplesOf(squared)[2]! < SCOREBOARD_BUDGETS.timbreMeasuredCrestMin.value);
 
   const low = new Int16Array(reference.audio.samples.length);
+  let running = 0;
+  const taps = 12;
   for (let index = 0; index < low.length; index += 1) {
-    const seconds = index / reference.audio.facts.sampleRate;
-    low[index] = Math.round(0.2 * 32767 * Math.sin(2 * Math.PI * 90 * seconds));
+    running += reference.audio.samples[index]!;
+    if (index >= taps) running -= reference.audio.samples[index - taps]!;
+    low[index] = Math.round(running / Math.min(index + 1, taps));
   }
+  // A copy heard through a low-pass: still one recording, high band removed.
   const lowBand = await evaluate("A5", audioEvidence(low));
   assert.ok(samplesOf(lowBand)[3]! > SCOREBOARD_BUDGETS.timbreMeasuredBandDeltaDb.value);
 });
@@ -235,6 +241,82 @@ withAudio("A6 passes a clean delivery and fails an underrun or an overrun", asyn
     audioEvidence(clipped(cleanAudio(), 1, 8).samples),
   );
   assert.equal(samplesOf(overrun)[1], 1);
+});
+
+function joined(parts: Int16Array[]): Int16Array {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const samples = new Int16Array(total);
+  let at = 0;
+  for (const part of parts) {
+    samples.set(part, at);
+    at += part.length;
+  }
+  return samples;
+}
+
+/** The greeting the pipeline had produced when the caller interrupted: 1.04 s. */
+const CANCELLED_GREETING_SECONDS = 1.04;
+
+function cancelledGreetingEnd(cancelled: boolean) {
+  return {
+    cancelled,
+    cause: cancelled ? "speech_start" : "",
+    reason: cancelled ? "cancelled during the greeting (speech_start)" : "spoken",
+    frames: 13,
+    sampleRate: reference.audio.facts.sampleRate,
+    audioBytes: Math.round(CANCELLED_GREETING_SECONDS * reference.audio.facts.sampleRate) * 2,
+  };
+}
+
+/**
+ * The jitter call's delivered shape: a lead-in, the greeting fragment the
+ * pipeline produced before the caller spoke, the cancel's silence, then the
+ * reply. The 4 s gap is a turn boundary, not a starvation.
+ */
+function cancelledGreetingDelivery(gapSeconds = 4) {
+  const greeting = tone(CANCELLED_GREETING_SECONDS, { amplitude: 0.2 });
+  const reply = tone(0.5, { amplitude: 0.2, frequency: 330 });
+  const samples = joined([
+    silence(1.5).samples,
+    greeting.samples,
+    silence(gapSeconds).samples,
+    reply.samples,
+  ]);
+  return { samples, greeting };
+}
+
+withAudio("A6 does not count a cancelled greeting's silence as an underrun", async () => {
+  const { samples } = cancelledGreetingDelivery();
+  const cancelled = await evaluate("A6", {
+    ...audioEvidence(samples),
+    ledger: { end: { type: "end", greeting: cancelledGreetingEnd(true) } },
+  });
+  assert.deepEqual(samplesOf(cancelled), [0, 0]);
+  assert.match(
+    cancelled.kind === "measured" ? cancelled.detail ?? "" : "",
+    /cancelled greeting/,
+  );
+
+  // Same audio, but the call never cancelled the greeting: the 4 s hole is a
+  // real underrun and the bar still bites.
+  const spoken = await evaluate("A6", {
+    ...audioEvidence(samples),
+    ledger: { end: { type: "end", greeting: cancelledGreetingEnd(false) } },
+  });
+  assert.equal(samplesOf(spoken)[0], 1);
+
+  // A hole inside the greeting is an underrun even on a cancelled greeting.
+  const inside = hole(tone(CANCELLED_GREETING_SECONDS, { amplitude: 0.2 }), 0.4, 0.6);
+  const holed = joined([
+    silence(1.5).samples,
+    inside.samples,
+    tone(0.5, { amplitude: 0.2, frequency: 330 }).samples,
+  ]);
+  const insideGreeting = await evaluate("A6", {
+    ...audioEvidence(holed),
+    ledger: { end: { type: "end", greeting: cancelledGreetingEnd(true) } },
+  });
+  assert.equal(samplesOf(insideGreeting)[0], 1);
 });
 
 withAudio("A7 reads a short barge fade, refuses a long one and counts a pop", async () => {
