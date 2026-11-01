@@ -256,6 +256,9 @@ class TurnTransport:
     async def send(self, message) -> None:
         self.sent.append(dict(message))
 
+    async def interrupted(self) -> None:
+        self.sent.append({"type": "interrupted"})
+
     async def close(self) -> None:
         self.closed = True
 
@@ -333,6 +336,32 @@ class GreetingBargeInCallTest(unittest.TestCase):
         self.assertIn("cancelled", marks)
         self.assertIn("greeting_done", marks)
         self.assertEqual([], speech.audio)
+
+    def test_a_greeting_cut_tells_the_browser_to_drop_the_audio_it_has_queued(self):
+        """The cut owns the whole line, including the part the browser holds.
+
+        Synthesis runs far ahead of real time: a 4.96 s greeting is fully
+        streamed in 0.87 s (delivered call eeaeba6a: 238080 bytes, 62 frames,
+        cancelled 874 ms after the first frame). Cancelling the producer stops
+        new frames but leaves that queue playing, so the caller hears the line
+        they interrupted. The browser already drops its playout on
+        ``{"type": "interrupted"}``; the greeting cut must send it.
+        """
+        voice = GatedVoice()
+        lifecycle, transport, stream, frames, speech = self.make(
+            trace=[SpeechStart("t1"), SpeechComplete("book a demo", turn_id="t1")],
+            voice=voice,
+        )
+
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=2.0))
+
+        self.assertEqual(1, voice.cancelled)
+        self.assertTrue(end.greeting.cancelled)
+        self.assertIn(
+            {"type": "interrupted"},
+            transport.sent,
+            "the greeting was cut but the browser was never told to drop its queue",
+        )
 
     def test_a_taking_the_floor_partial_also_cuts_without_a_speech_start(self):
         voice = GatedVoice()

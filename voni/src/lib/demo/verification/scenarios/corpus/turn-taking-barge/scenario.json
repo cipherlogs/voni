@@ -43,16 +43,16 @@
       }
     },
     {
-      "take": "barge",
-      "trigger": {
-        "type": "agent-speech-start",
-        "delayMs": 120
-      }
-    },
-    {
       "take": "resume",
       "trigger": {
         "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "barge",
+      "trigger": {
+        "type": "agent-speech-start",
+        "delayMs": 900
       }
     }
   ]
