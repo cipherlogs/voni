@@ -250,6 +250,16 @@ artifact disappears.
   missing, records an `unknown` id, or reports a `unversioned` pipeline build
   (RR-03). The 2026-10-31 live rehearsal refused there; the committed record
   landed on 2026-11-01, so only a missing pipeline key still stops a local run.
+- **Two rate limits bound a local run, and neither is a defect.** The app's
+  demo token limiter is per IP per hour (`DEMO_MAX_PER_IP_PER_HOUR`, 3 by
+  default); a verification stack must raise it above the plan's call count, or
+  the second run of the day mints `429` and Chromium never opens the call. The
+  TTS vendor allows **five synthesis sessions per minute per account**; the
+  fast contract's ten calls at their natural length sit at about three per
+  minute, and a full run at about one and a half, but back-to-back short calls
+  (or a diagnose loop beside a run) trip it and the call ends with the vendor's
+  `3009` refusal. One run at a time, with its calls at natural length, stays
+  inside both.
 - A completed run whose `cost.priced` row is unmeasured **withholds** the
   certificate (`cost-missing`) and keeps the verdict and cards. The 2026-10-31
   live rehearsal observed the STT `audio_seconds` and the TTS termination summary
