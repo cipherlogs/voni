@@ -146,6 +146,54 @@ class BillingTests(unittest.TestCase):
         self.assertFalse(record.billing.measured)
 
 
+class FinishTests(unittest.TestCase):
+    """The call's deliberate end reads the summary before the socket closes."""
+
+    def test_finish_terminates_a_live_session_and_records_the_summary(self):
+        tts, factory = open_session(
+            [
+                begin(),
+                audio_ms(800, flush_id=0),
+                flush_done(flush_id=0, audio_duration_ms=800),
+                termination(
+                    billed_characters=42,
+                    audio_duration_seconds=1.5,
+                    session_duration_seconds=2,
+                ),
+            ]
+        )
+        spoken(tts, "Hello there.")
+
+        record = asyncio.run(tts.finish())
+
+        self.assertIsNotNone(record)
+        self.assertEqual(tts.billing.characters, 42)
+        self.assertTrue(tts.billing.measured)
+        self.assertEqual(tts.billing.audio_duration_seconds, 1.5)
+        self.assertEqual(tts.billing.session_duration_seconds, 2)
+        self.assertEqual(sent_types(factory), ["Generate", "Flush", "Terminate"])
+
+    def test_finish_on_an_already_closed_session_sends_nothing(self):
+        tts, factory = open_session(
+            [
+                begin(),
+                audio_ms(800, flush_id=0),
+                flush_done(flush_id=0, audio_duration_ms=800),
+                termination(billed_characters=12),
+            ]
+        )
+        spoken(tts, "Hello there.")
+        asyncio.run(tts.terminate())
+        sent_before = list(factory.socket.sent)
+
+        record = asyncio.run(tts.finish())
+
+        self.assertIsNone(record)
+        self.assertEqual(factory.socket.sent, sent_before)
+        self.assertEqual(tts.billing.characters, 12)
+        self.assertTrue(tts.billing.measured)
+
+
 class UnterminatedTests(unittest.TestCase):
     def test_a_call_that_ends_without_a_termination_records_unmeasured(self):
         tts, _ = open_session(

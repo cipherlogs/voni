@@ -284,6 +284,22 @@ class RecordedSpeechTests(unittest.TestCase):
         self.assertIn("whole seconds", stt.unit("audio_seconds").source)
         self.assertTrue(stt.measured)
 
+    def test_a_supplied_source_is_carried_not_relabelled_as_a_vendor_frame(self):
+        meter = UsageMeter()
+        meter.record_stt(
+            {
+                "audio_duration_seconds": 3.0,
+                "source": "meta speech: audio frames sent by the pipeline",
+            }
+        )
+
+        unit = meter.usage().leg("stt").unit("audio_seconds")
+
+        self.assertEqual(
+            unit.source, "meta speech: audio frames sent by the pipeline"
+        )
+        self.assertEqual(unit.quantity, 3)
+
     def test_a_whole_second_is_not_rounded_up(self):
         meter = UsageMeter()
         meter.record_stt({"audio_duration_seconds": 0.4})

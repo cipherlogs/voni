@@ -156,6 +156,56 @@ class LeadBudgetTest(unittest.TestCase):
         )
 
 
+class SentAudioUsageTest(unittest.TestCase):
+    """The usage the pipeline reports is the audio it actually sent."""
+
+    def test_usage_counts_the_audio_seconds_actually_sent(self):
+        backend, factory = open_audio()
+
+        asyncio.run(backend.send_audio(caller_pcm(0.5)))
+        asyncio.run(backend.send_audio(caller_pcm(0.25)))
+
+        sent = sum(len(frame) for frame in factory.socket.sent[1:])
+        self.assertEqual(backend.usage["audio_duration_seconds"], 0.75)
+        self.assertEqual(
+            backend.usage["audio_duration_seconds"], sent / BYTES_PER_SECOND
+        )
+        self.assertIn("frames sent by the pipeline", backend.usage["source"])
+
+    def test_usage_counts_filled_silence_as_sent_audio(self):
+        clock = FakeClock()
+        backend, _ = open_audio(clock)
+        clock.advance(0.5)
+
+        asyncio.run(backend.send_audio(caller_pcm(0.01)))
+
+        # The gap is filled with PCM silence before the caller frame, so both
+        # are frames the vendor received.
+        self.assertAlmostEqual(
+            backend.usage["audio_duration_seconds"], 0.51, places=6
+        )
+
+    def test_a_frame_the_lead_budget_dropped_is_not_counted(self):
+        clock = FakeClock()
+        backend, _ = open_audio(clock)
+        for _ in range(10):
+            asyncio.run(backend.send_audio(caller_pcm(0.5)))
+        asyncio.run(backend.send_audio(caller_pcm(0.5)))
+
+        self.assertEqual(backend.dropped_frames, 1)
+        self.assertEqual(backend.usage["audio_duration_seconds"], 5.0)
+
+    def test_usage_does_not_move_with_the_wall_clock(self):
+        clock = FakeClock()
+        backend, _ = open_audio(clock)
+        asyncio.run(backend.send_audio(caller_pcm(0.2)))
+
+        before = backend.usage["audio_duration_seconds"]
+        clock.advance(10.0)
+
+        self.assertEqual(backend.usage["audio_duration_seconds"], before)
+
+
 class SilenceTest(unittest.TestCase):
     def test_silence_fills_the_gap_before_the_next_caller_frame(self):
         clock = FakeClock()

@@ -195,6 +195,29 @@ class MeteringVoice(FakeVoice):
         self.billing = billing
 
 
+class TerminatingVoice(FakeVoice):
+    """A live synthesis session that reports billing only after ``Terminate``.
+
+    Mirrors the real adapter: a plain ``close`` leaves the summary unread, so
+    ``billing`` stays unmeasured; the call's deliberate ``finish`` is what
+    records the vendor's characters and durations.
+    """
+
+    def __init__(self, billing: Billing) -> None:
+        super().__init__()
+        self.billing = Billing(
+            characters=None,
+            measured=False,
+            source="unterminated: the session has not ended",
+        )
+        self._summary = billing
+        self.finished = False
+
+    async def finish(self) -> None:
+        self.finished = True
+        self.billing = self._summary
+
+
 class HangingGreetingVoice(FakeVoice):
     """A voice whose greeting synthesis never produces its first frame."""
 

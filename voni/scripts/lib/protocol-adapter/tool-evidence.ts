@@ -53,7 +53,7 @@ export type ToolEvidenceDeps = {
   readonly fetch?: typeof fetch;
 };
 
-function reasonOf(error: unknown): string {
+function reasonOf(error: unknown, depth = 0): string {
   if (typeof error === "object" && error !== null && "code" in error) {
     const code = (error as { code?: unknown }).code;
     const message = (error as { message?: unknown }).message;
@@ -61,7 +61,19 @@ function reasonOf(error: unknown): string {
       return `${code}: ${typeof message === "string" ? message : "(no message)"}`;
     }
   }
-  return error instanceof Error ? error.message : String(error);
+  if (typeof error === "object" && error !== null) {
+    const message = (error as { message?: unknown }).message;
+    const head = typeof message === "string" ? message : String(error);
+    // Drizzle wraps the driver's error: its message is the SQL, and the reason
+    // a table is missing lives in `cause`. A gap that names only the SQL cannot
+    // say why the log is unreadable.
+    const cause = (error as { cause?: unknown }).cause;
+    if (depth < 3 && cause !== undefined && cause !== null && cause !== error) {
+      return `${head} (cause: ${reasonOf(cause, depth + 1)})`;
+    }
+    return head;
+  }
+  return String(error);
 }
 
 /**
