@@ -58,6 +58,8 @@ export const CALL_MARK_NAMES = [
   "turn",
   "end_call_received",
   "end_received",
+  /** A caller's stop ended the call before the service's end arrived. */
+  "end_missing",
   "error_received",
   "start_failed",
   "teardown",
