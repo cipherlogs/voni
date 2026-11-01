@@ -416,11 +416,17 @@ export async function runBrowserCertification(
 
   const { scenario, corpus, target } = preflightAnswer;
 
-  if (scenario.heldOut) {
+  // A held-out scenario runs in a full certification and nowhere else. The
+  // multi-call caller marks that by withholding each call's certificate (the
+  // run owns the one certificate); a single-scenario command issues one, so a
+  // sealed scenario there is still refused (RR-07).
+  const fullCertification =
+    input.plan?.mode === "full" && (input.certificate ?? "issue") === "withhold";
+  if (scenario.heldOut && !fullCertification) {
     const error = new BrowserAdapterError(
       "corpus-refused",
       `scenario "${scenario.name}" is held out; a held-out scenario runs only in a full ` +
-        "certification, and this run is a diagnose run (RR-07)",
+        "certification, and this run is not one (RR-07)",
     );
     return refused(runId, runDir, error, {
       target: input.target,

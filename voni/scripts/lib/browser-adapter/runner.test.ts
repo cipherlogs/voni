@@ -75,6 +75,38 @@ function runJson(result: { runDir: string }): Record<string, unknown> {
   >;
 }
 
+test("a held-out scenario is refused outside a full certification", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), [{ name: "sarcastic", heldOut: true }]);
+    const result = await runBrowserCertification(
+      input(root, { scenarioName: "sarcastic" }),
+    );
+    assert.equal(result.status, "refused");
+    assert.equal(result.refusal?.code, "corpus-refused");
+    assert.match(result.refusal?.message ?? "", /held out/);
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a full certification plan lets a held-out scenario run", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), [{ name: "sarcastic", heldOut: true }]);
+    const result = await runBrowserCertification(
+      input(root, {
+        scenarioName: "sarcastic",
+        plan: { mode: "full", repetitions: 3 },
+        certificate: "withhold",
+      }),
+    );
+    assert.notEqual(result.refusal?.code, "corpus-refused");
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("a golden scenario runs once, writes a certificate bound to one call id, and waits for the human panel", async () => {
   const root = tempRoot();
   try {
