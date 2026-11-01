@@ -527,6 +527,20 @@ export async function runProtocolCall(
     }
   }
 
+  // A script that does not end the call itself (no caller hang-up) still ends
+  // it: the service closes cleanly on the `stop` frame, and only a dropped
+  // socket or a vendor fault is recorded as an error. Closing the socket
+  // instead made a completed script end as "Ingress audio slower than real-time"
+  // — the vendor's read of an abrupt disconnect, not a fact about the call.
+  if (!dropped && state.end === null && !state.closed) {
+    await pump.stop().catch(() => {});
+    try {
+      socket.send(JSON.stringify({ type: "stop" }));
+    } catch {
+      state.closed = true;
+    }
+  }
+
   // Wait for the service's graceful end. A call-drop or a close is an ending
   // too; the record names which.
   const endDeadline = callTime() + timeoutMs;

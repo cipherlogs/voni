@@ -28,6 +28,8 @@ function audioMessage(samples = 128): string {
 function socketScript(input: {
   readonly endAtFrame: number;
   readonly dropAtFrame?: number;
+  /** End on the caller's stop frame, as the live service does. */
+  readonly endOnStop?: boolean;
 }) {
   const sent: string[] = [];
   const audioBytes: number[] = [];
@@ -44,6 +46,12 @@ function socketScript(input: {
       send(data: string): void {
         sent.push(data);
         const parsed = JSON.parse(data) as Record<string, unknown>;
+        if (parsed.type === "stop" && input.endOnStop === true && !ended) {
+          ended = true;
+          message?.(JSON.stringify({ type: "end", turns: 1, endedBy: "stop", metrics: { marks: {} } }));
+          queueMicrotask(() => close?.());
+          return;
+        }
         if (parsed.type !== "audio" || typeof parsed.data !== "string") return;
         audioBytes.push(Buffer.from(parsed.data, "base64").length);
         audioFrames += 1;
@@ -268,6 +276,63 @@ test("a graceful end before the call-drop point is not reported as a drop", asyn
 
     assert.equal(result.endedBy, "end");
     assert.match(result.faultsApplied[0]?.observed ?? "", /ended before the fault point/);
+  } finally {
+    if (previous === undefined) delete process.env.VOICE_PIPELINE_ENVELOPE_SECRET;
+    else process.env.VOICE_PIPELINE_ENVELOPE_SECRET = previous;
+    removeTree(root);
+  }
+});
+
+test("a script with no hang-up stops the call instead of dropping the socket", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv11-transport-stop-"));
+  const previous = process.env.VOICE_PIPELINE_ENVELOPE_SECRET;
+  process.env.VOICE_PIPELINE_ENVELOPE_SECRET = "test-envelope";
+  try {
+    const scenario = await loadedScenario(root);
+    const script = socketScript({ endAtFrame: Number.MAX_SAFE_INTEGER, endOnStop: true });
+    let t = 0;
+    const result = await runProtocolCall(
+      {
+        scenario,
+        callId: "22222222-2222-4222-8222-222222222222",
+        target: {
+          httpBase: "http://127.0.0.1:8767",
+          wsUrl: "ws://127.0.0.1:8767/v1/browser-call",
+          local: true,
+        },
+        targetLabel: "local",
+        soundscapePcm: null,
+        timeoutMs: 5_000,
+        env: process.env,
+      },
+      {
+        fetchImpl: (async (_url: string, init?: RequestInit) => {
+          const body = JSON.parse(String(init?.body)) as {
+            signed_body: { envelope: { call_id: string; agent_id: string; body_hash: string } };
+          };
+          const envelope = body.signed_body.envelope;
+          return new Response(
+            JSON.stringify({
+              status: "accepted",
+              call_id: envelope.call_id,
+              agent_id: envelope.agent_id,
+              body_hash: envelope.body_hash,
+            }),
+            { status: 202 },
+          );
+        }) as typeof fetch,
+        connect: () => script.socket,
+        now: () => t,
+        sleep: async (ms) => {
+          t += ms;
+        },
+      },
+    );
+
+    const stop = script.sent.filter((raw) => (JSON.parse(raw) as { type?: string }).type === "stop");
+    assert.equal(stop.length, 1, "exactly one stop frame ends the call");
+    assert.equal(result.endedBy, "end", "the service ended on the stop frame, not by a close");
+    assert.equal(result.error, null, "a clean stop is not an error");
   } finally {
     if (previous === undefined) delete process.env.VOICE_PIPELINE_ENVELOPE_SECRET;
     else process.env.VOICE_PIPELINE_ENVELOPE_SECRET = previous;
