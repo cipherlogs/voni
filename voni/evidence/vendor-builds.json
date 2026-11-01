@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "builds": [
+    {
+      "leg": "stt",
+      "vendor": "meta",
+      "model": "muse-voice-transcribe-1.0",
+      "buildId": "muse-voice-transcribe-1.0"
+    },
+    {
+      "leg": "tts",
+      "vendor": "assemblyai",
+      "model": "assemblyai-tts-1",
+      "buildId": "assemblyai-tts-1"
+    },
+    {
+      "leg": "llm",
+      "vendor": "meta",
+      "model": "muse-spark-1.3",
+      "buildId": "muse-spark-1.3"
+    }
+  ]
+}

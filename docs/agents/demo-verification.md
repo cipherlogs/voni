@@ -52,7 +52,7 @@ have is a defect in this map.
 | Studio | local-only Record, Rate and Corpus surfaces; never in the deployed build | Record landed in `voni/scripts/studio/`: `take-store.ts` writes one immutable hashed take per landing (`voni/.studio/`, gitignored) on the shared digest in `scenarios/digest.ts`; `dialogues.ts` validates authored prompt cards; `http.ts` serves `record.html` on loopback only and refuses a production environment or host by name; no `src/` file imports it. Rate and Corpus landed in the same process: `rate.ts` builds the blind queue (every failing call ahead of the clean sample, seeded per-session order, A/B sides with a private answer key, seven axes, free text and defect tags), `rating-store.ts` persists attributable sessions and gold labels under `voni/.studio/rating/` and rehashes evidence on every serving, `rate.html` and `corpus.html` are the surfaces, `take-store.ts` retires a take with `retired.json` (never editing the take) and records baseline consent metadata; `selectable()` excludes retired and baseline takes | 23, 24 |
 | Human baseline | three to five consented, hashed reference calls, blind comparison only | **captured 2026-11-01**: 3 participants, 6 takes of 4:03–5:04, consented and pinned (RR-04); session plan and owner runbook in `docs/demo-human-baseline.md`; `voni/scripts/studio/baseline.ts` verifies consent references, the 4–6 minute band, rehashed takes, a pinned hash list and non-use as certification input, exposed as `npm run demo:baseline:verify`; `take-store.ts` lists active baseline takes with `baselineTakes()` | 25 |
 | Panel and gold labels | blind sample, seven axes, blind A/B, signature, exit 3 | `voni/src/lib/demo/verification/panel/` — `types.ts` fixes the twelve-call sample (two per Locale plus the two worst remaining failing calls, every failing call mandatory) and the gold-label/signature vocabulary; `verdict.ts` computes H1–H5 and H7 from the panel's gold labels against the contract's frozen bars; `run.ts` merges those verdicts into the run. The local-only orchestration is `voni/scripts/studio/panel/` — `session.ts` builds the blind session (every failing call mandatory), `gold-labels.ts` exports attributable labels and their digest, `signature.ts` signs/verifies and completes H7. `voni/scripts/lib/demo-certificate.ts` is `demo:certificate`; an unsigned certificate is `pending-human` and exits 3 | 27 |
-| CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | `voni/scripts/demo-verify.mts` is the command; the testable contract is `voni/scripts/lib/verify-cli/` — `args.ts` accepts the three spec forms and a defect card's replay command unchanged, `plan.ts` owns the target/mode/Locale matrix (fast ten ×1; nightly English 43 + Locale core 12 ×4 at one; full the same 91 at three), and `run.ts` preflights keys, corpus and vendor builds as one named exit 2, takes the machine-wide timing lock (a held lock is a named exit 2, never a wait), dispatches diagnose through the protocol adapter and certification through the browser adapter, and issues at most one certificate from a full run. Diagnose never writes a certificate and the protocol adapter's exit 0 is refused. `staging` and `production` refuse by name (no evidence sink). The 43-scenario English and four Locale core corpora have landed, so nightly/full no longer refuse for a corpus; they still refuse before a call for the missing pipeline key and the absent `voni/evidence/vendor-builds.json` (RR-03). A full run with `--locale` other than `en` is refused by name: only English has the per-Locale full set. A fast or nightly scoped-clean report is exit 1, never a certificate | 28 |
+| CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | `voni/scripts/demo-verify.mts` is the command; the testable contract is `voni/scripts/lib/verify-cli/` — `args.ts` accepts the three spec forms and a defect card's replay command unchanged, `plan.ts` owns the target/mode/Locale matrix (fast ten ×1; nightly English 43 + Locale core 12 ×4 at one; full the same 91 at three), and `run.ts` preflights keys, corpus and vendor builds as one named exit 2, takes the machine-wide timing lock (a held lock is a named exit 2, never a wait), dispatches diagnose through the protocol adapter and certification through the browser adapter, and issues at most one certificate from a full run. Diagnose never writes a certificate and the protocol adapter's exit 0 is refused. `staging` and `production` refuse by name (no evidence sink). The 43-scenario English and four Locale core corpora have landed, so nightly/full no longer refuse for a corpus; they still refuse before a call for a missing pipeline key; the vendor-build record landed on 2026-11-01 (RR-03). A full run with `--locale` other than `en` is refused by name: only English has the per-Locale full set. A fast or nightly scoped-clean report is exit 1, never a certificate | 28 |
 | Streak and cutover | three-clean streak, staging gate, post-flip confirmation, monthly full production | `voni/src/lib/demo/verification/release/` — `streak.ts` judges the latest three committed certificates; `gate.ts` binds a clean staging certificate to the image; `confirmation.ts` bounds the post-flip record to ten calls; `rollback.ts` holds the one value and its zero-session proof; `monthly.ts` owns the cron and the recorded monthly production proof. `voni/scripts/demo-cutover.mts` (`npm run demo:cutover`) is the reader; records live in `voni/evidence/cutover/` | 29 |
 | CI cadence | fast contract, nightly health, weekly full certification, Locale matrix | `voni/src/lib/demo/verification/cadence.ts` is the one count source (fast 10, nightly 91, full 273) and the cron constants; `voni/scripts/demo-gate-report.mjs` turns a `demo:verify --json` report into a merge gate that reads the artifact — expected call count, an empty `failedPropertyIds` and `ineligible: false` — before it reads the status, because a clean scoped-pass and a property failure both exit 1; `voni/scripts/demo-cadence-wiring.test.ts` parses `.github/workflows/{ci,nightly,demo-weekly,demo-monthly}.yml` and forbids vendor keys, path filters and timeout-less jobs. The fast job runs on every PR; nightly is English 43 × 1 + Locale core 12 × 1 × 4 = 91 calls; weekly full is the same plan × 3 = 273 with a panel signature still a human act | 30 |
 
@@ -169,10 +169,13 @@ ticket 28's CLI accept it unchanged; an unknown flag, a missing Locale or a
 certification mode is a named refusal (exit 2).
 
 The protocol adapter reads the committed vendor-build record at
-`voni/evidence/vendor-builds.json` before it opens a vendor (RR-03). That file
-does not exist yet: no engineer has recorded authentic STT/TTS/LLM build ids, so
-a real protocol run refuses by name rather than inventing one. The adapter's
-tests inject a fixture record; a live run stays unrun until the record lands.
+`voni/evidence/vendor-builds.json` before it opens a vendor (RR-03). The record
+landed on 2026-11-01 with the three legs the cascade opens: STT `meta`
+`muse-voice-transcribe-1.0`, TTS `assemblyai` `assemblyai-tts-1` and LLM `meta`
+`muse-spark-1.3`. The two Meta ids are the vendor's own served model ids
+(`GET https://api.meta.ai/v1/models`), and `assemblyai-tts-1` is the model id the
+TTS endpoint echoes back and the adapter asserts. A missing, empty, `unknown` or
+drifted id still refuses by name; RR-03 stays open because a vendor can move.
 
 ### CI cadence (ticket 30)
 
@@ -223,8 +226,9 @@ artifact disappears.
   scenarios a nightly/full run is defined over (the four Locale cores are
   complete at twelve each), so `planVerify` reports no corpus gap and the
   nightly/full plan is 91/273 calls. `demo:verify` still refuses before a call
-  for the missing pipeline key and the absent `voni/evidence/vendor-builds.json`
-  (RR-03); those are environment refusals, not a smaller plan reading green.
+  for a missing pipeline key (the vendor-build record itself landed on
+  2026-11-01); those are environment refusals, not a smaller plan reading
+  green.
   The fast contract's ten scenarios are all present, and all eight held-out
   names are committed with real takes (`sarcastic`, `distressed` and
   `mispronounced-email` completed the seal). Adding the three sealed scenarios
@@ -242,10 +246,10 @@ artifact disappears.
   adapter refuses it by name (`target-invalid` / `capture-unavailable`) instead
   of inventing evidence. A local certificate is true for the dev-mode app;
   production certification needs an evidence sink production does not expose yet.
-- The run refuses at preflight when `voni/evidence/vendor-builds.json` is absent
-  (RR-03). The 2026-10-31 live rehearsal refused there. The call path itself was
-  exercised separately with a test-only record; that run is not a certificate and
-  is not reported as one.
+- The run refuses at preflight when `voni/evidence/vendor-builds.json` is
+  missing, records an `unknown` id, or reports a `unversioned` pipeline build
+  (RR-03). The 2026-10-31 live rehearsal refused there; the committed record
+  landed on 2026-11-01, so only a missing pipeline key still stops a local run.
 - A completed run whose `cost.priced` row is unmeasured **withholds** the
   certificate (`cost-missing`) and keeps the verdict and cards. The 2026-10-31
   live rehearsal observed the STT `audio_seconds` and the TTS termination summary
@@ -490,11 +494,9 @@ fails closed; none may be relabelled as a pass.
   `--full --locale <es|fr|de|pt>` refuses by name instead of issuing a full
   certificate whose Locale coverage is a core. Owner: engineer (the missing
   Locale scenarios are a corpus build, not a harness shortcut).
-- **`voni/evidence/vendor-builds.json` is absent.** No engineer has recorded
-  authentic STT/TTS/LLM build ids, so every live `demo:verify` run (fast,
-  nightly or full) refuses at preflight with exit 2 before a vendor opens
-  (RR-03). The adapters' tests inject a fixture record; no live run has one.
-  Owner: engineer.
+- **Vendor drift (RR-03) is detection, not prevention.** The committed record
+  names the builds the run used, but a vendor can move a model behind the same
+  name; only a fresh certification detects it. Owner: engineer.
 
 ## Residual-risk register
 
@@ -567,7 +569,9 @@ detection depends on the vendor build ids recorded in the certificate.
 the certificate then makes a claim about a product that no longer exists.
 
 **Fail-closed.** A build id that cannot be recorded refuses the run (exit 2); it
-is never recorded as `unknown`. A changed build id invalidates the certificate
+is never recorded as `unknown`. The record committed on 2026-11-01 pins the
+builds of that day; it is evidence, not a promise that the vendor still serves
+them. A changed build id invalidates the certificate
 and requires a new certification run. The monthly full production certification
 bounds how long a stale green can stand.
 
