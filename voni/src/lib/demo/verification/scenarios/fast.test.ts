@@ -141,7 +141,7 @@ const SHAPE: readonly FixtureSpec[] = [
     class: "tools",
     properties: ["X1", "X3", "X4", "C6"],
     script: [
-      { take: "sent", trigger: { type: "call-open" } },
+      { take: "sent", trigger: { type: "agent-turn-end" } },
       { take: "tag", trigger: { type: "agent-turn-end" } },
     ],
   },

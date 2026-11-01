@@ -324,6 +324,13 @@ turn that delivered audio without a caption (un-scanned speech is not clean);
 it does not independently re-transcribe the delivered WAV, so a leak the
 captions miss remains a residual gap rather than a pass.
 
+The tools fast scenario cues its asking line at the agent's turn end, never at
+call-open: the app drops microphone frames until the service's first audio, so a
+line spoken before admission is never heard and the model cannot reach the tool
+turn. A model tool request is bound to the `service` credential; the browser's
+own `check_email` poll is logged under `browser` and filtered out, so X4 cannot
+pass on the page's poll alone.
+
 The one seam is the call boundary. If a proposed change adds a second seam
 inside the call lifecycle or the turn stream, it contradicts ADR 0013 and needs
 a new record before it is built.
