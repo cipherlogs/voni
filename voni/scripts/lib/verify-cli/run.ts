@@ -540,12 +540,18 @@ async function fastRun(
     failedPropertyIds: report.failedPropertyIds,
     ineligible: report.verdict === "ineligible",
     detail:
-      `${report.scopeNote} ${report.economy.detail}. A scoped-pass is not a certificate; ` +
-      "exit 0 is reserved for a signed full certification",
+      `${report.scopeNote} ${report.economy.detail}` +
+      (report.failedPropertyIds.length === 0
+        ? ""
+        : ` Failed in scope: ${report.failedPropertyIds.join(", ")}.`) +
+      " A scoped-pass is not a certificate; exit 0 is reserved for a signed full certification",
     unrun: unique([
       ...report.gaps,
       ...report.outOfScopeFamilies.map((family) => family.reason),
-      ...verdict.failedPropertyIds.map((id) => `${id} failed in the fast scope`),
+      // Only the in-scope failures belong here. The run verdict fails every
+      // property no attempt cites closed; those are the scope's out-of-scope
+      // families, already reported as families above, never as failures.
+      ...report.failedPropertyIds.map((id) => `${id} failed in the fast scope`),
       ...verdict.failures,
     ]),
   };
