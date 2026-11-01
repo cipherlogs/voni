@@ -237,6 +237,21 @@ test("the corpus is 43 English scenarios, and the closing six fill golden flow, 
   assert.equal(hangup.script.at(-1)?.trigger.type, "at-offset", "the caller leaves at its own fixed time");
 });
 
+test("the tools scenario's asking line waits for the agent's turn, never call-open", async () => {
+  const corpus = await load();
+  const scenario = corpus.scenarios.find((entry) => entry.name === "tools-email-send");
+  assert.ok(scenario, "the fast contract's tools scenario is committed");
+  assert.deepEqual(
+    scenario.script.map((step) => ({ take: step.take, trigger: step.trigger.type })),
+    [
+      { take: "sent", trigger: "agent-turn-end" },
+      { take: "tag", trigger: "agent-turn-end" },
+    ],
+    "the app drops microphone frames until the service's first audio arrives; a call-open take " +
+      "asking the agent to check the inbox is lost before the turn that would call the tool",
+  );
+});
+
 test("the held-out seals are exactly the spec's eight names, never a broader class seal", async () => {
   const corpus = await load();
   const held = new Set(

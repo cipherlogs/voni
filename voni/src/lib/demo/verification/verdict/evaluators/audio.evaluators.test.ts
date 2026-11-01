@@ -361,6 +361,49 @@ withAudio("A8 passes a clean delivery and counts the frames silence replaced", a
   assert.match(holed.kind === "measured" ? holed.detail ?? "" : "", /1000 ms/);
 });
 
+/** The soundscape call's delivery: a lead-in, then the greeting's first 1.2 s. */
+function endedMidGreeting(complete: boolean) {
+  const seconds = 1.2;
+  const frames = Math.round(seconds * reference.audio.facts.sampleRate);
+  const samples = joined([silence(2.8).samples, reference.audio.samples.subarray(0, frames)]);
+  return {
+    ...audioEvidence(samples),
+    ledger: {
+      end: {
+        type: "end",
+        endedBy: "stop",
+        greeting: {
+          spoken: true,
+          cancelled: false,
+          reason: "spoken",
+          frames: 80,
+          sampleRate: reference.audio.facts.sampleRate,
+          audioBytes: Math.round(6.4 * reference.audio.facts.sampleRate) * 2,
+        },
+      },
+      marks: {
+        marks: [{ name: "delivered_capture", tMs: 4_932, detail: { complete } }],
+      },
+    },
+  };
+}
+
+withAudio("A3 and A8 name a call that ended mid-greeting instead of blaming the capture", async () => {
+  const evidence = endedMidGreeting(true);
+  for (const id of ["A3", "A8"]) {
+    const result = await evaluate(id, evidence);
+    assert.equal(result.kind, "unmeasured", `${id} must fail closed on a cut greeting`);
+    const reason = result.kind === "unmeasured" ? result.reason : "";
+    assert.match(reason, /call ended/, `${id} names the call's ending: ${reason}`);
+    assert.doesNotMatch(reason, /truncated/, `${id} must not blame a complete capture`);
+  }
+
+  // A capture that did not report itself complete is still a truncation.
+  const lost = await evaluate("A3", endedMidGreeting(false));
+  assert.equal(lost.kind, "unmeasured");
+  assert.match(lost.kind === "unmeasured" ? lost.reason : "", /truncated/);
+});
+
 withAudio("A4 fails closed when the trace carries no caller words", async () => {
   const result = await evaluate("A4", {
     trace: {

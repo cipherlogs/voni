@@ -99,6 +99,29 @@ test("a truncated delivered line is refused, never measured short", () => {
   );
 });
 
+test("a complete capture cut by the call's end is named, never truncated", () => {
+  const reference = tone(1);
+  const delivered = tone(0.3);
+  const ending = { endedBy: "stop", captureComplete: true, producedSeconds: 1 };
+  assert.throws(
+    () => alignToReference(reference, delivered, "ref.wav", "del.wav", ending),
+    (error: unknown) =>
+      error instanceof TimbreComparisonError &&
+      error.code === "call-ended" &&
+      /the call ended \(stop\)/.test(error.message),
+  );
+  // The tap did not report a clean close: the old naming still bites.
+  assert.throws(
+    () =>
+      alignToReference(reference, delivered, "ref.wav", "del.wav", {
+        ...ending,
+        captureComplete: false,
+      }),
+    (error: unknown) =>
+      error instanceof TimbreComparisonError && error.code === "truncated",
+  );
+});
+
 test("a copy delivered a few milliseconds late measures as a copy, not as distortion", () => {
   const committed = loadVoiceReference();
   const late = delayed(copyWithNoise(committed.audio), 5);

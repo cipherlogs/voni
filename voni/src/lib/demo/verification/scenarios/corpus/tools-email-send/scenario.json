@@ -32,7 +32,7 @@
     {
       "take": "sent",
       "trigger": {
-        "type": "call-open"
+        "type": "agent-turn-end"
       }
     },
     {

@@ -324,6 +324,13 @@ turn that delivered audio without a caption (un-scanned speech is not clean);
 it does not independently re-transcribe the delivered WAV, so a leak the
 captions miss remains a residual gap rather than a pass.
 
+The tools fast scenario cues its asking line at the agent's turn end, never at
+call-open: the app drops microphone frames until the service's first audio, so a
+line spoken before admission is never heard and the model cannot reach the tool
+turn. A model tool request is bound to the `service` credential; the browser's
+own `check_email` poll is logged under `browser` and filtered out, so X4 cannot
+pass on the page's poll alone.
+
 The one seam is the call boundary. If a proposed change adds a second seam
 inside the call lifecycle or the turn stream, it contradicts ADR 0013 and needs
 a new record before it is built.
@@ -445,7 +452,15 @@ and IBAN shapes are scanned today.
 ### Audio evidence gaps
 
 Ticket 21 measures A1–A8 from the delivered WAV and the committed voice
-reference. Five limits are recorded rather than papered over:
+reference. Six limits are recorded rather than papered over:
+
+- **A3/A5/A8 name a call that ended mid-line.** The capture holds what the
+  playout rendered, so a call that hangs up with audio still queued delivers a
+  complete, short file. The comparison reads the end document's
+  `greeting.audioBytes` at `sampleRate` and the `delivered_capture` mark's
+  `complete` report and refuses with `call-ended` ("the line was cut by the
+  call's end, not lost by the tap"); a capture that did not report complete
+  still refuses as `truncated`. Both are unmeasured; neither is a pass.
 
 - **A4 has no caller words to read.** The turn ledger records a caller final's
   length and emptiness, never its text (a deliberate privacy rule), and no

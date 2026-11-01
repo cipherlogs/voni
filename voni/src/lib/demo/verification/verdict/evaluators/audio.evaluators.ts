@@ -41,6 +41,7 @@ import {
   TimbreComparisonError,
   alignToReference,
   compareTimbre,
+  type LineEnding,
 } from "../audio/compare";
 import {
   AudioEvidenceError,
@@ -93,6 +94,20 @@ function firstEvent(events: readonly AudioEvent[]): string {
 
 function traceRows(context: EvaluatorContext): Row[] {
   return rowsOf(context.evidence.trace);
+}
+
+/**
+ * What a refused A3/A8 read: the capture, and the end document when the
+ * evaluator had one. A named ending cites both, so the reason is checkable.
+ */
+function refusalCitations(context: EvaluatorContext): string[] {
+  const citations = [`wav:${textOf((context.source as Row | null)?.file)}`];
+  const ledger = context.evidence.ledger;
+  if (typeof ledger === "object" && ledger !== null) {
+    const path = textOf((ledger as Row).file);
+    if (path !== "") citations.push(`ledger:${path}`);
+  }
+  return citations;
 }
 
 /** A1: no dropout over 20 ms, no click, no seam. */
@@ -179,6 +194,7 @@ const a3: PropertyEvaluator = {
         reference.path,
         capture.audio,
         capture.file,
+        lineEnding(context),
       );
       return {
         kind: "measured",
@@ -190,7 +206,7 @@ const a3: PropertyEvaluator = {
           `onset delta ${compared.alignment.onsetDeltaMs} ms`,
       };
     } catch (error) {
-      return refused(error, [`wav:${textOf((context.source as Row | null)?.file)}`]);
+      return refused(error, refusalCitations(context));
     }
   },
 };
@@ -283,6 +299,7 @@ const a5: PropertyEvaluator = {
         reference.path,
         capture.audio,
         capture.file,
+        lineEnding(context),
       );
       return {
         kind: "measured",
@@ -343,6 +360,52 @@ function cancelledGreeting(context: EvaluatorContext): CancelledGreeting | null 
     return null;
   }
   return { producedMs: (audioBytes / 2 / sampleRate) * 1000 };
+}
+
+/** The tap's own report that it flushed and closed cleanly. */
+function captureComplete(ledger: Row): boolean {
+  const marks = ledger.marks;
+  if (typeof marks !== "object" || marks === null) return false;
+  const rows = (marks as Row).marks;
+  if (!Array.isArray(rows)) return false;
+  for (const mark of rows) {
+    if (typeof mark !== "object" || mark === null) continue;
+    const record = mark as Row;
+    if (record.name !== "delivered_capture") continue;
+    const detail = record.detail;
+    return typeof detail === "object" && detail !== null && (detail as Row).complete === true;
+  }
+  return false;
+}
+
+/**
+ * How the call ended and how much line the service produced, when the end
+ * document records both. A3, A5 and A8 read it so a complete capture that is
+ * short because the call ended mid-line is named as that, never as a truncated
+ * file; a capture that did not report complete still falls back to `truncated`.
+ */
+function lineEnding(context: EvaluatorContext): LineEnding | undefined {
+  const ledger = context.evidence.ledger;
+  if (typeof ledger !== "object" || ledger === null) return undefined;
+  const end = (ledger as Row).end;
+  if (typeof end !== "object" || end === null) return undefined;
+  const greeting = (end as Row).greeting;
+  if (typeof greeting !== "object" || greeting === null) return undefined;
+  const record = greeting as Row;
+  const sampleRate = record.sampleRate;
+  const audioBytes = record.audioBytes;
+  if (typeof sampleRate !== "number" || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+    return undefined;
+  }
+  if (typeof audioBytes !== "number" || !Number.isFinite(audioBytes) || audioBytes <= 0) {
+    return undefined;
+  }
+  const endedBy = (end as Row).endedBy;
+  return {
+    endedBy: typeof endedBy === "string" && endedBy !== "" ? endedBy : null,
+    captureComplete: captureComplete(ledger as Row),
+    producedSeconds: audioBytes / 2 / sampleRate,
+  };
 }
 
 /**
@@ -478,6 +541,7 @@ const a8: PropertyEvaluator = {
         capture.audio,
         reference.path,
         capture.file,
+        lineEnding(context),
       );
       const silent = silentFramesAgainstReference(
         aligned.reference.audio,
@@ -493,7 +557,7 @@ const a8: PropertyEvaluator = {
           (silent.windows[0] === undefined ? "" : `; first at ${silent.windows[0].atMs} ms`),
       };
     } catch (error) {
-      return refused(error);
+      return refused(error, refusalCitations(context));
     }
   },
 };
