@@ -2545,6 +2545,17 @@ def _failure(stage: str, error: BaseException) -> CallFailure:
 
 
 def _closer(session: Any) -> Callable[[], Any] | None:
-    """A session's ``close`` when it has one; an LLM stream may not."""
-    close = getattr(session, "close", None)
-    return close if callable(close) else None
+    """A session's deliberate end, or ``None`` when it has neither.
+
+    ``finish`` comes first: it is the synthesis adapter's bounded ``Terminate``
+    that reads the vendor's billing summary before the socket closes. A plain
+    ``close`` would discard that summary and leave the call's cost unmeasured.
+    ``terminate`` is honoured for an adapter that names the operation that way,
+    and ``close`` remains the end for speech and model sessions, which own no
+    summary.
+    """
+    for name in ("finish", "terminate", "close"):
+        closer = getattr(session, name, None)
+        if callable(closer):
+            return closer
+    return None

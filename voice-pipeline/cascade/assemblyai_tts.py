@@ -1492,6 +1492,25 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             billing=self.billing,
         )
 
+    async def finish(self) -> TerminationRecord | None:
+        """Deliberately end a live session so its ``Termination`` is recorded.
+
+        The call's end path closes every leg. A synthesis socket closed without
+        ``Terminate`` never receives the vendor's summary (it is sent only on a
+        clean finish), which would leave the call's characters, audio seconds
+        and session seconds unmeasured. A session that already ended — a
+        failure or a planned reconnect closed it — has no summary left to wait
+        for, so nothing is sent and the billing that ending recorded stands.
+        """
+        if self._socket is None:
+            return None
+        try:
+            return await self.terminate()
+        finally:
+            # ``terminate`` closes on the normal path; a protocol error must
+            # not leave the socket referenced. Closing twice is a no-op.
+            await self._close_socket()
+
     async def close(self) -> None:
         """Close the socket without a ``Terminate``: the call keeps no summary."""
         await self._close_socket()
