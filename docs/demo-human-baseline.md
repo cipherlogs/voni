@@ -1,10 +1,13 @@
 # Human baseline — session plan and owner runbook (ticket 25)
 
-**Status: prepared, not captured.** This is a human gate. An agent prepared this
-plan and the verifier; the owner and three to five consenting participants
-record the calls. Until `npm run demo:baseline:verify` passes on a pinned list,
-the axis "preference against the human baseline" (H5) is unverified, and the
-residual-risk register records the baseline as absent (RR-04).
+**Status: captured 2026-11-01.** Three consenting participants
+(`participant-01`…`participant-03`) recorded both calls through the `/baseline`
+flow, and `npm run demo:baseline:verify` re-verifies the six pinned takes
+against `voni/.studio/baseline-hashes.json` with exit 0. The baseline is now
+available as blind comparison audio, but it does **not** verify the axis
+"preference against the human baseline" (H5) on its own: H5 needs a signed panel
+rating calls against this audio, and until then it stays unverified. The
+residual-risk register records the captured size and its taste bias (RR-04).
 
 The baseline is **three to five people, two calls of four to six minutes each**,
 consented and hashed. It is used **only as blind comparison audio** for the
