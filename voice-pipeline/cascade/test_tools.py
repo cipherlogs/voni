@@ -550,6 +550,72 @@ def verified_vector_body():
     )
 
 
+def demo_verified_body():
+    """Ticket 64's v2 demo vector, verified: the kind the service routes on."""
+    vector = VECTORS["v2_demo"]
+    issued_ms = vector["issued_at_ms"]
+    signed = sign_body(
+        body=vector["body"],
+        minted_fingerprint=vector["minted_fingerprint"],
+        account_salt=vector["account_salt"],
+        secret=vector["secret"],
+        call_id=vector["call_id"],
+        agent_id=vector["agent_id"],
+        kind="demo",
+        ttl_ms=vector["expires_at_ms"] - issued_ms,
+        clock=FakeClock(issued_ms / 1000.0),
+    )
+    wire = json.loads(json.dumps(signed.message()))
+    return verify_envelope(
+        wire,
+        secret=vector["secret"],
+        call_id=vector["call_id"],
+        clock=FakeClock(issued_ms / 1000.0),
+    )
+
+
+class DemoRouteTests(unittest.TestCase):
+    """A demo call's tools live on the call-scoped demo route (demo-cascade 14)."""
+
+    def test_a_demo_call_posts_to_the_call_scoped_demo_route(self):
+        verified = demo_verified_body()
+        factory = ScriptedSessionFactory([Response(body=b'{"ok": true}')])
+        executor = ToolExecutor.from_verified(
+            verified,
+            base_url=BASE_URL,
+            secret=TOOL_SECRET,
+            session_factory=factory,
+            timeout_ms=2000,
+        )
+
+        asyncio.run(executor.execute(a_call()))
+
+        self.assertEqual(verified.subject_kind, "demo")
+        self.assertEqual(
+            factory.posts[0]["url"],
+            f"{BASE_URL}/api/demo/tools/search_properties",
+        )
+
+    def test_a_tenant_call_keeps_the_platform_route(self):
+        verified = verified_vector_body()
+        factory = ScriptedSessionFactory([Response(body=b'{"ok": true}')])
+        executor = ToolExecutor.from_verified(
+            verified,
+            base_url=BASE_URL,
+            secret=TOOL_SECRET,
+            session_factory=factory,
+            timeout_ms=2000,
+        )
+
+        asyncio.run(executor.execute(a_call()))
+
+        self.assertEqual(verified.subject_kind, "tenant")
+        self.assertEqual(
+            factory.posts[0]["url"],
+            f"{BASE_URL}/api/tools/search_properties",
+        )
+
+
 class SignedIdentityTests(unittest.TestCase):
     def test_the_hop_carries_the_call_id_the_signed_envelope_minted(self):
         verified = verified_vector_body()
