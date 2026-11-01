@@ -195,6 +195,38 @@ test("a truncated WAV is refused, never measured as a shorter capture", () => {
   }
 });
 
+test("a lost marks artifact still names the call it lost", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await scenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = fakeBrowserCall({
+      scenario,
+      eventsDir,
+      capturesDir,
+      runDir: root,
+      omitMarks: true,
+    });
+    await assert.rejects(
+      assembleBrowserEvidence({
+        call,
+        scenario,
+        target: "local",
+        eventsDir,
+        callDir: join(root, "call"),
+      }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "marks-missing");
+        assert.match((error as Error).message, new RegExp(BROWSER_CALL_ID));
+        return true;
+      },
+    );
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("a missing end document refuses: the browser adapter certifies from the persisted end message", async () => {
   const root = tempRoot();
   try {

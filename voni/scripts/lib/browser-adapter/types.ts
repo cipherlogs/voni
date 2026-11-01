@@ -157,7 +157,10 @@ export type SyntheticMicReport = {
 
 /** One call's result from the browser harness, before evidence assembly. */
 export type BrowserCallResult = {
-  /** Null when the harness could not read the marks; the runner refuses by name. */
+  /**
+   * The call id signed into the mint's demo call token, read independently of
+   * the marks receipt. Null only when the mint itself did not land.
+   */
   readonly callId: string | null;
   readonly voice: string;
   readonly subject: string;

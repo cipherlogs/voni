@@ -373,6 +373,59 @@ test("a caller hang-up whose end never arrives is named, never invented", async 
   assert.equal(names.at(-1), "teardown");
 });
 
+test("a fast hang-up posts the marks even when the capture's close never settles", async () => {
+  // The page can be gone as soon as the visitor hangs up. The marks must not
+  // wait behind an unbounded tap flush or WAV upload, or the artifact is lost
+  // with the page. The capture outcome is still included when it arrives
+  // inside the bound; a capture that never closes is named as absent, never
+  // invented as a delivered_capture the client did not see.
+  const socket = makeSocket();
+  const { marks, posted } = recorder();
+  const hangingPlayout = {
+    onFirstAudible: undefined,
+    play() {},
+    flush() {},
+    settled: () => true,
+    tap: () => new Promise<{ ended: boolean }>(() => {}),
+    onTap: undefined,
+  };
+  let micStops = 0;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {
+          micStops += 1;
+        },
+        audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+        playout: hangingPlayout as unknown as Playout,
+      }),
+      writeCapture: () => undefined,
+      marks,
+    },
+  );
+  session.setDeliveredCapture(true, "call-marks-05");
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+
+  const stopping = session.stop();
+  const bounded = await Promise.race([
+    stopping.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_500)),
+  ]);
+  assert.equal(bounded, true, "teardown is bounded, never held open by a hung capture");
+  assert.equal(posted.length, 1, "the marks artifact was posted before the page could close");
+  const names = posted[0]!.marks.map((mark) => mark.name);
+  assert.equal(names.includes("delivered_capture"), false, "no capture outcome was invented");
+  assert.ok(
+    names.includes("delivered_capture_absent"),
+    "the capture that never closed is named as absent",
+  );
+  assert.equal(micStops, 1, "the graph is still released after the bound");
+});
+
 test("a hanging marks writer never blocks hang-up", async () => {
   const socket = makeSocket();
   const marks = new CallMarks({
