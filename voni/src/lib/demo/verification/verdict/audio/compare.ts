@@ -3,9 +3,11 @@
  *
  * A3, A5 and A8 need the same two things: the delivered greeting aligned to the
  * reference line, and the six measured timbre axes on that pair. Alignment
- * starts each file at its own audible onset, so a lead-in is a reported fact
- * rather than a timbre difference; a delivered line too short to hold the
- * reference is a refusal, never a quietly shortened measurement.
+ * starts each file at its own audible onset and then refines the pair onto the
+ * same samples by cross-correlation, so a lead-in — or a gain that moved the
+ * onset frame — is a reported fact rather than a timbre difference; a delivered
+ * line too short to hold the reference is a refusal, never a quietly shortened
+ * measurement.
  *
  * The axes are the existing `measureTimbre` result (voice-parity ticket 74),
  * not a second implementation. A3's level and modulation legs are measured on
@@ -28,6 +30,21 @@ import { frameLevelsDb } from "./analysis";
 const ONSET_FLOOR_DBFS = -40;
 /** How far the delivered line may be short and still be compared. */
 const TRUNCATION_TOLERANCE_S = 0.05;
+/**
+ * The window the fine alignment searches. The onset is found on a 10 ms frame
+ * grid, and a capture loud enough for its lead-in noise to cross the onset
+ * floor is onseted at that noise — up to the reference line's own lead-in
+ * (0.2 s) away from the speech. A residual measured across that offset is the
+ * offset, not distortion: a bit-identical copy delivered 5 ms late measures
+ * ~21 dB. The window is one lead-in wide plus the onset frame.
+ */
+const ALIGN_SEARCH_S = 0.25;
+/** The head of the line is the probe the lag is found on. */
+const ALIGN_PROBE_S = 1.5;
+/** Coarse-to-fine steps for the lag search, in samples. */
+const ALIGN_COARSE_STEP = 16;
+/** Agreement within this of the peak is a tie, and the smaller lag wins. */
+const ALIGN_TIE_TOLERANCE = 0.01;
 
 export type TimbreComparisonErrorCode =
   | "format-mismatch"
@@ -77,9 +94,81 @@ function onsetFrame(audio: DecodedAudio): number | null {
 }
 
 /**
- * Align the delivered line to the reference by each file's own onset. A
- * different rate or channel count is a refusal; so is a delivered line more
- * than 50 ms short of the reference.
+ * The sample lag at which the delivered line best matches the reference, in
+ * [-ALIGN_SEARCH_S, ALIGN_SEARCH_S]. Both slices start at a 10 ms onset frame,
+ * so a copy still carries up to a frame of offset — and a gain difference can
+ * move the onset frame itself. The lag is found by normalized cross-correlation
+ * on the head of the line (channel 0: the channels are coherent), coarsely then
+ * at sample resolution, so level is normalised out and only the waveform's
+ * agreement moves the peak.
+ */
+function fineLag(reference: DecodedAudio, delivered: DecodedAudio): number {
+  const channels = reference.facts.channels;
+  const frames = Math.min(reference.facts.frameCount, delivered.facts.frameCount);
+  if (frames <= 0) return 0;
+  const probeFrames = Math.min(frames, Math.round(ALIGN_PROBE_S * reference.facts.sampleRate));
+  const limit = Math.round(ALIGN_SEARCH_S * reference.facts.sampleRate);
+  const stride = Math.max(1, Math.floor(probeFrames / 8000));
+  const agreement = (lag: number): number => {
+    let dot = 0;
+    let referenceSquares = 0;
+    let deliveredSquares = 0;
+    for (let frame = 0; frame < probeFrames; frame += stride) {
+      const other = frame + lag;
+      if (other < 0 || other >= delivered.facts.frameCount) continue;
+      const r = reference.samples[frame * channels]!;
+      const d = delivered.samples[other * channels]!;
+      dot += r * d;
+      referenceSquares += r * r;
+      deliveredSquares += d * d;
+    }
+    const overlap = referenceSquares * deliveredSquares;
+    return overlap > 0 ? dot / Math.sqrt(overlap) : 0;
+  };
+
+  let coarse = 0;
+  let coarseAgreement = -1;
+  for (let lag = -limit; lag <= limit; lag += ALIGN_COARSE_STEP) {
+    const value = Math.abs(agreement(lag));
+    if (value > coarseAgreement) {
+      coarseAgreement = value;
+      coarse = lag;
+    }
+  }
+  // A periodic probe agrees at every period, and a tone's agreement says
+  // nothing about where the line starts: within the tie band the smallest
+  // movement wins, so an aligned pair is left where it is.
+  for (let lag = -limit; lag <= limit; lag += ALIGN_COARSE_STEP) {
+    if (
+      Math.abs(agreement(lag)) >= coarseAgreement - ALIGN_TIE_TOLERANCE &&
+      Math.abs(lag) < Math.abs(coarse)
+    ) {
+      coarse = lag;
+    }
+  }
+  let best = coarse;
+  let bestAgreement = Math.abs(agreement(coarse));
+  for (let lag = coarse - ALIGN_COARSE_STEP; lag <= coarse + ALIGN_COARSE_STEP; lag += 1) {
+    if (lag < -limit || lag > limit) continue;
+    const value = Math.abs(agreement(lag));
+    if (
+      value > bestAgreement + ALIGN_TIE_TOLERANCE ||
+      (value >= bestAgreement - ALIGN_TIE_TOLERANCE && Math.abs(lag) < Math.abs(best))
+    ) {
+      bestAgreement = Math.max(bestAgreement, value);
+      best = lag;
+    }
+  }
+  return best;
+}
+
+/**
+ * Align the delivered line to the reference: each file starts at its own
+ * audible onset, then a normalized cross-correlation moves the pair onto the
+ * same samples (see {@link fineLag}), so an onset frame or a gain difference is
+ * reported as a lead-in rather than measured as distortion. A different rate
+ * or channel count is a refusal; so is a delivered line more than 50 ms short
+ * of the reference.
  */
 export function alignToReference(
   reference: DecodedAudio,
@@ -133,9 +222,24 @@ export function alignToReference(
   }
 
   const frames = Math.min(lineFrames, deliveredRemaining);
+  const referenceLine = sliceAudio(reference, referenceOnset, frames);
+  const deliveredLine = sliceAudio(delivered, deliveredOnset, frames);
+  // A positive lag means the delivered copy starts later than the frame its
+  // onset named; move that start forward, and the other file's only when the
+  // lag is negative, so the two slices hold the same samples.
+  const lag = fineLag(referenceLine, deliveredLine);
+  const referenceSkip = lag < 0 ? -lag : 0;
+  const deliveredSkip = lag > 0 ? lag : 0;
+  const alignedFrames = Math.max(0, frames - Math.abs(lag));
   return {
-    reference: { path: referencePath, audio: sliceAudio(reference, referenceOnset, frames) },
-    delivered: { path: deliveredPath, audio: sliceAudio(delivered, deliveredOnset, frames) },
+    reference: {
+      path: referencePath,
+      audio: sliceAudio(reference, referenceOnset + referenceSkip, alignedFrames),
+    },
+    delivered: {
+      path: deliveredPath,
+      audio: sliceAudio(delivered, deliveredOnset + deliveredSkip, alignedFrames),
+    },
     onsetDeltaMs: Math.round(((deliveredOnset - referenceOnset) / reference.facts.sampleRate) * 1000),
   };
 }
