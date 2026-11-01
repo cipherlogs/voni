@@ -189,6 +189,7 @@ class StreamTest(unittest.TestCase):
         # The model saw the authoritative final, never a partial.
         self.assertEqual("book a demo", self.llm.requests[0][0]["content"])
         self.assertEqual(1, stream.turn_count())
+        self.assertEqual(1, stream.request_count())
         self.assertEqual(
             4, stream.turn_usage()["0:t1"].prompt_tokens
         )
@@ -201,6 +202,7 @@ class StreamTest(unittest.TestCase):
 
         self.assertEqual([], self.llm.requests)
         self.assertEqual(0, stream.turn_count())
+        self.assertEqual(0, stream.request_count())
         self.assertEqual({}, stream.turn_usage())
 
     def test_a_speech_start_while_speaking_cancels_the_voice(self):
@@ -244,6 +246,8 @@ class StreamTest(unittest.TestCase):
         self.assertEqual("check_email", executor.calls[0].name)
         self.assertEqual(["One unread email."], self.tts.spoken)
         self.assertEqual(1, stream.turn_count())
+        # The tool round is a second model request on the same logical turn.
+        self.assertEqual(2, stream.request_count())
 
 
 class KeepaliveTTS(FakeTTS):

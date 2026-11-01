@@ -113,7 +113,7 @@ from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
 from cascade.meta_stt import SpeechPartial, SpeechStart
 from cascade.reconnect import ReconnectBudget
 from cascade.thresholds import ThresholdError, require_bound
-from cascade.usage import UsageMeter
+from cascade.usage import NO_REQUEST, CallUsage, UsageMeter
 from cascade.voice_binding import VoiceBindingError, bind_voice
 from metrics import TimingLedger
 from providers import SentenceAudio
@@ -239,6 +239,15 @@ class CallStream(Protocol):
         model stream, so it is the one that sees the usage chunk; the call
         records it here and prices it. A stream with no model leg returns an
         empty mapping, which leaves the LLM leg unmeasured (never zero).
+        """
+
+    def request_count(self) -> int:
+        """How many model requests this call actually made.
+
+        The pipeline makes every request, so it counts them: a greeting-only
+        call made none, which is a measured zero. This is not ``turn_count`` —
+        a request that never finished is still a request, so its missing usage
+        stays unmeasured.
         """
 
 
@@ -632,7 +641,9 @@ class LegCost:
     and reasoning tokens), so ``units`` carries every reported quantity and
     ``amount_usd`` is what the rate table charged for them. ``unit``/``quantity``
     stay the one-unit shorthand the end message has always carried; a leg with
-    several units sets ``unit="multiple"`` and ``quantity=None``.
+    several units sets ``unit="multiple"`` and ``quantity=None`` unless every
+    unit is zero — a leg opened and asked nothing — where zero is the leg's own
+    measured total.
     """
 
     leg: str
@@ -719,13 +730,20 @@ class CostSummary:
         )
 
     @classmethod
-    def from_call_cost(cls, priced: CallCost) -> "CostSummary":
+    def from_call_cost(
+        cls, priced: CallCost, *, usage: CallUsage | None = None
+    ) -> "CostSummary":
         """Carry a priced call's legs and total, and never a partial total.
 
         The meter recorded what the vendors reported and the rate table priced
         it (tickets 100/101). A leg with one unmeasured unit makes that leg and
         the total unmeasured, with the reason preserved; the rate-table version
         is still cited because it is what the measured legs were priced with.
+
+        A leg the call opened and never asked anything is the one measured zero:
+        its units are zero because the pipeline counted no request, so the leg
+        keeps ``quantity=0`` and carries that fact as its source instead of the
+        generic pricing note.
         """
         legs: list[LegCost] = []
         for priced_leg in priced.legs:
@@ -734,13 +752,25 @@ class CostSummary:
                     (_unit_of(line.rate), line.reported) for line in priced_leg.lines
                 )
                 single = len(units) == 1
+                no_request = (
+                    usage is not None
+                    and usage.leg(priced_leg.leg).requests == 0
+                )
                 legs.append(
                     LegCost(
                         leg=priced_leg.leg,
                         unit=units[0][0] if single else "multiple",
-                        quantity=units[0][1] if single else None,
+                        # Zero across every unit of a leg is a real total; a
+                        # non-zero multi-unit leg keeps the "multiple" shorthand.
+                        quantity=(
+                            units[0][1] if single else (0 if no_request else None)
+                        ),
                         measured=True,
-                        source="priced from the vendor's reported units",
+                        source=(
+                            NO_REQUEST
+                            if no_request
+                            else "priced from the vendor's reported units"
+                        ),
                         amount_usd=float(priced_leg.amount),
                         units=units,
                     )
@@ -2346,11 +2376,14 @@ class CallLifecycle:
         Nothing here estimates. Speech contributes its usage frame when the
         adapter recorded one; synthesis contributes the ``Termination`` billing
         the session closed with; the model's token units come from the turn
-        layer, which is the only reader of the usage chunk. A leg that reported
-        nothing records an absence, so the cost stays unmeasured by name.
+        layer, which is the only reader of the usage chunk. A leg that opened
+        and was asked nothing is a measured zero (the call counted no request);
+        a leg whose request went unanswered records an absence, so the cost
+        stays unmeasured by name.
         """
         try:
             by_leg = {leg.leg: leg for leg in opened}
+            self._record_llm_opened(by_leg)
             speech = by_leg.get("stt")
             if speech is not None:
                 usage = getattr(speech.session, "usage", None)
@@ -2369,6 +2402,31 @@ class CallLifecycle:
                 f"usage meter failed: {type(error).__name__}: {error}"
             )
 
+    def _record_llm_opened(self, by_leg: Mapping[str, OpenedLeg]) -> None:
+        """Tell the meter whether the model leg was asked anything at all.
+
+        A greeting-only call opens the model leg and never requests a reply.
+        That zero is the pipeline's own request count, so the meter records it
+        as a measured zero. A stream that does not count requests (or reports
+        something other than a count) leaves the leg unmeasured: an unknown
+        count is never zero.
+        """
+        if "llm" not in by_leg:
+            return
+        reader = getattr(self._stream, "request_count", None)
+        if not callable(reader):
+            return
+        try:
+            requests = reader()
+        except Exception:  # an unreadable count is an absence, not a zero
+            _log.exception("the model request count could not be read")
+            return
+        if isinstance(requests, bool) or not isinstance(requests, int):
+            return
+        if requests < 0:
+            return
+        self.usage_meter.record_opened("llm", requests=requests)
+
     def _cost(self) -> CostSummary:
         """Price the meter's recorded units; a gap is unmeasured, never zero."""
         if self._usage_error is not None:
@@ -2381,14 +2439,13 @@ class CallLifecycle:
                     f"cost meter failed: {type(error).__name__}: {error}"
                 )
         try:
-            priced = cost_call(
-                self.usage_meter.usage(), table=self._cost_table
-            )
+            call_usage = self.usage_meter.usage()
+            priced = cost_call(call_usage, table=self._cost_table)
         except Exception as error:
             return CostSummary.unmeasured(
                 f"the cost cannot be priced: {type(error).__name__}: {error}"
             )
-        return CostSummary.from_call_cost(priced)
+        return CostSummary.from_call_cost(priced, usage=call_usage)
 
     def _turns(self) -> int:
         try:
