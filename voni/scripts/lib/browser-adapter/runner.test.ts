@@ -257,6 +257,10 @@ test("a fake pipeline is a named refusal with exit 2, before any call", async ()
     const refusal = record.refusal as { code: string; message: string };
     assert.equal(refusal.code, "fake-pipeline");
     assert.match(refusal.message, /fake host/);
+    // The result carries the same named cause, so the CLI reports it instead
+    // of an INFO gap that happens to precede it in `unrun`.
+    assert.equal(result.refusal?.code, "fake-pipeline");
+    assert.equal(result.refusal?.message, refusal.message);
     assert.equal(record.certificate, null);
     assert.equal(record.call, null);
   } finally {

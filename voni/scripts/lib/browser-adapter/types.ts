@@ -417,6 +417,12 @@ export type BrowserRunRecord = {
   } | null;
 };
 
+/** An adapter's named refusal, as the CLI reports it. */
+export type AdapterRefusal = {
+  readonly code: string;
+  readonly message: string;
+};
+
 export type BrowserRunResult = {
   readonly runId: string;
   readonly runDir: string;
@@ -446,6 +452,12 @@ export type BrowserRunResult = {
   readonly target: BrowserTargetLabel;
   readonly locale: Locale;
   readonly parity: BrowserParityRecord | null;
+  /**
+   * The adapter's own named refusal (a preflight gap, a capture fault, a
+   * missing artifact). Null when the run produced a verdict. A caller reports
+   * this, never a gap line: `unrun` carries INFO beside the cause.
+   */
+  readonly refusal: AdapterRefusal | null;
 };
 
 /** The startup facts a preflight reads; injectable so tests never need a stack. */

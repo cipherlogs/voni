@@ -312,6 +312,7 @@ test("a missing recorded vendor build refuses before a vendor is opened", async 
       (runJson(result).refusal as { message: string }).message,
       /vendor-builds:.*vendor-builds\.json/,
     );
+    assert.equal(result.refusal?.code, "missing-vendor-build");
   } finally {
     removeTree(root);
   }

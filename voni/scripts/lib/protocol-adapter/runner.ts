@@ -32,6 +32,7 @@ import {
   readCodeFingerprint,
 } from "@/lib/demo/scoreboard";
 import { loadContract, type Contract } from "@/lib/demo/verification/contract";
+import { defaultEventsDir } from "../adapter-evidence";
 import { parseReplayCommand, renderDefectCards } from "@/lib/demo/verification/cards";
 import {
   DEFAULT_CORPUS_DIR,
@@ -125,14 +126,7 @@ export type ProtocolRunInput = {
   readonly transport?: ProtocolCallDeps;
 };
 
-const VONI_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
-
-function defaultEventsDir(env: Readonly<Record<string, string | undefined>>): string {
-  const configured = env.VOICE_PIPELINE_EVENTS_DIR?.trim();
-  if (configured !== undefined && configured !== "") return configured;
-  return join(VONI_ROOT, "voice-pipeline", ".events");
-}
 
 function defaultTargetUrl(
   env: Readonly<Record<string, string | undefined>>,
@@ -213,6 +207,7 @@ async function refused(
     scenario: null,
     target: context.target,
     locale: context.locale,
+    refusal: { code: error.code, message: error.message },
   };
 }
 
@@ -601,6 +596,7 @@ export async function runProtocolDiagnosis(
     scenario,
     target: input.target as CardTarget,
     locale: scenario.locale,
+    refusal: null,
   };
 }
 
