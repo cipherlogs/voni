@@ -273,6 +273,32 @@ test("X3 with no continuation at all is unmeasured, never a silent pass", async 
 
 // ── X4 ─────────────────────────────────────────────────────────────────────
 
+test("X4 with an unreadable tool log names the gap, not a call that never happened", async () => {
+  const verdict = await verdictOf("X4", {
+    tool: {
+      log: [],
+      gap:
+        'the demo tool log could not be read: Failed query: select * from "demo_tool_calls" ' +
+        '(cause: 42P01: relation "demo_tool_calls" does not exist)',
+    },
+    trace: traceEvidence(),
+  });
+  assert.equal(verdict.status, "FAIL");
+  assert.equal(verdict.reason, "unmeasured");
+  assert.match(verdict.detail, /tool log could not be read/);
+  assert.match(verdict.detail, /42P01/);
+  assert.doesNotMatch(verdict.detail, /no check_email was requested/);
+});
+
+test("X4 with no log row and no requested check_email says so", async () => {
+  const verdict = await verdictOf("X4", {
+    tool: { log: [] },
+    trace: traceEvidence({ rows: [BASE_ROWS[0]] }),
+  });
+  assert.equal(verdict.status, "FAIL");
+  assert.match(verdict.detail, /no check_email was requested/);
+});
+
 test("X4 passes only when the tool found the email and the real inbox re-finds it by tag", async () => {
   const verdict = await verdictOf("X4", {
     tool: toolEvidence(),

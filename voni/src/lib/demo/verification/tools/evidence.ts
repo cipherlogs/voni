@@ -230,6 +230,12 @@ export function continuationAfter(
 export function readToolEvidence(source: unknown): ToolEvidenceFacts {
   const tool = record(source, "the tool evidence");
   const gapParts: string[] = [];
+  // A collector that read the log and the inbox names the exact reason it
+  // could not (an unreadable query, a missing table). Keeping it is the whole
+  // point: an evaluator that recomputed "no log" would lose the cause and
+  // report a tool call that did happen as one that did not.
+  const carriedGap = text(tool.gap);
+  if (carriedGap !== "") gapParts.push(carriedGap);
 
   let log: ToolLogRow[] = [];
   const rawLog = tool.log;
@@ -241,7 +247,7 @@ export function readToolEvidence(source: unknown): ToolEvidenceFacts {
         error instanceof ToolLogError ? `${error.code}: ${error.message}` : String(error),
       );
     }
-  } else {
+  } else if (carriedGap === "") {
     gapParts.push(
       "the tool evidence carries no demo tool log; only the trace's call/result rows are " +
         "present, so status, returning and send facts are unmeasured",
@@ -278,10 +284,12 @@ export function readToolEvidence(source: unknown): ToolEvidenceFacts {
           : 0,
     };
   } else {
-    gapParts.push(
-      "the tool evidence carries no inbox delivery record; the golden path's email was not " +
-        "re-read from the real test inbox",
-    );
+    if (carriedGap === "") {
+      gapParts.push(
+        "the tool evidence carries no inbox delivery record; the golden path's email was not " +
+          "re-read from the real test inbox",
+      );
+    }
   }
 
   return {
