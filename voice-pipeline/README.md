@@ -144,7 +144,7 @@ the artifact-directory default). Secrets are names only in
 | `META_REASONING_EFFORT` | yes | the measured Spark effort; Spark refuses construction without it |
 | `META_IDENTIFIER_SALT` | yes | salts the stable internal id sent to Meta; never leaves the service |
 | `ASSEMBLYAI_API_KEY` | yes | the TTS leg |
-| `VOICE_PIPELINE_TOOL_BASE_URL` | yes | the app origin for `/api/tools/<name>`; empty ⇒ no tool executor and tool calls are dropped |
+| `VOICE_PIPELINE_TOOL_BASE_URL` | yes | the app origin for the tool route: `/api/demo/tools/<name>` for a demo subject, `/api/tools/<name>` for a tenant subject; empty ⇒ no tool executor and tool calls are dropped |
 | `VONI_TOOL_SECRET` | yes | bearer for the app's tool route |
 | `VOICE_PIPELINE_PORT` | no | listen port, 8766 |
 | `VOICE_PIPELINE_EVENTS_DIR` | no | trace artifact directory (`/var/lib/voni/events` in the image) |

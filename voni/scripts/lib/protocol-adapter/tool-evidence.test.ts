@@ -123,6 +123,30 @@ test("an unreadable inbox keeps its named refusal in the gap", async () => {
   assert.match(collected.gap ?? "", /503/);
 });
 
+test("a failed log query names the database's own cause, not just its SQL", async () => {
+  // Drizzle wraps the driver's error: the message is the SQL, the reason is
+  // the cause. A gap that stops at the SQL cannot say a table is missing.
+  const driver = Object.assign(
+    new Error('relation "demo_tool_calls" does not exist'),
+    { code: "42P01" },
+  );
+  const collected = await collectToolEvidence({
+    callId: "call-1",
+    env: ENV,
+    deps: deps({
+      readLog: async () => {
+        throw Object.assign(new Error('Failed query: select * from "demo_tool_calls"'), {
+          cause: driver,
+        });
+      },
+    }),
+  });
+  assert.equal(collected.log.length, 0);
+  assert.match(collected.gap ?? "", /demo tool log could not be read/);
+  assert.match(collected.gap ?? "", /42P01/);
+  assert.match(collected.gap ?? "", /relation "demo_tool_calls" does not exist/);
+});
+
 test("a thread with two replies is carried into the delivery as the double send", async () => {
   const collected = await collectToolEvidence({
     callId: "call-1",

@@ -25,6 +25,7 @@ import {
   type Caption,
   type EvidenceRow,
   type ToolCallRow,
+  type ToolEvidenceFacts,
   type ToolResultRow,
 } from "../../tools/evidence";
 import { threshold } from "./threshold";
@@ -56,6 +57,47 @@ function resultById(results: readonly ToolResultRow[], id: string): ToolResultRo
 
 function turnCitation(turn: string | null): string[] {
   return turn === null ? [] : [`turn:${turn}`];
+}
+
+/**
+ * Why the log carries no `check_email` row. An unreadable log is a gap, not a
+ * call the model never requested: the trace is the second source for a
+ * request, so X4 never reports a tool call that did happen as one that did not.
+ */
+function missingCheckEmail(
+  tool: ToolEvidenceFacts,
+  evidence: Record<string, unknown>,
+): { readonly requested: readonly ToolCallRow[]; readonly reason: string } {
+  let trace: ReturnType<typeof traceOf> = null;
+  let requested: ToolCallRow[] = [];
+  try {
+    trace = traceOf(evidence);
+    requested =
+      trace === null
+        ? []
+        : toolCalls(trace.rows).filter((call) => call.name === "check_email");
+  } catch {
+    trace = null;
+    requested = [];
+  }
+  if (trace === null) {
+    return {
+      requested,
+      reason:
+        tool.gap ??
+        "the demo tool log carries no check_email row and the trace is missing, so no request can be shown",
+    };
+  }
+  if (requested.length === 0) {
+    return { requested, reason: "no check_email was requested on this call" };
+  }
+  return {
+    requested,
+    reason:
+      tool.gap ??
+      `the demo tool log carries no row for the check_email the trace records in turn ` +
+        `${requested.map((call) => call.turn).join(", ")}; the tool's outcome is unmeasured`,
+  };
 }
 
 // ── X1: tool decision after turn end ───────────────────────────────────────
@@ -298,7 +340,18 @@ const x4: PropertyEvaluator = {
     }
     const checks = tool.log.filter((row) => row.toolName === "check_email");
     if (checks.length === 0) {
-      return { kind: "unmeasured", reason: "no check_email was requested on this call" };
+      const missing = missingCheckEmail(tool, context.evidence);
+      return {
+        kind: "unmeasured",
+        reason: missing.reason,
+        ...(missing.requested.length === 0
+          ? {}
+          : {
+              citations: missing.requested.map(
+                (call) => `trace:turn.tool_call:${call.toolCallId}`,
+              ),
+            }),
+      };
     }
     const found = checks.filter((row) => row.status === "found");
     if (found.length === 0) {
@@ -357,7 +410,21 @@ const x5: PropertyEvaluator = {
     }
     const checks = tool.log.filter((row) => row.toolName === "check_email");
     if (checks.length === 0) {
-      return { kind: "unmeasured", reason: "no check_email was requested, so the gate could not fire" };
+      const missing = missingCheckEmail(tool, context.evidence);
+      return {
+        kind: "unmeasured",
+        reason:
+          missing.requested.length === 0
+            ? "no check_email was requested, so the gate could not fire"
+            : `${missing.reason}, so the gate could not be judged`,
+        ...(missing.requested.length === 0
+          ? {}
+          : {
+              citations: missing.requested.map(
+                (call) => `trace:turn.tool_call:${call.toolCallId}`,
+              ),
+            }),
+      };
     }
     const gated = checks.filter((row) => row.status === "free");
     let call: ToolCallRow | null = null;
