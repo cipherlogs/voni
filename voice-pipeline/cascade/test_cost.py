@@ -263,6 +263,59 @@ class UnmeasuredCostTests(unittest.TestCase):
             self.assertIn("no units", " ".join(empty.leg(leg).reasons))
 
 
+class NoRequestLegTests(unittest.TestCase):
+    """A leg opened with no request is a measured zero, priced as one.
+
+    Every other leg here is measured, so the call's total is measurable: the
+    point of the zero is that it stops a greeting-only call from making the
+    whole run unmeasured. A request with no usage record is the next test,
+    and it stays unmeasured by name.
+    """
+
+    def measured_with(self, *, requests: int | None) -> UsageMeter:
+        meter = UsageMeter()
+        meter.record_stt({"audio_duration_seconds": 90})
+        meter.record_tts(
+            Billing(
+                characters=1000,
+                measured=True,
+                source="billed_characters",
+                audio_duration_seconds=0.0,
+                session_duration_seconds=1,
+            )
+        )
+        meter.record_opened("llm", requests=requests)
+        return meter
+
+    def test_a_leg_opened_with_no_request_prices_to_a_measured_zero(self):
+        priced = cost.cost_call(self.measured_with(requests=0).usage())
+
+        self.assertTrue(priced.measured)
+        llm = priced.leg("llm")
+        self.assertTrue(llm.measured)
+        self.assertEqual(Decimal(0), llm.amount)
+        self.assertEqual(
+            {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "reasoning_tokens": 0},
+            {line.rate.split(".", 1)[1]: line.billed for line in llm.lines},
+        )
+        # stt 90 s x $0.00005 + tts 1000 chars x $0.000015
+        self.assertEqual(Decimal("0.0195"), priced.amount)
+        self.assertEqual("0", priced.to_document()["legs"]["llm"]["amount"])
+
+    def test_a_request_with_no_usage_record_makes_the_leg_unmeasured(self):
+        meter = self.measured_with(requests=1)
+        meter.record_llm("turn-1", None)
+
+        priced = cost.cost_call(meter.usage())
+
+        self.assertFalse(priced.measured)
+        self.assertIsNone(priced.amount)
+        self.assertIsNone(priced.leg("llm").amount)
+        reasons = " ".join(priced.leg("llm").reasons)
+        self.assertIn("llm.prompt_tokens", reasons)
+        self.assertIn("no usage chunk", reasons)
+
+
 class IncompleteTableTests(unittest.TestCase):
     def test_a_unit_the_table_does_not_price_makes_the_total_unmeasured(self):
         with tempfile.TemporaryDirectory() as tmp:

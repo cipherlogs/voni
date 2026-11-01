@@ -45,6 +45,7 @@ from cascade.test_call import (
     FakeVoice,
     MeteringStream,
     MeteringVoice,
+    NoRequestStream,
     RecordingAudioSink,
     TerminatingVoice,
     signed_message,
@@ -88,6 +89,8 @@ class CostRowTests(unittest.TestCase):
         speech_seconds: float = 3.7,
         characters: int = 40,
         prompt_tokens: int = 1000,
+        stream: FakeStream | None = None,
+        open_model: bool = False,
     ):
         speech = ScriptedSTT(
             [SpeechStart("t1"), SpeechComplete("book a demo", turn_id="t1")],
@@ -107,28 +110,34 @@ class CostRowTests(unittest.TestCase):
                 if measured
                 else FakeVoice()
             )
-        stream: FakeStream = FakeStream()
+        supplied = stream is not None
         if measured:
             # The vendor bills speech in whole seconds: 3.7 s is 3 billed s.
             speech.usage = {"audio_duration_seconds": speech_seconds}
-            stream = (
-                MeteringStream(
-                    {
-                        "t1": TurnUsage(
-                            prompt_tokens=prompt_tokens,
-                            completion_tokens=100,
-                            cached_tokens=200,
-                            reasoning_tokens=0,
-                            measured=True,
-                        )
-                    }
+            if not supplied:
+                stream = (
+                    MeteringStream(
+                        {
+                            "t1": TurnUsage(
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=100,
+                                cached_tokens=200,
+                                reasoning_tokens=0,
+                                measured=True,
+                            )
+                        }
+                    )
+                    if llm_measured
+                    else MeteringStream({"t1": TurnUsage.unmeasured()})
                 )
-                if llm_measured
-                else MeteringStream({"t1": TurnUsage.unmeasured()})
-            )
+        if stream is None:
+            stream = FakeStream()
 
         async def open_speech(_body):
             return OpenedLeg("stt", "meta", "primary", "speech leg", speech)
+
+        async def open_the_model(_body):
+            return OpenedLeg("llm", "spark", "primary", "model leg", object())
 
         if voice_opener is not None:
 
@@ -150,6 +159,7 @@ class CostRowTests(unittest.TestCase):
             transport=transport,
             open_speech=open_speech,
             open_voice=open_voice,
+            open_model=open_the_model if open_model else None,
             stream=stream,
             send_audio=RecordingAudioSink(),
             ledger=TimingLedger(now=self.clock),
@@ -228,6 +238,35 @@ class CostRowTests(unittest.TestCase):
             row["legs"]["tts"]["units"],
         )
         self.assertNotIn("unmeasuredReason", row)
+
+    def test_a_greeting_only_call_leaves_a_measured_row_with_a_zero_model_leg(self):
+        # E3 sums these rows. A greeting-only call made no model request, so
+        # the row must carry a measured zero instead of an unmeasured leg.
+        ops = self.ops_for()
+
+        end, transport = self.run_call(ops, stream=NoRequestStream(), open_model=True)
+
+        row = self.cost_rows()[0]
+        self.assertTrue(row["measured"])
+        self.assertEqual(end.cost.total_usd, row["totalUsd"])
+        # stt 3 s x $0.00005 + tts 40 chars x $0.000015
+        self.assertEqual(Decimal("0.00075"), Decimal(str(row["totalUsd"])))
+        llm = row["legs"]["llm"]
+        self.assertTrue(llm["measured"])
+        self.assertEqual(0, llm["quantity"])
+        self.assertEqual(0, llm["amountUsd"])
+        self.assertEqual("opened, no request made this call", llm["source"])
+        self.assertEqual(
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+            llm["units"],
+        )
+        self.assertNotIn("unmeasuredReason", row)
+        self.assertTrue(transport.sent[-1]["cost"]["measured"])
 
     def test_an_unpriceable_call_writes_a_named_failure_row_never_a_zero(self):
         ops = self.ops_for()

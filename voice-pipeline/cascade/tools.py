@@ -1674,6 +1674,7 @@ async def continue_after_tool(
     record: MetaLLMTurn | None = None,
     ledger: TimingLedger | None = None,
     loop: ToolLoop | None = None,
+    on_request: Callable[[], None] | None = None,
 ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
     """Continue the same logical turn with a new model request, or nothing.
 
@@ -1693,6 +1694,10 @@ async def continue_after_tool(
     turn is ended through the loop's ``on_cap`` hook, and the cap is recorded.
     The cap is checked after the signals and denials, so an ``end_call`` still
     ends the call at the cap instead of speaking a fallback over the goodbye.
+
+    ``on_request`` is called immediately before the one completion this path
+    makes, and never when it returns without one, so a caller that counts its
+    own requests counts only the ones that were really made.
     """
     outcomes = _outcomes(outcome)
     denials = [item for item in outcomes if isinstance(item, DeniedCall)]
@@ -1729,6 +1734,8 @@ async def continue_after_tool(
     kwargs: dict[str, Any] = {}
     if record is not None:
         kwargs["turn"] = record
+    if on_request is not None:
+        on_request()
     async for event in llm.complete(
         messages=history.request_messages(), tools=tools, **kwargs
     ):
