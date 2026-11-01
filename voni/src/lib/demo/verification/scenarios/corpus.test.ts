@@ -129,6 +129,31 @@ test("every committed script resolves against the same canonical timeline", asyn
   }
 });
 
+test("turn-taking-barge interrupts a spoken reply, never the opening greeting", async () => {
+  const corpus = await load();
+  const scenario = corpus.scenarios.find((entry) => entry.name === "turn-taking-barge");
+  assert.ok(scenario);
+  const bargeStep = scenario.script.findIndex((step) => step.take === "barge");
+  assert.ok(bargeStep > 0, "the scenario keeps its barge take");
+  assert.equal(
+    scenario.script[bargeStep - 1]!.trigger.type,
+    "agent-turn-end",
+    "the greeting must be answered before the barge step, or the barge fires on the greeting",
+  );
+  const plan = evaluateTriggers(scenario.script, TIMELINE);
+  const barge = plan.points.find((entry) => entry.take === "barge");
+  assert.ok(barge);
+  const speechStarts = TIMELINE.filter((event) => event.type === "agent-speech-start").map(
+    (event) => event.atMs,
+  );
+  assert.ok(speechStarts.length >= 2);
+  assert.ok(
+    barge.atMs >= speechStarts[1]!,
+    "the barge lands on the opening greeting: a greeting is not a turn, so the trace writes no " +
+      "turn.cut row and A7 has no cut to measure",
+  );
+});
+
 test("the connectivity scenarios inject deterministic faults and no other scenario does", async () => {
   const corpus = await load();
   const jitter = [{ kind: "network-jitter", atMs: 900, durationMs: 600 }];
