@@ -31,6 +31,7 @@ export const STREAK_BREAK_CODES = [
   "ineligible",
   "coverage-gap",
   "run-failure",
+  "resumed-run",
   "duplicate-run-id",
 ] as const;
 
@@ -79,6 +80,9 @@ export function isCleanCertification(certificate: Certificate): boolean {
     certificate.coverage.byLocale.every((locale) => locale.status === "measured") &&
     certificate.eligibility.eligible &&
     certificate.runFailures.length === 0 &&
+    // A certificate assembled across an interruption is not one clean run. It
+    // may support a diagnosis, never a release or cutover streak.
+    certificate.resume === null &&
     certificate.properties.every((property) => property.status !== "FAIL")
   );
 }
@@ -204,6 +208,18 @@ export function evaluateCertificateStreak(input: {
           certificate.runId,
           `certificate "${certificate.runId}" records run failures: ` +
             certificate.runFailures.join("; "),
+        ),
+      );
+    }
+    if (certificate.resume !== null) {
+      breaks.push(
+        breakOf(
+          "resumed-run",
+          certificate.runId,
+          `certificate "${certificate.runId}" was assembled across an interruption ` +
+            `(${certificate.resume.reusedCalls.length} reused + ` +
+            `${certificate.resume.madeCalls.length} made call(s)); a clean certification is ` +
+            "one uninterrupted run",
         ),
       );
     }

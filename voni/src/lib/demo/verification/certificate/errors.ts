@@ -51,6 +51,7 @@ export type CertificateErrorCode =
   | "locale-mismatch"
   | "repetition-out-of-plan"
   | "duplicate-attempt"
+  | "duplicate-call-id"
   | "duplicate-corpus-scenario"
   | "empty-corpus"
   | "property-contract-mismatch"

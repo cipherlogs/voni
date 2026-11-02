@@ -558,8 +558,20 @@ function validatePanel(raw: unknown, verdict: CertificateVerdict): PanelSignatur
   return signature;
 }
 
-function validateResume(raw: unknown): CertificateResume | null {
-  if (raw === undefined || raw === null) return null;
+function validateResume(raw: unknown, legacy: boolean): CertificateResume | null {
+  if (legacy) {
+    if (raw !== undefined) {
+      refuse("malformed-certificate", "a version 1 certificate cannot carry resume");
+    }
+    return null;
+  }
+  if (raw === undefined) {
+    refuse(
+      "malformed-certificate",
+      "a version 2 certificate must carry resume (null for a run made in one piece)",
+    );
+  }
+  if (raw === null) return null;
   const resume = record(raw, "resume");
   const reusedCalls = strings(
     resume.reusedCalls,
@@ -618,11 +630,12 @@ export function validateCertificate(
   if (typeof root.schemaVersion !== "number" || !Number.isInteger(root.schemaVersion)) {
     refuse("malformed-certificate", "certificate.schemaVersion is not an integer");
   }
-  if (root.schemaVersion !== CERTIFICATE_SCHEMA_VERSION) {
+  const legacy = root.schemaVersion === 1;
+  if (!legacy && root.schemaVersion !== CERTIFICATE_SCHEMA_VERSION) {
     refuse(
       "unknown-schema-version",
       `certificate schema version ${root.schemaVersion} is unknown; this reader understands ` +
-        `${CERTIFICATE_SCHEMA_VERSION}`,
+        `1 and ${CERTIFICATE_SCHEMA_VERSION}`,
     );
   }
   const runId = text(root.runId, "runId");
@@ -646,7 +659,7 @@ export function validateCertificate(
   const residualRiskIds = validateResidualRisks(root.residualRiskIds);
   const verdict = oneOf(root.verdict, CERTIFICATE_VERDICTS, "verdict", "malformed-certificate");
   const panel = validatePanel(root.panel, verdict);
-  const resume = validateResume(root.resume);
+  const resume = validateResume(root.resume, legacy);
   const pass = boolean(root.pass, "pass");
 
   if (pass !== (verdict === "certified")) {

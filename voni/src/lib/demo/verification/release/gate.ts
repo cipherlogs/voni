@@ -185,7 +185,10 @@ export function evaluateCutoverGate(input: {
       clean
         ? `staging certificate ${chosen.runId} is certified, fully covered and on a clean tree`
         : `staging certificate ${chosen.runId} is ${chosen.verdict} (${chosen.coverage.gapRows} gap ` +
-          `row(s), ${chosen.code.fingerprint.dirty ? "dirty tree" : "clean tree"})`,
+          `row(s), ${chosen.code.fingerprint.dirty ? "dirty tree" : "clean tree"})` +
+          (chosen.resume === null
+            ? ""
+            : "; it was assembled across an interruption, not one clean run"),
       "certificate.verdict",
     ),
   );

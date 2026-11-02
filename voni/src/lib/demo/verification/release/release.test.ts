@@ -21,6 +21,7 @@ import {
   STREAK_SIZE,
   evaluateCertificateStreak,
   evaluateCutoverGate,
+  isCleanCertification,
   evaluateMonthlyProduction,
   evaluatePostFlipConfirmation,
   evaluateRollback,
@@ -146,6 +147,7 @@ type CertificateOptions = {
   readonly fingerprint?: typeof FINGERPRINT;
   readonly image?: string;
   readonly panel?: PanelSignature | null;
+  readonly resume?: NonNullable<CertificateBuildInput["resume"]>;
 };
 
 function certificate(options: CertificateOptions): Certificate {
@@ -169,6 +171,7 @@ function certificate(options: CertificateOptions): Certificate {
     cost: { usd: 1.25, callCount: 5 },
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: options.panel === undefined ? PANEL : options.panel,
+    resume: options.resume ?? null,
   });
 }
 
@@ -204,6 +207,62 @@ test("three consecutive clean certifications on one fingerprint and target form 
   assert.deepEqual(result.runIds, [STAGING_1.runId, STAGING_2.runId, STAGING_3.runId]);
   assert.deepEqual(result.fingerprint, FINGERPRINT);
   assert.match(result.detail, /3 consecutive clean/);
+});
+
+test("a dirty hash that moved while HEAD and the dirty flag stayed put breaks the streak", () => {
+  const one = certificate({
+    runId: "run-2026-10-05-01",
+    fingerprint: { ...FINGERPRINT, dirty: true, dirtyHash: "1".repeat(64) },
+  });
+  const two = certificate({
+    runId: "run-2026-10-05-02",
+    fingerprint: { ...FINGERPRINT, dirty: true, dirtyHash: "2".repeat(64) },
+  });
+  const sameAgain = certificate({
+    runId: "run-2026-10-05-03",
+    fingerprint: { ...FINGERPRINT, dirty: true, dirtyHash: "2".repeat(64) },
+  });
+  const streak = evaluateCertificateStreak({
+    certificates: [one, two, sameAgain],
+    target: "staging",
+  });
+  assert.equal(streak.ok, false);
+  assert.ok(
+    streak.breaks.some((entry) => entry.code === "different-fingerprint"),
+    "a dirty-hash-only divergence is a different fingerprint",
+  );
+});
+
+test("a resumed certificate is not a clean certification for the streak or the gate", () => {
+  const resumed = certificate({
+    runId: "run-2026-10-03-02",
+    resume: {
+      journalRunId: "run-2026-10-01-01",
+      journalPath: "/tmp/runs/run-2026-10-01-01/journal.jsonl",
+      originalStartedAt: "2026-10-01T08:00:00.000Z",
+      resumedAt: "2026-10-01T10:00:00.000Z",
+      reusedCalls: ["call-hello-en"],
+      madeCalls: ["call-hello-es"],
+    },
+  });
+  assert.equal(isCleanCertification(resumed), false);
+
+  const streak = evaluateCertificateStreak({
+    certificates: [STAGING_2, STAGING_3, resumed],
+    target: "staging",
+  });
+  assert.equal(streak.ok, false);
+  assert.ok(streak.breaks.some((entry) => entry.code === "resumed-run"));
+  assert.match(streak.detail, /resumed-run/);
+
+  const gate = evaluateCutoverGate({
+    image: IMAGE,
+    certificates: [STAGING_1, STAGING_2, resumed],
+  });
+  assert.equal(gate.open, false);
+  const cleanCheck = gate.checks.find((check) => check.name === "staging-clean");
+  assert.equal(cleanCheck?.ok, false);
+  assert.match(cleanCheck?.detail ?? "", /interruption|resumed/i);
 });
 
 test("a dirty tree, a coverage gap, a different target or a different fingerprint breaks the streak", () => {

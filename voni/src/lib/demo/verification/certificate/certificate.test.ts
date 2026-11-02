@@ -385,13 +385,41 @@ test("an unsigned clean run is pending-human; a certified verdict without a pane
 });
 
 test("an unknown schema version is refused by name, not reinterpreted", () => {
-  assert.equal(CERTIFICATE_SCHEMA_VERSION, 1);
+  assert.equal(CERTIFICATE_SCHEMA_VERSION, 2);
   const copy = mutable(certified());
   copy.schemaVersion = CERTIFICATE_SCHEMA_VERSION + 1;
   assertRefusal(
     () => validateCertificate(copy),
     "unknown-schema-version",
-    /schema version 2 is unknown/,
+    /schema version 3 is unknown/,
+  );
+});
+
+test("a v1 certificate stays readable; a v2 certificate must carry resume", () => {
+  const v1 = mutable(certified());
+  v1.schemaVersion = 1;
+  delete v1.resume;
+  const parsed = validateCertificate(v1);
+  assert.equal(parsed.resume, null, "a v1 certificate predates the resume record");
+  assert.equal(parsed.schemaVersion, 2, "a v1 document is read as the current schema");
+
+  const missing = mutable(certified());
+  delete missing.resume;
+  assertRefusal(
+    () => validateCertificate(missing),
+    "malformed-certificate",
+    /resume/,
+  );
+});
+
+test("a call id claimed by two attempts is refused, not deduped", () => {
+  const duplicated = attempts().map((attempt, index) =>
+    index === 1 ? { ...attempt, callId: attempts()[0]!.callId } : attempt,
+  );
+  assertRefusal(
+    () => buildCertificate(buildInput({ attempts: duplicated })),
+    "duplicate-call-id",
+    /call id/,
   );
 });
 

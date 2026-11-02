@@ -21,8 +21,13 @@ import type { Contract } from "../contract";
 import type { CorpusReference, Locale } from "../scenarios";
 import type { PropertyStatus, PropertyVerdictReason, RunVerdict } from "../verdict";
 
-/** The schema version every committed certificate must carry. */
-export const CERTIFICATE_SCHEMA_VERSION = 1 as const;
+/**
+ * The schema version every committed certificate must carry. Version 2 makes
+ * `resume` required (null for a run made in one piece), so a reader can never
+ * mistake an interrupted run for a clean one by omission. A version 1
+ * certificate stays readable and is read as `resume: null`.
+ */
+export const CERTIFICATE_SCHEMA_VERSION = 2 as const;
 
 /** The targets a certificate may be true for. A green never inherits. */
 export const CERTIFICATE_TARGETS = ["local", "staging", "production"] as const;
