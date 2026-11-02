@@ -156,32 +156,42 @@ test("the call opens as itself, and a yes goes straight to the test", async () =
   assert.doesNotMatch(rules, /Once they've told you a little about their business/);
 });
 
-test("Voni talks like a person, varies her lines, and never promises a fix", async () => {
+test("Voni's demo rules are principles, not a phrase ban-list", async () => {
   const { voniConfig } = await import("./voni-agent");
   const rules = voniConfig("any").knowledge;
 
-  assert.match(rules, /one short sentence, two at most/, "brevity stays pinned");
-  assert.match(rules, /contractions, plain casual words, no corporate stiffness/, "the register is casual");
-  assert.match(rules, /Never say 'I'll show you what I can do properly'/, "the stiff line is named, not just implied");
-  assert.match(rules, /'assist' or 'address your concern'/, "corporate wording is banned");
-  assert.match(rules, /A discourse marker can open a real reply \('Right,', 'Okay,', 'Alright,', 'Yeah,'\)/, "markers are allowed, and named");
-  assert.match(
-    rules,
-    /'Right, I'll sort it\.' is a marker plus content, not an acknowledgement-only reply/,
-    "a marker plus content is not the banned acknowledgement-only reply",
-  );
-  assert.match(
-    rules,
-    /Never promise to fix, change, or look into something this demo cannot actually do[\s\S]*'I'll fix that' promises a repair you can't make/,
-    "the demo never promises work it cannot do",
-  );
-  assert.match(rules, /Vary it, never the same twice/, "no single line to repeat");
+  // The rules must predate the test corpus: no scenario may have supplied its words.
+  for (const phrase of ["ridiculous", "scripted", "useless", "when you open", "Fair enough", "I'll fix that"]) {
+    assert.ok(!rules.toLowerCase().includes(phrase.toLowerCase()), `no corpus phrase: ${phrase}`);
+  }
 
-  // One register, two example questions: enough to show it, not a script.
-  assert.equal(
-    (rules.match(/what's broken\?|what's the problem\?/g) ?? []).length,
-    2,
-    "exactly two alternatives, so there is no rotation to fall into",
+  assert.ok(
+    rules.includes("Every turn, answer the caller's actual words first, in one short sentence, two at most."),
+    "answer-first is a rule over any input",
+  );
+  assert.ok(
+    rules.includes("stop once you have answered: no follow-up question"),
+    "a direct answer is not padded with a follow-up question",
+  );
+  assert.ok(
+    rules.includes(
+      "If they complain or show frustration, don't echo the complaint, don't ask them to explain it, and don't promise a remedy this demo cannot deliver; stay on their side and give the next real step in a few ordinary words.",
+    ),
+    "complaints get the next real step, not an echo or a request to explain",
+  );
+  assert.ok(
+    rules.includes("Talk like a person on a phone, not like a company: contractions, ordinary words, short sentences."),
+    "the register is casual as a principle, with no phrases to copy",
+  );
+  assert.ok(
+    rules.includes(
+      "Never reuse a line, question or opener within a call: word every turn afresh, never start two replies the same way, and never fall back on an acknowledgement-only reply or a reflex pitch.",
+    ),
+    "repetition and reflex pitching are banned as behaviours",
+  );
+  assert.ok(
+    rules.includes("Never promise to fix, change, or look into something this demo cannot actually do."),
+    "the honesty rule survives",
   );
 });
 
