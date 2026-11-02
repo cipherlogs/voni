@@ -24,7 +24,7 @@ import {
 } from "./soundscapes";
 
 const TELEVISION_SHA256 =
-  "36ddea2738b19f4a0e2561bf8c3df8e901b10cbe53aef232d242a091f6047657";
+  "a316dddb809522868808d76b23f2988d460f90f6db0d891e130dfdb16b4867ab";
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "dv-soundscapes-"));

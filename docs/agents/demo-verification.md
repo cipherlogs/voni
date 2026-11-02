@@ -496,8 +496,8 @@ and IBAN shapes are scanned today.
 `voni/evidence/soundscapes/television.wav` is a 30 s, 24 kHz mono PCM16 excerpt
 of the owner-supplied television audio, captured on 2026-11-02 from
 `https://www.youtube.com/watch?v=-q4pH8bZ1SU` (audio track extracted with
-`yt-dlp`, 30 s at 1800 s). Its sha256 is
-`36ddea2738b19f4a0e2561bf8c3df8e901b10cbe53aef232d242a091f6047657`; the sidecar
+`yt-dlp`, 30 s at 3240 s, the track's median-loudness window). Its sha256 is
+`a316dddb809522868808d76b23f2988d460f90f6db0d891e130dfdb16b4867ab`; the sidecar
 `television.json` records the source, window, rights note and what the bed is
 not. `voni/scripts/lib/soundscapes.ts` loads the pair, validates id, file name,
 rate, channels, bit depth, duration and hash against the decoded WAV, and
