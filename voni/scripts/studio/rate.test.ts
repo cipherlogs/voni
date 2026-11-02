@@ -118,7 +118,12 @@ function certificate(options: {
     ],
     eligibility: { eligible: true, reasons: [] },
     runFailures: [],
-    cost: { usd: 0.42, callCount: Object.values(options.callsByScenario).flat().length },
+    cost: {
+      usdMeasured: 0.42,
+      complete: true,
+      callCount: Object.values(options.callsByScenario).flat().length,
+      unpriced: [],
+    },
     residualRiskIds: ["RR-01"],
     panel: null,
     verdict: failing.size > 0 ? "not-demo-ready" : "pending-human",

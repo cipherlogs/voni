@@ -44,7 +44,13 @@ import {
   FULL_SCOPE,
   OPEN_RESIDUAL_RISK_IDS,
   type Certificate,
+  type CertificateCost,
 } from "@/lib/demo/verification/certificate";
+import {
+  CostBoundError,
+  boundPricedCost,
+  evidenceHasCut,
+} from "@/lib/demo/verification/economics";
 import {
   DEFAULT_CORPUS_DIR,
   scenarioFacts,
@@ -208,31 +214,30 @@ function budgetOf(
   };
 }
 
-function measuredCost(bundle: { readonly cost?: Record<string, unknown> }): number {
-  const cost = bundle.cost;
-  if (cost === undefined) {
-    throw new BrowserAdapterError(
-      "cost-missing",
-      "the call wrote no cost.priced row; a certificate carries the call's own measured " +
-        "cost and the runner never recomputes it",
-    );
+/**
+ * The call's cost claim. A designed cut leaves one leg unpriced: the run records
+ * a measured lower bound with that leg named rather than withholding the whole
+ * certificate. Any other unpriced leg, or a missing row, still withholds it.
+ */
+function measuredCost(
+  bundle: {
+    readonly cost?: Record<string, unknown>;
+    readonly ledger?: unknown;
+    readonly trace?: unknown;
+  },
+  callId: string,
+): CertificateCost {
+  try {
+    return boundPricedCost({
+      calls: [{ callId, scenario: "browser-call", cost: bundle.cost }],
+      cutCallIds: evidenceHasCut(bundle) ? new Set([callId]) : new Set(),
+    });
+  } catch (error) {
+    if (error instanceof CostBoundError) {
+      throw new BrowserAdapterError("cost-missing", error.message);
+    }
+    throw error;
   }
-  if (cost.measured !== true) {
-    throw new BrowserAdapterError(
-      "cost-missing",
-      `the cost.priced row is unmeasured (${String(cost.unmeasuredReason ?? "no reason recorded")}); ` +
-        "a certificate cannot record a price the table never gave",
-    );
-  }
-  const total = cost.totalUsd;
-  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) {
-    throw new BrowserAdapterError(
-      "cost-missing",
-      `the cost.priced row reports measured=true but totalUsd=${JSON.stringify(total)}; ` +
-        "a certificate needs the priced total",
-    );
-  }
-  return total;
 }
 
 /** Write a refused run's record, then return it. A refusal is still evidence. */
@@ -735,7 +740,7 @@ export async function runBrowserCertification(
           "one certificate, and this call's attempt is judged with the rest",
       );
     }
-    const usd = measuredCost(assembled.bundle);
+    const cost = measuredCost(assembled.bundle, callRecord.callId);
     certificate = buildCertificate({
       contract,
       run: verdict,
@@ -767,7 +772,7 @@ export async function runBrowserCertification(
       appBuild: codeFingerprint.head,
       pipelineImage: preflightAnswer.pipelineBuild,
       vendorBuilds: preflightAnswer.vendorBuilds,
-      cost: { usd, callCount: 1 },
+      cost,
       residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
       panel: null,
     });

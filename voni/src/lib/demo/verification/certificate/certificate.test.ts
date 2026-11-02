@@ -208,7 +208,7 @@ function buildInput(overrides: Partial<CertificateBuildInput> = {}): Certificate
     appBuild: "app-build-1",
     pipelineImage: `sha256:${"d".repeat(64)}`,
     vendorBuilds: VENDOR_BUILDS,
-    cost: { usd: 1.25, callCount: 15 },
+    cost: { usdMeasured: 1.25, complete: true, callCount: 15, unpriced: [] },
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: PANEL,
     ...overrides,
@@ -270,7 +270,12 @@ test("a complete run builds one certificate with code, target, corpus, vendors, 
   }
   assert.equal(certificate.eligibility.eligible, true);
   assert.deepEqual(certificate.runFailures, []);
-  assert.deepEqual(certificate.cost, { usd: 1.25, callCount: 15 });
+  assert.deepEqual(certificate.cost, {
+    usdMeasured: 1.25,
+    complete: true,
+    callCount: 15,
+    unpriced: [],
+  });
   assert.deepEqual(certificate.residualRiskIds, [...OPEN_RESIDUAL_RISK_IDS]);
   assert.deepEqual(certificate.panel, PANEL);
 
@@ -290,6 +295,74 @@ test("a certificate round-trips through committed JSON without losing a field", 
     corpus: { version: 1, sha256: CORPUS_HASH },
   });
   assert.deepEqual(parsed, certificate);
+});
+
+test("a cost bound round-trips with its unpriced leg and never renders as an exact price", () => {
+  const unpriced = {
+    callId: "call-mispronounced-email-1",
+    leg: "llm",
+    unit: "unknown",
+    source: "no usage chunk was recorded for this turn",
+  };
+  const certificate = buildCertificate(
+    buildInput({
+      cost: {
+        usdMeasured: 0.003115,
+        complete: false,
+        callCount: 15,
+        unpriced: [unpriced],
+      },
+      panel: null,
+    }),
+  );
+  assert.equal(certificate.cost.complete, false);
+  assert.deepEqual(certificate.cost.unpriced, [unpriced]);
+
+  const parsed = parseCertificate(serializeCertificate(certificate));
+  assert.deepEqual(parsed.cost, certificate.cost);
+
+  const text = renderCertificate(parsed);
+  assert.match(text, /cost at least \$0\.0031 — not exact/);
+  assert.match(text, /1 unpriced leg\(s\)/);
+  assert.match(text, /call-mispronounced-email-1 llm/);
+  assert.doesNotMatch(text, /cost \$0\.0031 \(complete\)/);
+});
+
+test("a complete claim with an unpriced leg, or a bound with none, is refused by name", () => {
+  const certificate = mutable(certified());
+  const complete: Mutable = {
+    ...(certificate.cost as Mutable),
+    complete: true,
+    unpriced: [{ callId: "call-1", leg: "llm", unit: "unknown", source: "cut" }],
+  };
+  assertRefusal(
+    () => validateCertificate({ ...certificate, cost: complete }),
+    "invalid-cost",
+    /complete is true but cost\.unpriced names legs/,
+  );
+  const emptyBound: Mutable = {
+    ...(certificate.cost as Mutable),
+    complete: false,
+    unpriced: [],
+  };
+  assertRefusal(
+    () => validateCertificate({ ...certificate, cost: emptyBound }),
+    "invalid-cost",
+    /complete is false but cost\.unpriced is empty/,
+  );
+});
+
+test("a pre-v4 certificate's exact usd still reads as a complete claim", () => {
+  const legacy = mutable(certified());
+  legacy.schemaVersion = 3;
+  legacy.cost = { usd: 1.25, callCount: 15 };
+  const parsed = validateCertificate(legacy);
+  assert.deepEqual(parsed.cost, {
+    usdMeasured: 1.25,
+    complete: true,
+    callCount: 15,
+    unpriced: [],
+  });
 });
 
 test("a certificate for one target can never be read as a certificate for another", () => {
@@ -423,17 +496,17 @@ test("an unsigned clean run is pending-human; a certified verdict without a pane
 });
 
 test("an unknown schema version is refused by name, not reinterpreted", () => {
-  assert.equal(CERTIFICATE_SCHEMA_VERSION, 3);
+  assert.equal(CERTIFICATE_SCHEMA_VERSION, 4);
   const copy = mutable(certified());
   copy.schemaVersion = CERTIFICATE_SCHEMA_VERSION + 1;
   assertRefusal(
     () => validateCertificate(copy),
     "unknown-schema-version",
-    /schema version 4 is unknown/,
+    /schema version 5 is unknown/,
   );
 });
 
-test("a v1 or v2 certificate stays readable; a v3 certificate must carry scope and resume", () => {
+test("a v1 or v2 certificate stays readable; a current certificate must carry scope and resume", () => {
   const v1 = mutable(certified());
   v1.schemaVersion = 1;
   delete v1.resume;
@@ -464,7 +537,7 @@ test("a v1 or v2 certificate stays readable; a v3 certificate must carry scope a
   );
 });
 
-test("a v3 certificate without a declared scope is refused by name", () => {
+test("a current certificate without a declared scope is refused by name", () => {
   const missingScope = mutable(certified());
   delete missingScope.scope;
   assertRefusal(
@@ -932,7 +1005,7 @@ test("the live 82-property contract appears in full, with every fail-closed gap 
       contract,
       run,
       attempts: [],
-      cost: { usd: 0, callCount: 0 },
+      cost: { usdMeasured: 0, complete: true, callCount: 0, unpriced: [] },
       panel: null,
     }),
   );

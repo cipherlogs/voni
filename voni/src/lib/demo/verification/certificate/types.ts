@@ -6,8 +6,9 @@
  * certification scope and the owner decision behind it, the corpus version,
  * hash and exact scenario set, the vendor builds, every property verdict with
  * its sample count and citations, explicit coverage rows (gaps included,
- * out-of-scope Locales named rather than dropped), the measured cost and call
- * count, the residual-risk ids, and — when the owner has signed — the panel
+ * out-of-scope Locales named rather than dropped), the measured cost as an
+ * exact total or a named lower bound with every unpriced leg, the call count,
+ * the residual-risk ids, and — when the owner has signed — the panel
  * session and reviewer. Its verdict is one of four, and only `certified` may be
  * called a pass.
  *
@@ -26,18 +27,20 @@ import type { CorpusReference, Locale, ScenarioClass } from "../scenarios";
 import type { PropertyStatus, PropertyVerdictReason, RunVerdict } from "../verdict";
 
 /**
- * The schema version every committed certificate must carry. Version 3 makes
- * the certification `scope` required, so a certificate always names the
- * Locales it is a claim about and the owner decision behind that set. Version 2
- * makes `resume` required (null for a run made in one piece), so a reader can
- * never mistake an interrupted run for a clean one by omission. Version 1
- * certificates stay readable and are read as `resume: null`; both older
+ * The schema version every committed certificate must carry. Version 4 makes
+ * `cost` a measured lower bound with its named unpriced legs, so a reader can
+ * never mistake a partial sum for an exact claim. Version 3 makes the
+ * certification `scope` required, so a certificate always names the Locales it
+ * is a claim about and the owner decision behind that set. Version 2 makes
+ * `resume` required (null for a run made in one piece), so a reader can never
+ * mistake an interrupted run for a clean one by omission. Version 1
+ * certificates stay readable and are read as `resume: null`; all older
  * versions are read as an undeclared scope, which means every demo Locale.
  */
-export const CERTIFICATE_SCHEMA_VERSION = 3 as const;
+export const CERTIFICATE_SCHEMA_VERSION = 4 as const;
 
 /** The versions a reader understands. Older documents keep their own version. */
-export type CertificateSchemaVersion = 1 | 2 | 3;
+export type CertificateSchemaVersion = 1 | 2 | 3 | 4;
 
 /** The targets a certificate may be true for. A green never inherits. */
 export const CERTIFICATE_TARGETS = ["local", "staging", "production"] as const;
@@ -289,10 +292,33 @@ export type CertificateEligibility = {
   readonly reasons: readonly string[];
 };
 
-/** Cost is read from the calls' own priced rows, never recomputed here. */
+/**
+ * One leg a call's own priced row left unpriced. `source` is the row's own
+ * words for the missing unit; the certificate never paraphrases it.
+ */
+export type CertificateUnpricedLeg = {
+  readonly callId: string;
+  readonly leg: string;
+  readonly unit: string;
+  readonly source: string;
+};
+
+/**
+ * Cost is read from the calls' own priced rows, never recomputed here.
+ *
+ * `usdMeasured` is the sum of every priced row and leg the vendors reported.
+ * It is exact only when `complete` is true. When a designed turn cut stops the
+ * vendor before its usage chunk, the unpriced leg is named instead of priced:
+ * `usdMeasured` is then a lower bound, never the exact cost, and no leg is a
+ * zero stand-in.
+ */
 export type CertificateCost = {
-  readonly usd: number;
+  readonly usdMeasured: number;
+  /** True only when every priced leg was measured; a bound is never exact. */
+  readonly complete: boolean;
   readonly callCount: number;
+  /** The legs the vendors never reported, each with the row's own reason. */
+  readonly unpriced: readonly CertificateUnpricedLeg[];
 };
 
 /** The committed certificate. */

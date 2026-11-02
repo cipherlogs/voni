@@ -925,7 +925,7 @@ test("the run total includes a call that opened no session at its measured zero"
   assert.ok(result.certificate, result.refusals.join("\n"));
   assert.equal(result.certificate?.cost.callCount, 15);
   assert.equal(
-    result.certificate?.cost.usd,
+    result.certificate?.cost.usdMeasured,
     14 * 0.0001,
     "the zero row adds zero and never replaces a real call's price",
   );
@@ -973,6 +973,87 @@ test("a run with a call whose real leg is unmeasured still refuses a total", asy
   assert.equal(result.status, "refused");
   assert.match(result.refusals.join("\n"), /unmeasured|no total|cost/i);
   assert.match(result.refusals.join("\n"), /characters/);
+});
+
+test("a cut turn's unpriced LLM leg yields a measured lower bound, not a refusal and not a total", async () => {
+  const contract = await fullContract();
+  const corpus = fullCorpus();
+  let calls = 0;
+  const cutCallId = "cut-call-47c04fa7";
+  const cutSource =
+    "llm.prompt_tokens is unmeasured: no usage chunk was recorded for this turn; " +
+    "llm.completion_tokens is unmeasured: no usage chunk was recorded for this turn";
+  const cutCost = {
+    callId: cutCallId,
+    measured: false,
+    totalUsd: null,
+    rateTableVersion: "cascade-vendor-rates v1",
+    unmeasuredReason: `llm: ${cutSource}`,
+    legs: {
+      stt: {
+        measured: true,
+        amountUsd: 0.00085,
+        unit: "audio_seconds",
+        quantity: 17,
+      },
+      llm: {
+        measured: false,
+        amountUsd: null,
+        unit: "unknown",
+        quantity: null,
+        source: cutSource,
+      },
+      tts: {
+        measured: true,
+        amountUsd: 0.002265,
+        unit: "multiple",
+        quantity: null,
+      },
+    },
+  };
+  const cutLedger = {
+    callId: cutCallId,
+    turns: [
+      { callId: cutCallId, type: "turn.user_final", turn: "0:0" },
+      { callId: cutCallId, type: "turn.cut", turn: "0:0", reason: "barge_in" },
+    ],
+  };
+  const result = await runVerify(request(["--target", "local", "--full"]), {
+    ...baseDeps(),
+    loadContract: async () => contract,
+    loadCorpus: async () => corpus,
+    loadEvaluators: async () => passingEvaluators(contract),
+    plan: () => fullPlan(corpus),
+    runScenario: async (input) => {
+      calls += 1;
+      const cut = calls === 1;
+      return {
+        refusal: null,
+        attempt: {
+          scenario: input.scenario,
+          repetition: 1,
+          locale: input.locale,
+          target: input.target,
+          evidence: cut
+            ? { ...EVIDENCE, cost: cutCost, ledger: cutLedger }
+            : EVIDENCE,
+        },
+        eligibility: { callId: cut ? cutCallId : `${input.scenario}#${input.repetition}`, scenario: input.scenario },
+        pipelineImage: "pipeline-test",
+      };
+    },
+  });
+
+  assert.equal(calls, 15);
+  const certificate = result.certificate;
+  assert.ok(certificate, result.refusals.join("\n"));
+  assert.equal(certificate.cost.complete, false);
+  assert.equal(certificate.cost.usdMeasured, 0.004515);
+  assert.deepEqual(certificate.cost.unpriced, [
+    { callId: cutCallId, leg: "llm", unit: "unknown", source: cutSource },
+  ]);
+  assert.equal(result.status, "not-demo-ready", "the gap keeps the run short of a certificate pass");
+  assert.notEqual(certificate.verdict, "certified");
 });
 
 test("a full run that cannot measure a call's cost refuses rather than inventing one", async () => {
@@ -1237,7 +1318,11 @@ test("--resume reuses completed calls, makes only the missing ones and names the
     assert.equal(certificate.runId, RESUME_RUN_ID, "the certificate names the original run");
     assert.deepEqual(certificate.code.fingerprint, FINGERPRINT);
     assert.equal(certificate.cost.callCount, 15, "the call count is the union");
-    assert.equal(certificate.cost.usd, 15 * 0.0001, "cost is summed across both halves");
+    assert.equal(
+      certificate.cost.usdMeasured,
+      15 * 0.0001,
+      "cost is summed across both halves",
+    );
     assert.deepEqual(certificate.resume?.reusedCalls, plannedKeys().slice(0, 6));
     assert.deepEqual(certificate.resume?.madeCalls, plannedKeys().slice(6));
     assert.equal(certificate.resume?.originalStartedAt, result.resumed?.originalStartedAt);
@@ -1872,7 +1957,7 @@ test("a failed call's measured cost is carried into the resumed total", async ()
     });
     assert.equal(resumed.exitCode, 1, resumed.refusals.join("\n"));
     assert.equal(resumed.certificate?.cost.callCount, 15, "every call that spent is counted");
-    assert.equal(resumed.certificate?.cost.usd, 14 * 0.0001 + 0.5);
+    assert.equal(resumed.certificate?.cost.usdMeasured, 14 * 0.0001 + 0.5);
     assert.deepEqual(resumed.resumed?.reusedCalls, ["en-one#1", "en-one#2"]);
     assert.equal(resumed.certificate?.resume?.reusedCalls.length, 2);
   } finally {

@@ -192,18 +192,76 @@ test("a measured call under the ceiling measures E1, E2 and E4", async () => {
   assert.deepEqual([...e4.samples], [0]);
 });
 
-test("an unmeasured priced row fails E1 and leaves E2 unmeasured", async () => {
+test("an unmeasured priced row leaves E1 and E2 unmeasured with the gap named", async () => {
   const contract = await loadContract();
   const evidence = await evaluate(
     contract,
     attempt({ cost: unmeasuredRow(), ledger: ledgerOf(goldenEnd()) }),
   );
   const e1 = measurement(evidence, "E1");
-  assert.equal(e1.outcome, "measured");
-  assert.equal(e1.passed, false);
+  assert.equal(e1.outcome, "unmeasured", "a lower bound is not an E1 measurement");
+  assert.match(e1.reason ?? "", /completion tokens|unmeasured/);
   const e2 = measurement(evidence, "E2");
   assert.equal(e2.outcome, "unmeasured");
   assert.match(e2.reason ?? "", /completion tokens/);
+});
+
+test("a cut turn's unpriced leg leaves E1/E2/E3 unmeasured, never PASS on a bound", async () => {
+  const cutRow = {
+    type: "cost.priced",
+    rateTableVersion: "cascade-vendor-rates v1",
+    measured: false,
+    totalUsd: null,
+    unmeasuredReason: "llm: no usage chunk was recorded for this turn",
+    legs: {
+      stt: {
+        unit: "audio_seconds",
+        quantity: 17,
+        measured: true,
+        source: "priced from the vendor's reported units",
+        amountUsd: 0.00085,
+        units: { audio_seconds: 17 },
+      },
+      llm: {
+        unit: "unknown",
+        quantity: null,
+        measured: false,
+        source: "no usage chunk was recorded for this turn",
+        amountUsd: null,
+        units: {},
+      },
+      tts: {
+        unit: "multiple",
+        quantity: null,
+        measured: true,
+        source: "priced from the vendor's reported units",
+        amountUsd: 0.002265,
+        units: { characters: 151 },
+      },
+    },
+  };
+  const contract = await loadContract();
+  const evidence = await evaluate(
+    contract,
+    attempt({ cost: cutRow, ledger: ledgerOf(goldenEnd()) }),
+  );
+  assert.equal(measurement(evidence, "E1").outcome, "unmeasured");
+  assert.equal(measurement(evidence, "E2").outcome, "unmeasured");
+  assert.match(measurement(evidence, "E2").reason ?? "", /llm unmeasured/);
+
+  const { verdict } = judgeRunWithCeiling({
+    runId: "run-cut",
+    contract,
+    evidence,
+    kind: "full",
+    calls: [{ callId: "call-1", scenario: "mispronounced-email", cost: cutRow }],
+  });
+  const e3 = verdict.properties.find((entry) => entry.propertyId === "E3");
+  assert.equal(e3?.status, "FAIL");
+  assert.equal(e3?.reason, "unmeasured");
+  assert.match(e3?.detail ?? "", /call-1/);
+  assert.match(e3?.detail ?? "", /no usage chunk/);
+  assert.notEqual(verdict.verdict, "certified");
 });
 
 test("a call with no priced row fails E1 and E2 closed", async () => {

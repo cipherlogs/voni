@@ -72,6 +72,8 @@ export type RunCeilingCheck = {
   readonly usd: number | null;
   /** Calls whose priced row is missing or unmeasured. Empty when all measured. */
   readonly unmeasuredCalls: readonly string[];
+  /** Each unmeasured call's own reason (the row's or the leg's words). */
+  readonly unmeasured?: readonly { readonly callId: string; readonly reason: string }[];
   readonly passed: boolean;
   readonly detail: string;
 };
@@ -84,6 +86,8 @@ export type RunCostSource = {
     readonly calls: number;
     readonly callIds: readonly string[];
     readonly unmeasuredCalls: readonly string[];
+    /** Kept so E3 names the missing leg, not only the call id. */
+    readonly unmeasured?: readonly { readonly callId: string; readonly reason: string }[];
   };
 };
 
@@ -225,6 +229,7 @@ export function settleRunCeiling(input: {
       callIds,
       usd: null,
       unmeasuredCalls: unmeasured.map((entry) => entry.callId),
+      unmeasured,
       passed: false,
       detail:
         `${kind} run: cost is unmeasured; a run with an unmeasured call has no total ` +
@@ -242,6 +247,7 @@ export function settleRunCeiling(input: {
     callIds,
     usd: spent,
     unmeasuredCalls: [],
+    unmeasured: [],
     passed,
     detail:
       `${kind} run: ${usd(spent)} across ${input.calls.length} calls ` +
@@ -265,6 +271,7 @@ export function runCostSource(check: RunCeilingCheck): RunCostSource {
       calls: check.calls,
       callIds: check.callIds,
       unmeasuredCalls: check.unmeasuredCalls,
+      unmeasured: check.unmeasured ?? [],
     },
   };
 }
@@ -311,9 +318,22 @@ export function evaluateRunCost(source: unknown): Evaluation {
     ? run.unmeasuredCalls.filter((entry): entry is string => typeof entry === "string")
     : [];
   if (unmeasured.length > 0) {
+    const named = Array.isArray(run.unmeasured)
+      ? run.unmeasured
+          .filter(
+            (entry): entry is { callId: string; reason: string } =>
+              typeof entry === "object" &&
+              entry !== null &&
+              typeof (entry as Record<string, unknown>).callId === "string" &&
+              typeof (entry as Record<string, unknown>).reason === "string",
+          )
+          .map((entry) => `${entry.callId} (${entry.reason})`)
+      : [];
     return {
       kind: "unmeasured",
-      reason: `the ${String(kind)} run has unmeasured calls: ${unmeasured.join(", ")}`,
+      reason:
+        `the ${String(kind)} run has unmeasured calls: ` +
+        (named.length > 0 ? named.join(", ") : unmeasured.join(", ")),
       citations: unmeasured.map((callId) => `cost:${callId}`),
     };
   }

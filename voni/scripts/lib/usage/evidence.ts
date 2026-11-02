@@ -307,9 +307,14 @@ function certificateCalls(certificate: Record<string, unknown>, runId: string): 
   if (typeof callCount !== "number" || !Number.isInteger(callCount) || callCount < 0) {
     refuse("torn-row", `certificate ${runId} cost.callCount is not a non-negative integer`);
   }
-  const certificateUsd = cost.usd;
+  // v4 records a measured lower bound; a pre-v4 document recorded an exact
+  // total under `usd`. Both reconcile against the same measured legs.
+  const certificateUsd = cost.usdMeasured ?? cost.usd;
   if (typeof certificateUsd !== "number" || !Number.isFinite(certificateUsd) || certificateUsd < 0) {
-    refuse("torn-row", `certificate ${runId} cost.usd is not a finite, non-negative amount`);
+    refuse(
+      "torn-row",
+      `certificate ${runId} cost.usdMeasured is not a finite, non-negative amount`,
+    );
   }
   const coverage = certificate.coverage;
   if (!isObject(coverage)) refuse("torn-row", `certificate ${runId} has no coverage object`);
@@ -464,12 +469,13 @@ function certificateRun(
     }
     return readCallDir(callDir, entry.callId, entry.scenario, entry.locale ?? local.locale);
   });
-  const certificateUsd = (certificate.cost as Record<string, unknown>).usd as number;
+  const cost = certificate.cost as Record<string, unknown>;
+  const certificateUsd = (cost.usdMeasured ?? cost.usd) as number;
   const measuredUsd = sumMeasuredCalls(resolved);
   if (!sameUsd(certificateUsd, measuredUsd)) {
     refuse(
       "torn-row",
-      `certificate ${runId} claims $${certificateUsd.toFixed(6)} but its priced rows sum to ` +
+      `certificate ${runId} claims $${certificateUsd.toFixed(6)} measured but its priced rows sum to ` +
         `$${measuredUsd.toFixed(6)}; the committed claim and the local trace disagree`,
     );
   }

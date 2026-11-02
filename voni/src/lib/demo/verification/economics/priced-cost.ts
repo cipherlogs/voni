@@ -8,6 +8,11 @@
  * of its own. A row that says it is unmeasured stays unmeasured: no leg is a
  * zero, no total is a partial sum.
  *
+ * The certificate may record a measured lower bound across rows
+ * ({@link ./cost-bound.ts}) only when a designed turn cut explains every
+ * unpriced leg. That bound names each leg it could not price; no row's own
+ * `totalUsd` is ever a partial sum.
+ *
  * The one measured zero with no legs is a call that opened no session: the app
  * refused before any vendor call, so no audio, token or character was spent.
  * That row must total zero and state its reason; an empty leg list never hides

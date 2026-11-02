@@ -26,6 +26,27 @@ function verdictLine(certificate: Certificate): string {
   return `CERTIFICATE ${certificate.verdict.toUpperCase()} (${mark})`;
 }
 
+/**
+ * A bound is never rendered as an exact price. A complete cost says so; an
+ * incomplete one says "at least" and names every unpriced leg with the row's
+ * own reason, so a screenshot cannot soften the gap.
+ */
+function costLine(certificate: Certificate): string {
+  const { cost } = certificate;
+  if (cost.complete) {
+    return `calls ${n(cost.callCount)}  cost ${money(cost.usdMeasured)} (complete)`;
+  }
+  const legs = cost.unpriced
+    .slice(0, 4)
+    .map((leg) => `${leg.callId} ${leg.leg}`)
+    .join(", ");
+  const more = cost.unpriced.length > 4 ? ` +${cost.unpriced.length - 4} more` : "";
+  return (
+    `calls ${n(cost.callCount)}  cost at least ${money(cost.usdMeasured)} — not exact; ` +
+    `${cost.unpriced.length} unpriced leg(s) (cut before the vendor reported: ${legs}${more})`
+  );
+}
+
 function coverageLine(certificate: Certificate): string {
   const { coverage } = certificate;
   const measured = coverage.rows.filter((row) => row.status === "measured").length;
@@ -80,7 +101,7 @@ export function renderCertificate(certificate: Certificate): string {
       `pipeline ${certificate.code.pipelineImage}`,
     `corpus v${certificate.corpus.version} ${certificate.corpus.sha256}`,
     `properties ${passed}/${certificate.properties.length} pass, ${failed.length} fail  ` +
-      `calls ${n(certificate.cost.callCount)}  cost ${money(certificate.cost.usd)}`,
+      costLine(certificate),
     coverageLine(certificate),
     panelLine(certificate),
     `risks ${certificate.residualRiskIds.join(" ")}`,
