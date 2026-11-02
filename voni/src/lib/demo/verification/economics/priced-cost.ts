@@ -8,6 +8,11 @@
  * of its own. A row that says it is unmeasured stays unmeasured: no leg is a
  * zero, no total is a partial sum.
  *
+ * The one measured zero with no legs is a call that opened no session: the app
+ * refused before any vendor call, so no audio, token or character was spent.
+ * That row must total zero and state its reason; an empty leg list never hides
+ * a price.
+ *
  * Spec: `.scratch/demo-verification/spec.md`, "Ground truth comes first".
  */
 
@@ -42,6 +47,8 @@ export type PricedCost = {
   readonly totalUsd: number | null;
   readonly rateTableVersion: string | null;
   readonly legs: readonly PricedLeg[];
+  /** Why the row is a measured zero with no leg; null when legs carried it. */
+  readonly source: string | null;
   readonly unmeasuredReason: string | null;
 };
 
@@ -150,11 +157,29 @@ export function readPricedRow(row: unknown): PricedCost {
 
   const legsRecord = objectOf(record.legs, "the priced cost row's legs");
   const legs = Object.entries(legsRecord).map(([name, raw]) => legOf(name, raw));
+  const source = text(record.source);
   if (legs.length === 0) {
-    throw new PricedCostError(
-      "malformed-cost",
-      "the priced cost row names no legs; a call with no measured leg has no cost",
-    );
+    // A call that opened no session has no audio, token or character to price.
+    // That is a measured zero, but only when the row prices zero and says why;
+    // an empty leg list is never a place to hide a nonzero total.
+    if (!measured) {
+      throw new PricedCostError(
+        "malformed-cost",
+        "an unmeasured cost row names no legs; without a leg there is nothing to explain",
+      );
+    }
+    if (totalUsd !== 0) {
+      throw new PricedCostError(
+        "malformed-cost",
+        "a cost row with no legs must total zero; a price without a priced leg is invented",
+      );
+    }
+    if (source === "") {
+      throw new PricedCostError(
+        "malformed-cost",
+        "a zero-leg cost row must state why no session opened; a zero without its reason is a stand-in",
+      );
+    }
   }
 
   const unmeasuredReason = text(record.unmeasuredReason);
@@ -163,6 +188,7 @@ export function readPricedRow(row: unknown): PricedCost {
     totalUsd,
     rateTableVersion: rateTableVersion === "" ? null : rateTableVersion,
     legs,
+    source: source === "" ? null : source,
     unmeasuredReason: measured ? null : unmeasuredReason || "the cost claim is incomplete",
   };
 }
@@ -173,6 +199,9 @@ function usd(amount: number): string {
 
 /** `stt $0.003100; llm $0.027000; tts unmeasured (reason)` — never a bare total. */
 export function legBreakdown(cost: PricedCost): string {
+  if (cost.legs.length === 0) {
+    return `zero usage (${cost.source ?? "no source recorded"})`;
+  }
   return cost.legs
     .map((leg) =>
       leg.measured && leg.amountUsd !== null

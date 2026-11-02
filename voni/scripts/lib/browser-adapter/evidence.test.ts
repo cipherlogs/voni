@@ -15,6 +15,7 @@ import {
   BROWSER_CALL_ID,
   fakeBrowserCall,
   marksArtifact,
+  probeTrace,
   removeTree,
   wavBytes,
 } from "./fixtures";
@@ -485,6 +486,60 @@ test("a mic-denied call with no trace or end document names both, and never inve
     assert.equal(assembled.bundle.wav, null);
     assert.ok(assembled.gaps.some((gap) => /no trace/.test(gap)));
     assert.ok(assembled.gaps.some((gap) => /no end document/.test(gap)));
+
+    // No session opened, so there is no audio, token or character to price.
+    // That fact is a measured zero, and it cites the committed table by name.
+    const table = JSON.parse(
+      readFileSync(
+        new URL("../../../../voice-pipeline/cascade/rates/v1.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { name: string; version: number };
+    const cost = assembled.bundle.cost;
+    assert.ok(cost, "the denied call with no session carries a measured zero row");
+    assert.equal(cost.measured, true);
+    assert.equal(cost.totalUsd, 0);
+    assert.deepEqual(cost.legs, {}, "no leg ran, so no leg is invented");
+    assert.equal(cost.rateTableVersion, `${table.name} v${table.version}`);
+    assert.equal(cost.source, "no session opened (the app refused before any vendor call)");
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a mic-denied call that did open a session keeps its unpriced row unmeasured", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await micDeniedScenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = fakeBrowserCall({
+      scenario,
+      eventsDir,
+      capturesDir,
+      runDir: root,
+      omitCapture: true,
+      edge: NAMED_DENIAL,
+      traceRows: probeTrace(BROWSER_CALL_ID, 0.012).filter(
+        (row) => row.type !== "cost.priced",
+      ),
+    });
+    const { assembled } = await assembleBrowserEvidence({
+      call,
+      scenario,
+      target: "local",
+      eventsDir,
+      callDir: join(root, "call"),
+    });
+    assert.equal(
+      assembled.bundle.cost,
+      undefined,
+      "a session that ran but wrote no priced row is never replaced by a zero",
+    );
+    assert.ok(
+      assembled.gaps.some((gap) => /no cost\.priced row/.test(gap)),
+      "the missing price is named as a gap",
+    );
   } finally {
     removeTree(root);
   }

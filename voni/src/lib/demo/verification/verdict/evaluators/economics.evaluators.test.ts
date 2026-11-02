@@ -231,6 +231,75 @@ test("an over-ceiling call fails with the measured amount and the leg breakdown"
   assert.match(verdict.detail, /tts \$0\.050000/);
 });
 
+test("a call that opened no session measures E1 and E2 at an honest zero", async () => {
+  const zeroRow = {
+    type: "cost.priced",
+    producer: "demo.verification.browser-adapter",
+    rateTableVersion: "cascade-vendor-rates v1",
+    measured: true,
+    totalUsd: 0,
+    legs: {},
+    source: "no session opened (the app refused before any vendor call)",
+  };
+  const contract = await loadContract();
+  const evidence = await evaluate(
+    contract,
+    attempt({ cost: zeroRow, ledger: ledgerOf(goldenEnd()) }),
+  );
+  const e1 = measurement(evidence, "E1");
+  assert.equal(e1.outcome, "measured");
+  assert.equal(e1.passed, true);
+  assert.match(e1.detail ?? "", /no session opened/);
+  const e2 = measurement(evidence, "E2");
+  assert.equal(e2.outcome, "measured");
+  assert.deepEqual([...e2.samples], [0]);
+  assert.match(e2.detail ?? "", /no session opened/);
+  assert.match(e2.detail ?? "", /cascade-vendor-rates v1/);
+
+  const { verdict, check } = judgeRunWithCeiling({
+    runId: "run-zero",
+    contract,
+    evidence,
+    kind: "fast",
+    calls: [
+      {
+        callId: "call-zero",
+        scenario: "resilience-mic-denied",
+        cost: zeroRow,
+      },
+      {
+        callId: "call-real",
+        scenario: "golden-flow",
+        cost: priced(0.0453),
+      },
+    ],
+  });
+  assert.equal(check.calls, 2);
+  assert.equal(check.usd, 0.0453, "the zero row adds zero, never a price");
+  const e3 = verdict.properties.find((entry) => entry.propertyId === "E3");
+  assert.equal(e3?.status, "PASS", e3?.detail);
+});
+
+test("a zero-leg row that hides a price is not a measured zero", async () => {
+  const contract = await loadContract();
+  const evidence = await evaluate(
+    contract,
+    attempt({
+      cost: {
+        type: "cost.priced",
+        rateTableVersion: "cascade-vendor-rates v1",
+        measured: true,
+        totalUsd: 0.01,
+        legs: {},
+        source: "no session opened (the app refused before any vendor call)",
+      },
+      ledger: ledgerOf(goldenEnd()),
+    }),
+  );
+  assert.equal(measurement(evidence, "E1").outcome, "unmeasured");
+  assert.equal(measurement(evidence, "E2").outcome, "unmeasured");
+});
+
 test("a budget-stopped call measures one stop and fails E4", async () => {
   const contract = await loadContract();
   const evidence = await evaluate(

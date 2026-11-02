@@ -26,10 +26,11 @@ function reasonOf(error: unknown): string {
 }
 
 /** The row and the rate table that priced it; a verdict cites both. */
-function auditOf(cost: { rateTableVersion: string | null }): string[] {
+function auditOf(cost: { rateTableVersion: string | null; legs: readonly unknown[] }): string[] {
   return [
     "cost:priced",
     ...(cost.rateTableVersion === null ? [] : [`cost:rate-table:${cost.rateTableVersion}`]),
+    ...(cost.legs.length === 0 ? ["cost:zero-session"] : []),
   ];
 }
 
@@ -45,7 +46,8 @@ const e1: PropertyEvaluator = {
         passed: cost.measured,
         citations: auditOf(cost),
         detail: cost.measured
-          ? `cost measured: $${String(cost.totalUsd)} from ${cost.rateTableVersion}`
+          ? `cost measured: $${String(cost.totalUsd)} from ${cost.rateTableVersion}` +
+            (cost.source === null ? "" : `; ${cost.source}`)
           : `cost unmeasured: ${cost.unmeasuredReason ?? "no reason recorded"}`,
       };
     } catch (error) {

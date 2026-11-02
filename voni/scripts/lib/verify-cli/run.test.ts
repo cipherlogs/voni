@@ -36,6 +36,7 @@ import type { PropertyEvaluator } from "@/lib/demo/verification/verdict";
 import { TimingLockHeldError } from "@/lib/demo/timing-lock";
 
 import { parseVerifyArgs, type VerifyRequest } from "./args";
+import { zeroSessionCostRow } from "../browser-adapter/zero-cost";
 import { VerifyCliError } from "./errors";
 import { planVerify, type VerifyPlan } from "./plan";
 import {
@@ -773,6 +774,88 @@ test("a full run whose injected signature is not a real panel signature is refus
   assert.equal(result.exitCode, 2);
   assert.equal(result.status, "refused");
   assert.match(result.refusals.join("\n"), /panel\.signature|signature/);
+});
+
+test("the run total includes a call that opened no session at its measured zero", async () => {
+  const contract = await fullContract();
+  const corpus = fullCorpus();
+  let calls = 0;
+  const result = await runVerify(request(["--target", "local", "--full"]), {
+    ...baseDeps(),
+    loadContract: async () => contract,
+    loadCorpus: async () => corpus,
+    loadEvaluators: async () => passingEvaluators(contract),
+    plan: () => fullPlan(corpus),
+    runScenario: async (input) => {
+      calls += 1;
+      return {
+        refusal: null,
+        attempt: {
+          scenario: input.scenario,
+          repetition: 1,
+          locale: input.locale,
+          target: input.target,
+          // The mic-denied call opened no session: zero legs, zero price. The
+          // rest of the run priced normally.
+          evidence: { ...EVIDENCE, cost: calls === 1 ? zeroSessionCostRow() : COST_ROW },
+        },
+        eligibility: { callId: `${input.scenario}#${input.repetition}`, scenario: input.scenario },
+        pipelineImage: "pipeline-test",
+      };
+    },
+  });
+  assert.equal(calls, 15);
+  assert.ok(result.certificate, result.refusals.join("\n"));
+  assert.equal(result.certificate?.cost.callCount, 15);
+  assert.equal(
+    result.certificate?.cost.usd,
+    14 * 0.0001,
+    "the zero row adds zero and never replaces a real call's price",
+  );
+});
+
+test("a run with a call whose real leg is unmeasured still refuses a total", async () => {
+  const contract = await fullContract();
+  const corpus = fullCorpus();
+  const unmeasured = {
+    measured: false,
+    totalUsd: null,
+    rateTableVersion: "cascade-vendor-rates v1",
+    unmeasuredReason: "tts: the vendor did not report characters",
+    legs: {
+      stt: { measured: true, amountUsd: 0.0001, unit: "audio_second", quantity: 1 },
+      tts: {
+        measured: false,
+        amountUsd: null,
+        unit: "unknown",
+        quantity: null,
+        source: "the vendor did not report characters",
+      },
+    },
+  };
+  const result = await runVerify(request(["--target", "local", "--full"]), {
+    ...baseDeps(),
+    loadContract: async () => contract,
+    loadCorpus: async () => corpus,
+    loadEvaluators: async () => passingEvaluators(contract),
+    plan: () => fullPlan(corpus),
+    runScenario: async (input) => ({
+      refusal: null,
+      attempt: {
+        scenario: input.scenario,
+        repetition: 1,
+        locale: input.locale,
+        target: input.target,
+        evidence: { ...EVIDENCE, cost: unmeasured },
+      },
+      eligibility: { callId: `${input.scenario}#${input.repetition}`, scenario: input.scenario },
+      pipelineImage: "pipeline-test",
+    }),
+  });
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.status, "refused");
+  assert.match(result.refusals.join("\n"), /unmeasured|no total|cost/i);
+  assert.match(result.refusals.join("\n"), /characters/);
 });
 
 test("a full run that cannot measure a call's cost refuses rather than inventing one", async () => {
