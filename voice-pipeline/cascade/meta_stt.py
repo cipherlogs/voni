@@ -670,7 +670,6 @@ class MetaStreamingSTT(StreamingSTT):
         self._turns.new_epoch()
         session = session_id(self._call_id, self._epoch)
         self._session = session
-        self._audio_end = float(self._clock())
         self._last_close_code = None
         url = f"{REALTIME_URL}?{urlencode({'sessionId': session})}"
         frame = {
@@ -695,6 +694,10 @@ class MetaStreamingSTT(StreamingSTT):
         except BaseException:
             await _close_quietly(socket)
             raise
+        # The acknowledgement starts the audio timeline: the vendor hears
+        # nothing before it, so the handshake wait is not caller time and is
+        # never back-filled with a burst of silence when the first frame lands.
+        self._audio_end = float(self._clock())
         self._socket = socket
         self._acked = True
 
@@ -785,6 +788,22 @@ class MetaStreamingSTT(StreamingSTT):
         self._audio_seq += 1
         for frames in self._turn_audio.values():
             frames.append((self._audio_seq, payload))
+
+    async def replay_audio(self, pcm: bytes) -> None:
+        """Forward caller audio captured before the ack at the session's pace.
+
+        The opening backlog is older than the clock, but the vendor refuses a
+        stream that runs ahead of real time: handing the whole backlog over as
+        one burst is exactly the "audio backlog too large" close (``1008``).
+        A frame therefore waits until the audio timeline has caught up with the
+        clock, so the backlog is played at the pace it was spoken and the lead
+        never grows past what the session itself accepts.
+        """
+        self._require_acked()
+        lead = self._lead()
+        if lead > 0:
+            await self._clock.sleep(lead)
+        await self.send_audio(pcm)
 
     async def send_silence(self, seconds: float | None = None) -> None:
         """Send PCM silence for ``seconds`` (default one 20 ms frame).

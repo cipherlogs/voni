@@ -79,6 +79,15 @@ class StreamingSTT(ABC):
     async def send_audio(self, pcm: bytes) -> None:
         """Forward one mic frame. Fire-and-forget; never await a reply here."""
 
+    async def replay_audio(self, pcm: bytes) -> None:
+        """Forward one frame captured before the session acknowledged, paced.
+
+        The live path is the default. A session whose vendor refuses audio that
+        runs ahead of real time overrides this so the opening backlog plays at
+        the pace the session accepts instead of in one burst.
+        """
+        await self.send_audio(pcm)
+
     @abstractmethod
     async def events(self) -> AsyncIterator[PartialTranscript | FinalTranscript]:
         """Yield partials then the final. Exactly one final per turn."""

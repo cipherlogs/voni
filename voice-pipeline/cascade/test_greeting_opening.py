@@ -21,11 +21,19 @@ the transport's own recorded flag rather than a timestamp.
 from __future__ import annotations
 
 import asyncio
+import json
+import struct
 import unittest
 
 from cascade.body_map import CascadeBody
 from cascade.call import AudioFrame, BrowserStop, CallLifecycle, OpenedLeg
-from cascade.meta_stt import SpeechComplete, SpeechPartial, SpeechStart
+from cascade.meta_stt import (
+    SAMPLE_RATE,
+    MetaStreamingSTT,
+    SpeechComplete,
+    SpeechPartial,
+    SpeechStart,
+)
 from cascade.test_call import (
     CALL_ID,
     ISSUED_S,
@@ -34,6 +42,7 @@ from cascade.test_call import (
     signed_message,
 )
 from cascade.testing import FakeClock
+from cascade.testing.socket_factory import Frame, ScriptedSocketFactory
 from metrics import TimingLedger
 
 from cascade.test_greeting_barge_in import (
@@ -47,6 +56,16 @@ from cascade.test_greeting_barge_in import (
 #: The take the service never heard on the delivered call (285138f6).
 INTRO = "This is ridiculous. Your service is useless."
 LOUD = b"\x00\x40" * 480
+
+
+def _ack() -> str:
+    """The vendor's acknowledgement: a JSON object with no ``type``."""
+    return json.dumps({"sessionId": "call-123:0", "status": "ready"})
+
+
+def _event(type_name: str, **fields) -> str:
+    """One vendor endpointing event, in the shape the live wire uses."""
+    return json.dumps({"type": type_name, **fields})
 
 
 class OpeningTransport:
@@ -178,12 +197,12 @@ class QuietSpeech:
         return None
 
 
-def lifecycle_with(*, transport, open_speech, open_voice, stream):
+def lifecycle_with(*, transport, open_speech, open_voice, stream, clock=None):
     class Sink:
         async def __call__(self, outbound) -> None:
             return None
 
-    clock = FakeClock(10.0)
+    clock = clock if clock is not None else FakeClock(10.0)
     return CallLifecycle(
         message=signed_message(body_dict()),
         secret=SECRET,
@@ -310,6 +329,118 @@ class OpeningHearsFirstTest(unittest.TestCase):
         self.assertEqual([GREETING], voice.greeted)
         self.assertTrue(end.greeting.spoken)
         self.assertFalse(end.greeting.cancelled)
+
+
+class SlowAckOpeningTest(unittest.TestCase):
+    """A six-second ack replays the opening, never in one fatal burst.
+
+    The live failure (04d01703) buffered the caller's opening through a slow
+    handshake, then sent the whole backlog in one go on top of a silence fill
+    for the handshake itself: the vendor closed 1008 ("audio backlog too
+    large") before any turn existed. The fix bounds the buffer and paces the
+    replay on the speech session's own clock.
+    """
+
+    def test_a_slow_ack_replays_the_opening_at_real_time_and_still_replies(self):
+        clock = FakeClock(10.0)
+        frames = 150  # 3 s of 20 ms caller frames
+        transport = OpeningTransport([AudioFrame(LOUD) for _ in range(frames)])
+        voice = OpenVoice()
+        stream = StoppingStream(transport)
+        factory = ScriptedSocketFactory(
+            [
+                Frame(_ack(), delay_ms=6000),
+                Frame(_event("speechStart", turnId=1)),
+                Frame(_event("transcript", text=INTRO)),
+                Frame(_event("speechComplete", turnId=1, transcript=INTRO)),
+            ],
+            clock=clock,
+        )
+        speech = MetaStreamingSTT(
+            api_key="test-key",
+            call_id=CALL_ID,
+            socket_factory=factory,
+            clock=clock,
+        )
+        ack_at: list[float] = []
+
+        async def open_speech(_body: CascadeBody) -> OpenedLeg:
+            # The caller's three seconds arrived while the handshake was in
+            # flight; the acknowledgement lands six seconds after connecting.
+            while transport.delivered < frames:
+                await asyncio.sleep(0)
+            await speech.open(language_codes=[], sample_rate=SAMPLE_RATE)
+            ack_at.append(clock())
+            return opened("stt", speech)
+
+        async def open_voice(_body: CascadeBody) -> OpenedLeg:
+            return opened("tts", voice)
+
+        lifecycle = lifecycle_with(
+            transport=transport,
+            open_speech=open_speech,
+            open_voice=open_voice,
+            stream=stream,
+            clock=clock,
+        )
+
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=2.0))
+
+        self.assertEqual(0, speech.dropped_frames, "the replay dropped audio")
+        self.assertEqual((), speech.failures, "the speech leg failed on backlog")
+        # The three seconds of opening audio played over three seconds of the
+        # session's clock, not as one burst.
+        self.assertGreaterEqual(clock() - ack_at[0], 2.9)
+        self.assertEqual([], voice.greeted)
+        self.assertFalse(end.greeting.spoken)
+        self.assertIn("caller spoke first", end.greeting.reason)
+        self.assertEqual(1, end.turns)
+        self.assertEqual(
+            [SpeechStart, SpeechPartial, SpeechComplete],
+            [type(event) for event in stream.events],
+        )
+        self.assertEqual(INTRO, stream.events[-1].text)
+
+    def test_an_overflowing_buffer_drops_the_oldest_and_records_it(self):
+        clock = FakeClock(10.0)
+        frames = 300  # 6 s: a second past the five-second lead bound
+        # Every frame is loud caller audio with its arrival order as a marker.
+        pcm = [struct.pack("<H", index) + LOUD[2:] for index in range(frames)]
+        transport = OpeningTransport([AudioFrame(frame) for frame in pcm])
+        speech = PreAckSpeech(INTRO)
+        voice = GatedVoice()
+        stream = StoppingStream(transport)
+
+        async def open_speech(_body: CascadeBody) -> OpenedLeg:
+            while transport.delivered < frames:
+                await asyncio.sleep(0)
+            speech.acknowledged = True
+            return opened("stt", speech)
+
+        async def open_voice(_body: CascadeBody) -> OpenedLeg:
+            return opened("tts", voice)
+
+        lifecycle = lifecycle_with(
+            transport=transport,
+            open_speech=open_speech,
+            open_voice=open_voice,
+            stream=stream,
+            clock=clock,
+        )
+
+        with self.assertLogs("cascade.call", level="WARNING") as logs:
+            end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=2.0))
+
+        kept = [struct.unpack("<H", frame[:2])[0] for frame in speech.audio]
+        self.assertEqual(list(range(frames - len(kept), frames)), kept)
+        self.assertGreater(lifecycle.opening_audio_dropped, 0)
+        self.assertEqual(
+            lifecycle.opening_audio_dropped, (frames - len(kept)) * len(LOUD)
+        )
+        self.assertIn("dropped the oldest", "\n".join(logs.output))
+        self.assertEqual([], voice.greeted)
+        self.assertFalse(end.greeting.spoken)
+        self.assertEqual(INTRO, stream.events[-1].text)
 
 
 if __name__ == "__main__":

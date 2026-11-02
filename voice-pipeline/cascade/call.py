@@ -22,8 +22,10 @@ handshake is in flight, then speaks the body's greeting through the opened
 voice once that voice acknowledged ``Begin``. Caller frames reach STT and
 provider events are buffered while the opening runs; a caller speech event (or
 loud caller PCM) anywhere from ``listening`` through the opening skips the line
-entirely, so a visitor who opens with a complaint is never greeted over it. A
-``speechStart`` or a
+entirely, so a visitor who opens with a complaint is never greeted over it. The
+pre-ack buffer is bounded by the speech session's own lead bound, and the
+replay is paced by the session: a slow ack costs the oldest words and some
+time, never an audio burst the vendor closes. A ``speechStart`` or a
 taking-the-floor partial after the line starts cuts it with ``Cancel`` (ticket
 79) so the caller's turn wins, and the client is told to drop the audio it has
 already queued, or the caller keeps hearing the line they interrupted. Nothing
@@ -102,6 +104,7 @@ import inspect
 import logging
 import sys
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -116,7 +119,13 @@ from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
 from cascade.events import COST_PRICED_EVENT_TYPE, OperationalEvents
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
-from cascade.meta_stt import SpeechComplete, SpeechPartial, SpeechStart
+from cascade.meta_stt import (
+    BYTES_PER_SECOND,
+    MAX_LEAD_S,
+    SpeechComplete,
+    SpeechPartial,
+    SpeechStart,
+)
 from cascade.reconnect import ReconnectBudget
 from cascade.thresholds import ThresholdError, require_bound
 from cascade.usage import NO_REQUEST, CallUsage, UsageMeter
@@ -156,6 +165,12 @@ CALLER_FIRST_WINDOW_MS = float(require_bound("greeting.caller_first_ms"))
 #: a live call); a provider speech event remains the authoritative one.
 CALLER_SPEECH_RMS = 500.0
 CALLER_SPEECH_FRAMES = 2
+
+#: The most caller audio the opening may hold before the speech session
+#: acknowledges. It is the session's own lead bound expressed in bytes, not a
+#: new number: a slower ack drops the oldest frames to keep the caller's newest
+#: words rather than build a backlog the vendor refuses.
+OPENING_AUDIO_BYTES = int(MAX_LEAD_S * BYTES_PER_SECOND)
 
 #: The drain/close/event wait's bound name (ticket 76 owns the value in
 #: ``thresholds.json``; this module never restates it).
@@ -1182,6 +1197,9 @@ class CallLifecycle:
         self.sequence = CallSequence()
         self.audio_frames: list[OutboundAudio] = []
         self._on_caption = on_caption
+        #: Bytes of caller opening audio dropped because the speech handshake
+        #: outlasted the buffer bound; the newest frames are kept.
+        self._opening_audio_dropped = 0
         self._clock = clock if clock is not None else time.monotonic
         self._ledger = (
             ledger if ledger is not None else TimingLedger(now=self._clock)
@@ -1332,16 +1350,21 @@ class CallLifecycle:
         # is released by `listening` before the speech leg has acknowledged its
         # handshake, so a caller who opens with a complaint is captured while
         # the service is still opening. Frames that arrive before the ack are
-        # buffered in arrival order and flushed once the session can accept
-        # them; the handshake's own bound is what caps that wait, and a failed
-        # handshake aborts the call and the buffer with it. Nothing reaches the
-        # turn layer until that boundary; the buffers below are replayed then.
+        # buffered in arrival order and replayed once the session can accept
+        # them, at the pace the session accepts rather than in one burst the
+        # vendor would close as a backlog; the handshake's own bound is what
+        # caps that wait, and a failed handshake aborts the call and the buffer
+        # with it. The buffer is bounded by the session's own lead bound and
+        # drops the oldest frame on overflow, so a slow ack costs the caller's
+        # earliest words, never the newest. Nothing reaches the turn layer
+        # until that boundary; the buffers below are replayed then.
         buffered_events: list[Any] = []
         buffered_contexts: list[str] = []
         #: Caller PCM received before the speech session acknowledged its
-        #: handshake. `audio_lock` keeps the flush and the live frames in order,
-        #: so no opening audio is overtaken or dropped.
-        opening_audio: list[bytes] = []
+        #: handshake. `audio_lock` keeps the replay and the live frames in
+        #: order, so no opening audio is overtaken.
+        opening_audio: deque[bytes] = deque()
+        opening_bytes = 0
         audio_lock = asyncio.Lock()
         stt_session: Any | None = None
         speech: OpenedLeg | None = None
@@ -1413,7 +1436,7 @@ class CallLifecycle:
                 failure_event.set()
 
         async def receive() -> None:
-            nonlocal stream_failure, caller_audio_frames
+            nonlocal stream_failure, caller_audio_frames, opening_bytes
             try:
                 while True:
                     item = await self._transport.receive()
@@ -1438,8 +1461,13 @@ class CallLifecycle:
                         async with audio_lock:
                             if stt_session is None:
                                 # The handshake has not been acknowledged yet;
-                                # hold the frame and flush it in order below.
+                                # hold the frame and replay it in order below.
                                 opening_audio.append(item.pcm)
+                                opening_bytes += len(item.pcm)
+                                while opening_bytes > OPENING_AUDIO_BYTES:
+                                    oldest = opening_audio.popleft()
+                                    opening_bytes -= len(oldest)
+                                    self._drop_opening_audio(len(oldest))
                             else:
                                 await stt_session.send_audio(item.pcm)
                     elif isinstance(item, ContextUpdate):
@@ -1477,24 +1505,33 @@ class CallLifecycle:
                 opened, CallFailure.from_exception("open", error)
             )
 
-        # The handshake is acknowledged: flush everything the caller said while
+        # The handshake is acknowledged: replay everything the caller said while
         # it was opening, in arrival order, before any live frame overtakes it.
+        # The replay is paced by the session, so a slow ack costs time instead
+        # of an audio burst the vendor closes. The event pump starts first: the
+        # replay can take seconds, and a caller speech event must be able to
+        # skip the greeting while it runs.
+        event_task = asyncio.ensure_future(pump())
         try:
             async with audio_lock:
-                for pcm in opening_audio:
-                    await speech.session.send_audio(pcm)
-                opening_audio.clear()
+                while opening_audio:
+                    pcm = opening_audio.popleft()
+                    opening_bytes -= len(pcm)
+                    await _paced_sender(speech.session)(pcm)
                 stt_session = speech.session
         except asyncio.CancelledError:
+            receive_task.cancel()
+            event_task.cancel()
+            await asyncio.gather(receive_task, event_task, return_exceptions=True)
             raise
         except Exception as error:
             receive_task.cancel()
-            await asyncio.gather(receive_task, return_exceptions=True)
+            event_task.cancel()
+            await asyncio.gather(receive_task, event_task, return_exceptions=True)
             return await self._abort_before_stream(
                 opened, CallFailure.from_exception("stream", error)
             )
 
-        event_task = asyncio.ensure_future(pump())
         failure_task = asyncio.ensure_future(failure_event.wait())
         budget_task = asyncio.ensure_future(budget_event.wait())
         end_task = asyncio.ensure_future(end_event.wait())
@@ -2245,6 +2282,28 @@ class CallLifecycle:
         """The per-call ceiling breach, once one has happened."""
         return self._budget_stop
 
+    @property
+    def opening_audio_dropped(self) -> int:
+        """Bytes of opening audio dropped to keep the caller's newest words.
+
+        Non-zero means the speech handshake outlasted the buffer bound and the
+        oldest pre-ack frames were discarded. It is recorded here and in the
+        warning log; the newest audio is what the replay sends, so the caller's
+        most recent words are the ones heard.
+        """
+        return self._opening_audio_dropped
+
+    def _drop_opening_audio(self, dropped: int) -> None:
+        """Record one opening frame dropped on overflow, never silently."""
+        self._opening_audio_dropped += dropped
+        _log.warning(
+            "opening audio buffer is full (%d bytes, %.1f s): dropped the oldest "
+            "frame to keep the caller's newest words (%d bytes dropped in total)",
+            OPENING_AUDIO_BYTES,
+            MAX_LEAD_S,
+            self._opening_audio_dropped,
+        )
+
     async def _announce_listening(self) -> None:
         """Open the caller's microphone before the speech handshake and greeting.
 
@@ -2834,6 +2893,17 @@ def _failure(stage: str, error: BaseException) -> CallFailure:
     if isinstance(error, CallFailure):
         return error
     return CallFailure.from_exception(stage, error)
+
+
+def _paced_sender(session: Any) -> Callable[[bytes], Awaitable[None]]:
+    """The session's paced opening replay, or its live send for a double.
+
+    A speech session that owns the vendor's lead law replays a pre-ack frame at
+    the pace the session accepts (``replay_audio``). A scripted double that
+    does not implement the seam forwards the frame, which is the live path.
+    """
+    replay = getattr(session, "replay_audio", None)
+    return replay if callable(replay) else session.send_audio
 
 
 def _closer(session: Any) -> Callable[[], Any] | None:
