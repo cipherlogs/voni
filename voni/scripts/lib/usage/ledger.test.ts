@@ -11,6 +11,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   UsageCliError,
@@ -19,15 +22,14 @@ import {
 } from "./types";
 import { buildLedger, formatLedger } from "./ledger";
 import { readUsageCall } from "./evidence";
+import { RATES_DIR, RateBook } from "./rates";
 import {
   MEASURED,
   MEASURED_LLM,
   MEASURED_LLM_ROW,
   MEASURED_ROW,
-  MEASURED_ZERO_ROW,
   RATE_TABLE_VERSION,
   UNMEASURED,
-  UNMEASURED_ROW,
   ZERO,
 } from "./test-fixtures";
 
@@ -46,14 +48,27 @@ function callOf(fixture: {
   });
 }
 
-function runOf(calls: readonly UsageCall[], runId = "browser-test"): UsageRun {
+function runOf(
+  calls: readonly UsageCall[],
+  runId = "browser-test",
+  expectedCalls: number | null = calls.length,
+): UsageRun {
   return {
     runId,
     kind: "directory",
     calls,
-    expectedCalls: calls.length,
+    expectedCalls,
     source: `voni/.demo-runs/${runId}`,
   };
+}
+
+function ratesDirWith(versions: readonly number[]): string {
+  const dir = mkdtempSync(join(tmpdir(), "dv-usage-rates-"));
+  const base = JSON.parse(readFileSync(join(RATES_DIR, "v1.json"), "utf8")) as Record<string, unknown>;
+  for (const version of versions) {
+    writeFileSync(join(dir, `v${version}.json`), `${JSON.stringify({ ...base, version }, null, 2)}\n`, "utf8");
+  }
+  return dir;
 }
 
 test("prices a measured call into its Meta and AssemblyAI legs", () => {
@@ -250,8 +265,90 @@ test("groups measured spend by scenario and call", () => {
   assert.equal(booking?.calls, 1);
   assert.equal(booking?.usd, 0.00549885);
   assert.equal(ledger.totalUsd, 0.00858385);
+  assert.equal(ledger.expectedCalls, 2);
+  assert.equal(ledger.planGap, null);
   const text = formatLedger(ledger);
+  assert.match(text, /calls: 2 measured · 2 planned/);
   assert.match(text, /PER SCENARIO/);
   assert.match(text, /PER CALL/);
   assert.match(text, /golden-flow-booking/);
+});
+
+test("does not print a billed rate beside a netted reported quantity", () => {
+  const text = formatLedger(buildLedger(runOf([callOf(MEASURED_LLM)])));
+  assert.match(text, /4,859 prompt tokens \(reported, includes cached\)/);
+  assert.match(text, /390 completion tokens \(reported, includes reasoning\)/);
+  assert.match(text, /342 reasoning tokens \(reported, inside completion tokens\)/);
+  // The prompt and completion rates would invite arithmetic the row never did.
+  assert.doesNotMatch(text, /\$0\.00000125\/unit/);
+  assert.doesNotMatch(text, /\$0\.00000425\/unit/);
+  // A cached token is the one LLM line the cached rate actually multiplies.
+  assert.match(text, /4,834 cached tokens[^\n]*\$0\.00000015\/unit/);
+});
+
+test("labels a quantity summed across rate versions as mixed, in numeric order", () => {
+  const dir = ratesDirWith([1, 2, 9, 10]);
+  try {
+    const rates = new RateBook(dir);
+    const versioned = (
+      fixture: typeof MEASURED,
+      callId: string,
+      version: string,
+    ) => ({
+      ...fixture,
+      callId,
+      row: { ...fixture.row, callId, rateTableVersion: version },
+    });
+    const v1 = versioned(MEASURED, "v1-call", "cascade-vendor-rates v1");
+    const v2 = versioned(MEASURED_LLM, "v2-call", "cascade-vendor-rates v2");
+    const v9 = versioned(MEASURED, "v9-call", "cascade-vendor-rates v9");
+    const v10 = versioned(MEASURED_LLM, "v10-call", "cascade-vendor-rates v10");
+    const mixed = buildLedger(runOf([callOf(v1), callOf(v2)]), { rates });
+    assert.deepEqual(mixed.lines.find((line) => line.id === "stt.audio_seconds")?.rateVersions, [
+      "cascade-vendor-rates v1",
+      "cascade-vendor-rates v2",
+    ]);
+    assert.equal(mixed.lines.find((line) => line.id === "stt.audio_seconds")?.rateUsdPerUnit, null);
+    assert.match(formatLedger(mixed), /mixed v1\/v2/);
+
+    const numeric = buildLedger(runOf([callOf(v10), callOf(v9)]), { rates });
+    assert.deepEqual(numeric.lines.find((line) => line.id === "stt.audio_seconds")?.rateVersions, [
+      "cascade-vendor-rates v9",
+      "cascade-vendor-rates v10",
+    ]);
+    assert.match(formatLedger(numeric), /mixed v9\/v10/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("never presents a fragment as a complete run when measured calls fall short of the plan", () => {
+  const ledger = buildLedger(runOf([callOf(MEASURED)], "browser-partial", 3));
+  assert.equal(ledger.complete, false);
+  assert.equal(ledger.expectedCalls, 3);
+  assert.equal(ledger.planGap, "1 of 3 planned calls were measured; 2 have no priced row");
+  const text = formatLedger(ledger);
+  assert.match(text, /calls: 1 measured · 3 planned/);
+  assert.match(text, /plan: 1 of 3 planned calls were measured/);
+  assert.match(text, /TOTAL \(measured subset\).*NOT RECONCILABLE: 1 of 3 planned calls/);
+});
+
+test("names an absent leg and its units as unmeasured, not zero", () => {
+  const noTts = {
+    ...MEASURED_ROW,
+    totalUsd: 0.00175,
+    legs: {
+      stt: MEASURED_ROW.legs.stt,
+      llm: MEASURED_ROW.legs.llm,
+    },
+  };
+  const ledger = buildLedger(runOf([callOf({ ...MEASURED, row: noTts })]));
+  assert.equal(ledger.complete, false);
+  assert.equal(ledger.totalUsd, 0.00175);
+  assert.deepEqual(
+    ledger.unmeasured.map((entry) => entry.lineId).sort(),
+    ["tts.audio_seconds", "tts.characters", "tts.session_seconds"],
+  );
+  assert.ok(ledger.unmeasured.every((entry) => /records no tts leg/.test(entry.reason)));
+  assert.match(formatLedger(ledger), /tts\.characters[^\n]*records no tts leg/);
 });

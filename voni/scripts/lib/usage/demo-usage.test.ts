@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { main } from "../../demo-usage.mts";
-import { MEASURED, MEASURED_LLM, MEASURED_ROW } from "./test-fixtures";
+import { MEASURED, MEASURED_ROW } from "./test-fixtures";
 
 type Captured = { readonly code: number; readonly out: string; readonly err: string };
 
@@ -36,20 +36,25 @@ async function run(argv: readonly string[]): Promise<Captured> {
   }
 }
 
-function writeRun(root: string, runId: string, calls: readonly typeof MEASURED[]): void {
-  for (const call of calls) {
-    const callDir = join(root, runId, "calls", call.callId);
-    mkdirSync(callDir, { recursive: true });
-    writeFileSync(join(callDir, "trace.jsonl"), `${JSON.stringify(call.row)}\n`, "utf8");
-    writeFileSync(
-      join(callDir, "call.json"),
-      `${JSON.stringify({ callId: call.callId, scenario: call.scenario, locale: call.locale })}\n`,
-      "utf8",
-    );
-  }
+function writeRun(root: string, runId: string, call: typeof MEASURED): void {
+  const callDir = join(root, runId, "calls", call.callId);
+  mkdirSync(callDir, { recursive: true });
+  writeFileSync(join(callDir, "trace.jsonl"), `${JSON.stringify(call.row)}\n`, "utf8");
+  writeFileSync(
+    join(callDir, "call.json"),
+    `${JSON.stringify({ callId: call.callId, scenario: call.scenario, locale: call.locale })}\n`,
+    "utf8",
+  );
   writeFileSync(
     join(root, runId, "run.json"),
-    `${JSON.stringify({ schemaVersion: 1, runId })}\n`,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      runId,
+      scenario: call.scenario,
+      locale: call.locale,
+      endedAt: "2026-11-02T10:00:00.000Z",
+      status: "not-demo-ready",
+    })}\n`,
     "utf8",
   );
 }
@@ -57,7 +62,7 @@ function writeRun(root: string, runId: string, calls: readonly typeof MEASURED[]
 test("prints a run ledger and exits 0", async () => {
   const root = mkdtempSync(join(tmpdir(), "dv-usage-cli-"));
   try {
-    writeRun(root, "browser-cli", [MEASURED, MEASURED_LLM]);
+    writeRun(root, "browser-cli", MEASURED);
     const result = await run([
       "--run",
       "browser-cli",
@@ -68,7 +73,9 @@ test("prints a run ledger and exits 0", async () => {
     ]);
     assert.equal(result.code, 0);
     assert.match(result.out, /demo:usage · run browser-cli/);
-    assert.match(result.out, /TOTAL \$0\.00858385 across 2 calls/);
+    assert.match(result.out, /calls: 1 measured · 1 planned/);
+    assert.match(result.out, /TOTAL \$0\.003085 across 1 call/);
+    assert.match(result.out, new RegExp(MEASURED.callId));
     assert.match(result.out, /PER CALL/);
     assert.match(result.out, /UNMEASURED\s+none/);
     assert.equal(result.err, "");
@@ -80,7 +87,7 @@ test("prints a run ledger and exits 0", async () => {
 test("--latest prints the newest evidence set", async () => {
   const root = mkdtempSync(join(tmpdir(), "dv-usage-cli-"));
   try {
-    writeRun(root, "browser-cli", [MEASURED]);
+    writeRun(root, "browser-cli", MEASURED);
     const result = await run([
       "--latest",
       "--run-root",
@@ -125,6 +132,16 @@ test("refuses a torn row with a named non-zero exit", async () => {
       `${JSON.stringify({ callId: MEASURED.callId, scenario: MEASURED.scenario })}\n`,
       "utf8",
     );
+    writeFileSync(
+      join(root, "browser-torn", "run.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        runId: "browser-torn",
+        endedAt: "2026-11-02T10:00:00.000Z",
+        status: "not-demo-ready",
+      })}\n`,
+      "utf8",
+    );
     const result = await run([
       "--run",
       "browser-torn",
@@ -135,6 +152,33 @@ test("refuses a torn row with a named non-zero exit", async () => {
     ]);
     assert.equal(result.code, 2);
     assert.match(result.err, /REFUSED \(torn-row\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a partial run with a named non-zero exit", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-usage-cli-"));
+  try {
+    const callDir = join(root, "browser-partial", "calls", MEASURED.callId);
+    mkdirSync(callDir, { recursive: true });
+    writeFileSync(join(callDir, "trace.jsonl"), `${JSON.stringify(MEASURED.row)}\n`, "utf8");
+    writeFileSync(
+      join(callDir, "call.json"),
+      `${JSON.stringify({ callId: MEASURED.callId, scenario: MEASURED.scenario })}\n`,
+      "utf8",
+    );
+    const result = await run([
+      "--run",
+      "browser-partial",
+      "--run-root",
+      root,
+      "--evidence-root",
+      join(root, "evidence"),
+    ]);
+    assert.equal(result.code, 2);
+    assert.match(result.err, /REFUSED \(incomplete-run\)/);
+    assert.match(result.err, /1 call trace seen/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
