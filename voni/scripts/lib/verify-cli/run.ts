@@ -211,6 +211,12 @@ export type VerifyResult = {
   readonly failedPropertyIds: readonly string[];
   /** A fallback-contaminated or otherwise ineligible run can never green. */
   readonly ineligible: boolean;
+  /**
+   * Calls re-made because they produced no evidence at all. The first attempt
+   * is kept beside the run; a retry is never a substitute for a measured
+   * result and never turns a failure green.
+   */
+  readonly retries: readonly EvidenceRetry[];
 };
 
 function emptyResult(
@@ -235,6 +241,7 @@ function emptyResult(
     detail: "",
     failedPropertyIds: [],
     ineligible: false,
+    retries: [],
   };
 }
 
@@ -314,12 +321,37 @@ async function startupGaps(
   };
 }
 
+/** One call that was re-made because it produced no evidence at all. */
+export type EvidenceRetry = {
+  readonly scenario: string;
+  readonly repetition: number;
+  /** The refusal the first attempt ended with. */
+  readonly code: string;
+  readonly message: string;
+  readonly at: string;
+};
+
+/**
+ * The refusal codes that mean "this call produced no evidence at all": the app
+ * never posted the marks that bind the call, or the harness could not open the
+ * call. Nothing was measured, so a second attempt cannot turn a result green.
+ *
+ * A call that ran and failed (a trigger that never resolved, a property below
+ * bar, a dropped socket after turns) is NOT here: its evidence is judged, and
+ * retrying it would be the retry-to-green the spec forbids.
+ */
+export const RETRYABLE_NO_EVIDENCE: ReadonlySet<string> = new Set([
+  "marks-missing",
+  "call-refused",
+]);
+
 type Collected = {
   readonly attempts: readonly ScenarioAttempt[];
   readonly callAttempts: readonly CertificationAttempt[];
   readonly eligibility: readonly CallEligibilityFact[];
   readonly costs: readonly RunCostRow[];
   readonly pipelineImage: string | null;
+  readonly retries: readonly EvidenceRetry[];
 };
 
 async function collectCalls(
@@ -333,6 +365,7 @@ async function collectCalls(
   const costs: RunCostRow[] = [];
   let pipelineImage: string | null = null;
   let lastStart: number | null = null;
+  const retries: EvidenceRetry[] = [];
 
   for (const scenario of plan.scenarios) {
     for (let repetition = 1; repetition <= plan.repetitions; repetition += 1) {
@@ -346,18 +379,48 @@ async function collectCalls(
         if (waited < interval) await (deps.sleep?.((interval - waited) | 0) ?? sleepMs(interval - waited));
       }
       lastStart = deps.clock?.() ?? Date.now();
-      const outcome = await deps.runScenario({
+      let outcome = await deps.runScenario({
         request,
         scenario: scenario.name,
         locale: scenario.locale,
         target: plan.target,
         repetition,
       });
+      // A call with no evidence is re-made once, and both attempts are kept in
+      // the run. Nothing was measured, so this cannot make a failure green; it
+      // only stops an infrastructure hiccup from costing the whole run. The
+      // second attempt's refusal stands, unretried.
+      if (outcome.refusal !== null && RETRYABLE_NO_EVIDENCE.has(outcome.refusal.code)) {
+        const first = outcome.refusal;
+        retries.push({
+          scenario: scenario.name,
+          repetition,
+          code: first.code,
+          message: first.message,
+          at: new Date().toISOString(),
+        });
+        const interval = callIntervalMs(deps.env);
+        await (deps.sleep?.(interval) ?? sleepMs(interval));
+        lastStart = deps.clock?.() ?? Date.now();
+        outcome = await deps.runScenario({
+          request,
+          scenario: scenario.name,
+          locale: scenario.locale,
+          target: plan.target,
+          repetition,
+        });
+      }
       if (outcome.refusal !== null) {
+        const remade =
+          retries.length === 0
+            ? ""
+            : `; this run re-made ${retries.length} call(s) that produced no evidence ` +
+              `(${retries.map((retry) => `${retry.scenario}#${retry.repetition} ${retry.code}`).join(", ")})`;
         refuse(
           "adapter-refused",
           `${scenario.name} repetition ${repetition} refused (${outcome.refusal.code}): ` +
-            outcome.refusal.message,
+            outcome.refusal.message +
+            remade,
           [outcome.refusal.code],
         );
       }
@@ -393,7 +456,7 @@ async function collectCalls(
     }
   }
 
-  return { attempts, callAttempts, eligibility, costs, pipelineImage };
+  return { attempts, callAttempts, eligibility, costs, pipelineImage, retries };
 }
 
 function measuredCost(costs: readonly RunCostRow[]): number {
@@ -572,6 +635,7 @@ async function fastRun(
     calls: collected.attempts.length,
     failedPropertyIds: report.failedPropertyIds,
     ineligible: report.verdict === "ineligible",
+    retries: collected.retries,
     detail:
       `${report.scopeNote} ${report.economy.detail}` +
       (report.failedPropertyIds.length === 0
@@ -580,6 +644,11 @@ async function fastRun(
       " A scoped-pass is not a certificate; exit 0 is reserved for a signed full certification",
     unrun: unique([
       ...report.gaps,
+      ...collected.retries.map(
+        (retry) =>
+          `${retry.scenario} repetition ${retry.repetition} produced no evidence and was re-made ` +
+          `(${retry.code}: ${retry.message.slice(0, 120)}); a retry never turns a result green`,
+      ),
       ...report.outOfScopeFamilies.map((family) => family.reason),
       // Only the in-scope failures belong here. The run verdict fails every
       // property no attempt cites closed; those are the scope's out-of-scope
@@ -676,6 +745,7 @@ async function certificationRun(
     calls: collected.attempts.length,
     failedPropertyIds: judged.failedPropertyIds,
     ineligible: judged.verdict === "ineligible",
+    retries: collected.retries,
     certificate,
     certificatePath: fileURLToPath(certificateFile(certificate.runId)),
     certificateVerdict: certificate.verdict,

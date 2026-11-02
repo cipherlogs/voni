@@ -182,6 +182,95 @@ async function fastResult(overrides: Partial<VerifyDeps> = {}): Promise<VerifyRe
   return runVerify(fastRequest(), deps);
 }
 
+test("a call that produced no evidence is re-made once, and both attempts are kept", async () => {
+  let calls = 0;
+  const result = await fastResult({
+    runScenario: async (input) => {
+      calls += 1;
+      // Only the very first call of the run is lost; the retry lands.
+      if (calls === 1) {
+        return {
+          refusal: {
+            code: "marks-missing",
+            message: 'the browser harness recorded no marks artifact for call "abc"',
+          },
+          attempt: null,
+          eligibility: null,
+          pipelineImage: null,
+        };
+      }
+      return {
+        refusal: null,
+        attempt: {
+          scenario: input.scenario,
+          repetition: 1,
+          locale: input.locale,
+          target: input.target,
+          evidence: EVIDENCE,
+        },
+        eligibility: { callId: `${input.scenario}#${input.repetition}`, scenario: input.scenario },
+        pipelineImage: "pipeline-test",
+      };
+    },
+  });
+
+  assert.equal(result.status, "scoped-pass");
+  assert.equal(calls, 11, "ten calls, with the first made twice");
+  assert.equal(result.retries.length, 1);
+  assert.equal(result.retries[0]?.code, "marks-missing");
+  assert.equal(result.retries[0]?.scenario, FAST_CONTRACT_SCENARIOS[0]);
+  assert.ok(
+    result.unrun.some((line) => /produced no evidence and was re-made/.test(line)),
+    "the run names the re-made call",
+  );
+});
+
+test("a second attempt that also produces no evidence refuses the run", async () => {
+  let calls = 0;
+  const result = await fastResult({
+    runScenario: async () => {
+      calls += 1;
+      return {
+        refusal: {
+          code: "marks-missing",
+          message: "no marks artifact",
+        },
+        attempt: null,
+        eligibility: null,
+        pipelineImage: null,
+      };
+    },
+  });
+  assert.equal(result.status, "refused");
+  assert.equal(result.exitCode, 2);
+  assert.equal(calls, 2, "one call, one retry, then the refusal stands");
+  assert.ok(
+    result.refusals.some((line) => /re-made 1 call\(s\) that produced no evidence/.test(line)),
+    "the refusal names the re-made call",
+  );
+});
+
+test("a call that ran and failed is never re-made", async () => {
+  let calls = 0;
+  const result = await fastResult({
+    runScenario: async () => {
+      calls += 1;
+      return {
+        refusal: {
+          code: "trigger-unresolved",
+          message: "no agent-turn-end event before the call ended",
+        },
+        attempt: null,
+        eligibility: null,
+        pipelineImage: null,
+      };
+    },
+  });
+  assert.equal(result.status, "refused");
+  assert.equal(calls, 1, "a measured call is never re-made");
+  assert.equal(result.retries.length, 0);
+});
+
 test("calls are paced so the vendor's session allowance is never reached", async () => {
   const starts: number[] = [];
   const sleeps: number[] = [];

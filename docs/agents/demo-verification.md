@@ -257,6 +257,16 @@ artifact disappears.
   a stream that arrives ahead of real time ("Audio processing backlog too
   large"). A resumed call speaks no greeting, so `MIC_GATE_FALLBACK_MS` (8 s)
   opens the gate even when no audio ever arrives.
+- **A call that produced no evidence is re-made once (owner amendment,
+  2026-11-02).** A 273-call run aborts on the first call without evidence, and
+  at the observed ~1% per-call fault rate a clean run was a fraction of a
+  percent — an infrastructure hiccup, not a result, cost the whole run. A
+  refusal code `marks-missing` or `call-refused` means nothing was measured, so
+  the call is made once more and both attempts are named in the run; the second
+  refusal stands, unretried. A call that ran and failed (`trigger-unresolved`,
+  a below-bar property, a dropping socket after turns) is never re-made: that
+  would be the retry-to-green the spec forbids. A completed run's
+  `VerifyResult.retries` lists every re-made call.
 - **Two rate limits bound a local run, and neither is a defect.** The app's
   demo token limiter is per IP per hour (`DEMO_MAX_PER_IP_PER_HOUR`, 3 by
   default); a verification stack must raise it above the plan's call count, or
