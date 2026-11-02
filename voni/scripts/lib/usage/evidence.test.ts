@@ -1,0 +1,542 @@
+/**
+ * Run-id resolution and the fail-closed evidence reader.
+ *
+ * A run id may name a local adapter directory or a committed certificate. A
+ * certificate resolves through the call ids in its coverage rows to the
+ * per-call directories under `.demo-runs`. A missing run, a missing priced row,
+ * a torn row and a certificate whose call count disagrees with the evidence are
+ * named refusals, never a partial ledger.
+ */
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { UsageCliError } from "./types";
+import { readRunJournal, resolveLatest, resolveRun } from "./evidence";
+import { buildLedger } from "./ledger";
+import { roundUsd } from "./sums";
+import {
+  MEASURED,
+  MEASURED_LLM,
+  MEASURED_ROW,
+  UNMEASURED,
+  ZERO,
+} from "./test-fixtures";
+
+type Fixture = {
+  readonly callId: string;
+  readonly scenario: string;
+  readonly locale: string;
+  readonly row: unknown;
+};
+
+function tempRoot(): string {
+  return mkdtempSync(join(tmpdir(), "dv-usage-"));
+}
+
+function writeCall(
+  root: string,
+  runId: string,
+  fixture: Fixture,
+  options: { readonly trace?: string; readonly pricedRows?: readonly unknown[] } = {},
+): string {
+  const callDir = join(root, runId, "calls", fixture.callId);
+  mkdirSync(callDir, { recursive: true });
+  const rows = options.pricedRows ?? [fixture.row];
+  const trace =
+    options.trace ?? `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
+  writeFileSync(join(callDir, "trace.jsonl"), trace, "utf8");
+  writeFileSync(
+    join(callDir, "call.json"),
+    `${JSON.stringify(
+      { callId: fixture.callId, scenario: fixture.scenario, locale: fixture.locale },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  return callDir;
+}
+
+function writeRun(root: string, runId: string, fixture: Fixture): string {
+  const dir = join(root, runId);
+  mkdirSync(dir, { recursive: true });
+  endRun(root, runId);
+  writeCall(root, runId, fixture);
+  return dir;
+}
+
+function endRun(root: string, runId: string): void {
+  const dir = join(root, runId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "run.json"),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        runId,
+        endedAt: "2026-11-02T10:00:00.000Z",
+        status: "not-demo-ready",
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+function writeCertificate(
+  evidenceRoot: string,
+  runId: string,
+  rows: readonly {
+    readonly scenario: string;
+    readonly locale: string;
+    readonly calls: readonly string[];
+    readonly requiredRepetitions?: number;
+  }[],
+  callCount: number,
+  usd = 0,
+): string {
+  const dir = join(evidenceRoot, "certificates");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${runId}.json`);
+  writeFileSync(
+    file,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        runId,
+        cost: { usd, callCount },
+        coverage: {
+          rows: rows.map((row) => ({
+            locale: row.locale,
+            scenario: row.scenario,
+            heldOut: false,
+            requiredRepetitions: row.requiredRepetitions ?? 1,
+            measuredRepetitions: row.calls.length,
+            status: "measured",
+            gap: null,
+            calls: row.calls,
+          })),
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  return file;
+}
+
+function refusalCode(action: () => unknown): string {
+  try {
+    action();
+  } catch (error) {
+    assert.ok(error instanceof UsageCliError, `expected a usage refusal, got ${String(error)}`);
+    return error.code;
+  }
+  assert.fail("expected a refusal, but the call returned");
+}
+
+test("resolves a certificate run id through its coverage call ids", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const evidenceRoot = join(root, "evidence");
+    // The certificate names two calls that live in two different adapter runs.
+    writeRun(runRoot, "browser-aaa", MEASURED);
+    writeRun(runRoot, "browser-bbb", MEASURED_LLM);
+    writeCertificate(
+      evidenceRoot,
+      "verify-20261102-01",
+      [
+        { scenario: MEASURED.scenario, locale: "en", calls: [MEASURED.callId] },
+        { scenario: MEASURED_LLM.scenario, locale: "en", calls: [MEASURED_LLM.callId] },
+      ],
+      2,
+      0.008584,
+    );
+
+    const run = resolveRun("verify-20261102-01", { runRoot, evidenceRoot });
+    assert.equal(run.kind, "certificate");
+    assert.equal(run.expectedCalls, 2);
+    assert.equal(run.calls.length, 2);
+    assert.deepEqual(
+      run.calls.map((call) => call.callId).sort(),
+      [MEASURED.callId, MEASURED_LLM.callId].sort(),
+    );
+    assert.equal(run.calls.find((call) => call.callId === MEASURED_LLM.callId)?.scenario, "golden-flow-booking");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolves a local adapter run directory", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    writeRun(runRoot, "browser-local", MEASURED);
+    const run = resolveRun("browser-local", { runRoot, evidenceRoot: join(root, "evidence") });
+    assert.equal(run.kind, "directory");
+    assert.equal(run.calls.length, 1);
+    assert.equal(run.expectedCalls, 1);
+    assert.equal(run.calls[0]?.scenario, MEASURED.scenario);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--latest picks the newest readable run directory", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const older = writeRun(runRoot, "browser-old", MEASURED);
+    const newer = writeRun(runRoot, "browser-new", MEASURED_LLM);
+    const old = new Date("2026-11-01T10:00:00Z");
+    const fresh = new Date("2026-11-02T10:00:00Z");
+    utimesSync(join(older, "run.json"), old, old);
+    utimesSync(older, old, old);
+    utimesSync(join(newer, "run.json"), fresh, fresh);
+    utimesSync(newer, fresh, fresh);
+
+    const run = resolveLatest({ runRoot, evidenceRoot: join(root, "evidence") });
+    assert.equal(run.runId, "browser-new");
+    assert.equal(run.calls[0]?.callId, MEASURED_LLM.callId);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--latest prefers a newer certificate over an older adapter run", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const evidenceRoot = join(root, "evidence");
+    const dir = writeRun(runRoot, "browser-old", MEASURED);
+    const cert = writeCertificate(
+      evidenceRoot,
+      "verify-20261102-02",
+      [{ scenario: MEASURED.scenario, locale: "en", calls: [MEASURED.callId] }],
+      1,
+      0.003085,
+    );
+    const old = new Date("2026-11-01T10:00:00Z");
+    const fresh = new Date("2026-11-02T10:00:00Z");
+    utimesSync(join(dir, "run.json"), old, old);
+    utimesSync(dir, old, old);
+    utimesSync(cert, fresh, fresh);
+
+    const run = resolveLatest({ runRoot, evidenceRoot });
+    assert.equal(run.runId, "verify-20261102-02");
+    assert.equal(run.kind, "certificate");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses an unknown run id by name", () => {
+  const root = tempRoot();
+  try {
+    const code = refusalCode(() =>
+      resolveRun("verify-missing", { runRoot: join(root, ".demo-runs"), evidenceRoot: join(root, "evidence") }),
+    );
+    assert.equal(code, "unknown-run");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a run with no priced row", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const runId = "browser-nocost";
+    const callDir = join(runRoot, runId, "calls", MEASURED.callId);
+    mkdirSync(callDir, { recursive: true });
+    endRun(runRoot, runId);
+    writeFileSync(join(callDir, "trace.jsonl"), `${JSON.stringify({ type: "greeting.done" })}\n`, "utf8");
+    writeFileSync(
+      join(callDir, "call.json"),
+      `${JSON.stringify({ callId: MEASURED.callId, scenario: MEASURED.scenario })}\n`,
+      "utf8",
+    );
+    const code = refusalCode(() =>
+      resolveRun(runId, { runRoot, evidenceRoot: join(root, "evidence") }),
+    );
+    assert.equal(code, "missing-evidence");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a torn cost row instead of skipping it", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const runId = "browser-torn";
+    const callDir = join(runRoot, runId, "calls", MEASURED.callId);
+    mkdirSync(callDir, { recursive: true });
+    endRun(runRoot, runId);
+    // A partial write: the type is visible, the JSON is not.
+    writeFileSync(
+      join(callDir, "trace.jsonl"),
+      `{"type":"cost.priced","measured":true,"totalUsd":0.00\n`,
+      "utf8",
+    );
+    writeFileSync(
+      join(callDir, "call.json"),
+      `${JSON.stringify({ callId: MEASURED.callId, scenario: MEASURED.scenario })}\n`,
+      "utf8",
+    );
+    const code = refusalCode(() =>
+      resolveRun(runId, { runRoot, evidenceRoot: join(root, "evidence") }),
+    );
+    assert.equal(code, "torn-row");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses two priced rows for one call", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const runId = "browser-duplicate";
+    endRun(runRoot, runId);
+    writeCall(runRoot, runId, MEASURED, { pricedRows: [MEASURED_ROW, MEASURED_ROW] });
+    const code = refusalCode(() =>
+      resolveRun(runId, { runRoot, evidenceRoot: join(root, "evidence") }),
+    );
+    assert.equal(code, "torn-row");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a certificate whose call count disagrees with the resolved calls", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const evidenceRoot = join(root, "evidence");
+    writeRun(runRoot, "browser-count", MEASURED);
+    writeCertificate(
+      evidenceRoot,
+      "verify-count",
+      [{ scenario: MEASURED.scenario, locale: "en", calls: [MEASURED.callId] }],
+      2,
+      0.003085,
+    );
+    const code = refusalCode(() => resolveRun("verify-count", { runRoot, evidenceRoot }));
+    assert.equal(code, "torn-row");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a certificate whose usd disagrees with its priced rows", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const evidenceRoot = join(root, "evidence");
+    writeRun(runRoot, "browser-usd", MEASURED);
+    writeCertificate(
+      evidenceRoot,
+      "verify-usd",
+      [{ scenario: MEASURED.scenario, locale: "en", calls: [MEASURED.callId] }],
+      1,
+      0.009999,
+    );
+    const code = refusalCode(() => resolveRun("verify-usd", { runRoot, evidenceRoot }));
+    assert.equal(code, "torn-row");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a certificate that names a call absent from local evidence", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const evidenceRoot = join(root, "evidence");
+    writeCertificate(
+      evidenceRoot,
+      "verify-absent",
+      [{ scenario: UNMEASURED.scenario, locale: "en", calls: [UNMEASURED.callId] }],
+      1,
+    );
+    const code = refusalCode(() => resolveRun("verify-absent", { runRoot, evidenceRoot }));
+    assert.equal(code, "missing-evidence");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("does not dress an unmeasured row's missing total as zero", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    writeRun(runRoot, "browser-unmeasured", UNMEASURED);
+    const run = resolveRun("browser-unmeasured", {
+      runRoot,
+      evidenceRoot: join(root, "evidence"),
+    });
+    assert.equal(run.calls[0]?.priced.measured, false);
+    assert.equal(run.calls[0]?.priced.totalUsd, null);
+    // The unmeasured row still carries its measured llm amount, never a zero.
+    assert.equal(run.calls[0]?.units.llm?.prompt_tokens, 4859);
+    assert.equal(run.calls[0]?.units.stt?.audio_seconds, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a missing run root rather than returning an empty run", () => {
+  const root = tempRoot();
+  try {
+    const code = refusalCode(() =>
+      resolveLatest({ runRoot: join(root, "absent"), evidenceRoot: join(root, "evidence") }),
+    );
+    assert.equal(code, "missing-evidence");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a partial run directory with no terminal run.json", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    // The adapter has written one call trace, but not the ending run.json.
+    writeCall(runRoot, "browser-partial", MEASURED);
+    let message = "";
+    try {
+      resolveRun("browser-partial", { runRoot, evidenceRoot: join(root, "evidence") });
+    } catch (error) {
+      assert.ok(error instanceof UsageCliError);
+      assert.equal(error.code, "incomplete-run");
+      message = error.message;
+    }
+    assert.match(message, /browser-partial/);
+    assert.match(message, /1 call trace seen/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--latest refuses the newest in-progress directory, never skips to an older run", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const old = writeRun(runRoot, "browser-old", MEASURED);
+    const partial = join(runRoot, "browser-partial");
+    writeCall(runRoot, "browser-partial", MEASURED_LLM);
+    const early = new Date("2026-11-01T10:00:00Z");
+    const fresh = new Date("2026-11-02T10:00:00Z");
+    utimesSync(join(old, "run.json"), early, early);
+    utimesSync(old, early, early);
+    utimesSync(partial, fresh, fresh);
+
+    const code = refusalCode(() =>
+      resolveLatest({ runRoot, evidenceRoot: join(root, "evidence") }),
+    );
+    assert.equal(code, "incomplete-run");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses the same call id in two run directories", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const evidenceRoot = join(root, "evidence");
+    writeRun(runRoot, "browser-dup-a", MEASURED);
+    // A second directory carries the same call id: one dashboard line would be
+    // counted twice.
+    writeCall(runRoot, "browser-dup-b", MEASURED);
+    writeCertificate(
+      evidenceRoot,
+      "verify-duplicate",
+      [{ scenario: MEASURED.scenario, locale: "en", calls: [MEASURED.callId] }],
+      1,
+      0.003085,
+    );
+    const code = refusalCode(() => resolveRun("verify-duplicate", { runRoot, evidenceRoot }));
+    assert.equal(code, "torn-row");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a certificate coverage row that relabels the call's scenario", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const evidenceRoot = join(root, "evidence");
+    writeRun(runRoot, "browser-label", MEASURED);
+    writeCertificate(
+      evidenceRoot,
+      "verify-label",
+      [{ scenario: MEASURED_LLM.scenario, locale: "en", calls: [MEASURED.callId] }],
+      1,
+      0.003085,
+    );
+    let message = "";
+    try {
+      resolveRun("verify-label", { runRoot, evidenceRoot });
+    } catch (error) {
+      assert.ok(error instanceof UsageCliError);
+      assert.equal(error.code, "torn-row");
+      message = error.message;
+    }
+    assert.match(message, new RegExp(MEASURED_LLM.scenario));
+    assert.match(message, new RegExp(MEASURED.scenario));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("buildLedger's total equals the certificate's aggregate at one precision", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const evidenceRoot = join(root, "evidence");
+    writeRun(runRoot, "browser-total-a", MEASURED);
+    writeRun(runRoot, "browser-total-b", MEASURED_LLM);
+    writeCertificate(
+      evidenceRoot,
+      "verify-total",
+      [
+        { scenario: MEASURED.scenario, locale: "en", calls: [MEASURED.callId] },
+        { scenario: MEASURED_LLM.scenario, locale: "en", calls: [MEASURED_LLM.callId] },
+      ],
+      2,
+      0.008584,
+    );
+    const run = resolveRun("verify-total", { runRoot, evidenceRoot });
+    const ledger = buildLedger(run);
+    const certificate = JSON.parse(
+      readFileSync(join(evidenceRoot, "certificates", "verify-total.json"), "utf8"),
+    ) as { cost: { usd: number } };
+    assert.equal(ledger.complete, true);
+    assert.equal(ledger.expectedCalls, 2);
+    assert.equal(roundUsd(ledger.totalUsd), roundUsd(certificate.cost.usd));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the run-journal seam refuses by name instead of falling back to mtime", () => {
+  const code = refusalCode(() => readRunJournal("verify-1", "/tmp/journal"));
+  assert.equal(code, "run-journal-not-implemented");
+});

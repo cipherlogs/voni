@@ -78,6 +78,14 @@ test("a measured priced row is read verbatim, with every leg", () => {
       ["tts", 0.0152],
     ],
   );
+  assert.deepEqual(
+    cost.legs.map((leg) => [leg.leg, leg.units]),
+    [
+      ["stt", { audio_seconds: 12.5 }],
+      ["llm", { prompt_tokens: 900 }],
+      ["tts", { characters: 310 }],
+    ],
+  );
   assert.equal(cost.unmeasuredReason, null);
 });
 
