@@ -97,14 +97,15 @@ class RepeatGuardTests(unittest.TestCase):
             await asyncio.sleep(0)
         self.fail(f"the stream only completed {stream.turn_count()} of {turns} turns")
 
-    def run_turns(self, stream: CascadeTurnStream, turns: int) -> None:
+    def run_turns(
+        self, stream: CascadeTurnStream, turns: int, texts=None
+    ) -> None:
         async def run():
             await stream.start()
             for number in range(1, turns + 1):
+                text = texts[number - 1] if texts is not None else f"turn {number}"
                 await stream.event(SpeechStart(f"t{number}"))
-                await stream.event(
-                    SpeechComplete(f"turn {number}", turn_id=f"t{number}")
-                )
+                await stream.event(SpeechComplete(text, turn_id=f"t{number}"))
                 await self.settle(stream, number)
             await stream.drain()
 
@@ -317,7 +318,9 @@ class RepeatGuardTests(unittest.TestCase):
             ]
         )
 
-        self.run_turns(stream, 4)
+        # The caller answers the opening question, so the unanswered-question
+        # guard is not what decides this turn: the repeat window alone is.
+        self.run_turns(stream, 4, ["turn 1", "the order", "turn 3", "turn 4"])
 
         self.assertEqual(QUESTION, self.tts.spoken[0])
         self.assertEqual(QUESTION, self.tts.spoken[-1])
