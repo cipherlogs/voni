@@ -14,7 +14,11 @@ import {
   buildCertificate,
   type Certificate,
 } from "../../../src/lib/demo/verification/certificate";
-import { LOCALES, type Locale } from "../../../src/lib/demo/verification/scenarios/types";
+import {
+  LOCALES,
+  type Locale,
+  type ScenarioClass,
+} from "../../../src/lib/demo/verification/scenarios/types";
 import { RATING_AXES } from "../rate";
 import { judgeRun, type RunVerdict } from "../../../src/lib/demo/verification/verdict";
 import { applyPanelVerdict, judgePanel } from "../../../src/lib/demo/verification/panel";
@@ -65,29 +69,54 @@ export function sessionCertificate(options: {
   failing?: readonly string[];
   /** How many failed property rows each failing scenario carries (default 1). */
   severity?: Readonly<Record<string, number>>;
+  /** The declared scope; every demo Locale when omitted. */
+  scope?: readonly Locale[];
+  /** One scenario per class for the one-Locale `en` fixture. */
+  classes?: readonly ScenarioClass[];
 } = {}): Certificate {
   const perLocale = options.callsPerLocale ?? 3;
   const failing = new Set(options.failing ?? []);
   const severity = options.severity ?? {};
   const levels = Math.max(1, ...Object.values(severity));
-  const rows = LOCALES.flatMap((locale) => {
-    const scenario = `panel-${locale}`;
-    const calls = Array.from({ length: perLocale }, (_, index) => `call-${locale}-${index + 1}`);
-    const base = {
-      locale,
-      scenario,
+  const scope = options.scope ?? LOCALES;
+  const inScope = LOCALES.filter((locale) => scope.includes(locale));
+  const rows = inScope.flatMap((locale) => {
+    const classRows =
+      locale === "en" && options.classes !== undefined
+        ? options.classes.map((scenarioClass, index) => ({
+            locale,
+            scenario: `panel-en-${index + 1}`,
+            class: scenarioClass,
+            calls: Array.from(
+              { length: perLocale },
+              (_, callIndex) => `call-en-${index + 1}-${callIndex + 1}`,
+            ),
+          }))
+        : [
+            {
+              locale,
+              scenario: `panel-${locale}`,
+              class: "golden-flow" as ScenarioClass,
+              calls: Array.from(
+                { length: perLocale },
+                (_, index) => `call-${locale}-${index + 1}`,
+              ),
+            },
+          ];
+    const base = classRows.map((row) => ({
+      ...row,
       heldOut: false,
       requiredRepetitions: perLocale,
       measuredRepetitions: perLocale,
       status: "measured" as const,
       gap: null,
-      calls,
-    };
+    }));
     const extra = [...failing]
       .filter((name) => name === `fail-${locale}`)
       .map((name) => ({
         locale,
         scenario: name,
+        class: "golden-flow" as ScenarioClass,
         heldOut: false,
         requiredRepetitions: 1,
         measuredRepetitions: 1,
@@ -95,9 +124,12 @@ export function sessionCertificate(options: {
         gap: null,
         calls: [`call-${locale}-fail-1`],
       }));
-    return [base, ...extra];
+    return [...base, ...extra];
   });
-  const rowsByLocale = LOCALES.map((locale) => rows.filter((row) => row.locale === locale));
+  const rowsByLocale = inScope.map((locale) => ({
+    locale,
+    rows: rows.filter((row) => row.locale === locale),
+  }));
   const failedProperties = Array.from({ length: levels }, (_, level) => ({
     propertyId: `T${level + 1}`,
     family: "turn-taking" as const,
@@ -117,10 +149,19 @@ export function sessionCertificate(options: {
         citations: [`${scenario}#1`],
       })),
   }));
+  const decision = {
+    decidedBy: "owner" as const,
+    decidedOn: "2026-11-02",
+    reason: "English-only launch",
+  };
   return {
     schemaVersion: CERTIFICATE_SCHEMA_VERSION,
     runId: RUN_ID,
     target: "local",
+    scope: {
+      locales: inScope,
+      ...decision,
+    },
     code: {
       fingerprint: { head: "a".repeat(40), dirty: false, dirtyHash: "b".repeat(64) },
       appBuild: "app-build-1",
@@ -137,14 +178,29 @@ export function sessionCertificate(options: {
       expectedScenarios: rows.length,
       gapRows: 0,
       rows,
-      byLocale: rowsByLocale.map((localeRows, index) => ({
-        locale: LOCALES[index]!,
-        expectedScenarios: localeRows.length,
-        measuredScenarios: localeRows.length,
-        gapRows: 0,
-        status: "measured" as const,
-        gap: null,
-      })),
+      byLocale: LOCALES.map((locale) => {
+        const localeRows = rowsByLocale.find((entry) => entry.locale === locale);
+        if (localeRows === undefined) {
+          return {
+            locale,
+            expectedScenarios: 0,
+            measuredScenarios: 0,
+            gapRows: 0,
+            status: "out-of-scope" as const,
+            gap: null,
+            decision,
+          };
+        }
+        return {
+          locale,
+          expectedScenarios: localeRows.rows.length,
+          measuredScenarios: localeRows.rows.length,
+          gapRows: 0,
+          status: "measured" as const,
+          gap: null,
+          decision: null,
+        };
+      }),
     },
     properties: failing.size === 0 ? [] : failedProperties,
     eligibility: { eligible: true, reasons: [] },
@@ -240,10 +296,12 @@ export function buildSigningCertificate(input: {
     signedAt: string;
     signature: string;
   };
-}): Certificate {  const scenarios = LOCALES.map((locale) => ({
+}): Certificate {
+  const scenarios = LOCALES.map((locale) => ({
     name: `panel-${locale}`,
     locale,
     heldOut: false,
+    class: "golden-flow" as ScenarioClass,
   }));
   const attempts = scenarios.flatMap((scenario) =>
     [1, 2, 3].map((repetition) => ({
@@ -257,6 +315,12 @@ export function buildSigningCertificate(input: {
     contract: humanContractSync(),
     run: input.run,
     target: "local",
+    scope: {
+      locales: [...LOCALES],
+      decidedBy: "owner",
+      decidedOn: "2026-11-02",
+      reason: "full five-Locale panel fixture",
+    },
     plan: { mode: "nightly", repetitions: 3 },
     corpus: { version: 1, fingerprint: "c".repeat(64), scenarios },
     attempts,

@@ -3,7 +3,8 @@
  * ratings become, and the signature that completes the certificate.
  *
  * The panel is the human authority for H1-H5 and H7. A panel session samples
- * twelve calls (two per Locale, every failing call mandatory); the ratings are
+ * twelve calls (two per Locale, or one per scenario class under a one-Locale
+ * scope, every failing call mandatory); the ratings are
  * exported as gold labels carrying the session id and reviewer; the owner's
  * signature binds those labels to one certificate. An unsigned certificate is
  * pending-human, never certified.
@@ -24,6 +25,15 @@ export const PANEL_SAMPLE_SIZE = 12;
  * still mandatory (the session grows rather than dropping a failure).
  */
 export const PANEL_CALLS_PER_LOCALE = 2;
+
+/**
+ * A one-Locale scope cannot draw "two per Locale" as breadth: that is two
+ * calls. Its twelve are one clean call per scenario class (the corpus's nine
+ * classes give nine), the remaining slots to the worst clean calls, and every
+ * failing call mandatory. One per class, not two, because nine classes at two
+ * each is eighteen and the sample is fixed at twelve.
+ */
+export const PANEL_CALLS_PER_CLASS = 1;
 
 /**
  * The panel's 5-point "Would you stay on this call?" axis mapped to the spec's
@@ -72,6 +82,14 @@ export type PanelJudgementInput = {
   readonly goldLabels: PanelGoldLabelSet;
   /** Null while the owner has not signed; H7 then fails as pending-human. */
   readonly signature: PanelSignature | null;
+  /**
+   * The certificate's declared Locales. H1 and H2 apply their per-Locale bars
+   * and the H2 judgement floor to these Locales only: under a one-Locale scope
+   * the equivalent of "40 per Locale" is 40 judgments for the one Locale, and a
+   * Locale the owner excluded is neutral, never a missing measurement. Omitted
+   * means every demo Locale, the pre-scope reading.
+   */
+  readonly scope?: readonly Locale[];
   /** The certificate facts the signature must bind; checked at signing. */
   readonly certificate?: {
     readonly runId: string;

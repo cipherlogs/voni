@@ -153,6 +153,43 @@ test("H2 refuses below 40 judgments per Locale and judges 40-60% only above the 
   assert.match(property(tooHigh, "H2").detail, /0\.800/);
 });
 
+test("a one-Locale scope applies H1 and the H2 floor to that Locale only", async () => {
+  const contract = await loadContract();
+  const scope = ["en"] as const;
+  const fortyEnglish = Array.from({ length: 40 }, (_, index) =>
+    label({ locale: "en", humanDetected: index < 20 }),
+  );
+
+  const judged = judgePanel(contract, {
+    goldLabels: set(fortyEnglish),
+    signature: null,
+    scope,
+  });
+  assert.equal(property(judged, "H2").status, "PASS");
+  assert.equal(property(judged, "H2").sampleCount, 40);
+  assert.match(property(judged, "H2").detail, /en 0\.500 \(n=40\)/);
+  assert.doesNotMatch(property(judged, "H2").detail, /es|fr|de|pt/);
+  assert.equal(property(judged, "H1").status, "PASS", "no missing out-of-scope Locale");
+
+  const short = judgePanel(contract, {
+    goldLabels: set(fortyEnglish.slice(0, 39)),
+    signature: null,
+    scope,
+  });
+  assert.equal(property(short, "H2").status, "FAIL");
+  assert.equal(property(short, "H2").reason, "unmeasured");
+  assert.match(property(short, "H2").detail, /40-judgment floor/);
+
+  const noEnglish = judgePanel(contract, {
+    goldLabels: set(byLocale(40, (locale) => label({ locale })).filter((entry) => entry.locale !== "en")),
+    signature: null,
+    scope,
+  });
+  assert.equal(property(noEnglish, "H1").status, "FAIL");
+  assert.equal(property(noEnglish, "H1").reason, "unmeasured");
+  assert.match(property(noEnglish, "H1").detail, /no gold label/);
+});
+
 test("H3 requires a median of 4 and no call below 3; H4 requires median 4", async () => {
   const contract = await loadContract();
   const good = judgePanel(contract, {

@@ -36,6 +36,7 @@ function certificate(options: {
   const rows = scenarios.map((scenario) => ({
     locale: "en" as const,
     scenario,
+    class: "golden-flow" as const,
     heldOut: false,
     requiredRepetitions: 1,
     measuredRepetitions: options.callsByScenario[scenario].length,
@@ -44,7 +45,13 @@ function certificate(options: {
     calls: options.callsByScenario[scenario],
   }));
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    scope: {
+      locales: ["en"],
+      decidedBy: "owner",
+      decidedOn: "2026-11-02",
+      reason: "English-only launch",
+    },
     resume: null,
     runId: "run-2026-10-31",
     target: "local",

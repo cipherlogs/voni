@@ -9,9 +9,12 @@
  * computes them. Every number still comes from the loaded contract entry; this
  * file holds no threshold.
  *
- * Fail closed: an absent Locale, an absent gold-label set, a missing signature,
- * an A/B judgment floor below 40 per Locale or an empty sample is a failure,
- * never a skip. H6 is not computed here: ticket 26's calibration owns it.
+ * Fail closed: an absent in-scope Locale, an absent gold-label set, a missing
+ * signature, an A/B judgment floor below 40 per in-scope Locale or an empty
+ * sample is a failure, never a skip. Under a one-Locale scope the floor is the
+ * same number applied to the one declared Locale: 40 judgments. Labels from a
+ * Locale the scope excludes are neutral and never counted. H6 is not computed
+ * here: ticket 26's calibration owns it.
  */
 
 import { percentile } from "../../scoreboard";
@@ -183,18 +186,49 @@ function labelsFor(locale: Locale, labels: readonly PanelGoldLabel[]): PanelGold
   return labels.filter((label) => label.locale === locale);
 }
 
+/** The Locales the certificate declares; omitted means every demo Locale. */
+function scopeLocales(input: PanelJudgementInput): readonly Locale[] {
+  const scope = input.scope;
+  if (scope === undefined) return LOCALES;
+  if (!Array.isArray(scope) || scope.length === 0) {
+    throw new PanelError(
+      "invalid-scope",
+      "the panel was handed an empty certification scope; a certificate is a claim about at " +
+        "least one Locale",
+    );
+  }
+  const seen = new Set<Locale>();
+  for (const locale of scope) {
+    if (!(LOCALES as readonly string[]).includes(locale)) {
+      throw new PanelError("invalid-scope", `the panel scope names unknown Locale "${String(locale)}"`);
+    }
+    if (seen.has(locale)) {
+      throw new PanelError("invalid-scope", `the panel scope records Locale "${locale}" twice`);
+    }
+    seen.add(locale);
+  }
+  return LOCALES.filter((locale) => seen.has(locale));
+}
+
+/** The labels that belong to the declared scope; the rest are neutral. */
+function scopedLabels(input: PanelJudgementInput): PanelGoldLabel[] {
+  const locales = scopeLocales(input);
+  return input.goldLabels.labels.filter((label) => locales.includes(label.locale));
+}
+
 function median(values: readonly number[]): number | null {
   return percentile([...values], 50);
 }
 
 /** H1: >= 80% yes overall and no Locale below 70%. */
 function h1(property: ContractPropertyEntry, input: PanelJudgementInput): PropertyVerdict {
-  const labels = input.goldLabels.labels;
+  const locales = scopeLocales(input);
+  const labels = scopedLabels(input);
   const citations = labels.map((label) => citation(label.sessionId, label));
   if (labels.length === 0) {
     return unmeasured(property, "H1: the panel carries no gold label; an unmeasured property fails", []);
   }
-  const missing = LOCALES.filter((locale) => labelsFor(locale, labels).length === 0);
+  const missing = locales.filter((locale) => labelsFor(locale, labels).length === 0);
   if (missing.length > 0) {
     return unmeasured(
       property,
@@ -207,7 +241,7 @@ function h1(property: ContractPropertyEntry, input: PanelJudgementInput): Proper
   const yes = (label: PanelGoldLabel): boolean =>
     (label.axes.stayOnCall ?? 0) >= PANEL_STAY_YES_MIN;
   const overall = labels.filter(yes).length / labels.length;
-  const byLocale = LOCALES.map((locale) => {
+  const byLocale = locales.map((locale) => {
     const group = labelsFor(locale, labels);
     const ratio = group.filter(yes).length / group.length;
     return { locale, ratio, count: group.length };
@@ -233,7 +267,8 @@ function h1(property: ContractPropertyEntry, input: PanelJudgementInput): Proper
 
 /** H2: 40-60% human detection per Locale, with at least 40 judgments per Locale. */
 function h2(property: ContractPropertyEntry, input: PanelJudgementInput): PropertyVerdict {
-  const ab = input.goldLabels.labels.filter((label) => label.humanDetected !== null);
+  const locales = scopeLocales(input);
+  const ab = scopedLabels(input).filter((label) => label.humanDetected !== null);
   const citations = ab.map((label) => citation(label.sessionId, label));
   if (ab.length === 0) {
     return unmeasured(
@@ -245,7 +280,7 @@ function h2(property: ContractPropertyEntry, input: PanelJudgementInput): Proper
   const minRatio = threshold(property, "dvHumanDetectionMinRatio");
   const maxRatio = threshold(property, "dvHumanDetectionMaxRatio");
   const minJudgments = threshold(property, "dvHumanDetectionMinJudgments");
-  const byLocale = LOCALES.map((locale) => {
+  const byLocale = locales.map((locale) => {
     const group = labelsFor(locale, ab);
     const detected = group.filter((label) => label.humanDetected === true).length;
     return {
@@ -293,7 +328,7 @@ function h2(property: ContractPropertyEntry, input: PanelJudgementInput): Proper
 
 /** H3: median >= 4 and no call below 3. */
 function h3(property: ContractPropertyEntry, input: PanelJudgementInput): PropertyVerdict {
-  const labels = input.goldLabels.labels;
+  const labels = scopedLabels(input);
   const scores = labels.map((label) => label.axes.soundsHuman ?? 0);
   const citations = labels.map((label) => citation(label.sessionId, label));
   const medianBar = threshold(property, "dvSoundsHumanMedianMin");
@@ -320,7 +355,7 @@ function h3(property: ContractPropertyEntry, input: PanelJudgementInput): Proper
 
 /** H4: median turn-taking rating >= 4. */
 function h4(property: ContractPropertyEntry, input: PanelJudgementInput): PropertyVerdict {
-  const labels = input.goldLabels.labels;
+  const labels = scopedLabels(input);
   const scores = labels.map((label) => label.axes.turnTaking ?? 0);
   const citations = labels.map((label) => citation(label.sessionId, label));
   const medianBar = threshold(property, "dvTurnTakingMedianMin");
@@ -337,7 +372,7 @@ function h4(property: ContractPropertyEntry, input: PanelJudgementInput): Proper
 
 /** H5: agent not preferred < 40%. The spec's operator is strict. */
 function h5(property: ContractPropertyEntry, input: PanelJudgementInput): PropertyVerdict {
-  const ab = input.goldLabels.labels.filter((label) => label.preference !== null);
+  const ab = scopedLabels(input).filter((label) => label.preference !== null);
   const citations = ab.map((label) => citation(label.sessionId, label));
   const maxRatio = threshold(property, "dvAgentNotPreferredMaxRatio");
   if (ab.length === 0) {

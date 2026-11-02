@@ -315,6 +315,7 @@ function rateCertificate(calls: readonly string[], failing = false): Certificate
     {
       locale: "en" as const,
       scenario: "booking",
+      class: "golden-flow" as const,
       heldOut: false,
       requiredRepetitions: 1,
       measuredRepetitions: calls.length,
@@ -324,7 +325,13 @@ function rateCertificate(calls: readonly string[], failing = false): Certificate
     },
   ];
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    scope: {
+      locales: ["en"],
+      decidedBy: "owner",
+      decidedOn: "2026-11-02",
+      reason: "English-only launch",
+    },
     resume: null,
     runId: "run-http-rating",
     target: "local",

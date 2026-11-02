@@ -2,10 +2,13 @@
  * Panel session assembly: the twelve-call blind sample the owner rates.
  *
  * A panel session is a Studio rating session with a fixed shape: twelve calls,
- * two per Locale, and every failing call mandatory. The extra two calls beyond
- * two-per-Locale are drawn from the remaining clean calls in seeded order. A
- * Locale with fewer than two calls, a failing call whose evidence is missing,
- * or a run with fewer than twelve eligible calls refuses the session by name.
+ * every failing call mandatory, and a clean base drawn from the certificate's
+ * declared scope. A multi-Locale scope keeps two calls per Locale; a one-Locale
+ * scope draws one clean call per scenario class (the corpus's nine classes, not
+ * two per class, which would exceed twelve) and fills the remaining slots with
+ * the worst clean calls. A Locale inside the scope with no call, a call from a
+ * Locale the scope excludes, a failing call whose evidence is missing, or a run
+ * with fewer than twelve eligible calls refuses the session by name.
  *
  * This module lives under `scripts/studio/` because the Studio is a local-only
  * script process; `voni/src/` holds the pure panel vocabulary and verdict.
@@ -14,6 +17,7 @@
 import type { Certificate } from "../../../src/lib/demo/verification/certificate/types";
 import { LOCALES } from "../../../src/lib/demo/verification/scenarios/types";
 import {
+  PANEL_CALLS_PER_CLASS,
   PANEL_CALLS_PER_LOCALE,
   PANEL_SAMPLE_SIZE,
 } from "../../../src/lib/demo/verification/panel/types";
@@ -69,6 +73,17 @@ export function buildPanelSession(input: BuildPanelSessionInput): PanelSession {
     throw new PanelError("empty-panel", "a panel session needs call evidence; nothing was supplied");
   }
 
+  const scope = input.certificate.scope?.locales ?? LOCALES;
+  for (const call of input.calls) {
+    if (!scope.includes(call.locale)) {
+      throw new PanelError(
+        "out-of-scope-call",
+        `call "${call.callId}" speaks Locale "${call.locale}", which the certificate's declared ` +
+          `scope (${scope.join(", ")}) excludes; an excluded Locale is neutral and never sampled`,
+      );
+    }
+  }
+
   const supplied = new Set(input.calls.map((call) => call.callId));
   const failing = certificateFailingScenarios(input.certificate);
   for (const scenario of failing) {
@@ -90,21 +105,47 @@ export function buildPanelSession(input: BuildPanelSessionInput): PanelSession {
     }
   }
 
-  for (const locale of LOCALES) {
+  for (const locale of scope) {
     const calls = input.calls.filter((call) => call.locale === locale);
     if (calls.length === 0) {
       throw new PanelError(
         "missing-locale",
-        `the panel has no call for Locale "${locale}"; every demo Locale needs two calls`,
+        `the panel has no call for Locale "${locale}", which the certificate's scope declares; ` +
+          `every in-scope Locale needs calls (out of scope: ${LOCALES.filter((entry) => !scope.includes(entry)).join(", ") || "none"})`,
       );
     }
     if (calls.length < PANEL_CALLS_PER_LOCALE) {
       throw new PanelError(
         "locale-shortfall",
         `Locale "${locale}" has ${calls.length} call(s); the panel requires ` +
-          `${PANEL_CALLS_PER_LOCALE} per Locale`,
+          `${PANEL_CALLS_PER_LOCALE} per in-scope Locale`,
       );
     }
+  }
+
+  // A one-Locale scope groups the clean sample by scenario class so the twelve
+  // still cover the corpus's behaviours; a multi-Locale scope keeps Locale.
+  const oneLocale = scope.length === 1;
+  let cleanGroupOf: Record<string, string> | undefined;
+  if (oneLocale) {
+    const classOf = new Map(
+      input.certificate.coverage.rows
+        .filter((row) => row.locale === scope[0])
+        .map((row) => [row.scenario, row.class]),
+    );
+    const groups: Record<string, string> = {};
+    for (const call of input.calls) {
+      const scenarioClass = classOf.get(call.scenario);
+      if (scenarioClass === null || scenarioClass === undefined) {
+        throw new PanelError(
+          "missing-scenario-class",
+          `call "${call.callId}" names scenario "${call.scenario}" with no recorded class; a ` +
+            "one-Locale panel samples across classes and cannot group an unclassed scenario",
+        );
+      }
+      groups[call.callId] = scenarioClass;
+    }
+    cleanGroupOf = groups;
   }
 
   if (input.calls.length < PANEL_SAMPLE_SIZE) {
@@ -125,6 +166,8 @@ export function buildPanelSession(input: BuildPanelSessionInput): PanelSession {
       seed: input.seed,
       createdAt: input.createdAt,
       cleanPerLocale: PANEL_CALLS_PER_LOCALE,
+      cleanPerGroup: oneLocale ? PANEL_CALLS_PER_CLASS : PANEL_CALLS_PER_LOCALE,
+      ...(cleanGroupOf === undefined ? {} : { cleanGroupOf }),
       sampleSize: PANEL_SAMPLE_SIZE,
     });
     blind = blindSession(session);
@@ -140,7 +183,7 @@ export function buildPanelSession(input: BuildPanelSessionInput): PanelSession {
     );
   }
 
-  const byLocale = LOCALES.map((locale) => ({
+  const byLocale = scope.map((locale) => ({
     locale,
     count: session.queue.filter((item) => item.locale === locale).length,
   }));
