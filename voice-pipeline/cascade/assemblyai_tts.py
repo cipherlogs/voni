@@ -1239,9 +1239,16 @@ class AssemblyAIStreamingTTS(StreamingTTS):
         self._pending_cancels.clear()
         self._awaiting_cancel = None
         self._cancel_generation += 1
-        self.needs_reconnect = False
+        # The close is not a handover until the new session's Begin is
+        # asserted. A failed handshake leaves the adapter closed, so it must
+        # still ask for a reconnect; otherwise the next reply calls
+        # ``_require_open`` on a socket that was never opened and dies with
+        # "the synthesis session is not open" after the reply text was already
+        # captioned (call 5f4db146).
+        self.needs_reconnect = True
         self.reconnects += 1
         await self.open()
+        self.needs_reconnect = False
 
     def _fail(self, verdict: FailureVerdict, reason: str) -> SynthesisCallFailure:
         """Record one call-ending failure: breaker for triggers, alert for bugs."""
