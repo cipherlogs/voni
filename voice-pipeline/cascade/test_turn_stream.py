@@ -561,8 +561,8 @@ class AckTest(unittest.TestCase):
             async def complete(self, *, messages, tools=None, turn=None):
                 await gate.wait()
                 record = turn if turn is not None else MetaLLMTurn()
-                record.content_text += "Sure."
-                yield TokenDelta(text="Sure.")
+                record.content_text += "I can do that."
+                yield TokenDelta(text="I can do that.")
                 record.finished = True
 
         captions: list[tuple[str, str, bool]] = []
@@ -594,16 +594,16 @@ class AckTest(unittest.TestCase):
 
         asyncio.run(run())
 
-        self.assertEqual(["Mhm.", "Sure."], stream._tts.spoken)
+        self.assertEqual(["Mhm.", "I can do that."], stream._tts.spoken)
         self.assertNotIn("Mhm.", [text for _, text, _ in captions], "the ack is not a caption")
-        self.assertIn(("agent", "Sure.", True), captions, "the reply is the final caption")
+        self.assertIn(("agent", "I can do that.", True), captions, "the reply is the final caption")
 
     def test_a_fast_reply_never_speaks_an_ack(self):
         class FastLLM:
             async def complete(self, *, messages, tools=None, turn=None):
                 record = turn if turn is not None else MetaLLMTurn()
-                record.content_text += "Sure."
-                yield TokenDelta(text="Sure.")
+                record.content_text += "I can do that."
+                yield TokenDelta(text="I can do that.")
                 record.finished = True
 
         stream = CascadeTurnStream(
@@ -624,7 +624,7 @@ class AckTest(unittest.TestCase):
 
         asyncio.run(run())
 
-        self.assertEqual(["Sure."], stream._tts.spoken)
+        self.assertEqual(["I can do that."], stream._tts.spoken)
 
 
 class EndCallSignalTest(unittest.TestCase):
@@ -689,7 +689,7 @@ class EndCallSignalTest(unittest.TestCase):
 
         asyncio.run(run())
 
-        self.assertEqual([closing], stream._tts.spoken)
+        self.assertEqual(["Bye!"], stream._tts.spoken)
         self.assertEqual(["end"], ended)
 
     def _run_caller_request(self, final_text, reply_text, *, locale="en", calls=(), executor=None):
@@ -725,7 +725,7 @@ class EndCallSignalTest(unittest.TestCase):
             "Okay, bye!",
         )
 
-        self.assertEqual(["Okay, bye!"], stream._tts.spoken)
+        self.assertEqual(["Bye!"], stream._tts.spoken)
         self.assertEqual(["end"], ended, "the caller's request is call control")
 
     def test_a_german_caller_asking_to_hang_up_ends_the_call(self):
@@ -745,7 +745,7 @@ class EndCallSignalTest(unittest.TestCase):
         )
 
         self.assertEqual([], ended)
-        self.assertEqual(["Of course, go ahead."], stream._tts.spoken)
+        self.assertEqual(["Go ahead."], stream._tts.spoken)
 
     def test_an_empty_model_hang_up_still_ends_on_the_callers_request(self):
         from cascade.meta_llm import MetaToolCall, ToolDenial
@@ -770,7 +770,7 @@ class EndCallSignalTest(unittest.TestCase):
             executor=DenyingExecutor(),
         )
 
-        self.assertEqual(["Okay, bye!"], stream._tts.spoken)
+        self.assertEqual(["Bye!"], stream._tts.spoken)
         self.assertEqual(["end"], ended)
 
     def test_a_barge_in_during_the_goodbye_keeps_listening_and_never_hangs_up(self):
@@ -816,7 +816,7 @@ class EndCallSignalTest(unittest.TestCase):
         asyncio.run(run())
 
         self.assertEqual([], ended, "a barge-in during the goodbye still hung up")
-        self.assertEqual([closing, "Sure, I am still here."], tts.spoken)
+        self.assertEqual([closing, "I am still here."], tts.spoken)
         self.assertEqual(2, len(audio.frames))
 
 

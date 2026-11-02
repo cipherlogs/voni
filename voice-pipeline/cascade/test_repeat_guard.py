@@ -259,8 +259,8 @@ class RepeatGuardTests(unittest.TestCase):
         repair = "Let us start with the order you placed."
         stream = self.make(
             replies=[
-                {"deltas": ["Fair enough. ", "What went wrong?"]},
-                {"deltas": ["Fair enough. ", "What went wrong?"]},
+                {"deltas": ["Not quite. ", "What went wrong?"]},
+                {"deltas": ["Not quite. ", "What went wrong?"]},
                 {"deltas": [repair]},
             ]
         )
@@ -270,7 +270,7 @@ class RepeatGuardTests(unittest.TestCase):
         # The whole second reply was the measured loop; the caller hears the
         # first turn and the one repair, never the pair again.
         self.assertEqual(
-            ["Fair enough.", "What went wrong?", repair], self.tts.spoken
+            ["Not quite.", "What went wrong?", repair], self.tts.spoken
         )
         self.assertEqual(2, stream.repeat_dropped)
         self.assertEqual(1, stream.repeat_repair)
@@ -282,7 +282,7 @@ class RepeatGuardTests(unittest.TestCase):
             if message["role"] == "system"
         ]
         self.assertIn(
-            "You already said, verbatim: 'Fair enough.'. Do not repeat it; "
+            "You already said, verbatim: 'Not quite.'. Do not repeat it; "
             "answer only what the caller just said.",
             system,
         )
