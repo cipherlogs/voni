@@ -45,6 +45,8 @@ export const BROWSER_ERROR_CODES = [
   "call-refused",
   "call-timeout",
   "trigger-unresolved",
+  /** No vendor leg opened: the call measured nothing and is re-made once. */
+  "call-not-opened",
   "certificate-refused",
   "run-dir-invalid",
   "corpus-refused",

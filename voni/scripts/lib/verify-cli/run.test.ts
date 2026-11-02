@@ -272,6 +272,43 @@ test("a second attempt that also produces no evidence refuses the run", async ()
   );
 });
 
+test("a call that never opened is re-made once, like any other call without evidence", async () => {
+  let calls = 0;
+  const result = await fastResult({
+    runScenario: async (input) => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          refusal: {
+            code: "call-not-opened",
+            message:
+              "the call ended during the opening handshake and no vendor leg opened",
+          },
+          attempt: null,
+          eligibility: null,
+          pipelineImage: null,
+        };
+      }
+      return {
+        refusal: null,
+        attempt: {
+          scenario: input.scenario,
+          repetition: 1,
+          locale: input.locale,
+          target: input.target,
+          evidence: EVIDENCE,
+        },
+        eligibility: { callId: `${input.scenario}#${input.repetition}`, scenario: input.scenario },
+        pipelineImage: "pipeline-test",
+      };
+    },
+  });
+  assert.equal(result.status, "scoped-pass");
+  assert.equal(calls, 11, "the lost call is made again, the rest run once");
+  assert.equal(result.retries.length, 1);
+  assert.equal(result.retries[0]?.code, "call-not-opened");
+});
+
 test("a call that ran and failed is never re-made", async () => {
   let calls = 0;
   const result = await fastResult({

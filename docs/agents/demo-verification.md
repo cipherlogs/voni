@@ -259,6 +259,13 @@ artifact disappears.
   a stream that arrives ahead of real time ("Audio processing backlog too
   large"). A resumed call speaks no greeting, so `MIC_GATE_FALLBACK_MS` (8 s)
   opens the gate even when no audio ever arrives.
+- **A call that died in the opening handshake is no evidence (2026-11-02).**
+  The harness reports any caller trigger that never resolved as
+  `trigger-unresolved`, which reads like a judged failure. When the call's end
+  document says it ended at stage `open` with no vendor leg opened, nothing was
+  spoken, nothing was billed and nothing was measured: the adapter refuses it as
+  `call-not-opened`, which is in the no-evidence set and is re-made once. A call
+  that opened a leg and then stayed silent keeps the judged `trigger-unresolved`.
 - **A call that produced no evidence is re-made once (owner amendment,
   2026-11-02).** A 273-call run aborts on the first call without evidence, and
   at the observed ~1% per-call fault rate a clean run was a fraction of a

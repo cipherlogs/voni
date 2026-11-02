@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { defaultEventsDir } from "../adapter-evidence";
+import { readCallOutcome } from "./call-outcome";
 import { readCodeFingerprint } from "@/lib/demo/scoreboard";
 import { loadContract, type Contract } from "@/lib/demo/verification/contract";
 import { parseReplayCommand, renderDefectCards } from "@/lib/demo/verification/cards";
@@ -493,6 +494,37 @@ export async function runBrowserCertification(
   }
 
   if (call.triggerPlan.unresolved.length > 0) {
+    const unresolved =
+      `the browser call did not resolve ${call.triggerPlan.unresolved.length} caller trigger(s): ` +
+      call.triggerPlan.unresolved
+        .map((item) => `step ${item.step} "${item.take}" (${item.trigger}): ${item.reason}`)
+        .join("; ");
+    // A trigger that never resolved is only a result if the call existed. A
+    // call that died in the opening handshake measured nothing, so it is
+    // re-made once under the no-evidence amendment instead of being judged.
+    const outcome = readCallOutcome({
+      endPath: call.endPath,
+      eventsDir: input.eventsDir ?? defaultEventsDir(env),
+      callId: call.callId,
+    });
+    if (outcome.kind === "no-session") {
+      const closed = new BrowserAdapterError(
+        "call-not-opened",
+        `${unresolved}; ${outcome.detail}`,
+      );
+      return refused(runId, runDir, closed, {
+        target: input.target,
+        locale,
+        scenarioName: input.scenarioName,
+        corpus: { version: corpus.version, sha256: corpus.fingerprint },
+        scenarioFingerprint: scenario.fingerprint,
+        codeFingerprint,
+        startedAt,
+        call: null,
+        budget: budgetOf(call.elapsedMs, input.elapsedBudgetS ?? null),
+        previous: [],
+      });
+    }
     const error = new BrowserAdapterError(
       "trigger-unresolved",
       `the browser call did not resolve ${call.triggerPlan.unresolved.length} caller trigger(s): ` +

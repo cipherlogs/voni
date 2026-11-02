@@ -405,6 +405,9 @@ export const RETRYABLE_NO_EVIDENCE: ReadonlySet<string> = new Set([
   "marks-missing",
   "capture-missing",
   "call-refused",
+  // The call died in the opening handshake: no vendor leg opened, no turn was
+  // spoken, no leg was billed. Nothing was measured.
+  "call-not-opened",
   // The stack was unreachable before the call: nothing was measured either.
   "pipeline-unreachable",
   "app-unreachable",

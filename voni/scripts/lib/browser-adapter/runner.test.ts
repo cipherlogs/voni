@@ -377,6 +377,80 @@ test("a missing delivered capture refuses to certify, by name", async () => {
   }
 });
 
+const UNRESOLVED_TRIGGER = {
+  points: [],
+  unresolved: [
+    {
+      step: 1,
+      take: "bye",
+      trigger: "agent-turn-end" as const,
+      reason: "no agent-turn-end event before the call ended",
+    },
+  ],
+};
+
+const NO_LEG_OPENED_END = {
+  endedBy: "error",
+  error: { name: "TimeoutError", message: "timed out during opening handshake", stage: "open" },
+  providers: {
+    stt: { provider: null, reason: "the call ended before this leg opened" },
+    llm: { provider: null, reason: "the call ended before this leg opened" },
+    tts: { provider: null, reason: "the call ended before this leg opened" },
+  },
+};
+
+test("a call that died in the opening handshake is no evidence, never a judged failure", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), GOLDEN);
+    const result = await runBrowserCertification(
+      input(root, {
+        call: async (callInput) => {
+          const fake = fakeBrowserCall({
+            scenario: callInput.scenario,
+            eventsDir: join(root, "events"),
+            capturesDir: join(root, "captures"),
+            runDir: callInput.runDir,
+            endOverride: NO_LEG_OPENED_END,
+          });
+          return { ...fake, callId: fake.callId, triggerPlan: UNRESOLVED_TRIGGER };
+        },
+      }),
+    );
+    assert.equal(result.exitCode, 2);
+    const refusal = runJson(result).refusal as { code: string; message: string };
+    assert.equal(refusal.code, "call-not-opened");
+    assert.match(refusal.message, /no vendor leg opened|opening handshake/);
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a call whose agent stayed silent after the call opened is a judged failure", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), GOLDEN);
+    const result = await runBrowserCertification(
+      input(root, {
+        call: async (callInput) => {
+          const fake = fakeBrowserCall({
+            scenario: callInput.scenario,
+            eventsDir: join(root, "events"),
+            capturesDir: join(root, "captures"),
+            runDir: callInput.runDir,
+          });
+          return { ...fake, triggerPlan: UNRESOLVED_TRIGGER };
+        },
+      }),
+    );
+    assert.equal(result.exitCode, 2);
+    const refusal = runJson(result).refusal as { code: string; message: string };
+    assert.equal(refusal.code, "trigger-unresolved");
+  } finally {
+    removeTree(root);
+  }
+});
+
 const R5_CONTRACT: Contract = {
   families: [{ id: "resilience", title: "Resilience", propertyCount: 1 }],
   properties: [
