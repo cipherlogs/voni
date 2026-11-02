@@ -17,6 +17,7 @@
 
 import type { CodeFingerprint } from "../../scoreboard";
 import type { Certificate, CertificateTarget } from "../certificate";
+import { LOCALES, type Locale } from "../scenarios";
 
 export const STREAK_SIZE = 3;
 
@@ -27,6 +28,7 @@ export const STREAK_BREAK_CODES = [
   "plan-not-full",
   "dirty-tree",
   "different-fingerprint",
+  "different-scope",
   "not-certified",
   "ineligible",
   "coverage-gap",
@@ -51,9 +53,24 @@ export type CertificateStreak = {
   readonly count: number;
   readonly runIds: readonly string[];
   readonly fingerprint: CodeFingerprint | null;
+  /**
+   * The Locale set every certificate in the window declares. Null when the
+   * window is empty or the claims disagree; a mixed-scope streak is refused.
+   */
+  readonly scope: readonly Locale[] | null;
   readonly breaks: readonly StreakBreak[];
   readonly detail: string;
 };
+
+function scopeOf(certificate: Certificate): readonly Locale[] {
+  return certificate.scope?.locales ?? LOCALES;
+}
+
+function sameScope(left: readonly Locale[], right: readonly Locale[]): boolean {
+  return (
+    left.length === right.length && left.every((locale) => right.includes(locale))
+  );
+}
 
 function breakOf(
   code: StreakBreakCode,
@@ -131,6 +148,8 @@ export function evaluateCertificateStreak(input: {
   const runIds = window.map((certificate) => certificate.runId);
   const fingerprint =
     window.length === 0 ? null : { ...window[window.length - 1].code.fingerprint };
+  const referenceScope = window.length === 0 ? null : [...scopeOf(window[0]!)];
+  let allScopesAgree = referenceScope !== null;
 
   if (window.length === 0) {
     breaks.push(breakOf("no-certificates", null, "no certificate is recorded"));
@@ -155,6 +174,18 @@ export function evaluateCertificateStreak(input: {
         ),
       );
       continue;
+    }
+    if (referenceScope !== null && !sameScope(scopeOf(certificate), referenceScope)) {
+      allScopesAgree = false;
+      breaks.push(
+        breakOf(
+          "different-scope",
+          certificate.runId,
+          `certificate "${certificate.runId}" declares scope ` +
+            `${scopeOf(certificate).join(", ")}, not the streak's ${referenceScope.join(", ")}; ` +
+            "an English-only claim and a five-Locale claim are different streaks",
+        ),
+      );
     }
     if (fingerprint !== null && !sameFingerprint(certificate.code.fingerprint, fingerprint)) {
       breaks.push(
@@ -251,15 +282,18 @@ export function evaluateCertificateStreak(input: {
   ).length;
   const ok =
     breaks.length === 0 &&
+    allScopesAgree &&
     window.length === STREAK_SIZE &&
     window.every(
       (certificate) =>
         certificate.target === input.target && isCleanCertification(certificate),
     );
+  const scope = allScopesAgree ? referenceScope : null;
+  const scopeNote = scope === null ? "" : ` on scope ${scope.join(", ")}`;
   const detail = ok
     ? `${STREAK_SIZE} consecutive clean certifications on ${fingerprint?.head ?? "no code"} ` +
-      `for target ${input.target} (${runIds.join(", ")})`
-    : `no ${STREAK_SIZE}-clean streak for target ${input.target}: ` +
+      `for target ${input.target}${scopeNote} (${runIds.join(", ")})`
+    : `no ${STREAK_SIZE}-clean streak for target ${input.target}${scopeNote}: ` +
       (breaks.length === 0
         ? "the latest window is shorter than the streak"
         : breaks.map((entry) => `${entry.code}${entry.runId ? ` (${entry.runId})` : ""}`).join(", "));
@@ -270,6 +304,7 @@ export function evaluateCertificateStreak(input: {
     count,
     runIds,
     fingerprint,
+    scope,
     breaks,
     detail,
   };

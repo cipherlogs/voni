@@ -15,7 +15,13 @@
  * routing flip"; ADR 0013; RR-05.
  */
 
-import { CertificateError, validateCertificate, type Certificate, type CertificateTarget } from "../certificate";
+import {
+  CertificateError,
+  validateCertificate,
+  type Certificate,
+  type CertificateTarget,
+} from "../certificate";
+import type { Locale } from "../scenarios";
 import { evaluateCertificateStreak, isCleanCertification, STREAK_SIZE } from "./streak";
 
 export type CutoverGateCheck = {
@@ -31,6 +37,8 @@ export type CutoverGateResult = {
   readonly exitCode: 0 | 1 | 2 | 3;
   readonly image: string;
   readonly stagingRunId: string | null;
+  /** The Locale set the staging streak is true for; null when absent/mixed. */
+  readonly scope: readonly Locale[] | null;
   readonly checks: readonly CutoverGateCheck[];
   /** Named evidence that is absent; empty when the gate opens. */
   readonly missing: readonly string[];
@@ -83,6 +91,7 @@ export function evaluateCutoverGate(input: {
       exitCode: 2,
       image,
       stagingRunId: null,
+      scope: null,
       checks: [check("image", false, "missing-image", "the gate needs the image being flipped", "cutover gate")],
       missing: ["the image being flipped"],
       detail: "missing-evidence: no image was named for the cutover gate",
@@ -105,6 +114,7 @@ export function evaluateCutoverGate(input: {
       exitCode: 2,
       image,
       stagingRunId: null,
+      scope: null,
       checks: [
         check(
           "staging-certificate",
@@ -167,6 +177,7 @@ export function evaluateCutoverGate(input: {
       exitCode: 3,
       image,
       stagingRunId: chosen.runId,
+      scope: chosen.scope?.locales ?? null,
       checks,
       missing,
       detail:
@@ -230,9 +241,10 @@ export function evaluateCutoverGate(input: {
   const exitCode: CutoverGateResult["exitCode"] =
     failed.length === 0 ? 0 : streak.count < STREAK_SIZE && clean ? 2 : 1;
   const open = exitCode === 0;
+  const scopeNote = streak.scope === null ? "" : ` on scope ${streak.scope.join(", ")}`;
   const detail = open
     ? `gate open: staging ${chosen.runId} certifies image ${image} on ` +
-      `${chosen.code.fingerprint.head}, with a ${STREAK_SIZE}-clean staging streak`
+      `${chosen.code.fingerprint.head}, with a ${STREAK_SIZE}-clean staging streak${scopeNote}`
     : failed.length > 0
       ? `${exitCode === 2 ? "missing-evidence" : "blocked"}: ` +
         failed.map((entry) => `${entry.code}: ${entry.detail}`).join("; ")
@@ -243,6 +255,7 @@ export function evaluateCutoverGate(input: {
     exitCode,
     image,
     stagingRunId: chosen.runId,
+    scope: streak.scope,
     checks,
     missing,
     detail,
