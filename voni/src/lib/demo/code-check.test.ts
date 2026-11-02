@@ -152,7 +152,7 @@ test("the call opens as itself, and a yes goes straight to the test", async () =
   assert.equal(VONI_GREETINGS.en, "Hi, I'm Voni.", "the opening is a greeting, not a hook");
   assert.doesNotMatch(VONI_GREETINGS.en, /business/, "the business comes later");
   const rules = voniConfig("any").knowledge;
-  assert.match(rules, /As soon as they say yes[\s\S]*in that same turn, put the test on their screen/);
+  assert.match(rules, /Until the test is on their screen[\s\S]*put the test on their screen in that same reply/);
   assert.doesNotMatch(rules, /Once they've told you a little about their business/);
 });
 
@@ -181,9 +181,19 @@ test("Voni's demo rules are principles, not a phrase ban-list", async () => {
   );
   assert.ok(
     rules.includes(
-      "A complaint is answered, never steered: no test offer, no invite, and no question about their business in that reply; the test waits until they are warm or ask.",
+      "A complaint or frustration is the only turn that is answered and stopped: no test offer, no invite, and no question about their business in that reply; the test waits only for a complaint to pass, never for a particular phrase.",
     ),
-    "the live test waits for warmth or a request, never a complaint",
+    "only a complaint stops the test; a neutral caller is still invited",
+  );
+  assert.ok(
+    rules.includes(
+      "Until the test is on their screen, every willing or neutral turn ends with it",
+    ),
+    "a willing or neutral caller is still invited",
+  );
+  assert.ok(
+    rules.includes("do not treat a neutral answer as a complaint"),
+    "a neutral answer is not read as a complaint",
   );
   assert.ok(
     rules.includes("Talk like a person on a phone, not like a company: contractions, ordinary words, short sentences."),
