@@ -16,6 +16,7 @@ import {
 } from "../../scripts/lib/browser-adapter/synthetic-mic";
 import type { EdgeObservation } from "../../scripts/lib/browser-adapter/types";
 import { reportCallId } from "../../scripts/lib/browser-adapter/call-id";
+import { transcriptRole } from "../../src/lib/voice/overheard-caption";
 
 /**
  * The browser adapter's one Playwright spec: a certifying call on the real
@@ -759,22 +760,24 @@ test("a certifying browser call on the real stack", async ({ page }) => {
 
   // The visitor's transcript: each final caller/agent line the page rendered.
   // It is observation only, read before the page is torn down; a line the UI
-  // never painted cannot be invented here.
-  const captions = await page
+  // never painted cannot be invented here. The speaker label is mapped in
+  // Node, not in the page, so the shared rule covers `You · overheard` too.
+  const rendered = await page
     .evaluate(() => {
       const region = document.querySelector('[aria-label="Call transcript"]');
       if (region === null) return [];
-      const rows: { role: "caller" | "agent"; text: string }[] = [];
+      const rows: { label: string; text: string }[] = [];
       for (const item of region.querySelectorAll('[data-slot="message-scroller-item"]')) {
         const spans = item.querySelectorAll(":scope > span");
         const label = spans[0]?.textContent?.trim() ?? "";
         const text = spans[1]?.textContent?.trim() ?? "";
         if (text === "") continue;
-        rows.push({ role: label === "You" ? "caller" : "agent", text });
+        rows.push({ label, text });
       }
       return rows;
     })
-    .catch(() => [] as { role: "caller" | "agent"; text: string }[]);
+    .catch(() => [] as { label: string; text: string }[]);
+  const captions = rendered.map((row) => ({ role: transcriptRole(row.label), text: row.text }));
 
   // Read the marks artifact for its evidence (count, capture mark, transcript
   // clock). A missing marks file is reported, not invented: the runner refuses

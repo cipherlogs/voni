@@ -26,15 +26,11 @@ export type Playout = {
   onFirstAudible?: () => void;
   /**
    * Fires when playback runs dry: every queued sample has been rendered, not
-   * when the last chunk was queued. This is the turn's real end — a reply's
-   * transcript finishes streaming long before its audio has played, so the
-   * caller's state must follow this event, never the caption. A barge-in or a
-   * hang-up flushes the queue and does not fire it: that reply is cut, not
-   * finished.
-   *
-   * A stall also drains the queue; the worklet resumes the same reply when
-   * audio arrives inside its resume window, and the next frame re-opens the
-   * turn. The caller decides if a drain was an underrun.
+   * when the last chunk was queued. This is only half of a turn end: a reply's
+   * transcript may still be streaming, and a TTS stall drains the queue only
+   * to resume the same reply. The session ends the turn when this drain and
+   * the reply's final caption have both happened. A barge-in or a hang-up
+   * flushes the queue and does not fire it: that reply is cut, not finished.
    */
   onDrained?: () => void;
   /**
