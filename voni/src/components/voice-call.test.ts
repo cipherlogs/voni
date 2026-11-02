@@ -666,3 +666,51 @@ test("tickAllowed: visitor words into silence only", () => {
   assert.equal(tickAllowed("user", false, null), true, "no session (cascade idle)");
   assert.equal(tickAllowed("user", false, {}), true, "cascade has no playout probe");
 });
+
+// ── The turn ends on the playout's drain, not on the caption ─────────────
+// Call 285138f6: the greeting's final caption completed at 460 ms over 1.76 s
+// of audio and moved the call to `listening`, so the synthetic caller answered
+// 1.2 s before the speech ended. The state now follows `onSpeechEnd`.
+
+test("a final agent caption does not end the turn: the audio is still playing", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const branch = (() => {
+    const start = call.indexOf('marks?.mark("turn", { role: caption.role');
+    assert.ok(start >= 0, "the final caption branch is where the turn was marked");
+    const agent = call.indexOf('if (caption.role === "agent") {', start);
+    const otherwise = call.indexOf("} else {", agent);
+    assert.ok(agent >= 0 && otherwise > agent, "the agent final caption branch has a body");
+    return call.slice(agent, otherwise);
+  })();
+  assert.ok(
+    !branch.includes('setCallState("listening")'),
+    "the caption's final flag is text completion, not the end of the reply's audio",
+  );
+  assert.ok(
+    !branch.includes("speakingRef.current = false"),
+    "the caller still hears the agent as speaking until the playout drains",
+  );
+  assert.ok(
+    !branch.includes("replyDone("),
+    "the floor is released when the audio ends, never when the transcript does",
+  );
+});
+
+test("the playout's drain is the turn end: speaking -> listening and the floor", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const start = call.indexOf("onSpeechEnd: () => {");
+  assert.ok(start >= 0, "the cascade session's drain handler is wired");
+  const body = call.slice(start, call.indexOf("},", start));
+  assert.ok(body.includes("speakingRef.current = false"), "the drained turn stops speaking");
+  assert.ok(body.includes('setCallState("listening")'), "the drained turn opens the caller's turn");
+  assert.ok(body.includes("replyDone(false)"), "a finished reply releases the floor");
+});
+
+test("a barge-in still ends the turn at the cut, not at a drain that never comes", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const start = call.indexOf("onInterrupted: () => {");
+  assert.ok(start >= 0);
+  const body = call.slice(start, call.indexOf("},", start));
+  assert.ok(body.includes('setCallState("listening")'));
+  assert.ok(body.includes("replyDone(true)"), "the cut reply is recorded as interrupted");
+});

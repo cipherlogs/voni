@@ -392,6 +392,99 @@ test("session sends config on open and dispatches server events", async () => {
   assert.equal(socket.closed, true);
 });
 
+test("a turn ends when its audio drains, not when its caption finishes", async () => {
+  // The live greeting: a 460 ms transcript over 1.76 s of 24 kHz speech. The
+  // caption is complete while most of the audio is still queued; only the
+  // playout knows when the last sample has sounded.
+  const socket = makeSocket();
+  let speechEnds = 0;
+  const playout: Playout = { play: () => {}, flush: () => {} };
+  const session = new CascadeSession(
+    { onSpeechEnd: () => (speechEnds += 1) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => playout,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  assert.equal(typeof playout.onDrained, "function", "the session listens for the playout's drain");
+
+  socket.emit(
+    JSON.stringify({
+      type: "audio",
+      seq: 1,
+      sample_rate: 24000,
+      data: Buffer.alloc(84480).toString("base64"),
+    }),
+  );
+  socket.emit(JSON.stringify({ type: "caption", role: "agent", text: "Hi, I'm Voni.", final: true }));
+  assert.equal(speechEnds, 0, "a final caption is text; the turn's audio is still playing");
+
+  playout.onDrained!();
+  assert.equal(speechEnds, 1, "the drain is the turn's real end");
+
+  // A second reply is its own turn: the drain fires again for it.
+  socket.emit(
+    JSON.stringify({
+      type: "audio",
+      seq: 2,
+      sample_rate: 24000,
+      data: Buffer.alloc(9600).toString("base64"),
+    }),
+  );
+  playout.onDrained!();
+  assert.equal(speechEnds, 2, "each reply's drain is one turn end");
+  await session.stop();
+});
+
+test("an interruption is not a finished turn: the flush never reports a drain", async () => {
+  // A barge-in cuts the reply; the playout marks itself not-busy in the same
+  // tick, so the worklet's idle report is ignored. The client must keep the
+  // cut and the finish apart: the interrupted path redraws `listening`, the
+  // drained path releases the floor.
+  const socket = makeSocket();
+  const worklet = fakeAudioWorkletNode();
+  const playout = createWorkletPlayout(worklet.node);
+  let drained = 0;
+  let interrupted = 0;
+  const session = new CascadeSession(
+    { onInterrupted: () => (interrupted += 1) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {}, playout }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  // After start: the session installs its own drain listener there.
+  playout.onDrained = () => (drained += 1);
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+
+  playout.play(new Uint8Array(2), 24000);
+  socket.emit(JSON.stringify({ type: "interrupted" }));
+  // The idle report that would have belonged to the flushed reply arrives
+  // just after the flush, as the worklet's already-rendered quantum does.
+  worklet.send({
+    type: "level",
+    seq: 1,
+    queuedMs: 0,
+    cushionMs: 0,
+    targetCushionMs: 250,
+    correctionPct: 0,
+    playing: false,
+    idle: true,
+    consumed: 1,
+  });
+
+  assert.equal(interrupted, 1);
+  assert.equal(drained, 0, "a flushed reply is cut, never finished");
+  await session.stop();
+});
+
+
 test("mic frames wait for the service's first audio, then are forwarded", async () => {
   const socket = makeSocket();
   const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };

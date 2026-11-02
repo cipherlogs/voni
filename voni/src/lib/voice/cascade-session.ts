@@ -155,6 +155,13 @@ export type CascadeHandlers = {
   onCaption?: (caption: CascadeCaption) => void;
   onAudio?: (pcm: Uint8Array, sampleRate: number) => void;
   onInterrupted?: () => void;
+  /**
+   * The reply's audio finished playing: the playout's queue drained after the
+   * last sample sounded. This — not the final agent caption, which streams in
+   * while the audio is still playing — is when the agent stops holding the
+   * floor and the caller may answer.
+   */
+  onSpeechEnd?: () => void;
   onMetrics?: (metrics: unknown, turns: number) => void;
   onError?: (message: string) => void;
   onEnd?: (info: { turns: number }) => void;
@@ -519,6 +526,15 @@ export class CascadeSession {
       this.playout.onFirstAudible = () => {
         this.marks?.mark("first_audible");
         this.handlers.onFirstAudible?.();
+      };
+      // The turn's real end: the queue drained after the last sample sounded.
+      // A caption's `final` flag says the text is complete, not the audio; the
+      // greeting proved it (a 460 ms caption over 1.76 s of speech). A flush
+      // (barge-in, hang-up) never reaches here: the playout marks itself
+      // not-busy before the worklet's idle report can be read.
+      this.playout.onDrained = () => {
+        if (this.ended) return;
+        this.handlers.onSpeechEnd?.();
       };
     }
     this.started = true;

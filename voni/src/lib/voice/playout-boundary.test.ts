@@ -312,3 +312,30 @@ test("boundary: a deliberate flush still fades and drops the queue", () => {
     `the new reply starts at ${(restarted / OUT).toFixed(3)}s, want 0.9s`,
   );
 });
+
+/**
+ * The drain a turn ends on is the last sample's, never the last chunk's. The
+ * live greeting was 22 frames totalling 1.76 s while its transcript finished
+ * at 0.46 s; a client that ends the turn at the message talks over the rest.
+ * The worklet has no message: it reports idle only once nothing is queued,
+ * nothing sounds and the boundary fade has finished.
+ */
+test("drain: the idle belongs to the last played sample, not the last queued chunk", () => {
+  const seconds = 1.76;
+  const arrivals: Arrival[] = [[0, sineChunk(0, Math.round(seconds * SRC))]];
+  const { out, posts } = render(arrivals, 2.4);
+  const idles = idleTimes(posts);
+
+  assert.equal(idles.length, 1, `idles at ${idles.join(", ")}`);
+  // A 5 ms edge fade follows the last source sample; allow that and a quantum.
+  assert.ok(
+    idles[0]! >= seconds && idles[0]! <= seconds + 0.02,
+    `drained at ${idles[0]!.toFixed(3)}s, want the audio's end at ${seconds}s`,
+  );
+  // The whole reply sounded: the drain is not a queue-time report.
+  const afterDrain = Math.ceil(idles[0]! * OUT) + QUANTUM;
+  assert.ok(
+    out.subarray(afterDrain).every((y) => y === 0),
+    "audio sounded after the reported drain",
+  );
+});
