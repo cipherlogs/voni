@@ -43,8 +43,6 @@ export function endDocumentPath(input: {
   return join(input.eventsDir, `${stem}.end.json`);
 }
 
-type ProviderRecord = { readonly provider?: unknown } | null;
-
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -86,19 +84,21 @@ export function readCallOutcome(input: {
   const message =
     error !== null && typeof error.message === "string" ? error.message : "no error recorded";
 
-  const providers = record(doc.providers);
-  const legs = providers === null ? [] : Object.values(providers);
-  const opened = legs.filter((leg): leg is ProviderRecord => {
-    const entry = record(leg);
-    return entry !== null && entry.provider !== null && entry.provider !== undefined;
-  });
+  const turns = typeof doc.turns === "number" ? doc.turns : null;
 
-  if (endedBy === "error" && stage === "open" && opened.length === 0) {
+  // A leg failing is never a Voni behaviour. If the call died while it was
+  // still opening, or before a single turn was spoken, nothing was measured:
+  // the greeting may not have existed, so no property could observe anything.
+  // A call that spoke at least one turn and then lost a leg is a different
+  // case: it ran, and it is judged.
+  const nothingSpoken = stage === "open" || turns === 0;
+  if (endedBy === "error" && nothingSpoken) {
     return {
       kind: "no-session",
       detail:
-        `the call ended during the opening handshake (${message}) and no vendor leg opened, ` +
-        "so no turn was spoken and no leg was billed",
+        `the call ended with an error at stage ${JSON.stringify(stage)} (${message}) ` +
+        `before any turn was spoken (turns: ${turns === null ? "unknown" : turns}), ` +
+        "so nothing was measured",
     };
   }
 
@@ -107,7 +107,7 @@ export function readCallOutcome(input: {
     detail:
       endedBy === "error"
         ? `the call ended with an error at stage ${JSON.stringify(stage)} (${message}) ` +
-          `after ${opened.length} leg(s) opened`
+          `after ${turns === null ? "an unknown number of" : turns} turn(s)`
         : `the call ended by ${JSON.stringify(endedBy)}`,
   };
 }

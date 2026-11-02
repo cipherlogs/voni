@@ -35,18 +35,47 @@ test("a call that died in the opening handshake with no leg opened measured noth
   assert.match(outcome.detail, /opening handshake/);
 });
 
-test("a call that opened a leg and then failed is a measured result", () => {
+test("a call that spoke a turn and then lost a leg is a measured result", () => {
   const outcome = readCallOutcome(
     writeEnd({
       ...NO_LEG_OPENED,
-      providers: {
-        ...NO_LEG_OPENED.providers,
-        stt: { provider: "muse-voice-transcribe-1.0", reason: null },
-      },
+      error: { ...NO_LEG_OPENED.error, stage: "stop" },
+      turns: 2,
     }),
   );
   assert.equal(outcome.kind, "measured");
-  assert.match(outcome.detail, /1 leg\(s\) opened/);
+  assert.match(outcome.detail, /2 turn\(s\)/);
+});
+
+test("a synthesis refusal before the greeting measured nothing, even though speech opened", () => {
+  // Run en-1: STT opened, TTS refused with a session-rate error at stage open,
+  // zero turns. The agent never spoke, so no property observed anything.
+  const outcome = readCallOutcome(
+    writeEnd({
+      endedBy: "error",
+      turns: 0,
+      error: {
+        name: "SynthesisHandshakeError",
+        message:
+          "synthesis session refused before Begin: Error 3009: Too many sessions opened for this account in the last minute",
+        stage: "open",
+      },
+      providers: {
+        stt: { provider: "meta", reason: "Meta realtime speech is the cascade's speech rung" },
+        llm: { provider: null, reason: "the call ended before this leg opened" },
+        tts: { provider: null, reason: "the call ended before this leg opened" },
+      },
+    }),
+  );
+  assert.equal(outcome.kind, "no-session");
+  assert.match(outcome.detail, /before any turn was spoken/);
+});
+
+test("an error after the greeting but before any turn still measured nothing", () => {
+  const outcome = readCallOutcome(
+    writeEnd({ ...NO_LEG_OPENED, error: { ...NO_LEG_OPENED.error, stage: "stream" }, turns: 0 }),
+  );
+  assert.equal(outcome.kind, "no-session");
 });
 
 test("an error after the opening stage is a measured result, not an absent call", () => {
