@@ -21,6 +21,12 @@ Barge-in is the caller winning the floor: a real ``speechStart`` while audio is
 sounding sends the synthesis session's ``Cancel`` and stops the reply task. The
 cancelled turn is settled so a later final is not held behind it.
 
+An acknowledgement opener ("Right,", "Got it —") is stripped before synthesis,
+so the caller hears the substance and never the padding. A reply that was only
+an opener is withheld; one bounded repair is asked, and a repair that is still
+nothing but an opener fails the turn by name rather than speaking a bare "Got
+it."
+
 One ticker drives both time-based duties on the injected clock:
 :meth:`EventRules.tick` at ``turn.stall_guard_ms`` while a final is held, and
 ``AssemblyAIStreamingTTS.keepalive_if_idle`` at ``tts.keepalive_interval_ms``
@@ -111,12 +117,77 @@ ACK_DELAY_BOUND = "reply.ack_delay_ms"
 REPEAT_NOTE_WINDOW = 2
 
 #: The duplicate bar, in words, after normalisation. This is a rule, not a
-#: tunable: one-word agreements ("Yes.", "Right.") must never be dropped for
-#: agreeing twice, while the measured two-word loop ("Fair enough.") is caught.
+#: tunable: one-word agreements ("Yes.") must never be dropped for agreeing
+#: twice, while a measured two-word loop ("Not quite.") is caught.
 REPEAT_MIN_WORDS = 2
 
 #: Punctuation is a separator, not content: "what's" and "what s" are one form.
 _NON_WORD = re.compile(r"[^\w\s]+", re.UNICODE)
+
+#: Acknowledgement openers carry no answer. This is a rule, not a tunable: the
+#: owner's decision (2026-11-03) is that no reply opens with one, in any
+#: register. Each entry is the opener form only; a meaning-bearing word is not
+#: an opener just because it appears inside a sentence ("the right answer").
+_FILLER_OPENERS = (
+    "right",
+    "got it",
+    "okay",
+    "ok",
+    "alright",
+    "fair enough",
+    "no worries",
+    "sure",
+    "of course",
+    "absolutely",
+    "i see",
+    "yeah",
+    "yep",
+    "mm-hmm",
+    "uh-huh",
+    "sounds good",
+    "cool",
+)
+
+#: What ends an opener: comma, full stop, colon, ellipsis, or a spaced dash. A
+#: hyphen glued to the next word is a compound ("right-click"), not a
+#: separator, so the hyphen form needs whitespace on both sides.
+_FILLER_SEPARATOR = (
+    r"(?:\s*,\s*|\s*\.\.\.\s*|\s*…\s*|\s*\.\s*|\s*:\s*|\s*[—–]\s*|\s+-\s+)"
+)
+
+#: The anchored opener form. Longest phrase first so "okay" is tried before
+#: "ok", and end-of-text counts as a separator so a bare "Got it" is all filler.
+_FILLER_OPENER = re.compile(
+    "^(?:"
+    + "|".join(
+        re.escape(phrase)
+        for phrase in sorted(_FILLER_OPENERS, key=len, reverse=True)
+    )
+    + ")(?:"
+    + _FILLER_SEPARATOR
+    + r"|\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _strip_filler_openers(text: str) -> tuple[str, int]:
+    """Remove every leading acknowledgement opener and count them.
+
+    Repeats so "Right, got it — …" loses both. Only the anchored opener form
+    with a separator matches, so a word inside a sentence is never touched.
+    The remainder opens the spoken sentence, so its first letter is capitalised
+    ("got it — showing" becomes "Showing").
+    """
+    removed = 0
+    while True:
+        match = _FILLER_OPENER.match(text)
+        if match is None:
+            text = text.strip()
+            if removed and text:
+                text = text[:1].upper() + text[1:]
+            return text, removed
+        text = text[match.end() :]
+        removed += 1
 
 
 class ReplyRepeatedOnly(RuntimeError):
@@ -136,6 +207,17 @@ class ReplyQuestionOnly(RuntimeError):
     the failure is deliberate: the caller hears nothing and the trace records
     the turn as failed rather than looping the question or going silent with
     no record.
+    """
+
+
+class ReplyFillerOnly(RuntimeError):
+    """The bounded repair was still nothing but an acknowledgement.
+
+    The opener guard withheld every sentence of a reply that carried no
+    substance, so the caller heard nothing. The repair may not open with
+    another acknowledgement; if it still does, the turn fails by name rather
+    than speaking a bare "Got it." Naming the failure is deliberate: the
+    caller hears nothing and the trace records the turn as failed.
     """
 
 
@@ -329,6 +411,11 @@ class CascadeTurnStream:
         #: Metric counters: a question was withheld, a repair was asked for.
         self.question_withheld = 0
         self.question_repair = 0
+        #: This reply's acknowledgement-only sentences, and its one repair flag.
+        self._reply_filler_withheld: list[str] = []
+        self._filler_repaired = False
+        #: Metric counter: one per acknowledgement opener removed before speech.
+        self.filler_stripped = 0
         #: Whether the caller's final asked to end (call control, not a tool).
         self._caller_wants_end = False
         self._buffer = ""
@@ -475,6 +562,8 @@ class CascadeTurnStream:
         self._repeat_repaired = False
         self._reply_question_withheld = []
         self._question_repaired = False
+        self._reply_filler_withheld = []
+        self._filler_repaired = False
         # The unanswered-question rule is decided from the caller's final, once
         # per turn: it consumes the last question so it cannot fire twice.
         self._must_not_ask = self._question_was_unanswered(state.final_text)
@@ -491,6 +580,8 @@ class CascadeTurnStream:
                 await self._repair_unanswered_question(record)
             elif self._should_repair_repeated_reply():
                 await self._repair_repeated_reply(record)
+            elif self._should_repair_filler_reply():
+                await self._repair_filler_reply(record)
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -818,6 +909,50 @@ class CascadeTurnStream:
                 "the repair reply only asked a question the caller did not answer"
             )
 
+    def _should_repair_filler_reply(self) -> bool:
+        """Whether this turn spoke nothing but an acknowledgement."""
+        return (
+            not self._ending
+            and not self._filler_repaired
+            and self._reply_new_sentences == 0
+            and bool(self._reply_filler_withheld)
+            and (self._may_request is None or self._may_request("llm"))
+        )
+
+    async def _repair_filler_reply(self, record: MetaLLMTurn) -> None:
+        """One bounded re-ask that must begin with the substance, not an ack.
+
+        The opener guard has already withheld every sentence of the first
+        reply, so the caller has heard nothing this turn. The repair may still
+        open with an acknowledgement; that is stripped again, and if nothing
+        else remains the turn fails by name rather than speaking a bare
+        "Got it." One repair per turn, never retried.
+        """
+        self._filler_repaired = True
+        self._history.add_hidden_context(
+            "You said nothing but an acknowledgement. Answer what they just "
+            "said with the substance itself; do not open with an "
+            "acknowledgement or filler."
+        )
+        repair = MetaLLMTurn()
+        self._count_request()
+        try:
+            async for item in self._llm.complete(
+                messages=self._history.request_messages(),
+                tools=None,
+                turn=repair,
+            ):
+                if isinstance(item, TokenDelta):
+                    await self._say(item.text)
+            await self._flush()
+        finally:
+            repair.close()
+        record.usage = _merged_usage(record.usage, repair.usage)
+        if self._reply_new_sentences == 0:
+            raise ReplyFillerOnly(
+                "the repair reply was nothing but an acknowledgement"
+            )
+
     def _should_repair_repeated_reply(self) -> bool:
         """Whether this turn spoke nothing new and may ask one repair."""
         return (
@@ -914,6 +1049,10 @@ class CascadeTurnStream:
         self.question_withheld += 1
         self._count_metric("question_withheld")
 
+    def _drop_filler(self, sentence: str) -> None:
+        """Withhold an acknowledgement-only sentence before its audio exists."""
+        self._reply_filler_withheld.append(sentence)
+
     def _count_metric(self, name: str) -> None:
         """Count one guard metric; an unreadable sink never ends the call."""
         counter = getattr(self._ledger, "count", None)
@@ -937,6 +1076,26 @@ class CascadeTurnStream:
             and not self._may_request("tts")
         ):
             return
+        if not force:
+            # The opener guard runs before every other rule, because the same
+            # sentence must be judged on the words the caller would hear. A
+            # batched chunk that carries an acknowledgement-only sentence is
+            # split so that sentence is withheld without losing the rest.
+            pieces = _reply_sentences(text) or [text]
+            if len(pieces) > 1 and any(
+                _FILLER_OPENER.match(piece) for piece in pieces
+            ):
+                for piece in pieces:
+                    await self._speak(piece)
+                return
+            original = text
+            text, stripped = _strip_filler_openers(text)
+            if stripped:
+                self.filler_stripped += stripped
+                self._count_metric("filler_stripped")
+            if not text:
+                self._drop_filler(original)
+                return
         # The exact-repeat guard keeps precedence: a line already spoken is a
         # repeat first, and its own repair runs before this rule. One _speak
         # may carry several sentences (the synthesis session batches them), so
@@ -1161,6 +1320,8 @@ class CascadeTurnStream:
             reason = "the reply only asked a question the caller did not answer"
         elif isinstance(error, ReplyRepeatedOnly):
             reason = "the reply only repeated a line already spoken"
+        elif isinstance(error, ReplyFillerOnly):
+            reason = "the reply was nothing but an acknowledgement"
         else:
             reason = "the reply failed"
         self._write_turn_row(
@@ -1183,4 +1344,9 @@ def _call_name(outcome: Any) -> str:
     return name if isinstance(name, str) and name.strip() else type(outcome).__name__
 
 
-__all__ = ["CascadeTurnStream", "ReplyQuestionOnly", "ReplyRepeatedOnly"]
+__all__ = [
+    "CascadeTurnStream",
+    "ReplyFillerOnly",
+    "ReplyQuestionOnly",
+    "ReplyRepeatedOnly",
+]

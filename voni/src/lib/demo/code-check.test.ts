@@ -232,10 +232,26 @@ test("Voni's demo rules are principles, not a phrase ban-list", async () => {
   );
   assert.ok(
     rules.includes(
-      "Never reuse a line, question or opener within a call: word every turn afresh, never start two replies the same way, and never fall back on an acknowledgement-only reply or a reflex pitch.",
+      "Begin every reply with the substance itself: no acknowledgement or filler opener, and never an acknowledgement alone.",
+    ),
+    "the reply starts with its substance as a principle",
+  );
+  assert.ok(
+    rules.includes(
+      "Never reuse a line, question or opener within a call: word every turn afresh, never start two replies the same way, and never fall back on a reflex pitch.",
     ),
     "repetition and reflex pitching are banned as behaviours",
   );
+  assert.ok(
+    !rules.includes("A short filler can open a real reply"),
+    "no wording hands the model a filler to open with",
+  );
+  for (const filler of ["Got it,", "Okay,", "Right,", "Fair enough"]) {
+    assert.ok(
+      !rules.includes(filler),
+      `the prompt does not exemplify a filler opener: ${filler}`,
+    );
+  }
   assert.ok(
     rules.includes("Never promise to fix, change, or look into something this demo cannot actually do."),
     "the honesty rule survives",
@@ -245,7 +261,8 @@ test("Voni's demo rules are principles, not a phrase ban-list", async () => {
 test("a personal address: acknowledged, asked again, never a hang-up", async () => {
   const { checkEmailInstructions, beatGoal, EMAIL_BEAT_GOAL, OPEN_BEAT_GOAL } = await import("./voni-agent");
   const line = checkEmailInstructions({ status: "free", address: "nedal@gmail.com" });
-  assert.match(line, /Got it, Nedal! But that's a personal address, and I need your work one/);
+  assert.match(line, /That's a personal address, Nedal, and I need your work one/);
+  assert.doesNotMatch(line, /Got it|No problem/, "the example opens with the point, not an ack");
   assert.match(line, /Never hang up over it/);
   assert.doesNotMatch(line, /Then hang up/);
   const invited = { invited: true, found: false };
