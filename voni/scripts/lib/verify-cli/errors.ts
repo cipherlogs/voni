@@ -26,6 +26,19 @@ export const VERIFY_ERROR_CODES = [
   "timing-lock-held",
   "adapter-refused",
   "certificate-refused",
+  "resume-mode-unsupported",
+  "journal-run-id-invalid",
+  "journal-missing",
+  "journal-torn",
+  "journal-malformed",
+  "journal-schema-unknown",
+  "journal-run-id-mismatch",
+  "journal-target-mismatch",
+  "journal-code-mismatch",
+  "journal-corpus-mismatch",
+  "journal-vendor-builds-mismatch",
+  "journal-plan-mismatch",
+  "journal-evidence-missing",
 ] as const;
 
 export type VerifyErrorCode = (typeof VERIFY_ERROR_CODES)[number];
