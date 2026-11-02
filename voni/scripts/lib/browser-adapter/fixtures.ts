@@ -129,6 +129,7 @@ export function writeBrowserEvidence(input: {
   readonly omitCapture?: boolean;
   readonly omitMarks?: boolean;
   readonly omitEnd?: boolean;
+  readonly omitTrace?: boolean;
   readonly pricedUsd?: number;
   readonly costMeasured?: boolean;
   /** Extra or replacement trace rows; a fallback row is the contamination proof. */
@@ -167,10 +168,12 @@ export function writeBrowserEvidence(input: {
     priced.totalUsd = null;
     priced.unmeasuredReason = "the vendor did not report usage";
   }
-  writeFileSync(
-    join(input.eventsDir, `${input.callId}.jsonl`),
-    rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
-  );
+  if (input.omitTrace !== true) {
+    writeFileSync(
+      join(input.eventsDir, `${input.callId}.jsonl`),
+      rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+    );
+  }
   if (input.omitEnd !== true) {
     const end = {
       ...probeEnd(input.callId, input.pricedUsd ?? 0.012),
@@ -228,6 +231,7 @@ export function fakeBrowserCall(input: {
   readonly omitMarks?: boolean;
   readonly omitCapture?: boolean;
   readonly omitEnd?: boolean;
+  readonly omitTrace?: boolean;
   readonly captureComplete?: boolean;
   readonly marksCallId?: string;
   readonly captureCallIdInName?: string;
@@ -251,6 +255,7 @@ export function fakeBrowserCall(input: {
     omitMarks: input.omitMarks,
     omitCapture: input.omitCapture,
     omitEnd: input.omitEnd,
+    omitTrace: input.omitTrace,
     captureComplete: input.captureComplete,
     marksCallId: input.marksCallId,
     captureCallIdInName: input.captureCallIdInName,

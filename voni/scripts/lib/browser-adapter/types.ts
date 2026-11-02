@@ -223,16 +223,18 @@ export type BrowserCallInput = {
 export type BrowserEvidenceBundle = {
   /** The persisted end message, the turn ledger and the browser marks. */
   readonly ledger: {
-    readonly file: string;
-    readonly end: Record<string, unknown>;
-    readonly endGap: null;
+    /** Null when the call never reached the service (a denied microphone). */
+    readonly file: string | null;
+    readonly end: Record<string, unknown> | null;
+    readonly endGap: string | null;
     readonly turns: readonly Record<string, unknown>[];
     readonly turnIds: readonly string[];
-    readonly marks: CallMarksArtifact;
-    readonly marksGap: "";
+    /** Null when the client posted no marks; the gap then names why. */
+    readonly marks: CallMarksArtifact | null;
+    readonly marksGap: string;
   };
   readonly trace: {
-    readonly file: string;
+    readonly file: string | null;
     readonly rows: readonly Record<string, unknown>[];
     readonly lineCount: number;
     /**
@@ -249,7 +251,10 @@ export type BrowserEvidenceBundle = {
     }[] | null;
     readonly transcriptGap: string | null;
   };
-  /** The worklet's rendered output: the certifying adapter always has it. */
+  /**
+   * The worklet's rendered output. Null only for a denied microphone, where
+   * the tap never opened; the gap names the absent audio and nothing is faked.
+   */
   readonly wav: {
     readonly file: string;
     readonly sampleRate: number;
@@ -258,7 +263,7 @@ export type BrowserEvidenceBundle = {
     readonly frames: number;
     readonly durationMs: number;
     readonly bytes: number;
-  };
+  } | null;
   readonly tool: {
     readonly calls: readonly Record<string, unknown>[];
     readonly results: readonly Record<string, unknown>[];
@@ -273,20 +278,22 @@ export type BrowserEvidenceBundle = {
   readonly cost?: Record<string, unknown>;
   /** The browser's own evidence: the marks artifact beside the delivered WAV. */
   readonly browser: {
-    readonly file: string;
-    readonly marks: CallMarksArtifact;
+    /** Null when the client posted no marks; the gap names why. */
+    readonly file: string | null;
+    readonly marks: CallMarksArtifact | null;
     /** The visitor's transcript, read from the page at teardown. */
     readonly captions?: readonly {
       readonly role: "caller" | "agent";
       readonly text: string;
     }[];
+    /** Null only for a denied microphone, which never delivered audio. */
     readonly capture: {
       readonly file: string;
       readonly name: string;
       readonly bytes: number;
       readonly sampleRate: number;
       readonly seconds: number;
-    };
+    } | null;
     readonly syntheticMic: SyntheticMicReport;
     /** The scenario's applied media faults, with what each actually did. */
     readonly faultsApplied: readonly AppliedFault[];
@@ -322,13 +329,13 @@ export type BrowserCallRecord = {
   readonly browser: BrowserCallResult["browser"];
   readonly elapsedMs: number;
   readonly files: {
-    readonly trace: string;
-    readonly end: string;
-    readonly deliveredWav: string;
-    readonly marks: string;
+    readonly trace: string | null;
+    readonly end: string | null;
+    readonly deliveredWav: string | null;
+    readonly marks: string | null;
     readonly call: string;
   };
-  /** Every artifact cites this call id; false is a refusal, never a warning. */
+  /** Every artifact that exists cites this call id; false is a refusal, never a warning. */
   readonly sameCallId: true;
   /** Evidence that did not exist, named rather than papered over. */
   readonly evidenceGaps: readonly string[];
