@@ -21,6 +21,7 @@ from cascade.assemblyai_tts import (
     AssemblyAIStreamingTTS,
     CloseAction,
     SynthesisCallFailure,
+    SynthesisHandshakeError,
 )
 from cascade.reconnect import ReconnectBudget
 from cascade.tts_support import (
@@ -272,6 +273,37 @@ class PlannedReconnectTests(unittest.TestCase):
         self.assertEqual(1, counters.planned_reconnects)
         self.assertEqual(0, counters.failures)
         self.assertEqual(1, counters.budget_left)
+
+
+class FailedReopenTests(unittest.TestCase):
+    """A reconnect whose handshake fails must not leave the session "open"."""
+
+    def test_a_failed_reconnect_leaves_the_session_asking_for_another(self):
+        # The call's one failure reconnect opens a session that never sends its
+        # Begin. The adapter must still be in "needs a reconnect", so the next
+        # reply opens a session instead of raising "the synthesis session is
+        # not open" (5f4db146: the caller's second take was transcribed, the
+        # reply was generated, and no audio ever played).
+        first = [begin()]
+        unopened: list[Frame | str | bytes] = []
+        third = [
+            begin(),
+            audio_ms(300, flush_id=0),
+            flush_done(flush_id=0, audio_duration_ms=300),
+        ]
+        tts, factory = session_with(first, unopened, third)
+
+        with self.assertRaises(SynthesisHandshakeError):
+            asyncio.run(tts.handle_close(None))
+
+        self.assertTrue(
+            tts.needs_reconnect,
+            "a failed handshake is not an open session; the next speak must try again",
+        )
+        chunks = collect(tts, "Hello.")
+
+        self.assertEqual(["Hello."], [chunk.text for chunk in chunks])
+        self.assertEqual(3, len(factory.connections))
 
 
 if __name__ == "__main__":
