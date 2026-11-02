@@ -20,12 +20,14 @@ Write with the builder and reader in
   vendor build, an attempt or corpus scenario outside the declared scope, and
   an attempt outside the corpus.
 - `validateCertificate` / `readCertificate` refuse an unknown schema version, a
-  v3 certificate with no declared scope, a target or run that does not match, a
-  different code fingerprint or corpus hash, a coverage omission, an
+  v3 certificate with no declared scope or corpus scenario set, a target or run
+  that does not match, a different code fingerprint or corpus hash, a missing,
+  extra or re-classed coverage row, a scope narrowed after the run, an
   out-of-scope Locale that carries a measurement or a decision that differs
-  from the certificate's, or an uncited verdict. A `certified` verdict with no
-  panel signature is refused by name; an unsigned clean run is `pending-human`,
-  not an error.
+  from the certificate's, or an uncited verdict. A reader may demand a `scope`;
+  a different Locale set is refused. A `certified` verdict with no panel
+  signature is refused by name; an unsigned clean run is `pending-human`, not an
+  error. v1/v2 documents keep their own version and re-serialize as v1/v2.
 
 The certificate is a claim about a **declared** Locale set. The English-only
 decision of 2026-11-02 (`scope: { locales: ["en"], decidedBy: "owner", … }`,

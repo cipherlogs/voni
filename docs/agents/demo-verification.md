@@ -8,10 +8,10 @@ certificate cites. Vocabulary is `CONTEXT.md`'s "Demo verification" section —
 certificate, certification run, defect card, panel, gold label, take, caller
 corpus, held-out scenario — and is used here as written.
 
-The register is dated **2026-11-02** (register version 2; RR-09 added for the
-owner's English-only decision). A risk leaves it only when the ticket that
-closes it records the evidence here; it is never deleted to make a certificate
-green.
+The register is dated **2026-11-02** (register version 3; RR-09 added for the
+owner's English-only decision, RR-10 for the unreachable H2 floor). A risk
+leaves it only when the ticket that closes it records the evidence here; it is
+never deleted to make a certificate green.
 
 ## The seam
 
@@ -42,7 +42,7 @@ have is a defect in this map.
 | Contract registry | 82 property ids in ten families, each with a bar, one evidence source and its threshold key | `voni/src/lib/demo/verification/contract/` — one `families/*.family.ts` per family, discovered by `loader.ts`; `contractDocument()` is the machine-readable form | 06 |
 | Frozen budget record | the single threshold source; the drift test that fails a hand-edited number | `voni/src/lib/demo/scoreboard-budgets.ts` + `.json` (the contract's `dv*` keys; cascade-owned keys still come from `voice-pipeline/cascade/thresholds.json`), `voni/src/lib/demo/verification/contract/bars.ts` + `contract-bars.json`, moved only with `npm run contract:bars -- --write` | 06 |
 | Verdict and statistics | pooling, per-scenario tails, fail-closed unknowns, ineligibility | `voni/src/lib/demo/verification/verdict/` — `statistics.ts` pools, `judge.ts` judges, `evaluators.ts` discovers one `evaluators/*.evaluators.ts` module per family | 07 |
-| Certificate | schema, declared scope, builder, validator, target binding, residual-risk ids, panel signature | `voni/src/lib/demo/verification/certificate/` — `types.ts` is the schema (v3: a required `scope` and a per-row scenario `class`; v1/v2 read as an undeclared scope), `scope.ts` holds the owner's declared sets (`en`, all five) and the 2026-11-02 decision, `build.ts` turns one verdict-core run into one certificate and refuses an attempt or corpus row outside the declared scope, `validate.ts` refuses an unknown schema, a v3 certificate without a scope, a mismatched target/fingerprint/corpus, an out-of-scope row that carries a measurement or an invented decision, an uncited verdict and a certified claim with no panel signature, `risks.ts` mirrors this register's ids (drift-tested), `render.ts` prints the scope and the excluded Locales; committed files live in `voni/evidence/certificates/` | 08 |
+| Certificate | schema, declared scope, corpus scenario set, builder, validator, target binding, residual-risk ids, panel signature | `voni/src/lib/demo/verification/certificate/` — `types.ts` is the schema (v3: a required `scope`, the covered `corpus.scenarios` and a per-row scenario `class`; v1/v2 read as an undeclared scope and keep their own version), `scope.ts` holds the owner's declared sets (`en`, all five) and the 2026-11-02 decision, `build.ts` turns one verdict-core run into one certificate and refuses an attempt or corpus row outside the declared scope, `validate.ts` refuses an unknown schema, a v3 certificate without a scope or scenario set, a missing/extra/re-classed coverage row (the self-declared-coverage forge), a scope narrowed after the run, a mismatched target/fingerprint/corpus, an out-of-scope row that carries a measurement or an invented decision, an uncited verdict and a certified claim with no panel signature, `risks.ts` mirrors this register's ids (drift-tested), `render.ts` prints the scope and the excluded Locales; committed files live in `voni/evidence/certificates/` | 08 |
 | Defect cards | one card per failed property with turn, excerpt, bar and replay command | `voni/src/lib/demo/verification/cards/` — `build.ts` refuses a card without a session, a turn (for turn-level evidence) or an existing evidence file; `wav.ts` bounds every excerpt inside the named take/WAV; `replay.ts` is the one parser the runner must accept unchanged; `render.ts` is the compact card | 09 |
 | Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest, the ten-scenario English fast contract, the twelve-scenario Locale core | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take; `corpus/` is the committed corpus at version 2 (91 scenarios, 227 real TTS takes): the ten fast-contract scenarios (twenty takes), ticket 13's five comprehension and five emotion scenarios (thirty takes), ticket 14's soundscape/connectivity/meta-security entries (nineteen takes), and ticket 15's `tools-slow-email` plus the sealed held-out `two-tools-in-turn` (five new takes; the three tools scenarios carry seven), ticket 16's forty-eight `locale-<behaviour>-<locale>` scenarios (120 real TTS takes, twelve behaviours on es/fr/de/pt), ticket 20's six resilience edge scenarios (eleven takes, R2–R7), and the three closing English scenarios (`golden-flow-booking`, `turn-taking-overlap`, `caller-hangup-mid-word`; nine takes) that bring English to the spec's 40, and the sealed `sarcastic`, `distressed` and `mispronounced-email` (nine takes) that complete the eight held-out names, and `generate.ts` + `scripts/generate-caller-takes.mts` (`npm run corpus:takes`) record a take once or a deliberate `--retake`; `fast.ts` selects its ten, proves the six call-path capabilities, scopes the verdict (uncited families are `OUT-OF-SCOPE`, never green), and presents the economics owner's settled fast-run check (`economy/run-ceiling.ts`) instead of resolving E3 or summing cost itself; `locale.ts` proves the four Locales hold the same class, triggers, properties, soundscape and fault per behaviour, scopes each Locale's contract, and bounds the 48-call nightly Locale core with the economics owner (a per-Locale full is refused until each Locale has a full set). `facts.ts` resolves each scenario's script to its authored take text for the exactness evaluators. Ticket 19 adds the filler-cut scenario (a cut, then a filler that resumes the tail) and gives a scenario an optional `holdOpenMs` so a greeting-only call is actually held open (32 s) before the harness hangs up. `CALLER-CORPUS.md` records the voice, model and retake rule; `SOUNDSCAPES.md` records the committed television bed and the second-voice/speakerphone scope. The English corpus is complete at 43; all eight held-out names are committed | 10, 12–16, 19, 30 |
 | Locale matrix | four Locales judged independently; understanding held as RR-02 until a named native reviewer signs; **out of scope** for the English-only certificate (RR-09, owner decision 2026-11-02) | `voni/src/lib/demo/verification/verdict/locale.ts` — `judgeLocaleMatrix` requires exactly one complete evidence set and twelve calls per Locale at the run's repetition count, refuses a measurement recorded under another Locale or a scenario outside that Locale's core, judges each Locale against its own scoped contract, and returns `pending-human` with RR-02 when `judgeLocaleUnderstanding` has no valid named sign-off; a role word, a malformed date or a missing sample/gold-label id is unverified, never a pass. The matrix still exists and a five-Locale run still judges it; the English-only certificate excludes it by the declared scope and cites RR-09 rather than reading the exclusion as a pass | 16 |
@@ -56,7 +56,7 @@ have is a defect in this map.
 | Vendor usage ledger | `demo:usage` reads one terminal run's own priced rows and prints Meta/AssemblyAI quantities, USD per leg and vendor, per-scenario and per-call rows, the measured-vs-plan call count, and a named unmeasured section; it never estimates, never prices with another table, and never prints an unmeasured leg as `$0` | `voni/scripts/demo-usage.mts` is the command; `voni/scripts/lib/usage/` owns it — `evidence.ts` resolves a terminal adapter `run.json` (the adapter writes it only at the end) or a committed certificate's coverage call ids, and joins them to the per-call traces; `ledger.ts` sums the rows' own `amountUsd` and labels reported-but-netted token lines so no rate invites arithmetic the row did not charge; `sums.ts` is the one six-decimal reconciliation; `rates.ts` loads only the committed table a row cites and labels mixed versions; `run-journal.md` is the agreed interface for the next reader, and `readRunJournal` refuses by name until that branch lands | — |
 | CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | `voni/scripts/demo-verify.mts` is the command; the testable contract is `voni/scripts/lib/verify-cli/` — `args.ts` accepts the three spec forms and a defect card's replay command unchanged, `plan.ts` owns the target/mode/Locale/scope matrix (fast ten ×1; nightly English 43 + Locale core 12 ×4 at one; full the same 91 at three; a full run's declared scope is its Locale filter, else all five, and a plan outside it refuses with `scope-mismatch`), and `run.ts` preflights keys, corpus and vendor builds as one named exit 2, takes the machine-wide timing lock (a held lock is a named exit 2, never a wait), dispatches diagnose through the protocol adapter and certification through the browser adapter, and issues at most one certificate from a full run. Diagnose never writes a certificate and the protocol adapter's exit 0 is refused. `staging` and `production` refuse by name (no evidence sink). The 43-scenario English and four Locale core corpora have landed, so nightly/full no longer refuse for a corpus; they still refuse before a call for a missing pipeline key; the vendor-build record landed on 2026-11-01 (RR-03). A full run with `--locale` other than `en` is refused by name: only English has the per-Locale full set. `npm run demo:verify -- --full --locale en` (or the explicit `--scope en`) is the English-only certificate command: the certificate declares `scope: en` and records es/fr/de/pt as out-of-scope by the owner's 2026-11-02 decision (RR-09), never as gaps; `--scope` accepts only `en` or all five. A fast or nightly scoped-clean report is exit 1, never a certificate | 28 |
 | CLI | `demo:verify`, `demo:studio`, `demo:certificate`; exits 0/1/2/3 | `voni/scripts/demo-verify.mts` is the command; the testable contract is `voni/scripts/lib/verify-cli/` — `args.ts` accepts the three spec forms, a defect card's replay command unchanged and the explicit `--resume <run-id>` flag, `plan.ts` owns the target/mode/Locale/scope matrix (fast ten ×1; nightly English 43 + Locale core 12 ×4 at one; full the same 91 at three; a full run's declared scope is its Locale filter, else all five, and a plan outside it refuses with `scope-mismatch`), and `run.ts` preflights keys, corpus and vendor builds as one named exit 2, takes the machine-wide timing lock (a held lock is a named exit 2, never a wait), dispatches diagnose through the protocol adapter and certification through the browser adapter, and issues at most one certificate from a full run. `journal.ts` writes one JSONL journal per full/nightly run and is the only reader a `--resume` trusts. Diagnose never writes a certificate and the protocol adapter's exit 0 is refused. `staging` and `production` refuse by name (no evidence sink). The 43-scenario English and four Locale core corpora have landed, so nightly/full no longer refuse for a corpus; they still refuse before a call for a missing pipeline key; the vendor-build record landed on 2026-11-01 (RR-03). A full run with `--locale` other than `en` is refused by name: only English has the per-Locale full set. `npm run demo:verify -- --full --locale en` (or the explicit `--scope en`) is the English-only certificate command: the certificate declares `scope: en` and records es/fr/de/pt as out-of-scope by the owner's 2026-11-02 decision (RR-09), never as gaps; `--scope` accepts only `en` or all five. A fast or nightly scoped-clean report is exit 1, never a certificate | 28 |
-| Streak and cutover | three-clean streak, staging gate, post-flip confirmation, monthly full production | `voni/src/lib/demo/verification/release/` — `streak.ts` judges the latest three committed certificates; `gate.ts` binds a clean staging certificate to the image; `confirmation.ts` bounds the post-flip record to ten calls; `rollback.ts` holds the one value and its zero-session proof; `monthly.ts` owns the cron and the recorded monthly production proof. `voni/scripts/demo-cutover.mts` (`npm run demo:cutover`) is the reader; records live in `voni/evidence/cutover/` | 29 |
+| Streak and cutover | three-clean streak on one declared scope, staging gate, post-flip confirmation, monthly full production | `voni/src/lib/demo/verification/release/` — `streak.ts` judges the latest three committed certificates and refuses a mixed-scope window by name (`different-scope`), returning the one scope the streak is true for; `gate.ts` binds a clean staging certificate to the image and reports the streak's scope; `confirmation.ts` bounds the post-flip record to ten calls; `rollback.ts` holds the one value and its zero-session proof; `monthly.ts` owns the cron and the recorded monthly production proof. `voni/scripts/demo-cutover.mts` (`npm run demo:cutover`) is the reader; records live in `voni/evidence/cutover/` | 29 |
 | CI cadence | fast contract, nightly health, weekly full certification, Locale matrix | `voni/src/lib/demo/verification/cadence.ts` is the one count source (fast 10, nightly 91, full 273) and the cron constants; `voni/scripts/demo-gate-report.mjs` turns a `demo:verify --json` report into a merge gate that reads the artifact — expected call count, an empty `failedPropertyIds` and `ineligible: false` — before it reads the status, because a clean scoped-pass and a property failure both exit 1; `voni/scripts/demo-cadence-wiring.test.ts` parses `.github/workflows/{ci,nightly,demo-weekly,demo-monthly}.yml` and forbids vendor keys, path filters and timeout-less jobs. The fast job runs on every PR; nightly is English 43 × 1 + Locale core 12 × 1 × 4 = 91 calls; weekly full is the same plan × 3 = 273 with a panel signature still a human act | 30 |
 
 ### Release and cutover (ticket 29)
@@ -113,13 +113,19 @@ claimed here — only local tests and the named refusals.
 **The panel under a one-Locale scope.** The twelve-call sample keeps its shape
 but changes its breadth: a multi-Locale certificate draws two clean calls per
 Locale, while an English-only certificate draws one clean call per scenario
-class (the English corpus's nine classes) and fills the remaining slots with the
-worst clean calls, every failing call still mandatory. The session refuses an
-in-scope Locale with no call and a call from an excluded Locale; it does not
-require a call for es, fr, de or pt. H1's per-Locale bar and H2's 40-judgment
+class present in the certificate's recorded scenario set (nine in the current
+English corpus, of ten declared) and fills the remaining slots with the worst
+clean calls, every failing call still mandatory. A class set with more classes
+than the twelve slots refuses by name rather than queueing extra labels. The
+session refuses an in-scope Locale with no call and a call from an excluded
+Locale; it does not require a call for es, fr, de or pt. H1's per-Locale bar and H2's 40-judgment
 floor apply to the declared Locales only, so the one-Locale equivalent of "40
-per Locale" is 40 English judgments — not five impossible floors. Excluded
-Locales are neutral; an English gap or failure still fails the certificate.
+per Locale" is 40 English judgments — not five impossible floors. One session
+exports at most twelve labels and no merge path exists, so a signed certificate
+states H2 as `unmeasured` with the count and the floor and is `not-demo-ready`
+(RR-10); the owner decides whether judgments accumulate or the floor changes.
+Excluded Locales are neutral; an English gap or failure still fails the
+certificate.
 
 ### The fast contract
 
@@ -703,6 +709,7 @@ one; an entry with two owners is a defect in this register.
 | RR-07 | Held-out scenarios are sealed by process, not by machine | engineer | 2026-10-31 |
 | RR-08 | The class census and the run plan are not the spec's shape: six resilience-edge scenarios are counted under `connectivity` (9, not 3), no scenario uses the spec's `locale` class, and the owner amendment moved English to 43 and the plan to 91/273 calls ($13.65/$40.95 under the amended $15/$45 ceilings) | engineer | 2026-10-31 |
 | RR-09 | Voni ships English only: es, fr, de and pt are untested by the owner's 2026-11-02 decision, so no certificate claims their quality | owner | 2026-11-02 |
+| RR-10 | One 12-call panel session exports at most 12 gold labels, so H2's 40-judgment floor is unreachable; H2 stays unmeasured and no certificate can be certified until the owner decides how judgments accumulate or whether the floor changes | owner | 2026-11-02 |
 
 ### RR-01 — Accent coverage is TTS-only until Studio takes exist
 
@@ -918,6 +925,32 @@ verdict and cannot mask a failure inside the scope.
 every declared Locale at 43 × 3; or the product decision changes and this entry
 records the new decision's date. Until then every certificate cites RR-09.
 
+### RR-10 — H2's 40-judgment floor is unreachable from one panel session
+
+**Risk.** H2's bar requires at least 40 A/B judgments per in-scope Locale
+(`dvHumanDetectionMinJudgments`). One panel session exports at most twelve
+calls, and no merge path accumulates a later session's labels into the
+certificate. A certificate signed from one session therefore cannot measure H2.
+This is not a reason to lower the bar: the owner decides whether judgments
+accumulate across sessions or the floor changes.
+
+**What it costs.** Every honest signed certificate states H2 as `unmeasured`
+with the exact count and the floor, and the verdict is `not-demo-ready`, never
+exit 0. A reader sees why the claim falls short instead of a floor quietly
+lowered to fit twelve.
+
+**Fail-closed.** H2 reports `unmeasured` with "one panel session exports N A/B
+judgments; the floor is 40 per Locale" in its detail; a signed certificate
+carrying that failure derives `not-demo-ready`. H1/H3/H4/H5 may pass on the
+session; H2 is named as the unmeasured property and H7 still confirms the owner
+signed.
+
+**Owner:** owner. **Opened:** 2026-11-02.
+**Closure:** the owner records a decision — an accumulation rule, a smaller
+floor, or another way to reach 40 per in-scope Locale — and a certification
+measures H2 to that bar. Until then every certificate cites RR-10 and cannot be
+`certified`.
+
 ## Certification scope
 
 A certificate is a claim about a **declared** set of Locales. The owner decides
@@ -927,18 +960,31 @@ the set; the run records it; the reader can recompute the verdict from it.
   certificate declares `locales: ["en"]`; es, fr, de and pt are out of scope by
   the owner's decision, recorded as RR-09. The full five-Locale run stays
   possible and declares all five, so no Locale is silently dropped.
-- **Schema v3.** The certificate carries `scope` and a `class` on every coverage
-  row. A v3 certificate without a scope is refused (`missing-scope`); v1 and v2
-  certificates stay readable and are read as an undeclared scope, meaning every
-  demo Locale.
-- **Rows.** Every demo Locale still appears in `coverage.byLocale`. An excluded
-  Locale is `status: "out-of-scope"`, `gap: null`, with the owner decision. It
-  is never `gap`, never measured and never absent. An in-scope Locale with a
-  shortfall is `gap` and makes the verdict `not-demo-ready`.
+- **Schema v3.** The certificate carries `scope`, the exact `corpus.scenarios`
+  set it claims to have covered (name, Locale, held-out flag and class), and a
+  `class` on every coverage row. A v3 certificate without a scope or scenario
+  set is refused (`missing-scope`, `invalid-corpus-reference`); v1 and v2
+  certificates stay readable, keep their own `schemaVersion`, and re-serialize
+  as v1/v2 with an undeclared all-Locale scope.
+- **Rows.** Every v3 declared scenario has exactly one coverage row; a missing
+  row is `coverage-row-missing`, and a row not in the declared set or carrying a
+  different class/held-out flag is `invalid-coverage`. This is what makes the
+  claim non-self-declared: deleting a failing row and lowering
+  `expectedScenarios` cannot re-derive a clean verdict, and a scope narrowed
+  after the run is refused because its declared scenarios would fall outside it.
+  Every demo Locale still appears in `coverage.byLocale`; an excluded Locale is
+  `status: "out-of-scope"`, `gap: null`, with the owner decision. It is never
+  `gap`, never measured and never absent. An in-scope Locale with a shortfall is
+  `gap` and makes the verdict `not-demo-ready`.
+- **Expectation.** A consumer may demand a `scope`; a certificate claiming a
+  different Locale set is refused (`scope-mismatch`). The signing path judges
+  the panel over the certificate's own scope, so an English-only certificate is
+  not read as four missing Locales.
 - **Refusals.** `scope-violation` for a Locale that ran or carries rows outside
   the scope, or an out-of-scope row with a measurement; `invalid-scope` for a
   scope that is not owner-decided, dated or well-formed, or a row decision that
-  differs from the certificate's; `missing-scope` for v3 without a scope.
+  differs from the certificate's; `missing-scope` for v3 without a scope;
+  `scope-mismatch` for a reader demanding another Locale set.
 
 ## How a certificate cites these
 
