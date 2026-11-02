@@ -349,6 +349,24 @@ class RepeatGuardTests(unittest.TestCase):
         self.assertEqual(1, sum(1 for line in self.tts.spoken if INVITE in line))
         self.assertEqual(0, stream.repeat_dropped)
 
+    def test_a_sentence_repeated_inside_one_reply_is_spoken_once(self):
+        repeated = "I handle calls, answer questions and follow up right away."
+        invite = (
+            "Send me an email from your work address with Frost 15 in the subject, "
+            "and tell me when it's sent."
+        )
+        stream = self.make(
+            replies=[{"deltas": [f"{repeated} {repeated} {invite}"]}]
+        )
+
+        self.run_turns(stream, 1, ["Fine. Then tell me what you can actually do."])
+
+        # The first copy and the rest of the reply are heard; the second copy
+        # is withheld, and a new sentence means no repair is needed.
+        self.assertEqual([repeated, invite], self.tts.spoken)
+        self.assertEqual(1, stream.repeat_dropped)
+        self.assertEqual(0, stream.repeat_repair)
+
     def test_a_second_invite_three_replies_later_is_withheld(self):
         stream = self.make(
             replies=[
