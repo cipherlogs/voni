@@ -2,6 +2,14 @@
 
 **Status: accepted. Decided 2026-10-31 (grilling session; the decisions recorded here were agreed, not proposed).**
 
+**Amendment, 2026-11-02 (owner).** Voni ships English only. A certificate's
+Locale set is now a declared scope and an input, never inferred from what ran:
+the English-only certificate names `en` and records es, fr, de and pt as
+`out-of-scope` by this decision (RR-09), never as gaps and never as passes. A
+five-Locale full run remains possible and declares all five. This narrows what
+a certificate claims; it does not make an unmeasured Locale green, and any
+shortfall inside the declared scope still yields `not-demo-ready`.
+
 The demo call is the product's sales asset, and the owner's question about it is binary: is the demo ready to show? The repository cannot answer it. The cascade trace records operational rows only — no turns, no end reason — and the call's final `end` message is not persisted, so a failure cannot cite the turn that produced it. The managed scoreboard measures a different engine and a fake caller, and the browser rig fakes the service. A change that makes one number better can make the caller's experience worse, and no artifact says which. So "fixed" and "ready" are opinions, and the only way to form one is to press Start call and hope.
 
 This record chooses to certify a contract instead. The demo runs only on the cascade ([ADR-0012](0012-demo-cascade-only.md)); this record says how that surface is judged. `demo:verify` plays a curated caller corpus of 43 scenarios through the real landing page, the real app, the real cascade pipeline and the real vendor legs, in all five demo Locales, and measures 82 properties in ten families from independent evidence. Each certification run writes exactly one certificate — bound to the code fingerprint, the corpus hash and the recorded vendor build ids — or a set of replayable defect cards that name the turn, the audio excerpt, the expected bar and where to look. A certificate's verdict is `certified`, `not-demo-ready`, `pending-human` or `ineligible`; only `certified` may be called a pass. The guarantee is narrow and honest: no false green inside the stated envelope, with every gap named as a residual risk. It is not a promise that no call can disappoint a visitor.
