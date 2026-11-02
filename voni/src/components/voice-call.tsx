@@ -50,10 +50,13 @@ import {
 import { CallTimings } from "@/lib/voice/call-timings";
 import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
 import { CascadeSession } from "@/lib/voice/cascade-session";
-import { demoUnavailableMessage } from "@/lib/voice/cascade-failure-view";
+import {
+  demoReconnectFailedMessage,
+  demoUnavailableMessage,
+} from "@/lib/voice/cascade-failure-view";
 import { createDemoFloor, DEMO_FLOOR_TICK_MS } from "@/lib/voice/demo-floor";
 import type { Floor } from "@/lib/voice/floor";
-import { startDemoCall } from "@/lib/voice/demo-start";
+import { mintDemoCall, startDemoCall } from "@/lib/voice/demo-start";
 import { callIdFromDemoToken, createCallMarks, type CallMarks } from "@/lib/voice/call-marks";
 import { boundedResumeHistory } from "@/lib/voice/resume-history";
 import { FILLER_POOL, isEndCallRequest, requestVoiceJudge } from "@/lib/voice/jev-judges";
@@ -1400,13 +1403,39 @@ export function VoiceCall({
           setError({ message: demoUnavailableMessage(failure.code) });
           setCallState("ended");
         },
+        onReconnectFailed: (cause) => {
+          // The call was live, so this is not a start refusal: say the line
+          // dropped and that it could not be resumed, by name in the marks.
+          cascadeEnded = true;
+          setError({ message: demoReconnectFailedMessage(cause) });
+        },
         onEnd: () => {
           cascadeEnded = true;
           speakingRef.current = false;
           overheardRef.current = false;
           setCallState("ended");
         },
-      }, { marks });
+      }, {
+        marks,
+        // One bounded reconnect after an unexpected transport drop: re-mint
+        // the resume body for the same call id through the one mint route
+        // (the hold-return path), carrying the settled turns in signed history.
+        // The session keeps the mic, playout and call-level audio sequence and
+        // opens a replacement socket; the resume body omits the greeting, so
+        // nothing is replayed.
+        reconnect: async () => {
+          const resumed = await mintDemoCall({
+            voiceId,
+            resume: true,
+            callToken: callTokenRef.current ?? undefined,
+            tagToken: loadTagToken(),
+            history: boundedResumeHistory(turnsRef.current),
+          });
+          callTokenRef.current = resumed.minted.demoCallToken;
+          if (resumed.minted.tagToken) saveTagToken(resumed.minted.tagToken);
+          return resumed.config;
+        },
+      });
       sessionRef.current = cascade;
       // The same dev flag as the managed path: a W0 delivered capture must be
       // written on the cascade path too, or the two captures cannot compare.

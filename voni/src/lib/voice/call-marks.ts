@@ -61,6 +61,10 @@ export const CALL_MARK_NAMES = [
   /** A caller's stop ended the call before the service's end arrived. */
   "end_missing",
   "error_received",
+  /** The live call is re-minting its resume body after a transport drop. */
+  "reconnect",
+  /** The one reconnect gave up: the named cause, then the call ends. */
+  "reconnect_failed",
   "start_failed",
   "teardown",
   "delivered_capture",

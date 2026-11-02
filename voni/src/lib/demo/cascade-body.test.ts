@@ -21,6 +21,7 @@ const BOUNDS = JSON.parse(
   envelopeTtlMs: number;
   callTokenTtlMs: number;
   resumeHistoryTurns: number;
+  reconnectHandshakeMs: number;
   source: string;
   dates: Record<string, string>;
 };
@@ -266,14 +267,17 @@ test("the cascade bounds cannot drift from the pipeline registry", () => {
   assert.equal(BOUNDS.envelopeTtlMs, REGISTRY.bounds["envelope.ttl_ms"].value);
   assert.equal(BOUNDS.callTokenTtlMs, REGISTRY.bounds["call_token.ttl_ms"].value);
   assert.equal(BOUNDS.resumeHistoryTurns, REGISTRY.bounds["resume.history_turns"].value);
+  assert.equal(BOUNDS.reconnectHandshakeMs, REGISTRY.bounds["reconnect.handshake_ms"].value);
   assert.match(BOUNDS.source, /voice-pipeline\/cascade\/thresholds\.json/);
   assert.match(BOUNDS.source, /envelope\.ttl_ms/);
   assert.match(BOUNDS.source, /call_token\.ttl_ms/);
   assert.match(BOUNDS.source, /resume\.history_turns/);
+  assert.match(BOUNDS.source, /reconnect\.handshake_ms/);
   for (const [field, bound] of [
     ["envelopeTtlMs", "envelope.ttl_ms"],
     ["callTokenTtlMs", "call_token.ttl_ms"],
     ["resumeHistoryTurns", "resume.history_turns"],
+    ["reconnectHandshakeMs", "reconnect.handshake_ms"],
   ] as const) {
     assert.equal(
       BOUNDS.dates[field],

@@ -187,7 +187,16 @@ test("the browser call marks are gated by the capture flag and wired to the casc
     /setDeliveredCapture\(callDebugFlags\(\)\.deliverCapture, marks\?\.callId\)/,
     "the WAV and the marks share one call id",
   );
-  assert.match(demo, /new CascadeSession\(\{[\s\S]*?\}, \{ marks \}\)/, "the session emits the transport marks");
+  assert.match(
+    demo,
+    /new CascadeSession\(\{[\s\S]*?\}, \{\s*marks,[\s\S]*?reconnect: async \(\) => \{/,
+    "the session emits the transport marks and owns the one reconnect",
+  );
+  assert.match(
+    demo,
+    /mintDemoCall\(\{[\s\S]*?resume: true,[\s\S]*?history: boundedResumeHistory\(turnsRef\.current\)/,
+    "a reconnect re-mints the resume body with the carried turns",
+  );
   assert.match(demo, /mark\("turn", \{ role: caption\.role, index: turnsRef\.current\.length \}\)/);
   assert.match(demo, /marks\.mark\("connected_painted"\)/);
   assert.match(demo, /marks\?\.mark\("start_failed"/);

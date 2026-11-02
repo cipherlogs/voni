@@ -28,3 +28,15 @@ export const DEMO_UNAVAILABLE_MESSAGES: Readonly<Record<DemoCascadeFailure, stri
 export function demoUnavailableMessage(cause: DemoCascadeFailure): string {
   return DEMO_UNAVAILABLE_MESSAGES[cause];
 }
+
+/**
+ * The line for a live call whose one reconnect could not resume it. The call
+ * had already started, so this is not the connect refusal above: it names the
+ * drop and the way back, never an engine or a vendor. The machine cause stays
+ * in the call marks.
+ */
+export function demoReconnectFailedMessage(cause: string): string {
+  return cause === "second-drop"
+    ? "The call dropped again and can't be resumed. Please start a new call."
+    : "The call dropped and couldn't be reconnected. Check your connection, then start a new call.";
+}
