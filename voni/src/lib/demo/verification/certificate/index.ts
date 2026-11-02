@@ -14,10 +14,14 @@ export {
   VENDOR_LEGS,
   REQUIRED_VENDOR_LEGS,
   COVERAGE_STATUSES,
+  LOCALE_COVERAGE_STATUSES,
+  SCOPE_DECIDERS,
   type Certificate,
   type CertificateBuildInput,
   type CertificateCorpus,
+  type CertificateCorpusRecord,
   type CertificateCorpusScenario,
+  type CertificateSchemaVersion,
   type CertificateCost,
   type CertificateCoverage,
   type CertificateEligibility,
@@ -31,13 +35,25 @@ export {
   type CertificateVerdict,
   type CertificateVerdictExit,
   type CertificationAttempt,
+  type CertificationScope,
   type CoverageRow,
   type CoverageStatus,
   type LocaleCoverage,
+  type LocaleCoverageStatus,
   type PanelSignature,
+  type ScopeDecider,
+  type ScopeDecision,
   type VendorBuild,
   type VendorLeg,
 } from "./types";
+
+export {
+  ENGLISH_ONLY_SCOPE,
+  FULL_SCOPE,
+  SCOPE_DECISION,
+  declaredScopeFor,
+  outOfScopeLocales,
+} from "./scope";
 
 export {
   CERTIFICATE_REFUSAL_EXIT_CODE,

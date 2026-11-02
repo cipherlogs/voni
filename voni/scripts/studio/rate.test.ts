@@ -36,6 +36,7 @@ function certificate(options: {
   const rows = scenarios.map((scenario) => ({
     locale: "en" as const,
     scenario,
+    class: "golden-flow" as const,
     heldOut: false,
     requiredRepetitions: 1,
     measuredRepetitions: options.callsByScenario[scenario].length,
@@ -44,7 +45,13 @@ function certificate(options: {
     calls: options.callsByScenario[scenario],
   }));
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    scope: {
+      locales: ["en"],
+      decidedBy: "owner",
+      decidedOn: "2026-11-02",
+      reason: "English-only launch",
+    },
     resume: null,
     runId: "run-2026-10-31",
     target: "local",
@@ -295,6 +302,33 @@ test("a clean sample is drawn per Locale, and every failing call is still includ
 
   const noClean = session({ failing: ["sad-caller"], calls, seed: 3, cleanPerLocale: 0 });
   assert.deepEqual(noClean.queue.map((item) => item.callId), ["en-fail"]);
+});
+
+test("a grouped clean base larger than the sample refuses, never over-queues", () => {
+  const calls = Array.from({ length: 13 }, (_, index) =>
+    call(`group-call-${index + 1}`, `group-scenario-${index + 1}`),
+  );
+  assert.throws(
+    () =>
+      buildRatingSession({
+        certificate: certificate({
+          callsByScenario: Object.fromEntries(
+            calls.map((entry) => [entry.scenario, [entry.callId]]),
+          ),
+        }),
+        calls,
+        reviewer: "owner",
+        seed: 7,
+        cleanPerLocale: 1,
+        cleanPerGroup: 1,
+        cleanGroupOf: Object.fromEntries(
+          calls.map((entry, index) => [entry.callId, `class-${index + 1}`]),
+        ),
+        sampleSize: 12,
+        createdAt: "2026-10-31T10:00:00.000Z",
+      }),
+    refusal("sample-overflow", /13 calls.*samples 12/),
+  );
 });
 
 test("a certificate failure with no call evidence is refused by name, never queued as clean", () => {

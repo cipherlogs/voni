@@ -46,6 +46,7 @@ function certificate(calls: readonly string[], failing: readonly string[] = []):
     {
       locale: "en" as const,
       scenario: "booking",
+      class: "golden-flow" as const,
       heldOut: false,
       requiredRepetitions: 1,
       measuredRepetitions: calls.length,
@@ -55,7 +56,13 @@ function certificate(calls: readonly string[], failing: readonly string[] = []):
     },
   ];
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    scope: {
+      locales: ["en"],
+      decidedBy: "owner",
+      decidedOn: "2026-11-02",
+      reason: "English-only launch",
+    },
     resume: null,
     runId: "run-rating-store",
     target: "local",

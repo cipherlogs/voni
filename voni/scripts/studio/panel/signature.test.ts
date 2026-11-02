@@ -25,7 +25,7 @@ import {
   signPanel,
   verifyPanelSignature,
 } from "./signature";
-import { pendingSigningFixture, REVIEWER, SESSION_DATE } from "./fixtures";
+import { loadHumanContract, pendingSigningFixture, REVIEWER, SESSION_DATE } from "./fixtures";
 
 function refusal(code: string, pattern: RegExp): (error: unknown) => boolean {
   return (error: unknown) => {
@@ -69,25 +69,60 @@ test("an unsigned certificate is pending-human, exits 3 and is never certified",
   );
 });
 
-test("the owner's signature completes H7 and certifies the clean run", async () => {
+test("the owner's signature and the real one-session labels name H2 unmeasured, never exit 0", async () => {
   const { certificate, session, ratings, gold } = await pendingSigningFixture();
+  const contract = await loadHumanContract();
   const signature = signPanel({ certificate, session, ratings, reviewer: REVIEWER });
   assert.equal(signature.sessionId, session.sessionId);
   assert.equal(signature.reviewer, REVIEWER);
   assert.equal(signature.signedAt, SESSION_DATE);
   assert.match(signature.signature, /^panel-v1:[0-9a-f]{64}$/);
 
-  const completed = completeCertificateSignature(certificate, signature, gold);
-  assert.equal(completed.verdict, "certified");
-  assert.equal(completed.pass, true);
+  const completed = completeCertificateSignature(certificate, signature, gold, contract);
+  assert.equal(completed.verdict, "not-demo-ready");
+  assert.equal(completed.pass, false);
   assert.deepEqual(completed.panel, signature);
+  assert.equal(certificateExitCode(completed.verdict), 1);
+
+  const h2 = completed.properties.find((property) => property.propertyId === "H2");
+  assert.equal(h2?.status, "FAIL");
+  assert.equal(h2?.reason, "unmeasured");
+  assert.match(
+    h2?.gaps.join(" ") ?? "",
+    /one panel session exports 12 A\/B judgments; the floor is 40/,
+  );
+  assert.equal(h2?.sampleCount, 12);
+
+  // The English scope reaches the signing judge: H1 is not read as four missing
+  // Locales, so the only human-property failure is the unreachable H2 floor.
+  const h1 = completed.properties.find((property) => property.propertyId === "H1");
+  assert.equal(h1?.status, "PASS", h1?.detail);
   assert.equal(completed.properties.find((property) => property.propertyId === "H7")?.status, "PASS");
-  assert.equal(certificateExitCode(completed.verdict), 0);
   assert.doesNotThrow(() => verifyPanelSignature({ certificate: completed, session, ratings }));
 
   const roundTrip = parseCertificate(serializeCertificate(completed));
   assert.deepEqual(roundTrip.panel, signature);
-  assert.equal(roundTrip.verdict, "certified");
+  assert.equal(roundTrip.verdict, "not-demo-ready");
+});
+
+test("signing an English-only certificate judges H1 over en, not over four missing Locales", async () => {
+  const { certificate, session, ratings, gold } = await pendingSigningFixture(["en"]);
+  assert.deepEqual(certificate.scope?.locales, ["en"]);
+  const contract = await loadHumanContract();
+  const signature = signPanel({ certificate, session, ratings, reviewer: REVIEWER });
+  const completed = completeCertificateSignature(certificate, signature, gold, contract);
+
+  const h1 = completed.properties.find((property) => property.propertyId === "H1");
+  assert.equal(h1?.status, "PASS", h1?.detail);
+  assert.doesNotMatch(h1?.detail ?? "", /no panel label for Locale\(s\) es/);
+  const h2 = completed.properties.find((property) => property.propertyId === "H2");
+  assert.equal(h2?.reason, "unmeasured");
+  assert.match(
+    h2?.gaps.join(" ") ?? "",
+    /one panel session exports 12 A\/B judgments; the floor is 40/,
+  );
+  assert.equal(completed.verdict, "not-demo-ready");
+  assert.equal(certificateExitCode(completed.verdict), 1);
 });
 
 test("signing a different run is refused by name", async () => {
@@ -238,7 +273,7 @@ test("the CLI reports an unsigned certificate as pending-human and exits 3", asy
   assert.equal(JSON.parse(readFileSync(path, "utf8")).verdict, "pending-human");
 });
 
-test("the CLI signs a pending certificate and exits 0", async () => {
+test("the CLI signs a pending certificate and never exits 0 while H2 is unmeasured", async () => {
   const { certificate, session, ratings } = await pendingSigningFixture();
   const root = studioRoot(session, ratings);
   const path = join(mkdtempSync(join(tmpdir(), "panel-cli-sign-")), "certificate.json");
@@ -256,10 +291,14 @@ test("the CLI signs a pending certificate and exits 0", async () => {
     "--evidence-root",
     root,
   ]);
-  assert.equal(code, 0);
+  assert.equal(code, 1, "H2 is unmeasured, so a signed certificate is not a pass");
   const signed = parseCertificate(readFileSync(path, "utf8"));
-  assert.equal(signed.verdict, "certified");
+  assert.equal(signed.verdict, "not-demo-ready");
   assert.equal(signed.panel?.sessionId, session.sessionId);
+  assert.equal(
+    signed.properties.find((property) => property.propertyId === "H2")?.reason,
+    "unmeasured",
+  );
 });
 
 test("the CLI refuses a missing reviewer by name", async () => {

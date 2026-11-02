@@ -63,6 +63,12 @@ export type JournalPlan = {
   readonly repetitions: number;
   /** Calls the plan owes, including any the corpus cannot supply. */
   readonly calls: number;
+  /**
+   * The certificate scope declared when the run started. Absent on a journal
+   * written before scopes existed; read as every demo Locale, the pre-scope
+   * claim, so a resume cannot silently narrow or widen it.
+   */
+  readonly scope?: readonly Locale[];
   readonly scenarios: readonly PlannedScenario[];
 };
 
@@ -426,6 +432,21 @@ function parseHeader(raw: unknown, path: string, line: number): JournalHeader {
         `repetition(s) is ${scenarios.length * repetitions}`,
     );
   }
+  let scope: Locale[] | undefined;
+  if (planRaw.scope !== undefined) {
+    if (!Array.isArray(planRaw.scope) || planRaw.scope.length === 0) {
+      malformed(path, line, "plan.scope is not a non-empty array");
+    }
+    const seenScope = new Set<Locale>();
+    for (const [index, value] of planRaw.scope.entries()) {
+      const locale = oneOf(value, LOCALES, `plan.scope[${index}]`, path, line);
+      if (seenScope.has(locale)) {
+        malformed(path, line, `plan.scope records Locale "${locale}" twice`);
+      }
+      seenScope.add(locale);
+    }
+    scope = LOCALES.filter((locale) => seenScope.has(locale));
+  }
 
   return {
     type: "header",
@@ -444,7 +465,13 @@ function parseHeader(raw: unknown, path: string, line: number): JournalHeader {
       sha256,
     },
     vendorBuilds,
-    plan: { mode: oneOf(planRaw.mode, JOURNAL_MODES, "plan.mode", path, line), repetitions, calls, scenarios },
+    plan: {
+      mode: oneOf(planRaw.mode, JOURNAL_MODES, "plan.mode", path, line),
+      repetitions,
+      calls,
+      ...(scope === undefined ? {} : { scope }),
+      scenarios,
+    },
   };
 }
 
@@ -855,6 +882,21 @@ export function assertResumable(loaded: LoadedJournal, expected: ResumeExpectati
       "journal-plan-mismatch",
       `journal ${path} plan calls ${recordedPlan.calls}, but this run plans ` +
         `${String(expected.plan.calls)}`,
+    );
+  }
+  // A journal written before scopes existed was made under the pre-scope claim
+  // (every Locale); it may not be resumed as a narrower claim, and a scoped
+  // journal may not be resumed wider than it declared.
+  const recordedScope = recordedPlan.scope ?? LOCALES;
+  const expectedScope = expected.plan.scope ?? LOCALES;
+  if (
+    recordedScope.length !== expectedScope.length ||
+    !expectedScope.every((locale) => recordedScope.includes(locale))
+  ) {
+    refuse(
+      "journal-plan-mismatch",
+      `journal ${path} declared scope ${recordedScope.join(", ")}, but this run declares ` +
+        `${expectedScope.join(", ")}; a resumed certificate may not change its claim`,
     );
   }
   if (recordedPlan.scenarios.length !== expected.plan.scenarios.length) {

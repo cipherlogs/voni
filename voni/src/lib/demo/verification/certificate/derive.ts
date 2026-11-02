@@ -6,6 +6,10 @@
  * until the owner signs, and only then `certified`. The builder and the reader
  * both call this, so a document cannot assert a verdict its facts contradict.
  *
+ * An out-of-scope Locale is neutral: it is neither a gap nor a pass, and it can
+ * neither mask a failure inside the declared scope nor turn an unmeasured
+ * in-scope scenario green. Only rows inside the scope can fail the run.
+ *
  * The panel owns H1-H5 and H7. Before the panel has run there are no gold
  * labels, so those properties carry a structural failure (`no-evaluator`,
  * `unmeasured`, ...) rather than a measured bar miss. Those are exactly what
@@ -51,6 +55,9 @@ export function deriveCertificateVerdict(input: {
     input.coverage.gapRows > 0 ||
     input.coverage.byLocale.some((locale) => locale.status === "gap")
   ) {
+    // `out-of-scope` Locale rows are deliberately not in this test: they are
+    // neutral, and a failure inside the scope is still caught by its own row or
+    // property above.
     return "not-demo-ready";
   }
   const failures = input.properties.filter((property) => property.status === "FAIL");

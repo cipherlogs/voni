@@ -47,6 +47,12 @@ export type VerifyPlan = {
   readonly mode: VerifyRequest["mode"];
   readonly target: CertificateTarget;
   readonly locale: Locale | null;
+  /**
+   * The certificate's declared Locales. A full run defaults to its Locale
+   * filter, else all five; every planned Locale must be inside it and every
+   * declared Locale must be planned, or the run refuses before a call.
+   */
+  readonly scope: readonly Locale[];
   readonly scenario: string | null;
   /** Attempts every planned scenario owes. */
   readonly repetitions: number;
@@ -112,6 +118,7 @@ function diagnosePlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
     mode: "diagnose",
     target: request.target,
     locale: scenario.locale,
+    scope: [scenario.locale],
     scenario: scenario.name,
     repetitions: 1,
     calls: 1,
@@ -138,6 +145,7 @@ function fastPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
       mode: "fast",
       target: request.target,
       locale: "en",
+      scope: ["en"],
       scenario: null,
       repetitions: plan.repetitions,
       calls: plan.calls,
@@ -180,8 +188,30 @@ function assertPerLocaleFull(request: VerifyRequest, corpus: Corpus): void {
 
 function certificationPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
   const repetitions = request.mode === "full" ? FULL_REPETITIONS : 1;
+  // The declared scope is also the run's Locale set when no filter is given:
+  // `--full --scope en` is the same English-only claim as `--locale en`.
   const locales: readonly Locale[] =
-    request.locale === undefined ? LOCALES : [request.locale];
+    request.locale === undefined ? (request.scope ?? LOCALES) : [request.locale];
+  // The declared claim is an input; the plan may not step outside it, and a
+  // declared Locale the plan does not run would be an unmeasured claim.
+  const scope: readonly Locale[] = request.scope ?? locales;
+  const unplanned = scope.filter((locale) => !locales.includes(locale));
+  if (unplanned.length > 0) {
+    refuse(
+      "scope-mismatch",
+      `the declared scope includes Locale(s) ${unplanned.join(", ")}, which this ${request.mode} ` +
+        `run does not plan; a certificate cannot claim a Locale it did not run`,
+    );
+  }
+  const undeclared = locales.filter((locale) => !scope.includes(locale));
+  if (undeclared.length > 0) {
+    refuse(
+      "scope-mismatch",
+      `the ${request.mode} run plans Locale(s) ${undeclared.join(", ")}, which the declared scope ` +
+        `(${scope.join(", ")}) excludes; a Locale that ran is measured, never out of scope. ` +
+        "Widen the scope or narrow the run with --locale",
+    );
+  }
 
   assertPerLocaleFull(request, corpus);
 
@@ -212,6 +242,7 @@ function certificationPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
     mode: request.mode,
     target: request.target,
     locale: request.locale ?? null,
+    scope,
     scenario: null,
     repetitions,
     calls,

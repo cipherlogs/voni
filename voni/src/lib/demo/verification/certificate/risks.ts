@@ -9,8 +9,11 @@
  * its closure evidence.
  *
  * RR-01 and RR-07 always apply (accent coverage is TTS-only; held-out
- * scenarios are process-sealed). All eight are open as of the register's
- * version 1, so every certificate cites all eight.
+ * scenarios are process-sealed). All ten are open as of the register's
+ * version 3, so every certificate cites all ten. RR-09 records the owner's
+ * 2026-11-02 English-only decision: non-English Locales are untested, not
+ * passing. RR-10 records that one 12-call panel session cannot reach H2's
+ * 40-judgment floor; H2 stays unmeasured until the owner decides.
  */
 
 export type ResidualRisk = {
@@ -19,7 +22,7 @@ export type ResidualRisk = {
   readonly opened: string;
 };
 
-/** Register version 1, dated 2026-10-31. */
+/** Register version 3, dated 2026-11-02 (RR-09 and RR-10 added). */
 export const RESIDUAL_RISKS: readonly ResidualRisk[] = [
   {
     id: "RR-01",
@@ -60,6 +63,16 @@ export const RESIDUAL_RISKS: readonly ResidualRisk[] = [
     id: "RR-08",
     owner: "engineer",
     opened: "2026-10-31",
+  },
+  {
+    id: "RR-09",
+    owner: "owner",
+    opened: "2026-11-02",
+  },
+  {
+    id: "RR-10",
+    owner: "owner",
+    opened: "2026-11-02",
   },
 ];
 

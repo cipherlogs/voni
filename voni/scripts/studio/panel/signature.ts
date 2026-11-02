@@ -288,6 +288,9 @@ export function completeCertificateSignature(
       : judgePanel(contract, {
           goldLabels: labels,
           signature,
+          // The panel judges the certificate's own claim: an English-only
+          // certificate must not be read as five missing Locales at signing.
+          ...(certificate.scope === null ? {} : { scope: certificate.scope.locales }),
           certificate: { runId: certificate.runId, target: certificate.target },
         });
   const byId = new Map(panelVerdicts.map((property) => [property.propertyId, property]));

@@ -8,6 +8,7 @@
  * gaps are printed by name.
  */
 
+import { outOfScopeLocales } from "./scope";
 import type { Certificate } from "./types";
 
 const GAP_ROWS_SHOWN = 6;
@@ -29,11 +30,29 @@ function coverageLine(certificate: Certificate): string {
   const { coverage } = certificate;
   const measured = coverage.rows.filter((row) => row.status === "measured").length;
   const locales = coverage.byLocale
-    .map((locale) => `${locale.locale} ${locale.measuredScenarios}/${locale.expectedScenarios}`)
+    .map((locale) =>
+      locale.status === "out-of-scope"
+        ? `${locale.locale} OUT-OF-SCOPE`
+        : `${locale.locale} ${locale.measuredScenarios}/${locale.expectedScenarios}`,
+    )
     .join(" ");
   return (
     `coverage ${measured}/${coverage.expectedScenarios} scenarios measured, ` +
     `${coverage.gapRows} gap rows; ${locales}`
+  );
+}
+
+/** The claim's Locale set and the owner decision behind it, never implicit. */
+function scopeLine(certificate: Certificate): string {
+  const { scope } = certificate;
+  if (scope === null) {
+    return "scope undeclared (pre-v3: every demo Locale required)";
+  }
+  const excluded = outOfScopeLocales(scope.locales);
+  return (
+    `scope ${scope.locales.join(", ")} (${scope.decidedBy} ${scope.decidedOn}: ` +
+    `${scope.reason})` +
+    (excluded.length === 0 ? "" : `  OUT OF SCOPE ${excluded.join(", ")}`)
   );
 }
 
@@ -55,6 +74,7 @@ export function renderCertificate(certificate: Certificate): string {
     verdictLine(certificate),
     `run ${certificate.runId}  target ${certificate.target}  plan ${certificate.plan.mode} × ` +
       `${certificate.plan.repetitions}`,
+    scopeLine(certificate),
     `code ${certificate.code.fingerprint.head}` +
       `${certificate.code.fingerprint.dirty ? "+dirty" : ""}  app ${certificate.code.appBuild}  ` +
       `pipeline ${certificate.code.pipelineImage}`,
@@ -90,7 +110,10 @@ export function renderCertificate(certificate: Certificate): string {
       ...failed.map(
         (property) =>
           `FAIL ${property.propertyId} ${property.reason} n=${n(property.sampleCount)} — ` +
-          `${property.citations[0] ?? "no citation"}`,
+          `${property.citations[0] ?? "no citation"}` +
+          // The named reason a failure is unmeasured belongs on the compact
+          // view too: H2's 40-judgment floor is not a footnote in the JSON.
+          (property.gaps[0] === undefined ? "" : ` (${property.gaps[0]})`),
       ),
     );
   }

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Contract, ContractPropertyEntry } from "../contract";
-import { LOCALES } from "../scenarios";
+import { LOCALES, type Locale } from "../scenarios";
 import {
+  FULL_SCOPE,
   OPEN_RESIDUAL_RISK_IDS,
   deriveCertificateVerdict,
   buildCertificate,
@@ -95,10 +96,13 @@ const SCENARIOS = LOCALES.map((locale) => ({
   name: `hello-${locale}`,
   locale,
   heldOut: false,
+  class: "golden-flow" as const,
 }));
 
-function attempts(): NonNullable<CertificateBuildInput["attempts"]> {
-  return SCENARIOS.map((scenario) => ({
+function attempts(
+  scenarios: readonly (typeof SCENARIOS)[number][] = SCENARIOS,
+): NonNullable<CertificateBuildInput["attempts"]> {
+  return scenarios.map((scenario) => ({
     scenario: scenario.name,
     locale: scenario.locale,
     repetition: 1,
@@ -106,10 +110,10 @@ function attempts(): NonNullable<CertificateBuildInput["attempts"]> {
   }));
 }
 
-function evidence(): PropertyEvidence[] {
+function evidence(scenarios: readonly (typeof SCENARIOS)[number][] = SCENARIOS): PropertyEvidence[] {
   const numeric: PropertyMeasurement[] = [];
   const categorical: PropertyMeasurement[] = [];
-  for (const scenario of SCENARIOS) {
+  for (const scenario of scenarios) {
     const citation = `call:${scenario.name}#1`;
     numeric.push({
       propertyId: "T1",
@@ -148,22 +152,26 @@ type CertificateOptions = {
   readonly image?: string;
   readonly panel?: PanelSignature | null;
   readonly resume?: NonNullable<CertificateBuildInput["resume"]>;
+  readonly scope?: readonly Locale[];
 };
 
 function certificate(options: CertificateOptions): Certificate {
+  const scope = options.scope ?? LOCALES;
+  const scenarios = SCENARIOS.filter((scenario) => scope.includes(scenario.locale));
   const run = judgeRun({
     runId: options.runId,
     contract: CONTRACT,
-    evidence: evidence(),
+    evidence: evidence(scenarios),
     calls: [],
   });
   return buildCertificate({
     contract: CONTRACT,
     run,
     target: options.target ?? "staging",
+    scope: options.scope === undefined ? FULL_SCOPE : { ...FULL_SCOPE, locales: [...scope] },
     plan: { mode: "full", repetitions: 1 },
-    corpus: { version: 1, fingerprint: CORPUS_HASH, scenarios: SCENARIOS },
-    attempts: attempts(),
+    corpus: { version: 1, fingerprint: CORPUS_HASH, scenarios },
+    attempts: attempts(scenarios),
     codeFingerprint: options.fingerprint ?? FINGERPRINT,
     appBuild: (options.fingerprint ?? FINGERPRINT).head,
     pipelineImage: options.image ?? IMAGE,
@@ -207,6 +215,93 @@ test("three consecutive clean certifications on one fingerprint and target form 
   assert.deepEqual(result.runIds, [STAGING_1.runId, STAGING_2.runId, STAGING_3.runId]);
   assert.deepEqual(result.fingerprint, FINGERPRINT);
   assert.match(result.detail, /3 consecutive clean/);
+});
+
+test("an English-only scoped certificate is clean, and a gap inside en still breaks it", () => {
+  const base = certificate({ runId: "run-2026-10-04-01" });
+  const decision = {
+    decidedBy: "owner" as const,
+    decidedOn: "2026-11-02",
+    reason: "English-only launch",
+  };
+  const scoped: Certificate = {
+    ...base,
+    scope: { locales: ["en"], ...decision },
+    coverage: {
+      ...base.coverage,
+      expectedScenarios: 1,
+      gapRows: 0,
+      rows: base.coverage.rows.filter((row) => row.locale === "en"),
+      byLocale: base.coverage.byLocale.map((locale) =>
+        locale.locale === "en"
+          ? {
+              ...locale,
+              expectedScenarios: 1,
+              measuredScenarios: 1,
+              gapRows: 0,
+              status: "measured" as const,
+              gap: null,
+              decision: null,
+            }
+          : {
+              locale: locale.locale,
+              expectedScenarios: 0,
+              measuredScenarios: 0,
+              gapRows: 0,
+              status: "out-of-scope" as const,
+              gap: null,
+              decision,
+            },
+      ),
+    },
+  };
+  assert.equal(isCleanCertification(scoped), true, "excluded Locales are neutral, not gaps");
+
+  const gap: Certificate = {
+    ...scoped,
+    coverage: {
+      ...scoped.coverage,
+      gapRows: 1,
+      byLocale: scoped.coverage.byLocale.map((locale) =>
+        locale.locale === "en"
+          ? {
+              ...locale,
+              status: "gap" as const,
+              gap: "1 of 1 scenarios not measured",
+              measuredScenarios: 0,
+            }
+          : locale,
+      ),
+    },
+  };
+  assert.equal(isCleanCertification(gap), false, "an in-scope gap is never neutral");
+});
+
+test("a streak is one declared scope: mixed English-only and five-Locale claims are refused", () => {
+  const englishStreak = evaluateCertificateStreak({
+    certificates: [
+      certificate({ runId: "run-2026-10-04-01", scope: ["en"] }),
+      certificate({ runId: "run-2026-10-04-02", scope: ["en"] }),
+      certificate({ runId: "run-2026-10-04-03", scope: ["en"] }),
+    ],
+    target: "staging",
+  });
+  assert.equal(englishStreak.ok, true);
+  assert.deepEqual(englishStreak.scope, ["en"]);
+  assert.match(englishStreak.detail, /on scope en/);
+
+  const mixed = evaluateCertificateStreak({
+    certificates: [
+      certificate({ runId: "run-2026-10-05-01" }),
+      certificate({ runId: "run-2026-10-05-02" }),
+      certificate({ runId: "run-2026-10-05-03", scope: ["en"] }),
+    ],
+    target: "staging",
+  });
+  assert.equal(mixed.ok, false);
+  assert.equal(mixed.scope, null, "a mixed window has no single claim");
+  assert.ok(mixed.breaks.some((entry) => entry.code === "different-scope"));
+  assert.match(mixed.detail, /different-scope/);
 });
 
 test("a dirty hash that moved while HEAD and the dirty flag stayed put breaks the streak", () => {

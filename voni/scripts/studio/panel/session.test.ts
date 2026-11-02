@@ -210,6 +210,105 @@ test("a run with fewer than twelve eligible calls refuses the panel", () => {
   );
 });
 
+test("a one-Locale scope needs no call for the four Locales it excludes", () => {
+  const certificate = sessionCertificate({
+    callsPerLocale: 3,
+    scope: ["en"],
+    classes: [
+      "golden-flow",
+      "turn-taking",
+      "comprehension",
+      "emotion",
+      "soundscape",
+      "connectivity",
+      "meta-security",
+      "ending",
+      "tools",
+    ],
+  });
+  const { session } = buildPanelSession({
+    certificate,
+    calls: callsFor(certificate),
+    reviewer: "owner",
+    seed: 7,
+    createdAt: "2026-10-31T10:00:00.000Z",
+  });
+
+  assert.equal(session.queue.length, PANEL_SAMPLE_SIZE);
+  assert.ok(
+    session.queue.every((item) => item.locale === "en"),
+    "only the in-scope Locale is sampled",
+  );
+  const classes = new Set(certificate.coverage.rows.map((row) => row.class));
+  const classByCall = new Map(
+    certificate.coverage.rows.flatMap((row) =>
+      row.calls.map((callId) => [callId, row.class] as const),
+    ),
+  );
+  const sampled = new Set(
+    session.queue.map((item) => classByCall.get(item.callId) ?? "missing"),
+  );
+  assert.deepEqual([...sampled].sort(), [...classes].sort(), "every class is represented");
+});
+
+test("more classes than the panel samples refuses by name, never queues extra labels", () => {
+  const classes = [
+    "golden-flow",
+    "turn-taking",
+    "comprehension",
+    "emotion",
+    "soundscape",
+    "connectivity",
+    "meta-security",
+    "ending",
+    "tools",
+    "locale",
+    "one",
+    "two",
+    "three",
+  ] as unknown as NonNullable<Parameters<typeof sessionCertificate>[0]>["classes"];
+  const certificate = sessionCertificate({ callsPerLocale: 3, scope: ["en"], classes });
+  assert.throws(
+    () =>
+      buildPanelSession({
+        certificate,
+        calls: callsFor(certificate),
+        reviewer: "owner",
+        seed: 1,
+        createdAt: "2026-10-31T10:00:00.000Z",
+      }),
+    refusal("class-shortfall", /13 classes.*samples 12/),
+  );
+});
+
+test("an in-scope Locale with no call refuses, while an excluded Locale is neutral", () => {
+  const certificate = sessionCertificate({ callsPerLocale: 3, scope: ["en", "es"] });
+  assert.throws(
+    () =>
+      buildPanelSession({
+        certificate,
+        calls: callsFor(certificate).filter((entry) => entry.locale === "en"),
+        reviewer: "owner",
+        seed: 1,
+        createdAt: "2026-10-31T10:00:00.000Z",
+      }),
+    refusal("missing-locale", /Locale "es"/),
+  );
+
+  const excluded = sessionCertificate({ callsPerLocale: 3, scope: ["en"] });
+  assert.throws(
+    () =>
+      buildPanelSession({
+        certificate: excluded,
+        calls: [...callsFor(excluded), call("call-es-extra", "panel-es", "es")],
+        reviewer: "owner",
+        seed: 1,
+        createdAt: "2026-10-31T10:00:00.000Z",
+      }),
+    refusal("out-of-scope-call", /Locale "es"/),
+  );
+});
+
 test("a panel session needs a named reviewer and call evidence", () => {
   const certificate = sessionCertificate({ callsPerLocale: 3 });
   assert.throws(

@@ -85,6 +85,14 @@ export type RatingSessionInput = {
   /** Clean calls sampled per Locale; every failing call is always queued. */
   readonly cleanPerLocale?: number;
   /**
+   * The group each call belongs to when the clean sample is grouped by
+   * something other than Locale (the one-Locale panel groups by scenario
+   * class). A call absent from the map falls back to its Locale.
+   */
+  readonly cleanGroupOf?: Readonly<Record<string, string>>;
+  /** Clean calls sampled per group when {@link cleanGroupOf} is supplied. */
+  readonly cleanPerGroup?: number;
+  /**
    * A minimum queue size. When the mandatory failing calls plus the per-Locale
    * clean sample are fewer than this, the remaining clean calls are drawn in
    * seeded order until the queue reaches it. 0 means no top-up (ticket 24's
@@ -191,6 +199,7 @@ export type RatingErrorCode =
   | "invalid-clean-sample"
   | "invalid-sample-size"
   | "sample-shortfall"
+  | "sample-overflow"
   | "invalid-session"
   | "duplicate-call"
   | "unknown-call"
@@ -459,22 +468,28 @@ function shuffle<T>(values: readonly T[], random: () => number): T[] {
   return copy;
 }
 
-/** The clean sample: up to `perLocale` from each Locale, in codepoint order. */
+/**
+ * The clean sample: up to `perGroup` from each group, in codepoint order. The
+ * group is the call's Locale by default; a caller can supply another grouping
+ * (the one-Locale panel groups by scenario class).
+ */
 function cleanSample(
   calls: readonly RatingCallInput[],
-  perLocale: number,
+  perGroup: number,
   random: () => number,
+  groupOf?: Readonly<Record<string, string>>,
 ): RatingCallInput[] {
-  if (perLocale === 0) return [];
-  const byLocale = new Map<Locale, RatingCallInput[]>();
+  if (perGroup === 0) return [];
+  const groups = new Map<string, RatingCallInput[]>();
   for (const call of calls) {
-    const group = byLocale.get(call.locale);
+    const key = groupOf?.[call.callId] ?? call.locale;
+    const group = groups.get(key);
     if (group) group.push(call);
-    else byLocale.set(call.locale, [call]);
+    else groups.set(key, [call]);
   }
   const sample: RatingCallInput[] = [];
-  for (const locale of [...byLocale.keys()].sort()) {
-    sample.push(...shuffle(byLocale.get(locale)!, random).slice(0, perLocale));
+  for (const key of [...groups.keys()].sort()) {
+    sample.push(...shuffle(groups.get(key)!, random).slice(0, perGroup));
   }
   return sample;
 }
@@ -489,6 +504,10 @@ export function buildRatingSession(input: RatingSessionInput): RatingSession {
   const seed = parseSeed(input.seed);
   const createdAt = parseCreatedAt(input.createdAt);
   const cleanPerLocale = parseCleanPerLocale(input.cleanPerLocale);
+  const cleanPerGroup =
+    input.cleanPerGroup === undefined
+      ? cleanPerLocale
+      : parseCleanPerLocale(input.cleanPerGroup);
   const sampleSize = parseSampleSize(input.sampleSize);
   const certificate = input.certificate;
   if (typeof certificate !== "object" || certificate === null) {
@@ -551,7 +570,22 @@ export function buildRatingSession(input: RatingSessionInput): RatingSession {
   // two extra slots beyond the base and the mandatory failures go to the worst
   // remaining calls; a run with more than two remaining failures grows past
   // twelve rather than dropping one.
-  const perLocaleClean = cleanSample(cleanCalls, cleanPerLocale, random);
+  const perLocaleClean = cleanSample(
+    cleanCalls,
+    cleanPerGroup,
+    random,
+    input.cleanGroupOf,
+  );
+  // A grouped base larger than the sample cannot be honoured by a fixed-size
+  // session: refuse by name rather than silently queueing more labels than the
+  // panel says it samples (one per class beyond twelve would do exactly that).
+  if (sampleSize > 0 && perLocaleClean.length > sampleSize) {
+    throw new RatingError(
+      "sample-overflow",
+      `the clean base is ${perLocaleClean.length} calls but this session samples ${sampleSize}; ` +
+        "a grouping with more groups than slots cannot be honoured, so the session refuses",
+    );
+  }
 
   const selected = new Set(perLocaleClean.map((call) => call.callId));
   const topUpCount = Math.max(0, sampleSize - failingCalls.length - perLocaleClean.length);
