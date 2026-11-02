@@ -342,7 +342,11 @@ export type EvidenceRetry = {
  */
 export const RETRYABLE_NO_EVIDENCE: ReadonlySet<string> = new Set([
   "marks-missing",
+  "capture-missing",
   "call-refused",
+  // The stack was unreachable before the call: nothing was measured either.
+  "pipeline-unreachable",
+  "app-unreachable",
 ]);
 
 type Collected = {
