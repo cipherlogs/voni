@@ -54,6 +54,15 @@ export type SyntheticMicOptions = {
   readonly faults?: readonly Fault[];
   /** Reject `getUserMedia` with `NotAllowedError`, the denial R5 measures. */
   readonly denyMicrophone?: boolean;
+  /**
+   * The scenario's ambience, looped under the caller for the whole call. It is
+   * mixed into the same bus as the caller takes; `quiet-room` passes nothing.
+   */
+  readonly soundscape?: {
+    readonly pcmBase64: string;
+    readonly sampleRate: number;
+    readonly levelDb?: number;
+  };
 };
 
 /** The shape the init script installs on the page. */
@@ -87,6 +96,7 @@ function syntheticMicBootstrap(input: {
   takes: Record<string, { pcmBase64: string; sampleRate: number }>;
   faults: readonly { kind: string; atMs: number; durationMs?: number }[];
   denyMicrophone: boolean;
+  soundscape: { pcmBase64: string; sampleRate: number; levelDb: number | null } | null;
 }): void {
   const CHUNK_MS = 20;
   const state: {
@@ -168,12 +178,29 @@ function syntheticMicBootstrap(input: {
   const ensureContext = (): AudioContext => {
     if (state.ctx === null) {
       state.ctx = new AudioContext();
-      state.bus = state.ctx.createGain();
-      state.bus.gain.value = 1;
+      const bus = state.ctx.createGain();
+      bus.gain.value = 1;
+      state.bus = bus;
       state.keepAlive = state.ctx.createConstantSource();
       state.keepAlive.offset.value = 0;
-      state.keepAlive.connect(state.bus);
+      state.keepAlive.connect(bus);
       state.keepAlive.start();
+      if (input.soundscape !== null) {
+        const samples = decode(input.soundscape.pcmBase64);
+        if (samples.length > 0) {
+          const buffer = state.ctx.createBuffer(1, samples.length, input.soundscape.sampleRate);
+          buffer.getChannelData(0).set(samples);
+          const source = state.ctx.createBufferSource();
+          source.buffer = buffer;
+          source.loop = true;
+          const gain = state.ctx.createGain();
+          // The protocol seam's documented default; the scenario may pin one.
+          gain.gain.value = Math.pow(10, (input.soundscape.levelDb ?? -30) / 20);
+          source.connect(gain);
+          gain.connect(bus);
+          source.start();
+        }
+      }
       state.callOrigin = performance.now();
     }
     return state.ctx;
@@ -302,6 +329,14 @@ export function syntheticMicSource(
     takes: record,
     faults,
     denyMicrophone: options.denyMicrophone === true,
+    soundscape:
+      options.soundscape === undefined
+        ? null
+        : {
+            pcmBase64: options.soundscape.pcmBase64,
+            sampleRate: options.soundscape.sampleRate,
+            levelDb: options.soundscape.levelDb ?? null,
+          },
   })});`;
 }
 

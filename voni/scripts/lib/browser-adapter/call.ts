@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { voiceForLocale } from "../protocol-adapter/transport";
+import { SOUNDSCAPE_SAMPLE_RATE } from "../soundscapes";
 import { BrowserAdapterError } from "./errors";
 import { pcm16ToBase64, type SyntheticMicTake } from "./synthetic-mic";
 import type { BrowserCallInput, BrowserCallResult } from "./types";
@@ -54,11 +55,21 @@ export type BrowserInvocation = {
   readonly eventsDir: string;
   readonly resultPath: string;
   readonly takes: readonly BrowserInvocationTake[];
+  /** The ambience the harness mixes under the caller, or null for quiet-room. */
+  readonly soundscape: BrowserInvocationSoundscape | null;
   readonly script: unknown;
   readonly faults: unknown;
   /** How long the harness keeps the line open before hanging up. */
   readonly holdOpenMs: number | null;
   readonly edge: unknown;
+};
+
+export type BrowserInvocationSoundscape = {
+  readonly id: string;
+  /** Mix level in dB; null means the adapter's documented default. */
+  readonly levelDb: number | null;
+  readonly sampleRate: number;
+  readonly pcmBase64: string;
 };
 
 /** A standard PCM16 mono WAV's data chunk and rate. */
@@ -128,6 +139,7 @@ export async function buildBrowserInvocation(input: {
     micTakes.push({ id: take.id, pcmBase64: encoded, sampleRate: parsed.sampleRate });
   }
   const resultPath = join(input.runDir, RESULT_FILE);
+  const soundscapePcm = input.call.soundscapePcm ?? null;
   const invocation: BrowserInvocation = {
     schemaVersion: 1,
     scenario: input.call.scenario.name,
@@ -139,6 +151,15 @@ export async function buildBrowserInvocation(input: {
     eventsDir: input.call.eventsDir,
     resultPath,
     takes,
+    soundscape:
+      soundscapePcm === null
+        ? null
+        : {
+            id: input.call.scenario.soundscape.id,
+            levelDb: input.call.soundscapeLevelDb ?? null,
+            sampleRate: SOUNDSCAPE_SAMPLE_RATE,
+            pcmBase64: pcm16ToBase64(soundscapePcm),
+          },
     script: input.call.scenario.script,
     faults: input.call.scenario.faults,
     holdOpenMs: input.call.scenario.holdOpenMs ?? null,

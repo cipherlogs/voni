@@ -67,6 +67,23 @@ test("a caller take round-trips through PCM16 base64", () => {
   assert.equal(Buffer.from(encoded, "base64").toString("hex"), Buffer.from(pcm).toString("hex"));
 });
 
+test("an ambient bed is looped under the caller, never treated as a take", () => {
+  const source = syntheticMicSource(
+    [{ id: "opening", pcmBase64: "AAAA", sampleRate: 24_000 }],
+    {
+      soundscape: {
+        pcmBase64: "AgABAA==",
+        sampleRate: 24_000,
+        levelDb: -18,
+      },
+    },
+  );
+  assert.match(source, /"soundscape":\{"pcmBase64":"AgABAA=="/);
+  assert.match(source, /source\.loop\s*=\s*true/);
+  assert.match(source, /Math\.pow\(10/);
+  assert.equal(source.match(/source\.start\(\)/g)?.length, 1, "the bed starts once and loops");
+});
+
 test("the take reader refuses a non-mono WAV", () => {
   const root = mkdtempSync(join(tmpdir(), "dv17-mic-"));
   try {

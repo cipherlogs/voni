@@ -7,23 +7,21 @@ named refusal, never digital silence wearing another name.
 | Id | Committed media | What it is |
 | --- | --- | --- |
 | `quiet-room` | none (the adapter passes `null`) | Digital silence: the mixer adds nothing. It is a control condition, **not** a television or room bed. |
-| `television` | **none** | The `soundscape-television` scenario exists so the gap is visible. No television/background PCM asset is committed, so the protocol adapter refuses `soundscape:television` by name (`missing-soundscape`) before any vendor opens. |
+| `television` | `voni/evidence/soundscapes/television.wav` + `television.json` | A 30 s, 24 kHz mono PCM16 excerpt of the owner-supplied television audio. The protocol seam mixes it under the caller's uplink; the browser harness loops it into the synthetic mic's bus. It is ambience, never evidence of Voni's own audio. |
 
-## The television gap (ticket 14)
+## The television bed
 
-The spec's soundscape class asks the agent to handle background television
-(visitor story 10), but no television PCM exists in the repository. Ticket 14
-does not substitute `quiet-room`: that would report a clean call that never had
-a television in it. Instead:
+`voni/scripts/lib/soundscapes.ts` loads the committed pair by id and validates
+the sidecar's id, file name, rate (24 kHz), channels (mono), bit depth (PCM16),
+duration and sha256 against the decoded WAV. It never resamples: a file at
+another rate is refused by name. `demo:verify` and `demo:certify:browser` load
+the map once and pass it as the adapter's `soundscapes`; `soundscape-television`
+and the four `locale-television-*` scenarios can then run. A scenario that names
+an id the loader does not hold still refuses `soundscape:<id>` by name, and
+`quiet-room` stays digital silence.
 
-- `soundscape-television/scenario.json` names `television`;
-- the protocol adapter's preflight refuses the id by name and opens no call;
-- `class-corpus.test.ts` pins both facts, and
-  `scripts/lib/protocol-adapter/runner.test.ts` proves the refusal.
-
-**To close it:** commit a small, hashed 24 kHz mono PCM16 bed (with its sha256 in
-a record beside it), add it to the adapter's soundscape map, and run the
-scenario. Do not map an uncommitted id to `quiet-room`.
+The bed's provenance and the owner's rights decision are recorded in
+`television.json` and in `docs/agents/demo-verification.md`.
 
 ## Second voice and speakerphone
 

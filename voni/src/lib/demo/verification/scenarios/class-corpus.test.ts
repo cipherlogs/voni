@@ -14,13 +14,12 @@ import {
  * Ticket 14's ten corpus entries: four soundscape, three connectivity and
  * three meta/security scenarios. Two of them (quiet room and jitter) landed
  * with ticket 12's fast corpus; this file pins the class totals, the held-out
- * seals and the soundscape gap by name.
+ * seals and the television scenario's name by id.
  *
- * The television scenario is deliberately *unrunnable* until a real bed is
- * committed: it names `television`, and the adapter refuses that id rather than
- * mixing digital silence and calling it a television. The refusal is proven in
- * `scripts/lib/protocol-adapter/runner.test.ts`; this file proves the corpus
- * cannot quietly substitute `quiet-room`.
+ * The television scenario names `television`; the committed bed is loaded by
+ * `scripts/lib/soundscapes.ts` and mixed by both adapters. This file proves the
+ * corpus cannot quietly substitute `quiet-room` (digital silence) for the bed
+ * id; the loader's own refusals are proven in `scripts/lib/soundscapes.test.ts`.
  */
 
 const NEW_SOUNDSCAPE = [
@@ -280,9 +279,7 @@ test("the television scenario names a real bed id and does not substitute digita
     "quiet-room is digital silence; using it as a television bed would be a false pass",
   );
 
-  // No committed PCM asset exists for the id. The adapter's preflight refuses it
-  // by name (`soundscape:television`); ticket 14 records the gap rather than
-  // pretending a bed was mixed.
+  // The bed is committed and loaded by id; quiet-room is never a substitute.
   for (const take of television.takes) {
     const bytes = readFileSync(take.path);
     assert.equal(take.sha256, sha256Hex(bytes));

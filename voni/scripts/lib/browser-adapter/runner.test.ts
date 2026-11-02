@@ -18,6 +18,7 @@ import { join } from "node:path";
 
 import { parseReplayCommand } from "@/lib/demo/verification/cards";
 import { runBrowserCertification, runReplayCommand, type BrowserRunInput } from "./runner";
+import { loadSoundscapes } from "../soundscapes";
 import {
   BROWSER_CALL_ID,
   FAKE_KEYS,
@@ -820,6 +821,43 @@ test("a provider fallback on the call makes the run ineligible, never certified"
     const run = runJson(result);
     assert.equal((run.certificate as { verdict: string }).verdict, "ineligible");
     assert.equal((run.certificate as { pass: boolean }).pass, false);
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a committed television bed reaches the adapter and the call", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), [
+      { name: "soundscape-television", soundscape: { id: "television", levelDb: -18 } },
+    ]);
+    const beds = loadSoundscapes();
+    let mixed: Uint8Array | null | undefined;
+    const result = await runBrowserCertification(
+      input(root, {
+        scenarioName: "soundscape-television",
+        soundscapes: beds,
+        call: async (callInput) => {
+          mixed = callInput.soundscapePcm;
+          return fakeBrowserCall({
+            scenario: callInput.scenario,
+            eventsDir: join(root, "events"),
+            capturesDir: join(root, "captures"),
+            runDir: callInput.runDir,
+          });
+        },
+      }),
+    );
+
+    assert.notEqual(
+      result.refusal?.code,
+      "missing-soundscape",
+      "the loaded bed satisfies preflight",
+    );
+    assert.ok(mixed instanceof Uint8Array, "the call receives the bed, not null");
+    assert.equal(mixed.byteLength, beds.television.byteLength);
+    assert.deepEqual(Buffer.from(mixed), Buffer.from(beds.television));
   } finally {
     removeTree(root);
   }

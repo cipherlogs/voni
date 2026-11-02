@@ -68,6 +68,7 @@ import {
   collectToolEvidence,
   type ToolEvidenceCollection,
 } from "../protocol-adapter/tool-evidence";
+import { QUIET_SOUNDSCAPE } from "../protocol-adapter/faults";
 
 import { runPlaywrightBrowserCall } from "./call";
 import { BrowserAdapterError } from "./errors";
@@ -458,6 +459,13 @@ export async function runBrowserCertification(
       runDir,
       elapsedBudgetS: input.elapsedBudgetS ?? null,
       env,
+      soundscapePcm:
+        scenario.soundscape.id === QUIET_SOUNDSCAPE
+          ? null
+          : (input.soundscapes ?? {})[scenario.soundscape.id] ?? null,
+      ...(scenario.soundscape.levelDb === undefined
+        ? {}
+        : { soundscapeLevelDb: scenario.soundscape.levelDb }),
     });
   } catch (error) {
     const refusedError =

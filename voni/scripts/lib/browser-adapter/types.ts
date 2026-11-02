@@ -217,6 +217,10 @@ export type BrowserCallInput = {
   readonly runDir: string;
   readonly elapsedBudgetS: number | null;
   readonly env: Readonly<Record<string, string | undefined>>;
+  /** The scenario's ambience as interleaved 24 kHz mono PCM16, or null for quiet-room. */
+  readonly soundscapePcm?: Uint8Array | null;
+  /** The scenario's mix level in dB; omitted means the adapter's default. */
+  readonly soundscapeLevelDb?: number;
 };
 
 /** The evidence the runner assembles for one browser call. */

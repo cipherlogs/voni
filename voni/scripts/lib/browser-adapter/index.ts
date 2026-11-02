@@ -48,6 +48,9 @@ export {
   buildBrowserInvocation,
   readTakePcm,
   runPlaywrightBrowserCall,
+  type BrowserInvocation,
+  type BrowserInvocationSoundscape,
+  type BrowserInvocationTake,
 } from "./call";
 
 export {
