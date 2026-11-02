@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -524,9 +525,12 @@ test("buildLedger's total equals the certificate's aggregate at one precision", 
     );
     const run = resolveRun("verify-total", { runRoot, evidenceRoot });
     const ledger = buildLedger(run);
+    const certificate = JSON.parse(
+      readFileSync(join(evidenceRoot, "certificates", "verify-total.json"), "utf8"),
+    ) as { cost: { usd: number } };
     assert.equal(ledger.complete, true);
     assert.equal(ledger.expectedCalls, 2);
-    assert.equal(roundUsd(ledger.totalUsd), roundUsd(0.008584));
+    assert.equal(roundUsd(ledger.totalUsd), roundUsd(certificate.cost.usd));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
