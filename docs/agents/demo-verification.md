@@ -30,6 +30,17 @@ trigger rules, a soundscape, expected properties and faults. There is no mocked
 tool executor on the golden path, no fake pipeline in the certifying adapter,
 and no test branch inside production code.
 
+### Two-sided preview mix
+
+`voni/scripts/demo-preview-mix.mjs` (`npm run demo:preview-mix -- <run-dir>`)
+places each `timeline.spoken[]` take at `atMs - capture_started`, where
+`capture_started` is one mark for the playout worklet's first written sample
+(`voni/src/lib/voice/cascade-session.ts`, `call-marks.ts`), in the page clock
+the harness timeline and `spoken[].atMs` share. The mix normalises the agent
+capture and each caller take to about -20 dBFS RMS and scales the result only
+for peak safety. A missing `capture_started` is a named refusal: the script
+never falls back to the page origin, call open or a mask correlation.
+
 ## Subsystem map
 
 Each ticket fills its own row when it lands. `not landed` is deliberate: no path

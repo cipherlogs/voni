@@ -79,6 +79,15 @@ export type WorkletPlayout = Playout & {
   tap: (on: boolean) => Promise<{ ended: boolean }>;
   /** One block of the output exactly as it was emitted, at the device rate. */
   onTap?: (samples: Float32Array) => void;
+  /**
+   * Fires once, when the tap writes its first sample: the capture's real
+   * origin. The argument is `performance.now()` corrected to that first
+   * sample using the worklet's context time. The page stamps it into
+   * `capture_started`, so a preview mix places a caller take at
+   * `atMs - capture_started` instead of guessing where the capture began.
+   * Observation only; it never touches the signal path.
+   */
+  onCaptureStarted?: (performanceNowMs: number) => void;
 };
 
 export const PLAYOUT_MODULE = "/playout-processor.js";
@@ -99,6 +108,7 @@ type Level = {
 };
 type Pop = { type: "pop"; kind: "jump" | "overload"; size: number; at: number };
 type Tap = { type: "tap"; samples: Float32Array };
+type TapStart = { type: "tap-start"; at?: number };
 type TapEnd = { type: "tap-end" };
 
 /** Little-endian PCM16 bytes -> float samples in [-1, 1). */
@@ -170,7 +180,21 @@ export function createWorkletPlayout(node: AudioWorkletNode): WorkletPlayout {
       });
     },
   };
-  node.port.onmessage = (e: MessageEvent<Level | Pop | Tap | TapEnd>) => {
+  node.port.onmessage = (e: MessageEvent<Level | Pop | Tap | TapStart | TapEnd>) => {
+    if (e.data?.type === "tap-start") {
+      // The message is handled after the block was rendered, so rewind by the
+      // context time between the first sample and now. The correction is
+      // bounded at zero: a clock that disagrees must not invent the future.
+      const context = (node as AudioWorkletNode & { context?: BaseAudioContext }).context;
+      const at = typeof e.data.at === "number" ? e.data.at : null;
+      const now = performance.now();
+      const firstSample =
+        context !== undefined && at !== null
+          ? now - Math.max(0, (context.currentTime - at) * 1000)
+          : now;
+      playout.onCaptureStarted?.(firstSample);
+      return;
+    }
     if (e.data?.type === "tap") {
       playout.onTap?.(e.data.samples);
       return;

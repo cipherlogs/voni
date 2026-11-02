@@ -20,7 +20,7 @@ import BOUNDS from "./cascade-bounds.json";
 import { acquireMicStream, startAudioGraph } from "./mic-capture";
 import { releaseMic } from "./mic-owner";
 import type { Playout, WorkletPlayout } from "./playout";
-import type { CallMarks } from "./call-marks";
+import { pageClockMs, type CallMarks } from "./call-marks";
 import {
   attachDeliveredCapture,
   finishDeliveredCapture,
@@ -343,7 +343,8 @@ export type CascadeDeps = {
 };
 
 /** The worklet handle `out` is a `WorkletPlayout`; a test playout may not be. */
-type TappablePlayout = Playout & Pick<WorkletPlayout, "tap" | "onTap">;
+type TappablePlayout = Playout &
+  Pick<WorkletPlayout, "tap" | "onTap" | "onCaptureStarted">;
 
 function isTappable(playout: Playout | null): playout is TappablePlayout {
   return playout !== null && typeof (playout as Partial<WorkletPlayout>).tap === "function";
@@ -415,6 +416,8 @@ export class CascadeSession {
   /** Dev delivered capture (`?delivercapture=1`): off unless the caller sets it. */
   private deliveredCaptureOn = false;
   private deliveredCapture: DeliveredCapture | null = null;
+  /** The capture's first written sample is one mark, never one per tap block. */
+  private captureStartedMarked = false;
   private captureOutcome: CaptureResult | null = null;
   private captureCallId: string | null = null;
   private teardownMarked = false;
@@ -482,6 +485,7 @@ export class CascadeSession {
     this.connectFailureReported = false;
     this.highestPlayedSeq = 0;
     this.teardownMarked = false;
+    this.captureStartedMarked = false;
     this.captureClosing = null;
     this.teardownPromise = null;
     this.endSeen = false;
@@ -532,6 +536,15 @@ export class CascadeSession {
         ...(this.captureNow === undefined ? {} : { now: this.captureNow }),
         ...(this.captureCallId === null ? {} : { callId: this.captureCallId }),
       });
+      // The capture's real clock anchor. It is the playout worklet's first
+      // written sample, stamped in the same page clock as the harness
+      // timeline and `timeline.spoken[].atMs`; the preview mix places every
+      // take at `atMs - capture_started` instead of inferring an origin.
+      this.playout.onCaptureStarted = (performanceNowMs) => {
+        if (this.captureStartedMarked) return;
+        this.captureStartedMarked = true;
+        this.marks?.mark("capture_started", { atMs: pageClockMs(performanceNowMs) });
+      };
     } else if (this.deliveredCaptureOn) {
       // The capture flag is on but this playout cannot be tapped: a named gap,
       // never a silent absence when the artifact is read.

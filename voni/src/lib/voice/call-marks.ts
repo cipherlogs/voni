@@ -52,6 +52,13 @@ export const CALL_MARK_NAMES = [
   "admitted",
   "refused",
   "connected_painted",
+  /**
+   * The delivered capture's real origin: the first sample the playout worklet
+   * wrote. Its `detail.atMs` is in the page clock the harness timeline and
+   * `timeline.spoken[].atMs` share, so a preview mix places a caller take at
+   * `atMs - capture_started` and never guesses.
+   */
+  "capture_started",
   "first_audible",
   "chime",
   "talk_clock_start",
@@ -76,6 +83,21 @@ export const CALL_MARK_NAMES = [
 ] as const;
 
 export type CallMarkName = (typeof CALL_MARK_NAMES)[number];
+
+/**
+ * The page clock the browser harness's `timeline` uses: `performance.now()`
+ * less the harness origin, when the adapter installed one before app code.
+ *
+ * An ordinary dev run has no harness timeline; there the same monotonic clock
+ * taken from page load is returned, so the mark is still a real reading rather
+ * than a wall clock that would need translating. The preview mix only reads
+ * this mark on harness runs, where `timeline.spoken[].atMs` exists.
+ */
+export function pageClockMs(now: number = performance.now()): number {
+  const origin = (globalThis as { __voniAgentTimeline?: { origin?: unknown } })
+    .__voniAgentTimeline?.origin;
+  return now - (typeof origin === "number" && Number.isFinite(origin) ? origin : 0);
+}
 
 export type CallMark = {
   name: CallMarkName;
