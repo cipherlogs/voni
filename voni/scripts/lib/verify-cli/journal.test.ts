@@ -12,6 +12,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  appendFileSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -23,10 +25,13 @@ import { join } from "node:path";
 import { VerifyCliError } from "./errors";
 import {
   JOURNAL_SCHEMA_VERSION,
+  acquireJournalLock,
   assertEvidencePresent,
   assertResumable,
   journalPath,
   readJournal,
+  truncateTornTail,
+  writeAllBytes,
   writeJournal,
   type JournalCallRecord,
   type JournalHeader,
@@ -127,10 +132,14 @@ test("a half-written tail is dropped and truncated; completed calls survive", ()
     const complete = JSON.stringify(call("en-one", 1));
     writeFileSync(path, `${readFileSync(path, "utf8")}${complete}\n{"type":"call","scenario":"en`, "utf8");
 
+    const before = readFileSync(path, "utf8");
     const loaded = readJournal(path);
     assert.equal(loaded.tailDropped, true);
     assert.equal(loaded.calls.size, 1, "the completed call before the torn tail is kept");
     assert.ok(loaded.calls.has("en-one#1"));
+    assert.equal(readFileSync(path, "utf8"), before, "reading a torn journal writes nothing");
+
+    truncateTornTail(loaded);
     const text = readFileSync(path, "utf8");
     assert.ok(text.endsWith("\n"), "the truncated journal ends at a complete entry");
     const lines = text.trim().split("\n");
@@ -285,6 +294,151 @@ test("a journal claim whose evidence file is gone is refused by path", () => {
     const error = refusal(() => assertEvidencePresent(withClaim));
     assert.match(error.message, /gone\.wav/);
     assert.match(error.message, /en-one#1/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a journal append completes through legal short writes", () => {
+  const chunks: string[] = [];
+  const sink = (chunk: Buffer): number => {
+    const take = Math.min(3, chunk.length);
+    chunks.push(chunk.subarray(0, take).toString("utf8"));
+    return take;
+  };
+  writeAllBytes(sink, Buffer.from('{"type":"call"}\n', "utf8"));
+  assert.equal(chunks.join(""), '{"type":"call"}\n');
+  assert.throws(() => writeAllBytes(() => 0, Buffer.from("x")), /no progress/);
+});
+
+test("a parseable but malformed middle line is a refusal, never a torn tail", () => {
+  const dir = root();
+  try {
+    const path = journalPath(dir, RUN_ID);
+    writeJournal(path, HEADER);
+    appendFileSync(
+      path,
+      `{"type":"call"}\n${JSON.stringify(call("en-one", 1))}\n`,
+      "utf8",
+    );
+    const error = refusal(() => readJournal(path));
+    assert.match(error.message, /line 2/);
+    assert.match(error.message, /outcome|scenario|not a non-empty string/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a started call with no completion record is interrupted, never re-runnable", () => {
+  const dir = root();
+  try {
+    const path = journalPath(dir, RUN_ID);
+    writeJournal(path, HEADER);
+    appendFileSync(
+      path,
+      `${JSON.stringify({
+        type: "start",
+        scenario: "en-one",
+        repetition: 1,
+        at: "2026-11-02T09:00:01.000Z",
+      })}\n`,
+      "utf8",
+    );
+    const loaded = readJournal(path);
+    assert.ok(loaded.interrupted.has("en-one#1"));
+    assert.equal(loaded.calls.size, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a torn failure record after a start leaves the call interrupted", () => {
+  const dir = root();
+  try {
+    const path = journalPath(dir, RUN_ID);
+    writeJournal(path, HEADER);
+    appendFileSync(
+      path,
+      `${JSON.stringify({
+        type: "start",
+        scenario: "en-one",
+        repetition: 1,
+        at: "2026-11-02T09:00:01.000Z",
+      })}\n{"type":"call","scenario":"en-one","repetition":1,"outcome":"failed"`,
+      "utf8",
+    );
+    const loaded = readJournal(path);
+    assert.equal(loaded.tailDropped, true);
+    assert.ok(loaded.interrupted.has("en-one#1"));
+    assert.equal(loaded.calls.size, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("two attempts cannot claim one call id", () => {
+  const dir = root();
+  try {
+    const path = journalPath(dir, RUN_ID);
+    writeJournal(path, HEADER);
+    const first = { ...call("en-one", 1), callId: "shared-call" };
+    const second = { ...call("es-one", 1), locale: "es" as const, callId: "shared-call" };
+    appendFileSync(path, `${JSON.stringify(first)}\n${JSON.stringify(second)}\n`, "utf8");
+    const error = refusal(() => readJournal(path));
+    assert.match(error.message, /call id "shared-call"/);
+    assert.match(error.message, /en-one#1/);
+    assert.match(error.message, /es-one#1/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a completed call must cite absolute provenance, and at least one file", () => {
+  const dir = root();
+  try {
+    const path = journalPath(dir, RUN_ID);
+    writeJournal(path, HEADER);
+    const loaded = readJournal(path);
+    const empty = { ...call("en-one", 1), evidenceRefs: [] };
+    const emptyJournal = {
+      ...loaded,
+      calls: new Map([["en-one#1", empty]]),
+    };
+    assert.match(
+      refusal(() => assertEvidencePresent(emptyJournal)).message,
+      /no evidence|provenance/,
+    );
+
+    const relative = { ...call("en-one", 1), evidenceRefs: ["caller/a.wav"] };
+    const relativeJournal = {
+      ...loaded,
+      calls: new Map([["en-one#1", relative]]),
+    };
+    assert.match(
+      refusal(() => assertEvidencePresent(relativeJournal)).message,
+      /absolute|caller\/a\.wav/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("one run id has one journal writer at a time", () => {
+  const dir = root();
+  try {
+    const path = journalPath(dir, RUN_ID);
+    writeJournal(path, HEADER);
+    const lock = acquireJournalLock(path);
+    const error = refusal(() => acquireJournalLock(path));
+    assert.match(error.message, /held by live pid|journal-locked/);
+    lock.release();
+    const again = acquireJournalLock(path);
+    again.release();
+
+    writeFileSync(`${path}.lock`, "999999999\n", "utf8");
+    const reclaimed = acquireJournalLock(path);
+    reclaimed.release();
+    assert.equal(existsSync(`${path}.lock`), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -23,6 +23,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { CodeFingerprint } from "@/lib/demo/scoreboard";
@@ -80,15 +81,18 @@ import type { VerifyRequest } from "./args";
 import { VerifyCliError, refuse } from "./errors";
 import {
   JOURNAL_SCHEMA_VERSION,
+  acquireJournalLock,
   assertEvidencePresent,
   assertResumable,
   callKey,
   journalPath,
   openJournal,
   readJournal,
+  truncateTornTail,
   writeJournal,
   type JournalCallRecord,
   type JournalHeader,
+  type JournalLock,
   type JournalRetryRecord,
   type JournalWriter,
   type LoadedJournal,
@@ -155,6 +159,12 @@ export type ScenarioCallOutcome = {
    * list means the attempt carries its evidence inline.
    */
   readonly evidenceRefs?: readonly string[];
+  /**
+   * The call's own priced row, even when the call failed after serving. A
+   * failure that priced nothing is recorded as null and refuses the total,
+   * never silently dropped from spend.
+   */
+  readonly cost?: unknown;
 };
 
 /**
@@ -410,6 +420,7 @@ type JournalSession = {
   readonly interrupted: ReadonlySet<string>;
   readonly writer: JournalWriter;
   readonly resumedAt: string;
+  readonly lock: JournalLock;
 };
 
 /** A journaled failure carried forward: it stays failed and is not re-made. */
@@ -510,6 +521,12 @@ async function collectCalls(
           code: recorded.refusal?.code ?? "adapter-refused",
           message: recorded.refusal?.message ?? "the journal records a failed call",
         });
+        // The failed call still spent. Its own row is carried so the total is
+        // the whole run's spend; a null row fails the total closed and names
+        // the call rather than dropping it.
+        costs.push({ callId: recorded.callId, scenario: scenario.name, cost: recorded.cost });
+        if (pipelineImage === null) pipelineImage = recorded.pipelineImage;
+        reusedIds.push(recorded.callId);
         continue;
       }
       // A call that was already re-made once but whose result never landed has
@@ -536,6 +553,15 @@ async function collectCalls(
         if (waited < interval) await (deps.sleep?.((interval - waited) | 0) ?? sleepMs(interval - waited));
       }
       lastStart = deps.clock?.() ?? Date.now();
+      // The start sentinel is durable before the call opens. A process death
+      // after it leaves a started call with no completion record, which a
+      // resume classifies interrupted and never re-makes.
+      journal?.writer.append({
+        type: "start",
+        scenario: scenario.name,
+        repetition,
+        at: nowIso(deps),
+      });
       let outcome = await deps.runScenario({
         request,
         scenario: scenario.name,
@@ -588,8 +614,8 @@ async function collectCalls(
           outcome: "failed",
           attempt: null,
           eligibility: null,
-          cost: null,
-          pipelineImage: null,
+          cost: outcome.cost ?? null,
+          pipelineImage: outcome.pipelineImage,
           evidenceRefs: [],
           refusal: outcome.refusal,
           at: nowIso(deps),
@@ -622,6 +648,19 @@ async function collectCalls(
         callId,
         scenario: scenario.name,
       };
+      const evidenceRefs = (outcome.evidenceRefs ?? []).map((ref) =>
+        isAbsolute(ref) ? ref : resolve(ref),
+      );
+      if (journal !== null && evidenceRefs.length === 0) {
+        refuse(
+          "journal-provenance-missing",
+          `${scenario.name} repetition ${repetition} produced an attempt but named no evidence ` +
+            "path; a journal cannot claim a call it cannot point to",
+        );
+      }
+      // A missing cost row is recorded as null, an unmeasured leg that fails
+      // the total closed; it is never omitted from a completed call.
+      const costRow = attempt.evidence.cost ?? outcome.cost ?? null;
       journal?.writer.append({
         type: "call",
         scenario: scenario.name,
@@ -631,11 +670,9 @@ async function collectCalls(
         outcome: "completed",
         attempt,
         eligibility: eligibilityFact,
-        // A missing cost row is recorded as null, an unmeasured leg that fails
-        // the total closed; it is never omitted from a completed call.
-        cost: attempt.evidence.cost ?? null,
+        cost: costRow,
         pipelineImage: outcome.pipelineImage,
-        evidenceRefs: [...(outcome.evidenceRefs ?? [])],
+        evidenceRefs,
         refusal: null,
         at: nowIso(deps),
       });
@@ -647,7 +684,7 @@ async function collectCalls(
         callId,
       });
       eligibility.push(eligibilityFact);
-      costs.push({ callId, scenario: scenario.name, cost: attempt.evidence.cost });
+      costs.push({ callId, scenario: scenario.name, cost: costRow });
       if (pipelineImage === null) pipelineImage = outcome.pipelineImage;
       madeIds.push(callId);
     }
@@ -744,11 +781,74 @@ function certificateFor(input: {
     appBuild: input.fingerprint.head,
     pipelineImage: input.collected.pipelineImage,
     vendorBuilds: [...input.builds],
-    cost: { usd, callCount: input.collected.attempts.length },
+    cost: { usd, callCount: input.collected.costs.length },
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: input.panel,
     resume: input.resume,
   });
+}
+
+/** The certificate shape the call-accounting check reads. */
+export type CallAccountingCertificate = {
+  readonly cost: { readonly callCount: number };
+  readonly coverage: {
+    readonly rows: readonly { readonly calls: readonly string[] }[];
+  };
+};
+
+/**
+ * The certificate's call count, coverage and resume halves must agree. A
+ * failed reused call spends and is counted in cost, but it is a coverage gap,
+ * not a measured call; every measured attempt must appear once in coverage.
+ */
+export function assertCallAccounting(
+  certificate: CallAccountingCertificate,
+  attempts: number,
+  resumed: ResumeRecord | null,
+): void {
+  const uniqueCalls = new Set(certificate.coverage.rows.flatMap((row) => row.calls));
+  const coverageCalls = certificate.coverage.rows.reduce(
+    (total, row) => total + row.calls.length,
+    0,
+  );
+  if (uniqueCalls.size !== coverageCalls) {
+    refuse(
+      "journal-attempt-mismatch",
+      `accounting mismatch: coverage names ${uniqueCalls.size} unique call id(s) across ${coverageCalls} row ` +
+        "entries; one call id cannot measure two attempts",
+    );
+  }
+  if (coverageCalls !== attempts) {
+    refuse(
+      "journal-attempt-mismatch",
+      `accounting mismatch: the run made ${attempts} measured call(s), but coverage names ${coverageCalls}`,
+    );
+  }
+  if (certificate.cost.callCount < coverageCalls) {
+    refuse(
+      "journal-attempt-mismatch",
+      `accounting mismatch: the certificate's cost covers ${certificate.cost.callCount} call(s), fewer than the ` +
+        `${coverageCalls} measured call(s) coverage names`,
+    );
+  }
+  if (resumed === null) {
+    if (certificate.cost.callCount !== attempts) {
+      refuse(
+        "journal-attempt-mismatch",
+        `accounting mismatch: the certificate's cost covers ${certificate.cost.callCount} call(s), but the run made ` +
+          `${attempts}; a fresh run has no other half to explain the difference`,
+      );
+    }
+    return;
+  }
+  const halves = resumed.reusedCalls.length + resumed.madeCalls.length;
+  if (halves !== certificate.cost.callCount) {
+    refuse(
+      "journal-attempt-mismatch",
+      `accounting mismatch: the resume names ${resumed.reusedCalls.length} reused + ${resumed.madeCalls.length} ` +
+        `made call(s), but the certificate's cost covers ${certificate.cost.callCount}`,
+    );
+  }
 }
 
 /** The certificate's run record of an interruption, from the resume itself. */
@@ -941,36 +1041,48 @@ function certificationJournal(input: {
     },
   };
 
-  if (input.request.resume === undefined) {
-    writeJournal(path, header);
+  // One writer per run id. A refusal below releases the lock before it throws.
+  const lock = acquireJournalLock(path);
+  try {
+    if (input.request.resume === undefined) {
+      writeJournal(path, header);
+      return {
+        path,
+        header,
+        resume: false,
+        calls: new Map(),
+        retries: new Map(),
+        interrupted: new Set(),
+        writer: openJournal(path),
+        resumedAt: input.resumedAt,
+        lock,
+      };
+    }
+
+    // Read and prove before writing anything: a refused resume must leave the
+    // journal exactly as it found it, including a torn tail.
+    const loaded: LoadedJournal = readJournal(path);
+    assertResumable(loaded, {
+      runId: input.runId,
+      target: input.plan.target,
+      codeFingerprint: input.fingerprint,
+      corpus: { version: input.corpus.version, sha256: input.corpus.fingerprint },
+      vendorBuilds: input.builds,
+      plan: input.plan,
+    });
+    assertEvidencePresent(loaded);
+    truncateTornTail(loaded);
     return {
-      path,
-      header,
-      resume: false,
-      calls: new Map(),
-      retries: new Map(),
-      interrupted: new Set(),
+      ...loaded,
+      resume: true,
       writer: openJournal(path),
       resumedAt: input.resumedAt,
+      lock,
     };
+  } catch (error) {
+    lock.release();
+    throw error;
   }
-
-  const loaded: LoadedJournal = readJournal(path);
-  assertResumable(loaded, {
-    runId: input.runId,
-    target: input.plan.target,
-    codeFingerprint: input.fingerprint,
-    corpus: { version: input.corpus.version, sha256: input.corpus.fingerprint },
-    vendorBuilds: input.builds,
-    plan: input.plan,
-  });
-  assertEvidencePresent(loaded);
-  return {
-    ...loaded,
-    resume: true,
-    writer: openJournal(path),
-    resumedAt: input.resumedAt,
-  };
 }
 
 async function certificationRun(
@@ -1009,7 +1121,38 @@ async function certificationRun(
   try {
     collected = await collectCalls(request, plan, deps, journal);
   } finally {
-    journal?.writer.close();
+    try {
+      journal?.writer.close();
+    } finally {
+      journal?.lock.release();
+    }
+  }
+
+  // The header is the code the run started with. The tree may not move while
+  // the calls run: a fresh run and a resumed half both prove the end reading
+  // still matches, and nightly health is bound by the same rule.
+  const endFingerprint = deps.readCodeFingerprint();
+  if (endFingerprint === null) {
+    refuse(
+      "certificate-refused",
+      "the repository has no readable HEAD at the end of the run; a certificate must bind " +
+        "to the code it ran",
+    );
+  }
+  const journalFingerprint = journal?.header.codeFingerprint ?? null;
+  if (
+    journalFingerprint !== null &&
+    (journalFingerprint.head !== endFingerprint.head ||
+      journalFingerprint.dirty !== endFingerprint.dirty ||
+      journalFingerprint.dirtyHash !== endFingerprint.dirtyHash)
+  ) {
+    refuse(
+      "journal-code-mismatch",
+      `journal ${journal?.path ?? ""} started on code fingerprint ` +
+        `${journalFingerprint.head}${journalFingerprint.dirty ? "+dirty" : ""}, but the ` +
+        `repository is now ${endFingerprint.head}${endFingerprint.dirty ? "+dirty" : ""}; ` +
+        "a certificate may not claim code it did not measure",
+    );
   }
 
   const kind = request.mode === "full" ? "full" : "nightly";
@@ -1047,7 +1190,7 @@ async function certificationRun(
     return {
       ...emptyResult(request, status, 1),
       runId,
-      calls: collected.attempts.length,
+      calls: collected.costs.length,
       failedPropertyIds: verdict.failedPropertyIds,
       ineligible: verdict.verdict === "ineligible",
       retries: collected.retries,
@@ -1067,33 +1210,6 @@ async function certificationRun(
     };
   }
 
-  // Read the fingerprint again at the end, as a fresh run always did: a tree
-  // that moved while the calls ran may not certify the reading it started
-  // with. A resumed run must still be the code its journal measured.
-  const endFingerprint = deps.readCodeFingerprint();
-  if (endFingerprint === null) {
-    refuse(
-      "certificate-refused",
-      "the repository has no readable HEAD at the end of the run; a certificate must bind " +
-        "to the code it ran",
-    );
-  }
-  const journalFingerprint = journal?.header.codeFingerprint ?? null;
-  if (
-    journal?.resume === true &&
-    journalFingerprint !== null &&
-    (journalFingerprint.head !== endFingerprint.head ||
-      journalFingerprint.dirty !== endFingerprint.dirty ||
-      journalFingerprint.dirtyHash !== endFingerprint.dirtyHash)
-  ) {
-    refuse(
-      "journal-code-mismatch",
-      `journal ${journal?.path ?? ""} started on code fingerprint ` +
-        `${journalFingerprint.head}${journalFingerprint.dirty ? "+dirty" : ""}, but the ` +
-        `repository is now ${endFingerprint.head}${endFingerprint.dirty ? "+dirty" : ""}; ` +
-        "a certificate may not claim code it did not measure",
-    );
-  }
   const certificate = certificateFor({
     contract: scoped.contract,
     run: judged,
@@ -1101,15 +1217,13 @@ async function certificationRun(
     corpus,
     builds,
     collected,
-    // A resumed certificate names the fingerprint the run started with; the
-    // check above proved it still describes the code that finished the run. A
-    // fresh run keeps the end reading it always had.
-    fingerprint: journal?.resume === true && journalFingerprint !== null
-      ? journalFingerprint
-      : endFingerprint,
+    // A journaled certificate names the fingerprint the run started with; the
+    // check above proved it still describes the code that finished the run.
+    fingerprint: journalFingerprint ?? endFingerprint,
     panel: panelInput?.signature ?? deps.signature ?? null,
     resume: certificateResume(collected.resumed),
   });
+  assertCallAccounting(certificate, collected.attempts.length, collected.resumed);
   const exitCode = exitForCertificate(certificate, {
     target: plan.target,
     runId: certificate.runId,
@@ -1122,7 +1236,7 @@ async function certificationRun(
       exitCode,
     ),
     runId: certificate.runId,
-    calls: collected.attempts.length,
+    calls: collected.costs.length,
     failedPropertyIds: judged.failedPropertyIds,
     ineligible: judged.verdict === "ineligible",
     retries: collected.retries,

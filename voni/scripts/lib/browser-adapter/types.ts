@@ -453,6 +453,12 @@ export type BrowserRunResult = {
     | null;
   /** The pipeline build the run served; a run certificate records it. */
   readonly pipelineImage: string | null;
+  /**
+   * The call's own priced row when it served one, even on a refusal. A run
+   * that failed after spending must carry the row so a journal total does not
+   * understate it; null means nothing was priced, never a zero.
+   */
+  readonly cost: Record<string, unknown> | null;
   /** 0 certified, 1 not-demo-ready, 2 a named refusal, 3 pending the human panel. */
   readonly exitCode: 0 | 1 | 2 | 3;
   readonly verdict: RunVerdict | null;

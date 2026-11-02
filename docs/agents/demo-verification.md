@@ -271,23 +271,31 @@ artifact disappears.
   A full or nightly run writes `<run-root>/<run-id>/journal.jsonl` (default
   `voni/.demo-runs/<run-id>/journal.jsonl`) as it goes: a header with
   schemaVersion, run id, startedAt, target, code fingerprint, corpus hash,
-  vendor builds and the scenario × repetition plan, then one entry per call with
-  its attempt, evidence references, eligibility, cost row and any
-  no-evidence retry. Every entry is written and `fsync`ed whole. `--resume
-  <run-id>` is explicit, reuses completed calls, makes only the missing ones
-  and issues the union's certificate under the original run id and fingerprint.
-  It refuses by name when the journal is missing (`journal-missing`), the last
-  entry is torn (`journal-torn`; only the half-written tail is truncated), the
+  vendor builds and the scenario × repetition plan, then a `start` sentinel
+  before each call, one entry per call with its attempt, absolute evidence
+  references, eligibility, cost row and any no-evidence retry. Every entry is
+  written through a write-all loop and `fsync`ed. A `start` with no completion
+  record is interrupted and is never re-made; a torn tail is truncated only
+  after the resume has passed every proof. `--resume <run-id>` is explicit,
+  reuses completed calls, makes only the missing ones and issues the union's
+  certificate under the original run id and fingerprint. It refuses by name
+  when the journal is missing (`journal-missing`), torn (`journal-torn`), the
   schema is unknown (`journal-schema-unknown`), the code/corpus/vendor
   builds/plan/target moved (`journal-code-mismatch`,
   `journal-corpus-mismatch`, `journal-vendor-builds-mismatch`,
-  `journal-plan-mismatch`, `journal-target-mismatch`), or a completed call's
-  evidence file is gone (`journal-evidence-missing`). A call recorded as failed
-  stays failed and is not re-made; a call with no evidence at all may be re-made
-  once, and that retry is journalled before it happens, so a resume cannot spend
-  a second one. The resumed half waits a full pacing interval before its first
-  call. `VerifyResult.resumed` and `certificate.resume` name the reused and
-  freshly made call ids, and the render prints `RESUMED … n reused, m made`.
+  `journal-plan-mismatch`, `journal-target-mismatch`), provenance is absent or
+  relative (`journal-provenance-missing`, `journal-provenance-invalid`), a call
+  id names two calls (`journal-duplicate-call-id`), the accounting does not add
+  up (`journal-attempt-mismatch`), or another live process holds the run id
+  (`journal-locked`). A call recorded as failed stays failed and is not
+  re-made; a call with no evidence at all may be re-made once, and that retry
+  is journalled before it happens. The resumed half waits a full pacing
+  interval before its first call. Certificate schema v2 requires `resume`
+  (null for one uninterrupted run); v1 certificates stay readable as
+  `resume: null`. A resumed certificate never counts toward the three-clean
+  streak or the staging gate (`resumed-run`). `VerifyResult.resumed` and
+  `certificate.resume` name the reused and freshly made call ids, and the
+  render prints `RESUMED … n reused, m made`.
 - **Two rate limits bound a local run, and neither is a defect.** The app's
   demo token limiter is per IP per hour (`DEMO_MAX_PER_IP_PER_HOUR`, 3 by
   default); a verification stack must raise it above the plan's call count, or

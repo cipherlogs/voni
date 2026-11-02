@@ -15,6 +15,7 @@ import { CERTIFICATE_TARGETS, type CertificateTarget } from "@/lib/demo/verifica
 import { LOCALES, type Locale } from "@/lib/demo/verification/scenarios";
 
 import { refuse } from "./errors";
+import { isSafeRunId } from "./run-id";
 
 /** The run plans the command dispatches; cutover stays ticket 29's gate. */
 export const VERIFY_MODES = ["diagnose", "fast", "nightly", "full"] as const;
@@ -23,9 +24,6 @@ export type VerifyMode = (typeof VERIFY_MODES)[number];
 
 /** One lower-case slug, the corpus directory-name rule. */
 const SCENARIO_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-
-/** A run id is a directory and journal name; a path is never one. */
-const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export type VerifyRequest = {
   readonly mode: VerifyMode;
@@ -195,7 +193,7 @@ export function parseVerifyArgs(argv: readonly string[]): VerifyRequest {
 
   const resume = values.resume;
   if (resume !== undefined) {
-    if (!SAFE_RUN_ID.test(resume) || resume.includes("..")) {
+    if (!isSafeRunId(resume)) {
       refuse(
         "bad-input",
         `"${resume}" is not a safe run id; use letters, digits, dot, dash or underscore`,

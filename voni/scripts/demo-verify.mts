@@ -164,6 +164,7 @@ function realDeps(): VerifyDeps {
         eligibility: result.eligibility,
         pipelineImage: result.pipelineImage,
         evidenceRefs,
+        cost: result.cost ?? undefined,
       };
     },
   };

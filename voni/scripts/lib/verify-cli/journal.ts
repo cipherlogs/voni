@@ -27,10 +27,11 @@ import {
   openSync,
   readFileSync,
   truncateSync,
+  unlinkSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import type { CodeFingerprint } from "@/lib/demo/scoreboard";
 import {
@@ -44,15 +45,13 @@ import type { CallEligibilityFact, ScenarioAttempt } from "@/lib/demo/verificati
 
 import { refuse } from "./errors";
 import type { PlannedScenario, VerifyPlan } from "./plan";
+import { isSafeRunId } from "./run-id";
 
 /** The journal schema this reader understands. */
 export const JOURNAL_SCHEMA_VERSION = 1 as const;
 
 /** The file every run directory holds. */
 export const JOURNAL_FILE = "journal.jsonl";
-
-/** A run id becomes a directory and a file; a path is never one. */
-const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 const JOURNAL_MODES = ["full", "nightly"] as const;
 
@@ -78,6 +77,18 @@ export type JournalHeader = {
   readonly corpus: CorpusReference;
   readonly vendorBuilds: readonly VendorBuild[];
   readonly plan: JournalPlan;
+};
+
+/**
+ * Written immediately before a call opens. A `start` with no completion record
+ * means the call may have run and died; a later resume must not re-make it, so
+ * it is classified interrupted rather than silently treated as never-begun.
+ */
+export type JournalStartRecord = {
+  readonly type: "start";
+  readonly scenario: string;
+  readonly repetition: number;
+  readonly at: string;
 };
 
 /** A call that produced no evidence and was re-made once. */
@@ -113,7 +124,11 @@ export type JournalCallRecord = {
   readonly at: string;
 };
 
-export type JournalEntry = JournalHeader | JournalCallRecord | JournalRetryRecord;
+export type JournalEntry =
+  | JournalHeader
+  | JournalStartRecord
+  | JournalCallRecord
+  | JournalRetryRecord;
 
 export type LoadedJournal = {
   readonly path: string;
@@ -121,15 +136,22 @@ export type LoadedJournal = {
   /** Completed and failed calls by `${scenario}#${repetition}`. */
   readonly calls: ReadonlyMap<string, JournalCallRecord>;
   readonly retries: ReadonlyMap<string, JournalRetryRecord>;
-  /** A re-made call whose final record never landed: it stays failed. */
+  /** A started call whose completion never landed: it stays failed. */
   readonly interrupted: ReadonlySet<string>;
-  /** True when a half-written tail was truncated on read. */
+  /** True when the last entry was half-written. Reading writes nothing. */
   readonly tailDropped: boolean;
+  /** The byte offset a confirmed resume should truncate to, or null. */
+  readonly truncateAtBytes: number | null;
 };
 
 export type JournalWriter = {
-  append(entry: JournalCallRecord | JournalRetryRecord): void;
+  append(entry: JournalStartRecord | JournalCallRecord | JournalRetryRecord): void;
   close(): void;
+};
+
+export type JournalLock = {
+  readonly path: string;
+  release(): void;
 };
 
 export function callKey(scenario: string, repetition: number): string {
@@ -138,7 +160,7 @@ export function callKey(scenario: string, repetition: number): string {
 
 /** Where a run's journal lives; the run id is refused unless it is a safe component. */
 export function journalPath(runRoot: string | undefined, runId: string): string {
-  if (!SAFE_RUN_ID.test(runId) || runId.includes("..")) {
+  if (!isSafeRunId(runId)) {
     refuse(
       "journal-run-id-invalid",
       `run id "${runId}" is not a safe run id; use letters, digits, dot, dash or underscore`,
@@ -147,14 +169,38 @@ export function journalPath(runRoot: string | undefined, runId: string): string 
   return join(runRoot ?? ".demo-runs", runId, JOURNAL_FILE);
 }
 
+/**
+ * Write every byte, however many legal short writes the OS needs. A single
+ * `writeSync` may return fewer bytes than it was given; ignoring that return
+ * would append a half entry that a later resume could misread.
+ */
+export function writeAllBytes(
+  write: (chunk: Buffer) => number,
+  bytes: Buffer,
+): void {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = write(bytes.subarray(offset));
+    if (written <= 0) {
+      throw new Error("the journal write made no progress");
+    }
+    offset += written;
+  }
+}
+
+function appendLine(fd: number, entry: JournalEntry): void {
+  const bytes = Buffer.from(`${JSON.stringify(entry)}\n`, "utf8");
+  writeAllBytes((chunk) => writeSync(fd, chunk), bytes);
+  fsyncSync(fd);
+}
+
 /** Create a new run's journal with its header line, durably. */
 export function writeJournal(path: string, header: JournalHeader): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, "", "utf8");
   const fd = openSync(path, "a");
   try {
-    writeSync(fd, `${JSON.stringify(header)}\n`);
-    fsyncSync(fd);
+    appendLine(fd, header);
   } finally {
     closeSync(fd);
   }
@@ -167,13 +213,78 @@ export function openJournal(path: string): JournalWriter {
   return {
     append(entry) {
       if (closed) throw new Error("the journal is closed");
-      writeSync(fd, `${JSON.stringify(entry)}\n`);
-      fsyncSync(fd);
+      appendLine(fd, entry);
     },
     close() {
       if (closed) return;
       closed = true;
       closeSync(fd);
+    },
+  };
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * One writer per run id. The machine-wide timing lock already serializes CLI
+ * runs; this refuses a second writer that reaches the same journal directly.
+ * A lock whose pid is gone is stale and is reclaimed.
+ */
+export function acquireJournalLock(journalFile: string): JournalLock {
+  mkdirSync(dirname(journalFile), { recursive: true });
+  const path = `${journalFile}.lock`;
+  const claim = (): boolean => {
+    try {
+      writeFileSync(path, `${process.pid}\n`, { encoding: "utf8", flag: "wx" });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      return false;
+    }
+  };
+  if (!claim()) {
+    let holder: number | null = null;
+    try {
+      const raw = readFileSync(path, "utf8").trim();
+      const parsed = Number(raw);
+      if (Number.isInteger(parsed) && parsed > 0) holder = parsed;
+    } catch {
+      holder = null;
+    }
+    if (holder !== null && processIsAlive(holder)) {
+      refuse(
+        "journal-locked",
+        `journal ${journalFile} is held by live pid ${holder}; one run id has one writer, so ` +
+          "a second resume cannot extend the same run",
+      );
+    }
+    try {
+      unlinkSync(path);
+    } catch {
+      // A concurrent release or a vanished lock is not a failure.
+    }
+    if (!claim()) {
+      refuse(
+        "journal-locked",
+        `journal ${journalFile} was claimed while this resume tried to reclaim a stale lock`,
+      );
+    }
+  }
+  return {
+    path,
+    release() {
+      try {
+        unlinkSync(path);
+      } catch {
+        // An already-released lock is still released.
+      }
     },
   };
 }
@@ -406,6 +517,19 @@ function parseCall(raw: unknown, path: string, line: number): JournalCallRecord 
   };
 }
 
+function parseStart(raw: unknown, path: string, line: number): JournalStartRecord {
+  const record = isRecord(raw) ? raw : malformed(path, line, "the entry is not an object");
+  if (record.type !== "start") malformed(path, line, 'the entry is not a "start"');
+  const at = text(record.at, "at", path, line);
+  if (Number.isNaN(Date.parse(at))) malformed(path, line, `at "${at}" is not a date`);
+  return {
+    type: "start",
+    scenario: text(record.scenario, "scenario", path, line),
+    repetition: integer(record.repetition, "repetition", path, line, 1),
+    at,
+  };
+}
+
 function parseRetry(raw: unknown, path: string, line: number): JournalRetryRecord {
   const record = isRecord(raw) ? raw : malformed(path, line, "the entry is not an object");
   if (record.type !== "retry") malformed(path, line, 'the entry is not a "retry"');
@@ -428,6 +552,8 @@ function parseEntry(raw: unknown, path: string, line: number): JournalEntry {
       return parseHeader(raw, path, line);
     case "call":
       return parseCall(raw, path, line);
+    case "start":
+      return parseStart(raw, path, line);
     case "retry":
       return parseRetry(raw, path, line);
     default:
@@ -454,12 +580,12 @@ function segmentsOf(raw: string): Segment[] {
 }
 
 /**
- * Read a run's journal, truncating only a half-written tail.
+ * Read a run's journal. Reading never writes: a half-written final segment is
+ * reported as `tailDropped` with the byte offset to trim, and only a resume
+ * that has passed every proof may call {@link truncateTornTail}.
  *
- * A completed entry always parses and ends at a newline. The final segment may
- * be a partial append; it is dropped and the file is cut back to the last
- * complete entry. Any earlier unparseable line refuses: it may hide a call the
- * run already paid for.
+ * A completed entry always parses and ends at a newline. Any earlier
+ * unparseable line refuses: it may hide a call the run already paid for.
  */
 export function readJournal(path: string): LoadedJournal {
   if (!existsSync(path)) {
@@ -517,24 +643,18 @@ export function readJournal(path: string): LoadedJournal {
     refuse("journal-torn", `journal ${path} does not begin with its header`);
   }
 
+  const starts = new Map<string, JournalStartRecord>();
   const calls = new Map<string, JournalCallRecord>();
   const retries = new Map<string, JournalRetryRecord>();
-  for (const { entry, line } of entries.slice(1)) {
-    if (entry.type === "header") {
-      malformed(path, line, "a second header cannot appear in the middle of a run");
-    }
-    const key = callKey(entry.scenario, entry.repetition);
-    if (entry.type === "retry") {
-      if (retries.has(key)) {
-        malformed(path, line, `call ${key} records a second re-make; it is re-made at most once`);
-      }
-      retries.set(key, entry);
-      continue;
-    }
-    if (calls.has(key)) {
-      malformed(path, line, `call ${key} is recorded twice`);
-    }
-    const scenario = header.plan.scenarios.find((planned) => planned.name === entry.scenario);
+  const callIdOwner = new Map<string, string>();
+
+  const checkPlan = (
+    entry: { readonly scenario: string; readonly repetition: number },
+    key: string,
+  ): void => {
+    const scenario = header.plan.scenarios.find(
+      (planned) => planned.name === entry.scenario,
+    );
     if (scenario === undefined) {
       refuse(
         "journal-plan-mismatch",
@@ -549,6 +669,36 @@ export function readJournal(path: string): LoadedJournal {
           `${header.plan.repetitions} repetition plan`,
       );
     }
+  };
+
+  for (const { entry, line } of entries.slice(1)) {
+    if (entry.type === "header") {
+      malformed(path, line, "a second header cannot appear in the middle of a run");
+    }
+    const key = callKey(entry.scenario, entry.repetition);
+    checkPlan(entry, key);
+    if (entry.type === "start") {
+      if (starts.has(key)) {
+        malformed(path, line, `call ${key} is started twice`);
+      }
+      starts.set(key, entry);
+      continue;
+    }
+    if (entry.type === "retry") {
+      if (retries.has(key)) {
+        malformed(path, line, `call ${key} records a second re-make; it is re-made at most once`);
+      }
+      retries.set(key, entry);
+      continue;
+    }
+    if (calls.has(key)) {
+      malformed(path, line, `call ${key} is recorded twice`);
+    }
+    const scenario = header.plan.scenarios.find((planned) => planned.name === entry.scenario);
+    if (scenario === undefined) {
+      // `checkPlan` already refused; this keeps the Locale check below honest.
+      refuse("journal-plan-mismatch", `journal ${path} records call ${key} outside its plan`);
+    }
     if (entry.locale !== scenario.locale) {
       refuse(
         "journal-plan-mismatch",
@@ -556,15 +706,27 @@ export function readJournal(path: string): LoadedJournal {
           `"${scenario.locale}"`,
       );
     }
+    const owner = callIdOwner.get(entry.callId);
+    if (owner !== undefined && owner !== key) {
+      refuse(
+        "journal-duplicate-call-id",
+        `journal ${path} records call id "${entry.callId}" for both ${owner} and ${key}; one ` +
+          "call id cannot name two calls",
+      );
+    }
+    callIdOwner.set(entry.callId, key);
     calls.set(key, entry);
   }
 
+  // A started call with no completion record may have run and died. It stays
+  // interrupted: never silently a call that never began, never a re-run.
   const interrupted = new Set<string>();
+  for (const key of starts.keys()) {
+    if (!calls.has(key)) interrupted.add(key);
+  }
   for (const key of retries.keys()) {
     if (!calls.has(key)) interrupted.add(key);
   }
-
-  if (truncateAt !== null) truncateSync(path, truncateAt);
 
   return {
     path,
@@ -573,7 +735,15 @@ export function readJournal(path: string): LoadedJournal {
     retries,
     interrupted,
     tailDropped: truncateAt !== null,
+    truncateAtBytes: truncateAt,
   };
+}
+
+/** Trim a torn tail only after every resume proof has passed. */
+export function truncateTornTail(loaded: LoadedJournal): void {
+  if (loaded.truncateAtBytes !== null) {
+    truncateSync(loaded.path, loaded.truncateAtBytes);
+  }
 }
 
 /** What this run expects the journal to say; every difference is a named refusal. */
@@ -712,16 +882,30 @@ export function assertResumable(loaded: LoadedJournal, expected: ResumeExpectati
 }
 
 /**
- * Every completed call must still have the evidence it cites. An empty
- * reference list means the attempt carries its evidence inline; a listed path
- * that is gone makes the journal's claim unsupported.
+ * Every completed call must still have the evidence it cites, and the citation
+ * must be an absolute path. An empty reference list is not provenance: a
+ * resume would have nothing to prove, and resolving a relative path against
+ * the resumer's cwd would let a different checkout satisfy the claim.
  */
 export function assertEvidencePresent(loaded: LoadedJournal): void {
   for (const [key, call] of loaded.calls) {
     if (call.outcome !== "completed") continue;
+    if (call.evidenceRefs.length === 0) {
+      refuse(
+        "journal-provenance-missing",
+        `journal ${loaded.path} records ${key} as completed without a single evidence path; ` +
+          "a resumed certificate cannot claim a call with no provenance",
+      );
+    }
     for (const ref of call.evidenceRefs) {
-      const file = isAbsolute(ref) ? ref : resolve(ref);
-      if (!existsSync(file)) {
+      if (!isAbsolute(ref)) {
+        refuse(
+          "journal-provenance-invalid",
+          `journal ${loaded.path} records ${key}'s evidence as "${ref}", not an absolute path; ` +
+            "a resume would resolve it against a different cwd",
+        );
+      }
+      if (!existsSync(ref)) {
         refuse(
           "journal-evidence-missing",
           `journal ${loaded.path} records ${key} as completed, but its evidence ${ref} is ` +

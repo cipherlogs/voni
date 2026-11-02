@@ -20,7 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   CERTIFICATE_TARGETS,
@@ -49,14 +49,17 @@ import { VerifyCliError } from "./errors";
 import { planVerify, type VerifyPlan } from "./plan";
 import {
   DEFAULT_CALL_INTERVAL_MS,
+  assertCallAccounting,
   callIntervalMs,
   exitForCertificate,
   runVerify,
+  type ResumeRecord,
   type ScenarioCallInput,
   type ScenarioCallOutcome,
   type VerifyDeps,
   type VerifyResult,
 } from "./run";
+import { acquireJournalLock } from "./journal";
 
 const VENDOR_BUILDS = {
   schemaVersion: 1,
@@ -75,12 +78,10 @@ const KEYS = {
 
 const FINGERPRINT = { head: "abc123", dirty: false, dirtyHash: "clean" };
 
-/**
- * Every test run writes its journal here, never into the repository's live
- * `.demo-runs` directory (a certification run may be executing beside the
- * suite). A resume test overrides this with its own temporary root.
- */
-const JOURNAL_ROOT = join(tmpdir(), "voni-verify-cli-journals");
+/** A real file every fake completed call cites as its provenance. */
+const EVIDENCE_FILE = join(tmpdir(), "voni-verify-cli-evidence", "call.json");
+mkdirSync(dirname(EVIDENCE_FILE), { recursive: true });
+writeFileSync(EVIDENCE_FILE, "{}\n", "utf8");
 
 const COST_ROW = {
   measured: true,
@@ -164,7 +165,9 @@ function baseDeps(overrides: Partial<VerifyDeps> = {}): VerifyDeps {
     readVendorBuilds: async () => VENDOR_BUILDS,
     acquireLock: () => noLock(),
     readCodeFingerprint: () => FINGERPRINT,
-    journalRoot: JOURNAL_ROOT,
+    // Journaling is opt-in in this suite: only the journal/resume tests write
+    // a journal, always under their own temporary root.
+    journalRoot: null,
     newRunId: () => "verify-test-01",
     diagnose: async () => ({
       status: "clean-diagnosis",
@@ -679,6 +682,7 @@ async function fullResult(input: {
   readonly journalRoot?: string;
   readonly runId?: string;
   readonly resume?: string;
+  readonly mode?: "full" | "nightly";
   readonly corpus?: Corpus;
   readonly runScenario?: VerifyDeps["runScenario"];
   readonly readCodeFingerprint?: VerifyDeps["readCodeFingerprint"];
@@ -712,7 +716,7 @@ async function fullResult(input: {
         }
       : evaluator,
   );
-  const argv = ["--target", input.target ?? "local", "--full"];
+  const argv = ["--target", input.target ?? "local", `--${input.mode ?? "full"}`];
   if (input.runRoot !== undefined) argv.push("--run-root", input.runRoot);
   if (input.resume !== undefined) argv.push("--resume", input.resume);
   return runVerify(request(argv), {
@@ -983,7 +987,7 @@ function completedOutcome(
     },
     eligibility: { callId: `${input.scenario}#${input.repetition}`, scenario: input.scenario },
     pipelineImage: "pipeline-test",
-    evidenceRefs: [],
+    evidenceRefs: [EVIDENCE_FILE],
     ...overrides,
   };
 }
@@ -1012,7 +1016,11 @@ function plannedKeys(corpus: Corpus = fullCorpus(), repetitions = 3): string[] {
   );
 }
 
-/** Run a certification that dies (not refuses) at the Nth call. */
+/**
+ * Run a certification that dies between calls, before the Nth call's `start`
+ * is written. A death *during* a call is a different case: the start remains,
+ * the call is interrupted and must not be re-made.
+ */
 async function interruptedRun(
   root: string,
   options: {
@@ -1023,19 +1031,37 @@ async function interruptedRun(
 ): Promise<string[]> {
   const made: string[] = [];
   const crashAt = options.crashAt ?? 7;
+  const runScenario: VerifyDeps["runScenario"] = async (input) => {
+    made.push(`${input.scenario}#${input.repetition}`);
+    return options.runScenario === undefined
+      ? completedOutcome(input)
+      : options.runScenario(input);
+  };
+  const shared = {
+    runRoot: root,
+    journalRoot: root,
+    runId: options.runId ?? RESUME_RUN_ID,
+    runScenario,
+  };
+  if (crashAt === 1) {
+    await assert.rejects(
+      fullResult({
+        ...shared,
+        clock: () => {
+          throw new Error("the run process died");
+        },
+      }),
+      /process died/,
+    );
+    return made;
+  }
+  let sleeps = 0;
   await assert.rejects(
     fullResult({
-      runRoot: root,
-      journalRoot: root,
-      runId: options.runId ?? RESUME_RUN_ID,
-      runScenario: async (input) => {
-        made.push(`${input.scenario}#${input.repetition}`);
-        const outcome =
-          options.runScenario === undefined
-            ? completedOutcome(input)
-            : await options.runScenario(input);
-        if (made.length === crashAt) throw new Error("the run process died");
-        return outcome;
+      ...shared,
+      sleep: async () => {
+        sleeps += 1;
+        if (sleeps === crashAt - 1) throw new Error("the run process died");
       },
     }),
     /process died/,
@@ -1063,11 +1089,14 @@ test("a certification run journals its header and each call as it proceeds", asy
       journalRoot: root,
       runId: RESUME_RUN_ID,
       panel: FULL_PANEL,
+      runScenario: async (input) => completedOutcome(input),
     });
     assert.equal(result.exitCode, 0, result.refusals.join("\n"));
 
     const entries = journalEntries(journalFile(root));
-    const [header, ...calls] = entries;
+    const header = entries[0];
+    const calls = entries.filter((entry) => entry.type === "call");
+    const starts = entries.filter((entry) => entry.type === "start");
     assert.equal(header?.type, "header");
     assert.equal(header?.schemaVersion, 1);
     assert.equal(header?.runId, RESUME_RUN_ID);
@@ -1094,13 +1123,14 @@ test("a certification run journals its header and each call as it proceeds", asy
     );
 
     assert.equal(calls.length, 15, "one call entry per completed call");
+    assert.equal(starts.length, 15, "one start sentinel per call that opened");
     for (const entry of calls) {
       assert.equal(entry.type, "call");
       assert.equal(entry.outcome, "completed");
       assert.ok(entry.attempt, `${String(entry.scenario)} carries its attempt`);
       assert.ok(entry.eligibility, `${String(entry.scenario)} carries eligibility`);
       assert.ok("cost" in entry, `${String(entry.scenario)} carries its cost row`);
-      assert.deepEqual(entry.evidenceRefs, []);
+      assert.deepEqual(entry.evidenceRefs, [EVIDENCE_FILE]);
       assert.equal(entry.retry ?? null, null);
     }
     assert.equal(result.resumed, null, "a fresh run is not a resumed run");
@@ -1116,7 +1146,7 @@ test("--resume reuses completed calls, makes only the missing ones and names the
   const root = mkdtempSync(join(tmpdir(), "dv-resume-reuse-"));
   try {
     const first = await interruptedRun(root, { crashAt: 7 });
-    assert.equal(first.length, 7);
+    assert.equal(first.length, 6, "the death lands between calls, before the seventh starts");
 
     const made: string[] = [];
     const result = await resumeResult(root, {
@@ -1196,6 +1226,7 @@ test("a call the journal records as failed stays failed and is never re-made", a
             attempt: null,
             eligibility: null,
             pipelineImage: null,
+            cost: COST_ROW,
           };
         }
         return completedOutcome(input);
@@ -1229,7 +1260,11 @@ test("a call the journal records as failed stays failed and is never re-made", a
       resumed.unrun.join("\n"),
       /en-one repetition 2 .*stays failed|en-one repetition 2 .*not re-made/,
     );
-    assert.equal(resumed.resumed?.reusedCalls.length, 1);
+    assert.equal(
+      resumed.resumed?.reusedCalls.length,
+      2,
+      "the completed call and the failed call are both reused",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1275,7 +1310,8 @@ test("a no-evidence retry record carries across an interruption, once", async ()
     });
 
     assert.ok(!made.includes("en-one#1"), "a completed retry is reused, not re-made");
-    assert.equal(resumed.exitCode, 3, resumed.refusals.join("\n"));
+    assert.ok(!made.includes("en-one#4"), "a started call with no result is not re-made");
+    assert.equal(resumed.exitCode, 1, "the interrupted call is a coverage gap");
     assert.equal(resumed.retries.length, 1, "the first half's retry is carried, not lost");
     assert.equal(resumed.retries[0]?.code, "marks-missing");
     assert.equal(resumed.retries[0]?.scenario, "en-one");
@@ -1471,7 +1507,11 @@ test("a torn tail is truncated and only the missing calls are made", async () =>
     const text = readFileSync(journalFile(root), "utf8");
     assert.ok(text.endsWith("\n"), "the torn tail was truncated, not appended after");
     const lines = text.trim().split("\n");
-    assert.equal(lines.length, 16, "the header and the union's fifteen calls remain");
+    assert.equal(
+      lines.length,
+      31,
+      "the header, fifteen starts and the union's fifteen calls remain",
+    );
     for (const line of lines) {
       assert.doesNotThrow(() => JSON.parse(line), "no half-written line remains");
     }
@@ -1547,6 +1587,258 @@ test("an unmeasured cost in either half fails the resumed certificate closed", a
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a torn failure record after a start never re-makes the call", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-torn-failure-"));
+  try {
+    await interruptedRun(root, { crashAt: 4 });
+    appendFileSync(
+      journalFile(root),
+      `${JSON.stringify({
+        type: "start",
+        scenario: "es-one",
+        repetition: 1,
+        at: "2026-11-02T09:00:02.000Z",
+      })}\n{"type":"call","scenario":"es-one","repetition":1,"outcome":"failed"`,
+      "utf8",
+    );
+
+    const made: string[] = [];
+    const resumed = await resumeResult(root, {
+      runScenario: async (input) => {
+        made.push(`${input.scenario}#${input.repetition}`);
+        return completedOutcome(input);
+      },
+    });
+
+    assert.ok(!made.includes("es-one#1"), "a started call is never re-made");
+    assert.equal(resumed.exitCode, 1);
+    assert.equal(
+      resumed.certificate?.coverage.rows.find((row) => row.scenario === "es-one")
+        ?.measuredRepetitions,
+      2,
+      "the interrupted attempt is a coverage gap",
+    );
+    assert.match(resumed.unrun.join("\n"), /es-one repetition 1 .*interrupted|stays failed/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a refused resume never mutates the torn journal", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-no-mutation-"));
+  try {
+    await interruptedRun(root, { crashAt: 4 });
+    appendFileSync(journalFile(root), '{"type":"call","scenario":"en', "utf8");
+    const before = readFileSync(journalFile(root), "utf8");
+
+    const resumed = await resumeResult(root, {
+      readCodeFingerprint: () => ({ ...FINGERPRINT, head: "def456" }),
+    });
+    assert.equal(resumed.exitCode, 2);
+    assert.match(resumed.refusals.join("\n"), /code fingerprint/);
+    assert.equal(
+      readFileSync(journalFile(root), "utf8"),
+      before,
+      "a refusal writes nothing, not even the truncated tail",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the end-of-run fingerprint must match the journal header on a full run", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-end-full-"));
+  try {
+    let reads = 0;
+    const result = await fullResult({
+      runRoot: root,
+      journalRoot: root,
+      runScenario: async (input) => completedOutcome(input),
+      readCodeFingerprint: () => {
+        reads += 1;
+        return reads === 1 ? FINGERPRINT : { ...FINGERPRINT, head: "def456" };
+      },
+    });
+    assert.equal(result.exitCode, 2);
+    assert.match(result.refusals.join("\n"), /code fingerprint|def456/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the end-of-run fingerprint must match the journal header on a nightly run", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-end-nightly-"));
+  try {
+    let reads = 0;
+    const result = await fullResult({
+      runRoot: root,
+      journalRoot: root,
+      runScenario: async (input) => completedOutcome(input),
+      mode: "nightly",
+      plan: (corpus: Corpus) => ({
+        ...fullPlan(corpus),
+        mode: "nightly",
+        repetitions: 1,
+        calls: corpus.scenarios.length,
+      }),
+      readCodeFingerprint: () => {
+        reads += 1;
+        return reads === 1 ? FINGERPRINT : { ...FINGERPRINT, head: "def456" };
+      },
+    });
+    assert.equal(result.exitCode, 2);
+    assert.match(result.refusals.join("\n"), /code fingerprint|def456/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a resumed half whose end fingerprint moved is refused", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-end-fingerprint-"));
+  try {
+    await interruptedRun(root, { crashAt: 4 });
+    let reads = 0;
+    const resumed = await resumeResult(root, {
+      readCodeFingerprint: () => {
+        reads += 1;
+        return reads === 1 ? FINGERPRINT : { ...FINGERPRINT, head: "def456" };
+      },
+      runScenario: async (input) => completedOutcome(input),
+    });
+    assert.equal(resumed.exitCode, 2);
+    assert.match(resumed.refusals.join("\n"), /code fingerprint|def456/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("one run id cannot be resumed by two writers at once", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-lock-"));
+  try {
+    await interruptedRun(root, { crashAt: 4 });
+    const lock = acquireJournalLock(journalFile(root));
+    try {
+      const resumed = await resumeResult(root, {
+        runScenario: async (input) => completedOutcome(input),
+      });
+      assert.equal(resumed.exitCode, 2);
+      assert.match(resumed.refusals.join("\n"), /held by live pid|journal-locked/);
+    } finally {
+      lock.release();
+    }
+    const after = await resumeResult(root, {
+      runScenario: async (input) => completedOutcome(input),
+    });
+    assert.equal(after.exitCode, 3, after.refusals.join("\n"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unmeasured leg in the resumed half still fails the certificate closed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-unmeasured-second-"));
+  try {
+    await interruptedRun(root, { crashAt: 4 });
+    const unmeasured = {
+      measured: false,
+      totalUsd: null,
+      rateTableVersion: "test-rates",
+      unmeasuredReason: "tts: the vendor did not report characters",
+      legs: {},
+    };
+    let made = 0;
+    const resumed = await resumeResult(root, {
+      runScenario: async (input) => {
+        made += 1;
+        const outcome = completedOutcome(input);
+        if (made === 1) {
+          return {
+            ...outcome,
+            attempt: {
+              ...(outcome.attempt as NonNullable<typeof outcome.attempt>),
+              evidence: { ...EVIDENCE, cost: unmeasured },
+            },
+          };
+        }
+        return outcome;
+      },
+    });
+    assert.equal(resumed.exitCode, 2);
+    assert.match(resumed.refusals.join("\n"), /unmeasured|characters|no cost total/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed call's measured cost is carried into the resumed total", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-failed-cost-"));
+  try {
+    const failedCost = {
+      measured: true,
+      totalUsd: 0.5,
+      rateTableVersion: "test-rates",
+      legs: { tts: { measured: true, amountUsd: 0.5, unit: "character", quantity: 10 } },
+    };
+    const failed = await fullResult({
+      runRoot: root,
+      journalRoot: root,
+      runId: RESUME_RUN_ID,
+      runScenario: async (input) => {
+        if (input.scenario === "en-one" && input.repetition === 2) {
+          return {
+            refusal: { code: "trigger-unresolved", message: "no agent-turn-end event" },
+            attempt: null,
+            eligibility: null,
+            pipelineImage: "pipeline-test",
+            cost: failedCost,
+          };
+        }
+        return completedOutcome(input);
+      },
+    });
+    assert.equal(failed.exitCode, 2);
+
+    const resumed = await resumeResult(root, {
+      runScenario: async (input) => completedOutcome(input),
+    });
+    assert.equal(resumed.exitCode, 1, resumed.refusals.join("\n"));
+    assert.equal(resumed.certificate?.cost.callCount, 15, "every call that spent is counted");
+    assert.equal(resumed.certificate?.cost.usd, 14 * 0.0001 + 0.5);
+    assert.deepEqual(resumed.resumed?.reusedCalls, ["en-one#1", "en-one#2"]);
+    assert.equal(resumed.certificate?.resume?.reusedCalls.length, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a resumed certificate accounts for every reused and made call", () => {
+  const certificate = {
+    cost: { callCount: 3 },
+    coverage: { rows: [{ calls: ["a", "b"] }] },
+  };
+  const resumed: ResumeRecord = {
+    runId: "verify-journal-01",
+    journalPath: "/tmp/journal.jsonl",
+    originalStartedAt: "2026-11-02T09:00:00.000Z",
+    resumedAt: "2026-11-02T10:00:00.000Z",
+    reusedCalls: ["a", "b"],
+    madeCalls: ["c"],
+  };
+  assert.doesNotThrow(() => assertCallAccounting(certificate, 2, resumed));
+  assert.throws(
+    () => assertCallAccounting({ ...certificate, cost: { callCount: 4 } }, 2, resumed),
+    /account|mismatch/,
+  );
+  assert.throws(
+    () => assertCallAccounting(certificate, 2, { ...resumed, reusedCalls: ["a"] }),
+    /account|mismatch/,
+  );
+  assert.throws(
+    () => assertCallAccounting({ ...certificate, coverage: { rows: [{ calls: ["a"] }] } }, 2, resumed),
+    /coverage|account/,
+  );
 });
 
 test("resume is explicit: a fast or diagnose run cannot be resumed", async () => {

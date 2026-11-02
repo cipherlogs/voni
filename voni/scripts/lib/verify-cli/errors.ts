@@ -39,6 +39,11 @@ export const VERIFY_ERROR_CODES = [
   "journal-vendor-builds-mismatch",
   "journal-plan-mismatch",
   "journal-evidence-missing",
+  "journal-provenance-missing",
+  "journal-provenance-invalid",
+  "journal-duplicate-call-id",
+  "journal-attempt-mismatch",
+  "journal-locked",
 ] as const;
 
 export type VerifyErrorCode = (typeof VERIFY_ERROR_CODES)[number];
