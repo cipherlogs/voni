@@ -331,6 +331,11 @@ turn. A model tool request is bound to the `service` credential; the browser's
 own `check_email` poll is logged under `browser` and filtered out, so X4 cannot
 pass on the page's poll alone.
 
+`comprehension-ambiguous-request` follows the same rule: its first line waits
+for the agent's turn, never call-open. A call-open take played before the
+greeting's first audio, was mostly dropped by the mic gate, and cut the
+greeting; the cut made the vendor close the idle synthesis session.
+
 The one seam is the call boundary. If a proposed change adds a second seam
 inside the call lifecycle or the turn stream, it contradicts ADR 0013 and needs
 a new record before it is built.
@@ -375,6 +380,13 @@ production evaluators and turned into defect cards:
   measures the delivered WAV's last run against the goodbye's synthesized length
   in the end message and reports both the played percentage and the drop delay;
   the fixture's 1200 ms goodbye is cut after 400 ms.
+
+A synthesis reconnect is a handover only after the new session's `Begin` is
+asserted. A failed handshake leaves the adapter asking for another reconnect,
+never an open session: call 5f4db146 transcribed the caller's second take,
+generated the reply, and then raised `the synthesis session is not open` from a
+reconnect whose handshake had failed, so the turn was captioned but silent. The
+next speak now opens a session instead of treating the closed adapter as open.
 
 The browser adapter's diagnose run makes one call. A timing/behaviour property
 whose contract plan is three repetitions therefore fails with
