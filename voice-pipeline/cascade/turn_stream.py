@@ -125,9 +125,50 @@ class ReplyRepeatedOnly(RuntimeError):
     """
 
 
+class ReplyQuestionOnly(RuntimeError):
+    """The bounded repair only asked another unanswered question.
+
+    The caller did not answer the last question, so every question sentence
+    was withheld, including the repair's. Nothing speakable remained. Naming
+    the failure is deliberate: the caller hears nothing and the trace records
+    the turn as failed rather than looping the question or going silent with
+    no record.
+    """
+
+
 def _normal_form(text: str) -> str:
     """The duplicate rule's normal form: case-folded, punctuation to space."""
     return " ".join(_NON_WORD.sub(" ", text.casefold()).split())
+
+
+#: Function words carry no answer: a caller who says "plumbing business" has
+#: answered "What does your business do?" through "business", not "what",
+#: "does" or "your". Deliberately small: ordinary nouns stay content words.
+_STOP_WORDS = frozenset(
+    "a an the and or but if then so to of in on at for from with by about as "
+    "into over under up down out off again also just only very really too much "
+    "many some any all no not yes is are was were be been being am do does did "
+    "doing done have has had having will would can could should shall may might "
+    "must i you your yours my mine me we us our ours he she it its they them "
+    "their theirs his her this that these those there here what which who whom "
+    "whose when where why how please okay ok well oh hi hello thanks thank sorry "
+    "let lets s t re ve ll d m".split()
+)
+
+#: One word of a caller's final or a question, for the answer test.
+_WORD = re.compile(r"\w+", re.UNICODE)
+
+
+def _content_words(text: str) -> frozenset[str]:
+    """The words an answer must share with a question: content, not grammar."""
+    return frozenset(
+        word for word in _WORD.findall(text.casefold()) if word not in _STOP_WORDS
+    )
+
+
+def _is_question(sentence: str) -> bool:
+    """A spoken sentence is a question when it carries a question mark."""
+    return "?" in sentence
 
 
 def _reply_sentences(text: str) -> list[str]:
@@ -271,6 +312,19 @@ class CascadeTurnStream:
         #: Metric counters: a repair was asked for, and a sentence was withheld.
         self.repeat_repair = 0
         self.repeat_dropped = 0
+        #: The last question this call asked and the content words it carried.
+        #: Only a spoken question is recorded; a withheld one was never heard.
+        self._last_question = ""
+        self._last_question_words: frozenset[str] = frozenset()
+        #: Whether this reply may not ask a question: the previous question was
+        #: left unanswered. Computed from the caller's final, once per turn.
+        self._must_not_ask = False
+        #: This reply's withheld question sentences, and its one repair flag.
+        self._reply_question_withheld: list[str] = []
+        self._question_repaired = False
+        #: Metric counters: a question was withheld, a repair was asked for.
+        self.question_withheld = 0
+        self.question_repair = 0
         #: Whether the caller's final asked to end (call control, not a tool).
         self._caller_wants_end = False
         self._buffer = ""
@@ -415,6 +469,11 @@ class CascadeTurnStream:
         self._reply_new_sentences = 0
         self._reply_dropped = []
         self._repeat_repaired = False
+        self._reply_question_withheld = []
+        self._question_repaired = False
+        # The unanswered-question rule is decided from the caller's final, once
+        # per turn: it consumes the last question so it cannot fire twice.
+        self._must_not_ask = self._question_was_unanswered(state.final_text)
         # The caller's words end the call, not the model's tool choice: Spark
         # does not call the hang-up tool on a caller request (measured 0/20).
         self._caller_wants_end = wants_to_end(state.final_text, self._locale_code)
@@ -424,7 +483,9 @@ class CascadeTurnStream:
             self._history.append_user(state.final_text)
             self._add_repeat_note()
             record = await self._run_turn(state, record)
-            if self._should_repair_repeated_reply():
+            if self._should_repair_unanswered_question():
+                await self._repair_unanswered_question(record)
+            elif self._should_repair_repeated_reply():
                 await self._repair_repeated_reply(record)
         except asyncio.CancelledError:
             cancelled = True
@@ -690,6 +751,69 @@ class CascadeTurnStream:
         if sentence:
             await self._speak(sentence)
 
+    def _question_was_unanswered(self, caller_text: str) -> bool:
+        """Whether the last spoken question is still unanswered by this final.
+
+        One shared content word counts as answered and closes the pending
+        question. An unanswered question stays pending: withholding the
+        follow-up question does not make the original answered, so the rule
+        keeps applying until the caller supplies a content word. A first reply
+        and a hold return have no pending question and never fire.
+        """
+        if not self._last_question:
+            return False
+        if self._last_question_words & _content_words(caller_text):
+            self._last_question = ""
+            self._last_question_words = frozenset()
+            return False
+        return True
+
+    def _should_repair_unanswered_question(self) -> bool:
+        """Whether withholding left nothing to say and one repair may be asked."""
+        return (
+            not self._ending
+            and self._must_not_ask
+            and not self._question_repaired
+            and self._reply_new_sentences == 0
+            and bool(self._reply_question_withheld)
+            and (self._may_request is None or self._may_request("llm"))
+        )
+
+    async def _repair_unanswered_question(self, record: MetaLLMTurn) -> None:
+        """One bounded re-ask that must answer the caller, not question them.
+
+        The guard has already withheld every question in the first reply, so
+        the caller has heard nothing this turn. The repair may still ask; that
+        question is withheld too and only a statement remainder is spoken. If
+        nothing remains, the turn fails by name rather than looping. One
+        repair per turn, counted, never retried.
+        """
+        self._question_repaired = True
+        self.question_repair += 1
+        self._count_metric("question_repair")
+        self._history.add_hidden_context(
+            "They did not answer your last question. Respond to what they just "
+            "said; do not ask another question."
+        )
+        repair = MetaLLMTurn()
+        self._count_request()
+        try:
+            async for item in self._llm.complete(
+                messages=self._history.request_messages(),
+                tools=None,
+                turn=repair,
+            ):
+                if isinstance(item, TokenDelta):
+                    await self._say(item.text)
+            await self._flush()
+        finally:
+            repair.close()
+        record.usage = _merged_usage(record.usage, repair.usage)
+        if self._reply_new_sentences == 0:
+            raise ReplyQuestionOnly(
+                "the repair reply only asked a question the caller did not answer"
+            )
+
     def _should_repair_repeated_reply(self) -> bool:
         """Whether this turn spoke nothing new and may ask one repair."""
         return (
@@ -769,8 +893,14 @@ class CascadeTurnStream:
         self.repeat_dropped += 1
         self._count_metric("repeat_dropped")
 
+    def _drop_question(self, sentence: str) -> None:
+        """Withhold a question sentence the caller has not answered."""
+        self._reply_question_withheld.append(sentence)
+        self.question_withheld += 1
+        self._count_metric("question_withheld")
+
     def _count_metric(self, name: str) -> None:
-        """Count one repeat metric; an unreadable sink never ends the call."""
+        """Count one guard metric; an unreadable sink never ends the call."""
         counter = getattr(self._ledger, "count", None)
         if not callable(counter):
             return
@@ -792,12 +922,28 @@ class CascadeTurnStream:
             and not self._may_request("tts")
         ):
             return
+        # The exact-repeat guard keeps precedence: a line already spoken is a
+        # repeat first, and its own repair runs before this rule.
         if not force and self._is_repeat(text):
             self._drop_repeat(text)
+            return
+        if not force and self._must_not_ask and _is_question(text):
+            # A batched piece may carry a statement and a question: withhold
+            # only the question sentences and speak the remainder.
+            for piece in _reply_sentences(text) or [text]:
+                if _is_question(piece):
+                    self._drop_question(piece)
+                else:
+                    await self._speak(piece)
             return
         self._reply_text = f"{self._reply_text} {text}".strip()
         if not force:
             self._reply_new_sentences += 1
+            asked = [piece for piece in _reply_sentences(text) if _is_question(piece)]
+            if asked:
+                # Only a question the caller heard can be left unanswered.
+                self._last_question = asked[-1]
+                self._last_question_words = _content_words(self._last_question)
         self._active_leg = "tts"
         await self._caption("agent", text, False)
         async with self._voice_lock:
@@ -973,11 +1119,12 @@ class CascadeTurnStream:
 
     def _turn_failed(self, state: TurnState, error: BaseException) -> None:
         """One failed reply: the leg and the error class, never its message."""
-        reason = (
-            "the reply only repeated a line already spoken"
-            if isinstance(error, ReplyRepeatedOnly)
-            else "the reply failed"
-        )
+        if isinstance(error, ReplyQuestionOnly):
+            reason = "the reply only asked a question the caller did not answer"
+        elif isinstance(error, ReplyRepeatedOnly):
+            reason = "the reply only repeated a line already spoken"
+        else:
+            reason = "the reply failed"
         self._write_turn_row(
             "turn_failed",
             state.id.event_id,
@@ -998,4 +1145,4 @@ def _call_name(outcome: Any) -> str:
     return name if isinstance(name, str) and name.strip() else type(outcome).__name__
 
 
-__all__ = ["CascadeTurnStream", "ReplyRepeatedOnly"]
+__all__ = ["CascadeTurnStream", "ReplyQuestionOnly", "ReplyRepeatedOnly"]
