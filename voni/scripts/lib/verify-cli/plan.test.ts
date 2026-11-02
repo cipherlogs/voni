@@ -217,13 +217,23 @@ test("the declared scope is an input: a plan outside it refuses, and a claim it 
   assert.deepEqual(everyLocale.scope, ["en", "es", "fr", "de", "pt"]);
   assert.equal(everyLocale.calls, FULL_CALLS);
 
-  const outsideClaim = refusal({
+  // `--scope en` with no Locale filter is the same English-only claim: it
+  // narrows the run to the declared Locale rather than claiming five.
+  const scopeOnly = planVerify({
     request: { mode: "full", target: "local", scope: ["en"], json: false, help: false },
     corpus,
   });
+  assert.deepEqual(scopeOnly.scope, ["en"]);
+  assert.equal(scopeOnly.calls, ENGLISH_SCENARIOS * 3);
+  assert.ok(scopeOnly.scenarios.every((scenario) => scenario.locale === "en"));
+
+  const outsideClaim = refusal({
+    request: { mode: "full", target: "local", locale: "de", scope: ["en"], json: false, help: false },
+    corpus,
+  });
   assert.equal(outsideClaim.code, "scope-mismatch");
-  assert.match(outsideClaim.message, /es, fr, de, pt/);
-  assert.match(outsideClaim.message, /never out of scope/);
+  assert.match(outsideClaim.message, /Locale\(s\) en/);
+  assert.match(outsideClaim.message, /does not plan/);
 
   const unrunClaim = refusal({
     request: { mode: "full", target: "local", locale: "en", scope: ["en", "es"], json: false, help: false },

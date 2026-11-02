@@ -188,8 +188,10 @@ function assertPerLocaleFull(request: VerifyRequest, corpus: Corpus): void {
 
 function certificationPlan(request: VerifyRequest, corpus: Corpus): VerifyPlan {
   const repetitions = request.mode === "full" ? FULL_REPETITIONS : 1;
+  // The declared scope is also the run's Locale set when no filter is given:
+  // `--full --scope en` is the same English-only claim as `--locale en`.
   const locales: readonly Locale[] =
-    request.locale === undefined ? LOCALES : [request.locale];
+    request.locale === undefined ? (request.scope ?? LOCALES) : [request.locale];
   // The declared claim is an input; the plan may not step outside it, and a
   // declared Locale the plan does not run would be an unmeasured claim.
   const scope: readonly Locale[] = request.scope ?? locales;
