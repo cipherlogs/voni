@@ -34,6 +34,7 @@ import {
   buildCertificate,
   certificateExitCode,
   certificateFile,
+  declaredScopeFor,
   validateCertificate,
   type Certificate,
   type CertificateExpectation,
@@ -763,21 +764,44 @@ function certificateFor(input: {
     refuse("certificate-refused", "no vendor build was recorded for this run (RR-03)");
   }
   const usd = measuredCost(input.collected.costs);
-  // One certificate only ever claims the target, code and corpus it ran; the
-  // reader refuses a different one by name.
+  const scope = declaredScopeFor(input.plan.scope);
+  if (scope === null) {
+    refuse(
+      "certificate-refused",
+      `the plan's Locale set (${input.plan.scope.join(", ")}) is not a declared owner scope; ` +
+        "a certificate records a decision, never an ad-hoc Locale list",
+    );
+  }
+  const classOf = new Map(
+    input.corpus.scenarios.map((scenario) => [scenario.name, scenario.class]),
+  );
+  // One certificate only ever claims the target, scope, code and corpus it ran;
+  // the reader refuses a different one by name.
   return buildCertificate({
     contract: input.contract,
     run: input.run,
     target: input.plan.target,
+    scope,
     plan: { mode: input.plan.mode === "full" ? "full" : "nightly", repetitions: input.plan.repetitions },
     corpus: {
       version: input.corpus.version,
       fingerprint: input.corpus.fingerprint,
-      scenarios: input.plan.scenarios.map((scenario) => ({
-        name: scenario.name,
-        locale: scenario.locale,
-        heldOut: scenario.heldOut,
-      })),
+      scenarios: input.plan.scenarios.map((scenario) => {
+        const scenarioClass = classOf.get(scenario.name);
+        if (scenarioClass === undefined) {
+          refuse(
+            "certificate-refused",
+            `planned scenario "${scenario.name}" has no class in the corpus; a certificate records ` +
+              "the class its panel samples across",
+          );
+        }
+        return {
+          name: scenario.name,
+          locale: scenario.locale,
+          heldOut: scenario.heldOut,
+          class: scenarioClass,
+        };
+      }),
     },
     attempts: [...input.collected.callAttempts],
     codeFingerprint: input.fingerprint,
@@ -1036,6 +1060,7 @@ function certificationJournal(input: {
       mode,
       repetitions: input.plan.repetitions,
       calls: input.plan.calls,
+      scope: [...input.plan.scope],
       scenarios: input.plan.scenarios.map((scenario) => ({
         name: scenario.name,
         locale: scenario.locale,
@@ -1182,7 +1207,12 @@ async function certificationRun(
   const judged =
     panelInput === null
       ? verdict
-      : applyPanelVerdict(verdict, judgePanel(contract, panelInput));
+      : applyPanelVerdict(
+          verdict,
+          // The panel judges the claim's own Locales: a one-Locale scope has a
+          // 40-judgment floor for that Locale, not five impossible floors.
+          judgePanel(contract, { ...panelInput, scope: plan.scope }),
+        );
   if (request.mode === "nightly") {
     const status: VerifyStatus =
       verdict.verdict === "ineligible"

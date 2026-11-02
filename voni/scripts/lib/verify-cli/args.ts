@@ -1,6 +1,9 @@
 /**
  * The `demo:verify` argv contract: one command, three targets, four modes, an
- * optional Locale filter and one single-scenario diagnose form.
+ * optional Locale filter, an optional declared certification scope, and one
+ * single-scenario diagnose form. `--locale en` on a full run is the documented
+ * English-only certificate command; `--scope` makes the claim explicit, and a
+ * scope the plan steps outside refuses before the first call.
  *
  * Parsing only decides what was asked. It never decides whether the run can
  * happen (corpus, keys, vendor builds and the target's evidence sink are
@@ -11,7 +14,11 @@
  * Spec: `.scratch/demo-verification/spec.md`, "Commands and exit codes".
  */
 
-import { CERTIFICATE_TARGETS, type CertificateTarget } from "@/lib/demo/verification/certificate";
+import {
+  CERTIFICATE_TARGETS,
+  declaredScopeFor,
+  type CertificateTarget,
+} from "@/lib/demo/verification/certificate";
 import { LOCALES, type Locale } from "@/lib/demo/verification/scenarios";
 
 import { refuse } from "./errors";
@@ -29,6 +36,11 @@ export type VerifyRequest = {
   readonly mode: VerifyMode;
   readonly target: CertificateTarget;
   readonly locale?: Locale;
+  /**
+   * The declared certification scope, in demo order. Absent means the default
+   * for the mode: the run's Locale filter on a full run, else every Locale.
+   */
+  readonly scope?: readonly Locale[];
   readonly scenario?: string;
   readonly appUrl?: string;
   readonly pipelineUrl?: string;
@@ -50,6 +62,7 @@ export type VerifyRequest = {
 const VALUE_FLAGS = {
   "--target": "target",
   "--locale": "locale",
+  "--scope": "scope",
   "--scenario": "scenario",
   "--app-url": "appUrl",
   "--pipeline-url": "pipelineUrl",
@@ -168,6 +181,40 @@ export function parseVerifyArgs(argv: readonly string[]): VerifyRequest {
   }
   const locale = localeValue as Locale | undefined;
 
+  let scope: readonly Locale[] | undefined;
+  if (values.scope !== undefined) {
+    if (mode === "diagnose" || mode === "fast") {
+      refuse(
+        "bad-input",
+        `--scope belongs to a certification run (--full or --nightly); a ${mode} run makes no ` +
+          "certificate claim",
+      );
+    }
+    const seen = new Set<Locale>();
+    for (const token of values.scope.split(",").map((entry) => entry.trim())) {
+      if (token === "") {
+        refuse("bad-input", "--scope needs a comma-separated Locale list, never an empty entry");
+      }
+      if (!(LOCALES as readonly string[]).includes(token)) {
+        refuse("unknown-locale", `unknown Locale "${token}" in --scope; expected ${LOCALES.join(", ")}`);
+      }
+      if (seen.has(token as Locale)) {
+        refuse("bad-input", `--scope records Locale "${token}" twice`);
+      }
+      seen.add(token as Locale);
+    }
+    const declared = LOCALES.filter((entry) => seen.has(entry));
+    if (declaredScopeFor(declared) === null) {
+      refuse(
+        "invalid-scope",
+        `--scope ${declared.join(",")} is not a declared owner scope; the owner has declared ` +
+          `"en" (English-only) and "${LOCALES.join(",")}" (every Locale). A narrower set is a new ` +
+          "owner decision, not a flag",
+      );
+    }
+    scope = declared;
+  }
+
   const scenario = values.scenario;
   if (scenario !== undefined && !SCENARIO_NAME.test(scenario)) {
     refuse(
@@ -212,6 +259,7 @@ export function parseVerifyArgs(argv: readonly string[]): VerifyRequest {
     mode,
     target,
     ...(locale === undefined ? {} : { locale }),
+    ...(scope === undefined ? {} : { scope }),
     ...(scenario === undefined ? {} : { scenario }),
     ...(values.appUrl === undefined ? {} : { appUrl: values.appUrl }),
     ...(values.pipelineUrl === undefined ? {} : { pipelineUrl: values.pipelineUrl }),
@@ -234,6 +282,8 @@ export function parseVerifyArgs(argv: readonly string[]): VerifyRequest {
 /** The usage block every entry point prints. */
 export const VERIFY_USAGE = `usage: npm run demo:verify -- --target <local|staging|production> [--full|--fast|--diagnose|--nightly]
        npm run demo:verify -- --scenario <name> --target local --diagnose
+       npm run demo:verify -- --full --locale en        (English-only certificate)
+       npm run demo:verify -- --full --scope en         (same claim, explicit)
        npm run demo:verify -- --locale <en|es|fr|de|pt>
 
   --target T          local | staging | production (default local)
@@ -244,6 +294,12 @@ export const VERIFY_USAGE = `usage: npm run demo:verify -- --target <local|stagi
   --scenario NAME     the scenario --diagnose runs
   --locale L          en | es | fr | de | pt (a Locale filter; a non-English
                       --full is refused: only English has a per-Locale full set)
+  --scope L,L         the certificate's declared Locales: en (English-only) or
+                      en,es,fr,de,pt (every Locale). Full runs default to the
+                      Locale filter, else all five. A Locale outside the scope
+                      is recorded as out of scope by the owner's 2026-11-02
+                      decision, never as a gap; an in-scope Locale is always
+                      required
   --app-url URL       the real app (default VONI_APP_URL)
   --pipeline-url URL  the real pipeline (default VOICE_PIPELINE_URL)
   --events-dir PATH   the pipeline's per-call trace directory

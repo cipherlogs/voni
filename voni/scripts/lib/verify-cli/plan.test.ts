@@ -191,6 +191,46 @@ test("a per-Locale full run without a full corpus refuses by name, never a local
   });
   assert.equal(english.calls, ENGLISH_SCENARIOS * 3);
   assert.deepEqual(english.gaps, []);
+  assert.deepEqual(english.scope, ["en"], "an English --full declares the English-only scope");
+});
+
+test("the declared scope is an input: a plan outside it refuses, and a claim it cannot run refuses", async () => {
+  const corpus = await committedCorpus();
+  const explicit = planVerify({
+    request: {
+      mode: "full",
+      target: "local",
+      locale: "en",
+      scope: ["en"],
+      json: false,
+      help: false,
+    },
+    corpus,
+  });
+  assert.deepEqual(explicit.scope, ["en"]);
+  assert.equal(explicit.calls, ENGLISH_SCENARIOS * 3);
+
+  const everyLocale = planVerify({
+    request: { mode: "full", target: "local", json: false, help: false },
+    corpus,
+  });
+  assert.deepEqual(everyLocale.scope, ["en", "es", "fr", "de", "pt"]);
+  assert.equal(everyLocale.calls, FULL_CALLS);
+
+  const outsideClaim = refusal({
+    request: { mode: "full", target: "local", scope: ["en"], json: false, help: false },
+    corpus,
+  });
+  assert.equal(outsideClaim.code, "scope-mismatch");
+  assert.match(outsideClaim.message, /es, fr, de, pt/);
+  assert.match(outsideClaim.message, /never out of scope/);
+
+  const unrunClaim = refusal({
+    request: { mode: "full", target: "local", locale: "en", scope: ["en", "es"], json: false, help: false },
+    corpus,
+  });
+  assert.equal(unrunClaim.code, "scope-mismatch");
+  assert.match(unrunClaim.message, /Locale\(s\) es, which this full run does not plan/);
 });
 
 test("the plan's counts are the cadence's one source, so a hand-edited copy fails", async () => {

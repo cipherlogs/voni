@@ -678,7 +678,7 @@ function fullCorpus(): Corpus {
     scenarios: LOCALES.map((locale: Locale) => ({
       schemaVersion: 1,
       name: `${locale}-one`,
-      class: "golden",
+      class: "golden-flow",
       locale,
       heldOut: false,
       expectedProperties: ["L1"],
@@ -697,6 +697,7 @@ function fullPlan(corpus: Corpus): VerifyPlan {
     mode: "full",
     target: "local",
     locale: null,
+    scope: LOCALES,
     scenario: null,
     repetitions: 3,
     calls: corpus.scenarios.length * 3,
@@ -790,6 +791,35 @@ test("a clean unsigned full run is pending-human and exit 3, with exactly one ce
   assert.equal(result.certificate?.plan.mode, "full");
   assert.equal(result.certificate?.coverage.gapRows, 0);
   assert.ok(result.certificatePath?.endsWith("verify-test-01.json"));
+});
+
+test("an English-only full run issues an en-scoped certificate and never reads the four Locales as gaps", async () => {
+  const corpus = {
+    ...fullCorpus(),
+    scenarios: fullCorpus().scenarios.filter((scenario) => scenario.locale === "en"),
+  };
+  const result = await fullResult({
+    corpus,
+    plan: (planned) => ({
+      ...fullPlan(planned),
+      locale: "en",
+      scope: ["en"],
+      calls: planned.scenarios.length * 3,
+    }),
+  });
+  assert.equal(result.exitCode, 3, "unsigned but clean is pending-human");
+  const certificate = result.certificate;
+  assert.ok(certificate);
+  assert.deepEqual(certificate.scope?.locales, ["en"]);
+  assert.equal(certificate.coverage.gapRows, 0);
+  assert.equal(certificate.coverage.byLocale.find((row) => row.locale === "en")?.status, "measured");
+  for (const locale of LOCALES.filter((entry) => entry !== "en")) {
+    assert.equal(
+      certificate.coverage.byLocale.find((row) => row.locale === locale)?.status,
+      "out-of-scope",
+    );
+  }
+  assert.ok(certificate.residualRiskIds.includes("RR-09"));
 });
 
 test("a signed clean full run is certified and exit 0", async () => {

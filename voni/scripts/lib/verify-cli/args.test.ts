@@ -47,6 +47,22 @@ test("the spec's three forms parse to one request each", () => {
   assert.equal(locale.target, "local", "an omitted target is local, the only target with a sink");
 });
 
+test("--scope declares the English-only claim, or all five, and refuses any other set", () => {
+  const english = parseVerifyArgs(["--full", "--locale", "en", "--scope", "en"]);
+  assert.deepEqual(english.scope, ["en"]);
+
+  const every = parseVerifyArgs(["--full", "--scope", "pt,en,de,fr,es"]);
+  assert.deepEqual(every.scope, ["en", "es", "fr", "de", "pt"], "recorded in demo order");
+
+  const partial = refusal(["--full", "--scope", "en,es"]);
+  assert.equal(partial.code, "invalid-scope");
+  assert.match(partial.message, /not a declared owner scope/);
+
+  assert.equal(refusal(["--full", "--scope", "en,xx"]).code, "unknown-locale");
+  assert.equal(refusal(["--full", "--scope", "en,en"]).code, "bad-input");
+  assert.equal(refusal(["--fast", "--scope", "en"]).code, "bad-input");
+});
+
 test("a defect card's replay command is accepted unchanged", () => {
   const command = replayCommand({
     scenario: "turn-taking-barge",

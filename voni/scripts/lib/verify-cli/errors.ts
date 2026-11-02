@@ -15,6 +15,8 @@ export const VERIFY_ERROR_CODES = [
   "unknown-target",
   "unknown-locale",
   "unknown-mode",
+  "invalid-scope",
+  "scope-mismatch",
   "unsupported-target",
   "unsupported-mode",
   "missing-scenario",

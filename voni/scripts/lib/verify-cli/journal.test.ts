@@ -230,6 +230,16 @@ test("resume refuses when the code, corpus, builds, plan or target moved", () =>
       refusal(() =>
         assertResumable(loaded, {
           ...expected,
+          plan: { ...expected.plan, scope: ["en"] },
+        }),
+      ).message,
+      /declared scope es, fr, de, pt|declared scope/,
+    );
+
+    assert.match(
+      refusal(() =>
+        assertResumable(loaded, {
+          ...expected,
           codeFingerprint: { ...HEADER.codeFingerprint, head: "def456" },
         }),
       ).message,

@@ -41,6 +41,7 @@ import {
 } from "@/lib/demo/verification/adapters";
 import {
   buildCertificate,
+  FULL_SCOPE,
   OPEN_RESIDUAL_RISK_IDS,
   type Certificate,
 } from "@/lib/demo/verification/certificate";
@@ -739,6 +740,10 @@ export async function runBrowserCertification(
       contract,
       run: verdict,
       target: input.target,
+      // This adapter issues a single-scenario claim; it declares every Locale so
+      // the four it did not run are named gaps, never silently dropped. A
+      // scoped certificate comes from the plan-aware `demo:verify` CLI.
+      scope: FULL_SCOPE,
       plan: input.plan ?? { mode: "diagnose", repetitions: 1 },
       corpus: {
         version: corpus.version,
@@ -747,6 +752,7 @@ export async function runBrowserCertification(
           name: entry.name,
           locale: entry.locale,
           heldOut: entry.heldOut,
+          class: entry.class,
         })),
       },
       attempts: [
