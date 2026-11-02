@@ -16,12 +16,14 @@ in the transport, so this module cannot become a second protocol.
 :class:`CallStream` is the turn layer's seam: the stream start, each STT
 event, a context update, the drain and the turn count. The orchestrator tickets
 implement it; this module only orders the call around it. The greeting is not
-part of the turn layer: the lifecycle opens the speech leg, tells the browser
-the line is listening, then speaks the body's greeting through the opened voice
-once that voice acknowledged ``Begin``. Caller frames reach STT and provider
-events are buffered while the opening runs; a caller speech event (or loud
-caller PCM) before the greeting starts skips the line entirely, so a visitor
-who opens with a complaint is never greeted over it. A ``speechStart`` or a
+part of the turn layer: the lifecycle tells the browser the line is listening
+before it opens the speech leg, buffers what the caller says while the
+handshake is in flight, then speaks the body's greeting through the opened
+voice once that voice acknowledged ``Begin``. Caller frames reach STT and
+provider events are buffered while the opening runs; a caller speech event (or
+loud caller PCM) anywhere from ``listening`` through the opening skips the line
+entirely, so a visitor who opens with a complaint is never greeted over it. A
+``speechStart`` or a
 taking-the-floor partial after the line starts cuts it with ``Cancel`` (ticket
 79) so the caller's turn wins, and the client is told to drop the audio it has
 already queued, or the caller keeps hearing the line they interrupted. Nothing
@@ -1326,24 +1328,23 @@ class CallLifecycle:
             )
 
         opened: list[OpenedLeg] = []
-        try:
-            speech = await self._open(self._open_speech, body, "stt", opened)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            return await self._abort_before_stream(
-                opened, CallFailure.from_exception("open", error)
-            )
-
-        # The opening is a window, not a pause: the caller's frames reach STT
-        # from the moment the speech leg is open, and the browser's microphone
-        # gate is released by `listening` instead of by the greeting's first
-        # sample. A caller who opens with a complaint is therefore heard before
-        # the greeting can start, and the line is skipped rather than said over
-        # them. Nothing reaches the turn layer until that boundary; the buffer
-        # below is replayed in arrival order.
+        # The opening is a window, not a pause: the browser's microphone gate
+        # is released by `listening` before the speech leg has acknowledged its
+        # handshake, so a caller who opens with a complaint is captured while
+        # the service is still opening. Frames that arrive before the ack are
+        # buffered in arrival order and flushed once the session can accept
+        # them; the handshake's own bound is what caps that wait, and a failed
+        # handshake aborts the call and the buffer with it. Nothing reaches the
+        # turn layer until that boundary; the buffers below are replayed then.
         buffered_events: list[Any] = []
         buffered_contexts: list[str] = []
+        #: Caller PCM received before the speech session acknowledged its
+        #: handshake. `audio_lock` keeps the flush and the live frames in order,
+        #: so no opening audio is overtaken or dropped.
+        opening_audio: list[bytes] = []
+        audio_lock = asyncio.Lock()
+        stt_session: Any | None = None
+        speech: OpenedLeg | None = None
         barge = asyncio.Event()
         barge_causes: list[str] = []
         caller_first = asyncio.Event()
@@ -1385,6 +1386,7 @@ class CallLifecycle:
                     buffered_events.append(event)
 
         async def pump() -> None:
+            assert speech is not None  # started only after the speech leg opens
             try:
                 async for event in speech.session.events():
                     if greeting is None:
@@ -1433,7 +1435,13 @@ class CallLifecycle:
                                     caller_first.set()
                             else:
                                 caller_audio_frames = 0
-                        await speech.session.send_audio(item.pcm)
+                        async with audio_lock:
+                            if stt_session is None:
+                                # The handshake has not been acknowledged yet;
+                                # hold the frame and flush it in order below.
+                                opening_audio.append(item.pcm)
+                            else:
+                                await stt_session.send_audio(item.pcm)
                     elif isinstance(item, ContextUpdate):
                         if streaming:
                             await self._stream.context(item.text)
@@ -1445,17 +1453,52 @@ class CallLifecycle:
                 stream_failure = CallFailure.from_exception("stream", error)
                 stop_reasons.append("error")
 
-        event_task = asyncio.ensure_future(pump())
+        window_ms = self._bound_overrides.get(
+            "greeting.caller_first_ms", CALLER_FIRST_WINDOW_MS
+        )
+        # Release the microphone before the speech handshake: the browser holds
+        # every caller frame until this signal, and the handshake can take
+        # seconds. The caller-first window starts here, so the whole opening is
+        # listening time instead of being spent before the gate ever runs.
+        window_started = self._clock()
+        await self._announce_listening()
         receive_task = asyncio.ensure_future(receive())
+
+        try:
+            speech = await self._open(self._open_speech, body, "stt", opened)
+        except asyncio.CancelledError:
+            receive_task.cancel()
+            await asyncio.gather(receive_task, return_exceptions=True)
+            raise
+        except Exception as error:
+            receive_task.cancel()
+            await asyncio.gather(receive_task, return_exceptions=True)
+            return await self._abort_before_stream(
+                opened, CallFailure.from_exception("open", error)
+            )
+
+        # The handshake is acknowledged: flush everything the caller said while
+        # it was opening, in arrival order, before any live frame overtakes it.
+        try:
+            async with audio_lock:
+                for pcm in opening_audio:
+                    await speech.session.send_audio(pcm)
+                opening_audio.clear()
+                stt_session = speech.session
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            receive_task.cancel()
+            await asyncio.gather(receive_task, return_exceptions=True)
+            return await self._abort_before_stream(
+                opened, CallFailure.from_exception("stream", error)
+            )
+
+        event_task = asyncio.ensure_future(pump())
         failure_task = asyncio.ensure_future(failure_event.wait())
         budget_task = asyncio.ensure_future(budget_event.wait())
         end_task = asyncio.ensure_future(end_event.wait())
 
-        window_ms = self._bound_overrides.get(
-            "greeting.caller_first_ms", CALLER_FIRST_WINDOW_MS
-        )
-        window_started = self._clock()
-        await self._announce_listening()
         try:
             await self._open(self._open_voice, body, "tts", opened)
             if self._open_model is not None:
@@ -1471,8 +1514,10 @@ class CallLifecycle:
             )
 
         if self._listening_opened:
-            # The window started at `listening`; opening the voice and model
-            # overlaps it, so a quiet caller only waits for whatever is left.
+            # The window started at `listening` and ran through the speech,
+            # voice and model opens; caller evidence anywhere in it skips the
+            # greeting. If the opening already used the window, the line has
+            # been quiet for at least that long and the greeting starts now.
             elapsed_ms = (self._clock() - window_started) * 1000.0
             remaining_ms = max(0.0, window_ms - elapsed_ms)
             caller_first_task = asyncio.ensure_future(caller_first.wait())
@@ -2201,14 +2246,14 @@ class CallLifecycle:
         return self._budget_stop
 
     async def _announce_listening(self) -> None:
-        """Open the caller's microphone before the greeting is spoken.
+        """Open the caller's microphone before the speech handshake and greeting.
 
         The browser holds microphone frames until the service admits the call,
         so a caller who opens with a complaint would otherwise be heard only
         after the greeting's first audible sample. This is the one signal that
-        releases those frames before the opening line: the call layer can then
-        hear the caller first and skip the greeting instead of saying "Hi"
-        over them. A transport without the seam (a test double, a non-browser
+        releases those frames before the opening line: the call layer buffers
+        them through the handshake, then hears the caller first and skips the
+        greeting instead of saying "Hi" over them. A transport without the seam (a test double, a non-browser
         path) records nothing, and no caller-first window is run because no
         caller audio can arrive ahead of the line.
         """
