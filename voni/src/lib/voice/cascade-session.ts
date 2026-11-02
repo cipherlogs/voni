@@ -53,10 +53,10 @@ export const DEMO_PLAYOUT_CUSHION_S = 0.25;
 export const CASCADE_PROTOCOL_VERSION = 1;
 
 /**
- * How long the microphone waits for the service's first audio before it speaks
- * anyway. The greeting opens the gate in every normal call; this only covers a
- * resumed call, which deliberately speaks no greeting, so the caller is never
- * left unheard.
+ * How long the microphone waits for the service's `listening` (or first audio)
+ * before it speaks anyway. The service now sends `listening` before the
+ * greeting opens the gate in a normal call; this only covers a resumed or
+ * silent call, so the caller is never left unheard.
  */
 export const MIC_GATE_FALLBACK_MS = 8_000;
 
@@ -177,6 +177,7 @@ export type CascadeHandlers = {
 
 export type ServerEvent =
   | { kind: "caption"; role: "user" | "agent"; text: string; final: boolean }
+  | { kind: "listening" }
   | { kind: "interrupted" }
   | { kind: "end_call" }
   | { kind: "end"; turns: number; metrics: unknown; protocolVersion?: number }
@@ -240,6 +241,8 @@ export function parseServerMessage(raw: string): ServerEvent | null {
       };
     case "interrupted":
       return { kind: "interrupted" };
+    case "listening":
+      return { kind: "listening" };
     case "end_call":
       return { kind: "end_call" };
     case "end":
@@ -519,8 +522,9 @@ export class CascadeSession {
       };
     }
     this.started = true;
-    // A resumed call speaks no greeting, so nothing may ever open the gate; the
-    // bound keeps that call able to speak rather than silent forever.
+    // A silent or skipped greeting sends `listening` before the line, so the
+    // gate opens without an audible sample; the bound still covers a resumed
+    // call or a dropped `listening`, so the caller is never silent forever.
     this.micGateTimer = setTimeout(() => this.openMicGate(), MIC_GATE_FALLBACK_MS);
     // Socket may already be open (fake sockets, fast localhost): flush config now.
     if (this.ws !== null && this.ws.readyState === this.ws.OPEN) this.sendConfig(config);
@@ -737,6 +741,12 @@ export class CascadeSession {
       case "caption":
         if (event.role === "user") this.endCallArmed = false;
         this.handlers.onCaption?.({ role: event.role, text: event.text, final: event.final });
+        break;
+      case "listening":
+        // The service opens the line before the greeting so a caller who
+        // speaks first is heard first. Release the microphone now, not on the
+        // greeting's first sample.
+        this.openMicGate();
         break;
       case "interrupted":
         this.endCallArmed = false;

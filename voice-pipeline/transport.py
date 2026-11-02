@@ -320,6 +320,10 @@ class BrowserCallTransport:
     async def interrupted(self) -> None:
         await _send(self._ws, {"type": "interrupted"})
 
+    async def listening(self) -> None:
+        """The line is open before the greeting: release the caller's mic."""
+        await _send(self._ws, {"type": "listening"})
+
 
 @dataclass
 class _PreparedCall:

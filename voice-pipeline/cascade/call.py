@@ -16,14 +16,16 @@ in the transport, so this module cannot become a second protocol.
 :class:`CallStream` is the turn layer's seam: the stream start, each STT
 event, a context update, the drain and the turn count. The orchestrator tickets
 implement it; this module only orders the call around it. The greeting is not
-part of the turn layer: the lifecycle starts the body's greeting through the
-opened voice (ticket 77) only after the synthesis session acknowledged
-``Begin``, and the opening is a listening window. Caller frames reach STT and
-provider events are buffered while the greeting sounds; a ``speechStart`` or a
-taking-the-floor partial cuts the greeting with ``Cancel`` (ticket 79) so the
-caller's turn wins, and the client is told to drop the audio it has already
-queued, or the caller keeps hearing the line they interrupted. Nothing reaches
-the turn layer before that boundary. A
+part of the turn layer: the lifecycle opens the speech leg, tells the browser
+the line is listening, then speaks the body's greeting through the opened voice
+once that voice acknowledged ``Begin``. Caller frames reach STT and provider
+events are buffered while the opening runs; a caller speech event (or loud
+caller PCM) before the greeting starts skips the line entirely, so a visitor
+who opens with a complaint is never greeted over it. A ``speechStart`` or a
+taking-the-floor partial after the line starts cuts it with ``Cancel`` (ticket
+79) so the caller's turn wins, and the client is told to drop the audio it has
+already queued, or the caller keeps hearing the line they interrupted. Nothing
+reaches the turn layer before that boundary. A
 greeting synthesis failure ends the call with the voice's own trigger on the
 end message (ticket 80); there is no silent opening.
 
@@ -93,8 +95,10 @@ The end message carries the facts a reader can act on and never a guess:
 from __future__ import annotations
 
 import asyncio
+import array
 import inspect
 import logging
+import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
@@ -110,7 +114,7 @@ from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
 from cascade.events import COST_PRICED_EVENT_TYPE, OperationalEvents
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
-from cascade.meta_stt import SpeechPartial, SpeechStart
+from cascade.meta_stt import SpeechComplete, SpeechPartial, SpeechStart
 from cascade.reconnect import ReconnectBudget
 from cascade.thresholds import ThresholdError, require_bound
 from cascade.usage import NO_REQUEST, CallUsage, UsageMeter
@@ -137,6 +141,19 @@ BOUNDED_WAITS: dict[str, tuple[str, str]] = {
     # it reads the same settled synthesis idle bound; no new number is invented.
     "goodbye": ("tts.idle_timeout_ms", "GoodbyeTimedOut"),
 }
+
+#: How long the opening listens for caller speech before the greeting starts.
+#: A caller speech event inside it skips the greeting entirely; a quiet caller
+#: hears the line at the end of the window. It is a gate, not filler.
+CALLER_FIRST_WINDOW_MS = float(require_bound("greeting.caller_first_ms"))
+
+#: Opening-window voice activity on the caller's PCM. The committed caller
+#: takes sit around RMS 1500; room tone is far below. Two frames above the bar
+#: keep a single click from suppressing the greeting. This is the early signal
+#: while the speech provider is still forming its first partial (about 3 s on
+#: a live call); a provider speech event remains the authoritative one.
+CALLER_SPEECH_RMS = 500.0
+CALLER_SPEECH_FRAMES = 2
 
 #: The drain/close/event wait's bound name (ticket 76 owns the value in
 #: ``thresholds.json``; this module never restates it).
@@ -206,6 +223,9 @@ class CallTransport(Protocol):
 
     async def send(self, message: Mapping[str, Any]) -> None:
         """Send the one end message."""
+
+    async def listening(self) -> None:
+        """Tell the browser the line is open before the greeting starts."""
 
     async def interrupted(self) -> None:
         """Tell the browser to drop and fade the playout it has queued."""
@@ -1167,11 +1187,14 @@ class CallLifecycle:
         self._envelope_clock = envelope_clock
         self._drain_bound_ms = drain_bound_ms
         self._bound_overrides: dict[str, float] = {}
+        known_bounds = {bound for bound, _ in BOUNDED_WAITS.values()} | {
+            "greeting.caller_first_ms"
+        }
         for name, value in (bounds or {}).items():
-            if name not in {bound for bound, _ in BOUNDED_WAITS.values()}:
+            if name not in known_bounds:
                 raise ValueError(
                     f"unknown bound override {name!r}; the bounded waits read "
-                    + ", ".join(sorted({bound for bound, _ in BOUNDED_WAITS.values()}))
+                    + ", ".join(sorted(known_bounds))
                 )
             self._bound_overrides[name] = float(value)
         if drain_bound_ms is not None:
@@ -1246,6 +1269,10 @@ class CallLifecycle:
         self._chime = chime
         self.chime_calls = 0
         self.chime_at: float | None = None
+        #: Whether the transport can open the caller's mic before the greeting.
+        #: Only then is the caller-first window meaningful: a transport without
+        #: the seam cannot deliver caller audio ahead of the line.
+        self._listening_opened = False
 
     # -- verification -----------------------------------------------------
 
@@ -1301,9 +1328,6 @@ class CallLifecycle:
         opened: list[OpenedLeg] = []
         try:
             speech = await self._open(self._open_speech, body, "stt", opened)
-            await self._open(self._open_voice, body, "tts", opened)
-            if self._open_model is not None:
-                await self._open(self._open_model, body, "llm", opened)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -1311,27 +1335,25 @@ class CallLifecycle:
                 opened, CallFailure.from_exception("open", error)
             )
 
-        try:
-            greeting = self._start_greeting(body, opened)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            return await self._abort_before_stream(opened, _failure("greeting", error))
-
         # The opening is a window, not a pause: the caller's frames reach STT
-        # and the provider's events are read while the greeting sounds, so an
-        # interruption is heard at the same moment it happens. Nothing reaches
-        # the turn layer until the greeting has finished or been cut; the
-        # buffer below is replayed in arrival order at that boundary.
+        # from the moment the speech leg is open, and the browser's microphone
+        # gate is released by `listening` instead of by the greeting's first
+        # sample. A caller who opens with a complaint is therefore heard before
+        # the greeting can start, and the line is skipped rather than said over
+        # them. Nothing reaches the turn layer until that boundary; the buffer
+        # below is replayed in arrival order.
         buffered_events: list[Any] = []
         buffered_contexts: list[str] = []
         barge = asyncio.Event()
         barge_causes: list[str] = []
+        caller_first = asyncio.Event()
+        caller_audio_frames = 0
         stop_reasons: list[str] = []
         delivery_lock = asyncio.Lock()
         streaming = False
         stream_started = False
         stream_failure: CallFailure | None = None
+        greeting: GreetingPlayback | None = None
         # One leg failure that ends the call (a spent reconnect, a bug, a
         # dropped socket's final close) sets this: the supervisor stops waiting
         # for browser input instead of leaving a dead line open. It is the only
@@ -1365,11 +1387,12 @@ class CallLifecycle:
         async def pump() -> None:
             try:
                 async for event in speech.session.events():
-                    if (
-                        greeting is not None
-                        and not greeting.done
-                        and not barge.is_set()
-                    ):
+                    if greeting is None:
+                        # The opening is still listening: caller speech before
+                        # the greeting starts skips it entirely.
+                        if _caller_spoke(event):
+                            caller_first.set()
+                    elif not greeting.done and not barge.is_set():
                         cause = _greeting_barge_cause(event)
                         if cause is not None:
                             barge_causes.append(cause)
@@ -1388,7 +1411,7 @@ class CallLifecycle:
                 failure_event.set()
 
         async def receive() -> None:
-            nonlocal stream_failure
+            nonlocal stream_failure, caller_audio_frames
             try:
                 while True:
                     item = await self._transport.receive()
@@ -1400,6 +1423,16 @@ class CallLifecycle:
                         return
                     if isinstance(item, AudioFrame):
                         self._ledger.mark("audio_in")
+                        if greeting is None and not caller_first.is_set():
+                            # The provider's first speech event is slow; the
+                            # caller's own PCM is the early evidence that the
+                            # opening has already been interrupted.
+                            if _caller_audio_speaks(item.pcm):
+                                caller_audio_frames += 1
+                                if caller_audio_frames >= CALLER_SPEECH_FRAMES:
+                                    caller_first.set()
+                            else:
+                                caller_audio_frames = 0
                         await speech.session.send_audio(item.pcm)
                     elif isinstance(item, ContextUpdate):
                         if streaming:
@@ -1412,18 +1445,87 @@ class CallLifecycle:
                 stream_failure = CallFailure.from_exception("stream", error)
                 stop_reasons.append("error")
 
+        event_task = asyncio.ensure_future(pump())
+        receive_task = asyncio.ensure_future(receive())
+        failure_task = asyncio.ensure_future(failure_event.wait())
+        budget_task = asyncio.ensure_future(budget_event.wait())
+        end_task = asyncio.ensure_future(end_event.wait())
+
+        window_ms = self._bound_overrides.get(
+            "greeting.caller_first_ms", CALLER_FIRST_WINDOW_MS
+        )
+        window_started = self._clock()
+        await self._announce_listening()
+        try:
+            await self._open(self._open_voice, body, "tts", opened)
+            if self._open_model is not None:
+                await self._open(self._open_model, body, "llm", opened)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            for task in (event_task, receive_task, failure_task, budget_task, end_task):
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            return await self._abort_before_stream(
+                opened, CallFailure.from_exception("open", error)
+            )
+
+        if self._listening_opened:
+            # The window started at `listening`; opening the voice and model
+            # overlaps it, so a quiet caller only waits for whatever is left.
+            elapsed_ms = (self._clock() - window_started) * 1000.0
+            remaining_ms = max(0.0, window_ms - elapsed_ms)
+            caller_first_task = asyncio.ensure_future(caller_first.wait())
+            try:
+                await asyncio.wait(
+                    (
+                        caller_first_task,
+                        receive_task,
+                        failure_task,
+                        budget_task,
+                        end_task,
+                    ),
+                    timeout=remaining_ms / 1000.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                # Let the pump drain anything already yielded before the decision.
+                await asyncio.sleep(0)
+            finally:
+                caller_first_task.cancel()
+                await asyncio.gather(caller_first_task, return_exceptions=True)
+
+        opening_over = self._listening_opened and (
+            failure_event.is_set()
+            or receive_task.done()
+            or budget_event.is_set()
+            or end_event.is_set()
+        )
+        if caller_first.is_set() or opening_over:
+            self._greeting = GreetingOutcome.skipped(
+                "the caller spoke first; the greeting was not started"
+                if caller_first.is_set()
+                else "the call ended before the greeting could start"
+            )
+        else:
+            try:
+                greeting = self._start_greeting(body, opened)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                for task in (event_task, receive_task):
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                return await self._abort_before_stream(
+                    opened, _failure("greeting", error)
+                )
+
         greeting_task = greeting.task if greeting is not None else None
         greeting_gate = (
             asyncio.ensure_future(self.run_bounded("greeting", lambda: greeting_task))
             if greeting_task is not None
             else None
         )
-        event_task = asyncio.ensure_future(pump())
-        receive_task = asyncio.ensure_future(receive())
         barge_task = asyncio.ensure_future(barge.wait())
-        failure_task = asyncio.ensure_future(failure_event.wait())
-        budget_task = asyncio.ensure_future(budget_event.wait())
-        end_task = asyncio.ensure_future(end_event.wait())
 
         ended_by = "dropped"
         failure: CallFailure | None = None
@@ -2098,6 +2200,26 @@ class CallLifecycle:
         """The per-call ceiling breach, once one has happened."""
         return self._budget_stop
 
+    async def _announce_listening(self) -> None:
+        """Open the caller's microphone before the greeting is spoken.
+
+        The browser holds microphone frames until the service admits the call,
+        so a caller who opens with a complaint would otherwise be heard only
+        after the greeting's first audible sample. This is the one signal that
+        releases those frames before the opening line: the call layer can then
+        hear the caller first and skip the greeting instead of saying "Hi"
+        over them. A transport without the seam (a test double, a non-browser
+        path) records nothing, and no caller-first window is run because no
+        caller audio can arrive ahead of the line.
+        """
+        announce = getattr(self._transport, "listening", None)
+        if not callable(announce):
+            return
+        result = announce()
+        if inspect.isawaitable(result):
+            await result
+        self._listening_opened = True
+
     async def _interrupt_browser(self) -> None:
         """Tell the client to drop the playout it has queued (a barge-in).
 
@@ -2537,6 +2659,43 @@ def _unit_of(rate_key: str) -> str:
     """The unit part of a ``<leg>.<unit>`` rate key."""
     leg, _, unit = rate_key.partition(".")
     return unit or leg
+
+
+def _caller_audio_speaks(pcm: bytes) -> bool:
+    """Whether one caller PCM frame is loud enough to be speech, not room tone.
+
+    The browser sends 16-bit little-endian samples. The provider's own speech
+    event is authoritative, but it can take seconds to form; this local RMS
+    check lets the opening skip the greeting as soon as the caller's first
+    words are audible. The bar sits below the committed caller takes (~1500)
+    and far above digital silence.
+    """
+    if len(pcm) < 2:
+        return False
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return False
+    mean_square = sum(sample * sample for sample in samples) / len(samples)
+    return mean_square ** 0.5 >= CALLER_SPEECH_RMS
+
+
+def _caller_spoke(event: Any) -> bool:
+    """Whether one provider event is the caller taking their first turn.
+
+    The opening window cares about any caller speech, not only the two events
+    that cut a sounding greeting: a final that arrives before the line starts
+    means the caller has already spoken, and the greeting must not follow it.
+    A backchannel (``mm-hmm``) is not speech that owns the floor.
+    """
+    if isinstance(event, SpeechStart):
+        return True
+    if isinstance(event, (SpeechPartial, SpeechComplete)):
+        text = getattr(event, "text", "") or ""
+        return bool(text.strip()) and not is_backchannel(text)
+    return False
 
 
 def _greeting_barge_cause(event: Any) -> str | None:
