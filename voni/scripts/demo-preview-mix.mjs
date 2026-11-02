@@ -14,10 +14,15 @@
  * Usage:
  *   node scripts/demo-preview-mix.mjs <run-dir> [--out <file>]
  *   node scripts/demo-preview-mix.mjs <run-dir> --call <call-id> [--corpus <dir>]
+ *   node scripts/demo-preview-mix.mjs <run-dir> --captures <.captures dir>
  *
- * `<run-dir>` is a `.demo-runs/<run-id>` run directory or one call directory.
- * The output defaults to `<call-dir>/preview-mix.wav`; the caller takes are read
- * from the committed scenario corpus unless `--corpus` names another root.
+ * `<run-dir>` is a real `.demo-runs/browser-*` directory (`browser-call.json`
+ * plus `run.json`/`browser-invocation.json`) or an older `calls/<id>/call.json`
+ * call directory. The output defaults to `<run-dir>/preview-mix.wav`; caller
+ * takes are read from the committed scenario corpus unless `--corpus` names
+ * another root. When `browser-call.json` has no `capturePath`/`marksPath`, the
+ * script finds them in the invocation's `capturesDir` by `callId`, the way the
+ * harness writes them.
  *
  * The mix normalises the agent capture and each caller take to about -20 dBFS
  * RMS over their non-silent samples, then scales the whole mix only if its peak
@@ -200,54 +205,154 @@ function levelGain(samples, label) {
   return TARGET_RMS / rms;
 }
 
-function resolveCallDirectory(runDir, callId) {
-  if (existsSync(join(runDir, "call.json"))) return runDir;
-  const callsDir = join(runDir, "calls");
-  if (!existsSync(callsDir)) {
-    throw new PreviewMixError(
-      "missing-call",
-      `${runDir} holds neither call.json nor a calls/ directory`,
-    );
-  }
-  const candidates = readdirSync(callsDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => join(callsDir, entry.name))
-    .filter((dir) => existsSync(join(dir, "call.json")));
-  if (candidates.length === 0) {
-    throw new PreviewMixError("missing-call", `${callsDir} holds no call.json`);
-  }
-  if (callId !== null) {
-    const match = candidates.find((dir) => {
-      if (basename(dir) === callId) return true;
-      const record = readJson(join(dir, "call.json"), "invalid-call");
-      return record.callId === callId;
-    });
-    if (match === undefined) {
-      throw new PreviewMixError(
-        "missing-call",
-        `${runDir} holds no call "${callId}"; available: ${candidates
-          .map((dir) => basename(dir))
-          .join(", ")}`,
-      );
-    }
-    return match;
-  }
-  if (candidates.length > 1) {
-    throw new PreviewMixError(
-      "ambiguous-call",
-      `${runDir} holds ${candidates.length} calls; pass --call <call-id> (${candidates
-        .map((dir) => basename(dir))
-        .join(", ")})`,
-    );
-  }
-  return candidates[0];
+function readOptionalJson(path, code) {
+  return existsSync(path) ? readJson(path, code) : null;
 }
 
-function resolveArtifact(callDir, path, fallback) {
-  if (typeof path === "string" && path.length > 0) {
-    return resolve(callDir, path);
+/** The capture the harness wrote for a call id, when its recorded path is null. */
+function captureForCall(capturesDir, callId) {
+  if (!existsSync(capturesDir)) return null;
+  const prefix = `delivered-${callId}-`;
+  const names = readdirSync(capturesDir)
+    .filter((name) => name.startsWith(prefix) && name.endsWith(".wav"))
+    .sort();
+  if (names.length === 0) return null;
+  if (names.length > 1) {
+    throw new PreviewMixError(
+      "ambiguous-capture",
+      `${capturesDir} holds ${names.length} captures for call "${callId}" (${names.join(
+        ", ",
+      )}); the recorded capturePath is missing, so the run does not name which one to mix`,
+    );
   }
-  return join(callDir, fallback);
+  return join(capturesDir, names[0]);
+}
+
+/** The marks artifact the harness wrote for a call id. */
+function marksForCall(capturesDir, callId) {
+  const path = join(capturesDir, `call-marks-${callId}.json`);
+  return existsSync(path) ? path : null;
+}
+
+/**
+ * The two run layouts the harness has written:
+ *
+ *  - `.demo-runs/browser-<id>/`: `browser-call.json` (the Playwright report) plus
+ *    `run.json`/`browser-invocation.json`; the capture and marks live in the
+ *    invocation's `capturesDir`, found by `callId` when the report's paths are
+ *    null. This is the real browser-adapter run.
+ *  - `calls/<id>/call.json`: the older evidence layout, with copied artifacts.
+ */
+function resolveCall(runDir, callId, capturesOverride) {
+  const browserCallPath = join(runDir, "browser-call.json");
+  if (existsSync(browserCallPath)) {
+    const record = readJson(browserCallPath, "invalid-call");
+    if (typeof record.callId !== "string" || record.callId.length === 0) {
+      throw new PreviewMixError("missing-call", `${browserCallPath} has no callId`);
+    }
+    if (callId !== null && record.callId !== callId) {
+      throw new PreviewMixError(
+        "missing-call",
+        `${browserCallPath} is call "${record.callId}", not "${callId}"`,
+      );
+    }
+    const run = readOptionalJson(join(runDir, "run.json"), "invalid-run") ?? {};
+    const invocation =
+      readOptionalJson(join(runDir, "browser-invocation.json"), "invalid-invocation") ?? {};
+    const capturesDir =
+      capturesOverride ??
+      (typeof invocation.capturesDir === "string"
+        ? resolve(runDir, invocation.capturesDir)
+        : join(VONI_ROOT, ".captures"));
+    const capturePath =
+      typeof record.capturePath === "string" && record.capturePath.length > 0
+        ? resolve(runDir, record.capturePath)
+        : captureForCall(capturesDir, record.callId);
+    const marksPath =
+      typeof record.marksPath === "string" && record.marksPath.length > 0
+        ? resolve(runDir, record.marksPath)
+        : marksForCall(capturesDir, record.callId);
+    const scenario =
+      typeof run.scenario === "string" && run.scenario.length > 0
+        ? run.scenario
+        : typeof record.scenario === "string" && record.scenario.length > 0
+          ? record.scenario
+          : typeof invocation.scenario === "string" && invocation.scenario.length > 0
+            ? invocation.scenario
+            : null;
+    if (capturePath === null) {
+      throw new PreviewMixError(
+        "missing-capture",
+        `no delivered capture for call "${record.callId}" in ${capturesDir}`,
+      );
+    }
+    if (marksPath === null) {
+      throw new PreviewMixError(
+        "missing-marks",
+        `no call-marks-${record.callId}.json in ${capturesDir}`,
+      );
+    }
+    if (scenario === null) {
+      throw new PreviewMixError("missing-scenario", `${runDir} names no scenario`);
+    }
+    return { callDir: runDir, record, scenario, capturePath, marksPath };
+  }
+
+  // The older calls/<id>/call.json layout, with the artifacts copied beside it.
+  let callDir = runDir;
+  if (!existsSync(join(callDir, "call.json"))) {
+    const callsDir = join(runDir, "calls");
+    if (!existsSync(callsDir)) {
+      throw new PreviewMixError(
+        "missing-call",
+        `${runDir} holds no browser-call.json and no calls/<id>/call.json`,
+      );
+    }
+    const candidates = readdirSync(callsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(callsDir, entry.name))
+      .filter((dir) => existsSync(join(dir, "call.json")));
+    if (candidates.length === 0) {
+      throw new PreviewMixError("missing-call", `${callsDir} holds no call.json`);
+    }
+    if (callId !== null) {
+      const match = candidates.find((dir) => {
+        if (basename(dir) === callId) return true;
+        return readJson(join(dir, "call.json"), "invalid-call").callId === callId;
+      });
+      if (match === undefined) {
+        throw new PreviewMixError(
+          "missing-call",
+          `${runDir} holds no call "${callId}"; available: ${candidates
+            .map((dir) => basename(dir))
+            .join(", ")}`,
+        );
+      }
+      callDir = match;
+    } else if (candidates.length > 1) {
+      throw new PreviewMixError(
+        "ambiguous-call",
+        `${runDir} holds ${candidates.length} calls; pass --call <call-id> (${candidates
+          .map((dir) => basename(dir))
+          .join(", ")})`,
+      );
+    } else {
+      callDir = candidates[0];
+    }
+  }
+  const record = readJson(join(callDir, "call.json"), "invalid-call");
+  if (typeof record.scenario !== "string" || record.scenario.length === 0) {
+    throw new PreviewMixError("missing-scenario", `${callDir}/call.json names no scenario`);
+  }
+  const capturePath =
+    typeof record.files?.deliveredWav === "string" && record.files.deliveredWav.length > 0
+      ? resolve(callDir, record.files.deliveredWav)
+      : join(callDir, "delivered.wav");
+  const marksPath =
+    typeof record.files?.marks === "string" && record.files.marks.length > 0
+      ? resolve(callDir, record.files.marks)
+      : join(callDir, "call-marks.json");
+  return { callDir, record, scenario: record.scenario, capturePath, marksPath };
 }
 
 function scenarioTakeAudio(corpusDir, scenario, takeId) {
@@ -286,23 +391,31 @@ function parseArgs(argv) {
   let out = null;
   let call = null;
   let corpus = null;
+  let captures = null;
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
-    if (token === "--out" || token === "--call" || token === "--corpus") {
+    if (
+      token === "--out" ||
+      token === "--call" ||
+      token === "--corpus" ||
+      token === "--captures"
+    ) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith("--")) {
         throw new PreviewMixError("missing-value", `${token} needs a value`);
       }
       if (token === "--out") out = value;
       else if (token === "--call") call = value;
-      else corpus = value;
+      else if (token === "--corpus") corpus = value;
+      else captures = value;
       i += 1;
       continue;
     }
     if (token.startsWith("--")) {
       throw new PreviewMixError(
         "unknown-flag",
-        `unknown flag "${token}"; usage: demo-preview-mix <run-dir> [--out <file>] [--call <id>] [--corpus <dir>]`,
+        `unknown flag "${token}"; usage: demo-preview-mix <run-dir> [--out <file>] ` +
+          "[--call <id>] [--corpus <dir>] [--captures <dir>]",
       );
     }
     if (runDir !== null) {
@@ -313,10 +426,17 @@ function parseArgs(argv) {
   if (runDir === null) {
     throw new PreviewMixError(
       "missing-run-dir",
-      "usage: demo-preview-mix <run-dir> [--out <file>] [--call <id>] [--corpus <dir>]",
+      "usage: demo-preview-mix <run-dir> [--out <file>] [--call <id>] [--corpus <dir>] " +
+        "[--captures <dir>]",
     );
   }
-  return { runDir: resolve(runDir), out, call, corpus: corpus === null ? null : resolve(corpus) };
+  return {
+    runDir: resolve(runDir),
+    out,
+    call,
+    corpus: corpus === null ? null : resolve(corpus),
+    captures: captures === null ? null : resolve(captures),
+  };
 }
 
 /**
@@ -350,7 +470,7 @@ function placeTake(take, capture, captureStartedMs) {
   return { offsetMs, offset };
 }
 
-function mixPreview({ record, capture, captureStartedMs, takes, corpusDir }) {
+function mixPreview({ record, scenario, capture, captureStartedMs, takes, corpusDir }) {
   const mixed = new Float32Array(capture.samples.length);
   const agentGain = levelGain(capture.samples, "the delivered capture");
   for (let i = 0; i < mixed.length; i += 1) mixed[i] = capture.samples[i] * agentGain;
@@ -367,7 +487,7 @@ function mixPreview({ record, capture, captureStartedMs, takes, corpusDir }) {
   const placements = [];
   for (const take of takes) {
     const { offsetMs, offset } = placeTake(take, capture, captureStartedMs);
-    const audioPath = scenarioTakeAudio(corpusDir, record.scenario, take.take);
+    const audioPath = scenarioTakeAudio(corpusDir, scenario, take.take);
     const audio = decodeWav(readFileSync(audioPath), audioPath);
     const samples = resample(audio.samples, audio.sampleRate, capture.sampleRate);
     const gain = levelGain(samples, `take "${take.take}"`);
@@ -391,11 +511,12 @@ function mixPreview({ record, capture, captureStartedMs, takes, corpusDir }) {
 
 function main(argv) {
   const args = parseArgs(argv);
-  const callDir = resolveCallDirectory(args.runDir, args.call);
-  const recordPath = join(callDir, "call.json");
-  const record = readJson(recordPath, "invalid-call");
+  const { callDir, record, scenario, capturePath, marksPath } = resolveCall(
+    args.runDir,
+    args.call,
+    args.captures,
+  );
 
-  const marksPath = resolveArtifact(callDir, record.files?.marks, "call-marks.json");
   const marks = readJson(marksPath, "missing-marks");
   const captureStartedMark = (Array.isArray(marks.marks) ? marks.marks : []).find(
     (mark) => mark?.name === "capture_started",
@@ -420,22 +541,19 @@ function main(argv) {
   if (takes.length === 0) {
     throw new PreviewMixError(
       "missing-takes",
-      `${recordPath} has no timeline.spoken[] caller takes to place`,
+      `${callDir} has no timeline.spoken[] caller takes to place`,
     );
   }
 
-  const capturePath = resolveArtifact(callDir, record.files?.deliveredWav, "delivered.wav");
   if (!existsSync(capturePath)) {
     throw new PreviewMixError("missing-capture", `${capturePath} does not exist`);
   }
   const capture = decodeWav(readFileSync(capturePath), capturePath);
   const corpusDir = args.corpus ?? DEFAULT_CORPUS_DIR;
-  if (typeof record.scenario !== "string" || record.scenario.length === 0) {
-    throw new PreviewMixError("missing-scenario", `${recordPath} names no scenario`);
-  }
 
   const { samples, state } = mixPreview({
     record,
+    scenario,
     capture,
     captureStartedMs,
     takes,
@@ -445,10 +563,14 @@ function main(argv) {
   const out = args.out === null ? join(callDir, "preview-mix.wav") : resolve(args.out);
   writeFileSync(out, encodeWavPcm16(samples, capture.sampleRate));
 
+  const label = (path) => {
+    const rel = relative(process.cwd(), path);
+    return rel.length > 0 && !rel.startsWith("..") ? rel : path;
+  };
   const first = state.placements[0];
-  console.log(`preview-mix: ${relative(process.cwd(), out) || out}`);
+  console.log(`preview-mix: ${label(out)}`);
   console.log(
-    `capture: ${relative(process.cwd(), capturePath) || capturePath} ` +
+    `capture: ${label(capturePath)} ` +
       `(${capture.sampleRate} Hz, ${(capture.samples.length / capture.sampleRate).toFixed(3)} s)`,
   );
   console.log(
