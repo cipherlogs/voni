@@ -5,6 +5,12 @@ between a complete sentence and its synthesis request. The guard remembers the
 last two replies the caller heard, withholds a duplicate sentence before any
 audio is generated, and asks one bounded repair when a whole reply was a
 repeat. The tests drive the public event seam and assert what the caller hears.
+
+The exact-match guard is the backstop. The general guard is a per-turn hidden
+system note that lists the last two replies verbatim and refuses to reuse them,
+so the model sees the lines it must not paraphrase. That is a prompt-level
+generalisation: these tests assert the note reaches the model, not that the
+model obeys it.
 """
 
 from __future__ import annotations
@@ -23,6 +29,21 @@ from cascade.turn_stream import CascadeTurnStream, ReplyRepeatedOnly
 from metrics import TimingLedger
 
 QUESTION = "What went wrong with the order you placed?"
+
+#: The general guard's closing instruction; the note lists replies above it.
+NO_REUSE = (
+    "Do not repeat or paraphrase any of these lines, questions or openers "
+    "you already said. Answer only what the caller just said, in a new way."
+)
+
+
+def system_text(request: list[dict]) -> str:
+    """Every system message in one request, joined for one containment check."""
+    return "\n".join(
+        message["content"]
+        for message in request
+        if message["role"] == "system"
+    )
 
 
 class RecordingTurnLedger:
@@ -134,6 +155,70 @@ class RepeatGuardTests(unittest.TestCase):
             "answer only what the caller just said.",
             system,
         )
+
+    def test_the_next_turn_is_told_not_to_reuse_the_replies_already_said(self):
+        second = "I can check that now for you."
+        stream = self.make(
+            replies=[
+                {"deltas": [QUESTION]},
+                {"deltas": [second]},
+            ]
+        )
+
+        self.run_turns(stream, 2)
+
+        first_request, second_request = self.llm.requests
+        self.assertNotIn(NO_REUSE, system_text(first_request))
+        # The model has no assistant turn in the history, so the note is where
+        # it sees its own last reply: verbatim, and refused.
+        self.assertIn(f"- {QUESTION}", system_text(second_request))
+        self.assertIn(NO_REUSE, system_text(second_request))
+
+    def test_the_note_lists_the_last_two_replies_verbatim(self):
+        first = "What went wrong with the order you placed?"
+        second = "I can check that now for you."
+        third = "Let me look at that booking."
+        stream = self.make(
+            replies=[
+                {"deltas": [first]},
+                {"deltas": [second]},
+                {"deltas": [third]},
+            ]
+        )
+
+        self.run_turns(stream, 3)
+
+        note = system_text(self.llm.requests[2])
+        self.assertIn(f"- {first}", note)
+        self.assertIn(f"- {second}", note)
+        self.assertNotIn(NO_REUSE, system_text(self.llm.requests[0]))
+
+    def test_the_repair_request_does_not_stack_a_second_note(self):
+        repair = "Let us start with the order you placed."
+        stream = self.make(
+            replies=[
+                {"deltas": [QUESTION]},
+                {"deltas": [QUESTION]},
+                {"deltas": [repair]},
+            ]
+        )
+
+        self.run_turns(stream, 2)
+
+        self.assertIn(NO_REUSE, system_text(self.llm.requests[1]))
+        repair_system = system_text(self.llm.requests[2])
+        self.assertIn("You already said, verbatim:", repair_system)
+        self.assertNotIn(NO_REUSE, repair_system)
+
+    def test_a_hold_return_is_not_told_about_speech_it_never_made(self):
+        stream = self.make(
+            replies=[{"deltas": [QUESTION]}],
+            history=[{"role": "assistant", "content": QUESTION}],
+        )
+
+        self.run_turns(stream, 1)
+
+        self.assertNotIn(NO_REUSE, system_text(self.llm.requests[0]))
 
     def test_a_repair_that_repeats_again_fails_the_turn_and_is_recorded(self):
         turn_events = RecordingTurnLedger()

@@ -141,6 +141,23 @@ def _reply_sentences(text: str) -> list[str]:
     return [piece.strip() for piece in split_sentences(text) if piece.strip()]
 
 
+def _repeat_note(replies: Sequence[str]) -> str:
+    """The general repeat guard: the last replies, verbatim, refused.
+
+    Exact matching only ever catches a line already heard word for word. This
+    note is what generalises it to a paraphrase: the model sees the lines it
+    must not reuse, rather than the pipeline guessing which new words mean the
+    same thing. Nothing here is captioned, recorded or spoken.
+    """
+    said = "\n".join(f"- {reply}" for reply in replies)
+    return (
+        "Lines you already said in this call, verbatim:\n"
+        f"{said}\n"
+        "Do not repeat or paraphrase any of these lines, questions or openers "
+        "you already said. Answer only what the caller just said, in a new way."
+    )
+
+
 def _merged_usage(first: TurnUsage, second: TurnUsage) -> TurnUsage:
     """One logical turn's two requests, summed only where both are measured."""
     if not first.measured:
@@ -405,6 +422,7 @@ class CascadeTurnStream:
         cancelled = False
         try:
             self._history.append_user(state.final_text)
+            self._add_repeat_note()
             record = await self._run_turn(state, record)
             if self._should_repair_repeated_reply():
                 await self._repair_repeated_reply(record)
@@ -716,6 +734,18 @@ class CascadeTurnStream:
             raise ReplyRepeatedOnly(
                 "the repair reply only repeated a line already spoken"
             )
+
+    def _add_repeat_note(self) -> None:
+        """Hold the last replies for this request as a refusal to reuse them.
+
+        Added once per logical turn, before its first model request, and only
+        when the caller has already heard a reply from this call: a first reply
+        and a hold return have nothing to avoid. The repair path names its own
+        duplicate, so it never stacks this note on top.
+        """
+        if not self._recent_replies:
+            return
+        self._history.add_hidden_context(_repeat_note(self._recent_replies))
 
     def _remember_reply(self, text: str) -> None:
         """Keep only the last two replies the caller actually heard."""
