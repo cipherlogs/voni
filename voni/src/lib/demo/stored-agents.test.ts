@@ -599,12 +599,21 @@ test("ladder and time-up instructions describe hanging up without naming the too
   assert.match(rungInstructions("end"), /hang up/);
 });
 
-test("a nudge or warning still invites a non-complaint, and never pitches a complaint", async () => {
+test("a nudge or warning invites only acceptance, and never a complaint", async () => {
   const { rungInstructions } = await import("./voni-agent");
   for (const rung of ["nudge", "warning"] as const) {
     const text = rungInstructions(rung);
     assert.match(text, /Never pitch or invite a complaint/, `${rung}: a complaint is never pitched`);
-    assert.match(text, /put the test up/, `${rung}: a willing or neutral caller is still invited`);
+    assert.match(
+      text,
+      /If the caller accepts the test or asks what you can do, put it up/,
+      `${rung}: acceptance or a capability question still invites`,
+    );
+    assert.match(
+      text,
+      /a challenge, skepticism, small talk, or a neutral answer is not acceptance/,
+      `${rung}: a skeptical or neutral turn is not an invitation`,
+    );
     assert.doesNotMatch(text, /\?/, `${rung}: no question, so no business question`);
     assert.doesNotMatch(text, /steers? back to the goal/i, `${rung}: never steer to a pitch`);
   }

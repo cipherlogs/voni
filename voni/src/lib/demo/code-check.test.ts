@@ -152,8 +152,39 @@ test("the call opens as itself, and a yes goes straight to the test", async () =
   assert.equal(VONI_GREETINGS.en, "Hi, I'm Voni.", "the opening is a greeting, not a hook");
   assert.doesNotMatch(VONI_GREETINGS.en, /business/, "the business comes later");
   const rules = voniConfig("any").knowledge;
-  assert.match(rules, /Until the test is on their screen[\s\S]*put the test on their screen in that same reply/);
+  assert.match(rules, /When the caller accepts the test or asks what you can do[\s\S]*put the test on their screen in the same reply/);
   assert.doesNotMatch(rules, /Once they've told you a little about their business/);
+});
+
+test("a skeptical first turn is not an invitation", async () => {
+  const { voniConfig } = await import("./voni-agent");
+  const rules = voniConfig("any").knowledge;
+  assert.doesNotMatch(rules, /willing or neutral/, "neutrality alone is not acceptance");
+  assert.match(
+    rules,
+    /only when the caller accepts it or asks what you can do/,
+    "acceptance or a capability question is the signal",
+  );
+  assert.match(
+    rules,
+    /A challenge, skepticism, a question about whether you are real, small talk, or a neutral answer is not acceptance/,
+    "a skeptical challenge is answered without an invite",
+  );
+});
+
+test("a willing turn gets the test", async () => {
+  const { voniConfig } = await import("./voni-agent");
+  const rules = voniConfig("any").knowledge;
+  assert.match(
+    rules,
+    /When the caller accepts the test or asks what you can do[\s\S]*put the test on their screen in the same reply/,
+    "acceptance or a capability question brings the test",
+  );
+  assert.match(
+    rules,
+    /Once the invite is said, never say it again or paraphrase it/,
+    "one invite per call",
+  );
 });
 
 test("Voni's demo rules are principles, not a phrase ban-list", async () => {
@@ -181,15 +212,15 @@ test("Voni's demo rules are principles, not a phrase ban-list", async () => {
   );
   assert.ok(
     rules.includes(
-      "A complaint or frustration is the only turn that is answered and stopped: no test offer, no invite, and no question about their business in that reply; the test waits only for a complaint to pass, never for a particular phrase.",
+      "A complaint or frustration is answered and stopped too: no test offer, no invite, and no question about their business.",
     ),
-    "only a complaint stops the test; a neutral caller is still invited",
+    "a complaint still bars the invite",
   );
   assert.ok(
     rules.includes(
-      "Until the test is on their screen, every willing or neutral turn ends with it",
+      "A challenge, skepticism, small talk, or a neutral answer is answered and stopped too; only acceptance or a question about what you can do brings the test next.",
     ),
-    "a willing or neutral caller is still invited",
+    "only acceptance or a capability question brings the test",
   );
   assert.ok(
     rules.includes("do not treat a neutral answer as a complaint"),
