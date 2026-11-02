@@ -9,9 +9,10 @@ import assert from "node:assert/strict";
 import { readUsageCall } from "./evidence";
 import { sumMeasuredCalls, sumMeasuredLegs } from "./sums";
 import { MEASURED, UNMEASURED } from "./test-fixtures";
+import type { CallFixture } from "./test-fixtures";
 
 test("sums only measured legs and never treats an unmeasured leg as zero", () => {
-  const call = (fixture: typeof MEASURED) =>
+  const call = (fixture: CallFixture) =>
     readUsageCall({
       callId: fixture.callId,
       scenario: fixture.scenario,

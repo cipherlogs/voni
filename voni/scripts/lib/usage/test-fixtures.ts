@@ -10,6 +10,17 @@
 
 export const RATE_TABLE_VERSION = "cascade-vendor-rates v1";
 
+/**
+ * A call fixture as the tests pass it. The call id is deliberately widened: a
+ * test that rewrites it is testing the ledger, not the fixture's literal type.
+ */
+export type CallFixture = {
+  readonly callId: string;
+  readonly scenario: string;
+  readonly locale: string;
+  readonly row: Readonly<Record<string, unknown>>;
+};
+
 /** A fully measured call: stt 35 s, no LLM request, tts 89 chars. */
 export const MEASURED_ROW = {
   schemaVersion: 1,
@@ -159,28 +170,28 @@ export const MEASURED_ZERO_ROW = {
   source: "the call opened no session: the app refused before any vendor call",
 } as const;
 
-export const MEASURED = {
+export const MEASURED: CallFixture = {
   callId: MEASURED_ROW.callId,
   scenario: "golden-flow-greeting-only",
   locale: "en",
   row: MEASURED_ROW,
 };
 
-export const MEASURED_LLM = {
+export const MEASURED_LLM: CallFixture = {
   callId: MEASURED_LLM_ROW.callId,
   scenario: "golden-flow-booking",
   locale: "en",
   row: MEASURED_LLM_ROW,
 };
 
-export const UNMEASURED = {
+export const UNMEASURED: CallFixture = {
   callId: UNMEASURED_ROW.callId,
   scenario: "golden-flow-booking",
   locale: "en",
   row: UNMEASURED_ROW,
 };
 
-export const ZERO = {
+export const ZERO: CallFixture = {
   callId: MEASURED_ZERO_ROW.callId,
   scenario: "ending-goodbye",
   locale: "en",

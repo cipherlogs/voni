@@ -324,7 +324,8 @@ function rateCertificate(calls: readonly string[], failing = false): Certificate
     },
   ];
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    resume: null,
     runId: "run-http-rating",
     target: "local",
     code: {

@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { main } from "../../demo-usage.mts";
+import { main } from "./main";
 import { MEASURED, MEASURED_ROW } from "./test-fixtures";
 
 type Captured = { readonly code: number; readonly out: string; readonly err: string };

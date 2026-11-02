@@ -55,7 +55,8 @@ function certificate(calls: readonly string[], failing: readonly string[] = []):
     },
   ];
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    resume: null,
     runId: "run-rating-store",
     target: "local",
     code: {

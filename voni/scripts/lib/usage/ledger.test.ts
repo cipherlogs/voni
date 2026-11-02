@@ -32,6 +32,7 @@ import {
   UNMEASURED,
   ZERO,
 } from "./test-fixtures";
+import type { CallFixture } from "./test-fixtures";
 
 function callOf(fixture: {
   readonly callId: string;
@@ -291,7 +292,7 @@ test("labels a quantity summed across rate versions as mixed, in numeric order",
   try {
     const rates = new RateBook(dir);
     const versioned = (
-      fixture: typeof MEASURED,
+      fixture: CallFixture,
       callId: string,
       version: string,
     ) => ({

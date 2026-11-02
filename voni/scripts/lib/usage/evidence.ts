@@ -9,6 +9,7 @@
  * missing `cost.priced` row and a torn row are named refusals.
  */
 
+import type { Dirent } from "node:fs";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -519,7 +520,7 @@ function hasRunEvidence(runDir: string): boolean {
 
 function candidates(options: ResolveOptions): Candidate[] {
   const found: Candidate[] = [];
-  let runEntries;
+  let runEntries: Dirent[];
   try {
     runEntries = readdirSync(options.runRoot, { withFileTypes: true });
   } catch {
@@ -535,7 +536,7 @@ function candidates(options: ResolveOptions): Candidate[] {
       kind: "directory",
     });
   }
-  let certEntries;
+  let certEntries: Dirent[];
   try {
     certEntries = readdirSync(join(options.evidenceRoot, "certificates"), {
       withFileTypes: true,

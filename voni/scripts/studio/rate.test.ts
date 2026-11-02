@@ -44,7 +44,8 @@ function certificate(options: {
     calls: options.callsByScenario[scenario],
   }));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    resume: null,
     runId: "run-2026-10-31",
     target: "local",
     code: {
