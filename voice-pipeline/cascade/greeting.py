@@ -32,6 +32,11 @@ Three facts shape the implementation:
 * **The greeting is cancellable.** :meth:`CallGreeting.start` exposes a
   playback that can be cut with the synthesis session's ``Cancel``; the
   pending text is discarded and the line never resumes.
+* **A caller who speaks first is never greeted.** The call layer listens
+  before it starts the greeting; a caller speech event inside that opening
+  window skips the line entirely and records
+  :meth:`GreetingOutcome.skipped`, so no "Hi" is said over a complaint. A cut
+  during the greeting is the other, already-covered case.
 
 The audio sink is injected because the wire is the transport's business: this
 module forwards :class:`providers.SentenceAudio` and knows nothing about base64,
@@ -138,6 +143,11 @@ class GreetingOutcome:
     @classmethod
     def silent(cls, reason: str) -> "GreetingOutcome":
         """The body has no greeting; this is intentional, not a defect."""
+        return cls(spoken=False, reason=reason)
+
+    @classmethod
+    def skipped(cls, reason: str) -> "GreetingOutcome":
+        """The caller spoke first: the greeting was never started, never resumed."""
         return cls(spoken=False, reason=reason)
 
     def to_document(self) -> dict[str, Any]:

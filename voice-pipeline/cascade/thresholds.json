@@ -99,6 +99,15 @@
       "date": "2026-11-02",
       "note": "Bounded close only; a close that misses it is abandoned, never retried, and the reply's new socket is opened regardless."
     },
+    "greeting.caller_first_ms": {
+      "unit": "ms",
+      "gate": "greeting",
+      "ticket": "greeting-replies",
+      "value": 1000,
+      "source": "owner decision 2026-11-02 (greeting-replies): never say the greeting once the caller has spoken; the opening listens for a caller turn for one second before the line starts",
+      "date": "2026-11-02",
+      "note": "A caller speech event inside this window skips the greeting entirely. A quiet caller starts the greeting at the end of the window; this is a listening gate, not filler."
+    },
     "tts.generate_char_cap": {
       "unit": "chars",
       "gate": "tts.sentence-scheduling",

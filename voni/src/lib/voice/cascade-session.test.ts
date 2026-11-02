@@ -150,6 +150,9 @@ test("server messages parse to typed events", () => {
   assert.deepEqual(parseServerMessage(JSON.stringify({ type: "interrupted" })), {
     kind: "interrupted",
   });
+  assert.deepEqual(parseServerMessage(JSON.stringify({ type: "listening" })), {
+    kind: "listening",
+  });
   const end = parseServerMessage(JSON.stringify({ type: "end", metrics: { a: 1 }, turns: 2 }));
   assert.deepEqual(end, { kind: "end", turns: 2, metrics: { a: 1 } });
   assert.equal(parseServerMessage("not json"), null);
@@ -461,6 +464,34 @@ test("a call that never speaks still opens the mic after the bound", async () =>
   } finally {
     clock.reset();
   }
+});
+
+test("a listening event opens the mic before the greeting", async () => {
+  // The service sends `listening` before the opening line so a caller who
+  // speaks first is heard first and the greeting can be skipped.
+  const socket = makeSocket();
+  const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async (_owner, onFrame) => {
+        mic.onFrame = onFrame;
+        return { stop: () => {} };
+      },
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  mic.onFrame?.(new Uint8Array([1]).buffer);
+  assert.equal(socket.sent.length, 1, "held until the service opens the line");
+
+  socket.emit(JSON.stringify({ type: "listening" }));
+  mic.onFrame?.(new Uint8Array([2]).buffer);
+  assert.equal(socket.sent.length, 2, "released by listening, not by first audio");
+  await session.stop();
 });
 
 test("muting cascade drops mic frames and sends context without stopping playback", async () => {

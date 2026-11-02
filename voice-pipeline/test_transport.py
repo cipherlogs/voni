@@ -40,7 +40,11 @@ from cascade.token import (
 )
 from cascade.voice_binding import bind_voice
 from providers import SentenceAudio, TokenDelta
-from transport import build_cascade_legs, handle_browser_call
+from transport import (
+    BrowserCallTransport,
+    build_cascade_legs,
+    handle_browser_call,
+)
 
 SECRET = "test-only-transport-secret"
 ACCOUNT = "acct_test_65"
@@ -384,7 +388,9 @@ def run_call(
         if chosen_switch is None:
             chosen_switch = await (open_switch() if mode is None else switch_in_mode(mode))
 
-        with mock.patch("transport.CallLifecycle", RecordingLifecycle):
+        with mock.patch("transport.CallLifecycle", RecordingLifecycle), mock.patch.object(
+            BrowserCallTransport, "listening", None
+        ):
             await handle_browser_call(
                 ws,
                 config_message=(
