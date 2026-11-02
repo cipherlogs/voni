@@ -29,7 +29,7 @@ import unittest
 
 from cascade.assemblyai_tts import AssemblyAIStreamingTTS
 from cascade.body_map import CascadeBody, adapt_body
-from cascade.call import CallLifecycle, OpenedLeg
+from cascade.call import AudioFrame, BrowserStop, CallLifecycle, OpenedLeg
 from cascade.greeting import CallGreeting
 from cascade.meta_stt import SpeechComplete, SpeechPartial, SpeechStart
 from cascade.test_call import CALL_ID, ISSUED_S, SECRET, FakeStream, signed_message
@@ -378,6 +378,31 @@ class GreetingBargeInCallTest(unittest.TestCase):
         )
         self.assertEqual(1, end.turns)
         self.assertEqual("stop", end.ended_by)
+
+    def test_caller_audio_before_the_greeting_skips_it_without_a_provider_event(self):
+        """The provider's first speech event is slow; the PCM is early.
+
+        Two loud caller frames are enough to know the opening was interrupted
+        before the greeting started, even if the speech provider has not formed
+        its first partial yet. A stop ends the call so the test needs no turn.
+        """
+        voice = GatedVoice()
+        loud = b"\x00\x40" * 480
+        lifecycle, transport, stream, frames, speech = self.make(
+            trace=[],
+            voice=voice,
+            inputs=[AudioFrame(loud), AudioFrame(loud), BrowserStop()],
+            listening=True,
+        )
+
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=2.0))
+
+        self.assertEqual([], voice.greeted)
+        self.assertEqual(0, voice.cancelled)
+        self.assertFalse(end.greeting.spoken)
+        self.assertIn("caller spoke first", end.greeting.reason)
+        self.assertEqual([], [frame for frame in frames if frame.kind == "greeting"])
+        self.assertEqual(2, len(speech.audio))
 
     def test_a_greeting_cut_tells_the_browser_to_drop_the_audio_it_has_queued(self):
         """The cut owns the whole line, including the part the browser holds.

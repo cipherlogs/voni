@@ -270,13 +270,16 @@ artifact disappears.
   missing, records an `unknown` id, or reports a `unversioned` pipeline build
   (RR-03). The 2026-10-31 live rehearsal refused there; the committed record
   landed on 2026-11-01, so only a missing pipeline key still stops a local run.
-- **The microphone is gated on the service's first audio.** The connect takes
-  seconds (mint, admission, vendor handshake) and the mic is live for all of it.
-  Frames from that window are now held rather than forwarded: the service used
-  to deliver them as one backlog when the session opened, and the vendor closes
-  a stream that arrives ahead of real time ("Audio processing backlog too
-  large"). A resumed call speaks no greeting, so `MIC_GATE_FALLBACK_MS` (8 s)
-  opens the gate even when no audio ever arrives.
+- **The microphone is gated on the service's `listening` (or first audio).**
+  The connect takes seconds (mint, admission, vendor handshake) and the mic is
+  live for all of it. Frames from that window are now held rather than
+  forwarded: the service used to deliver them as one backlog when the session
+  opened, and the vendor closes a stream that arrives ahead of real time
+  ("Audio processing backlog too large"). The service sends `listening` before
+  the opening line, so a caller who speaks first is heard while the greeting is
+  still deciding; any caller speech inside that window skips the greeting
+  entirely. A resumed call speaks no greeting, so `MIC_GATE_FALLBACK_MS` (8 s)
+  opens the gate even when no `listening` arrives.
 - **A run's code fingerprint covers code, not working notes (2026-11-02).**
   The end-of-run check refuses a certificate when the tree moved during the
   run. It hashes tracked edits, the committed HEAD and the contents of untracked
@@ -413,7 +416,7 @@ it does not independently re-transcribe the delivered WAV, so a leak the
 captions miss remains a residual gap rather than a pass.
 
 The tools fast scenario cues its asking line at the agent's turn end, never at
-call-open: the app drops microphone frames until the service's first audio, so a
+call-open: the app drops microphone frames until the service says it is listening (or sends its first audio), so a
 line spoken before admission is never heard and the model cannot reach the tool
 turn. A model tool request is bound to the `service` credential; the browser's
 own `check_email` poll is logged under `browser` and filtered out, so X4 cannot
