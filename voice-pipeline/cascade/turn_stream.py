@@ -104,8 +104,11 @@ KEEPALIVE_BOUND = "tts.keepalive_interval_ms"
 #: How long a reply may stay silent before one short spoken ack covers it.
 ACK_DELAY_BOUND = "reply.ack_delay_ms"
 
-#: How many already spoken replies the repeat guard remembers.
-REPEAT_REPLY_WINDOW = 2
+#: How many replies the hidden no-reuse note lists. The exact-match guard
+#: remembers every reply this call spoke, so a line repeated many turns later
+#: (a second invite) is still withheld; the note stays short to keep the
+#: per-turn prompt bounded.
+REPEAT_NOTE_WINDOW = 2
 
 #: The duplicate bar, in words, after normalisation. This is a rule, not a
 #: tunable: one-word agreements ("Yes.", "Right.") must never be dropped for
@@ -300,10 +303,11 @@ class CascadeTurnStream:
         #: The text spoken in the current reply, so the browser gets one final
         #: caption after the audio (not only sentence partials).
         self._reply_text = ""
-        #: The last two replies the caller actually heard, oldest first. A
-        #: duplicate is only a duplicate of one of these; seeded hold-return
+        #: Every reply the caller actually heard this call, oldest first. A
+        #: duplicate is a duplicate of any of these, because the product rule
+        #: is one line per call (a second invite included); seeded hold-return
         #: history is not a reply this call spoke and is never consulted.
-        self._recent_replies: list[str] = []
+        self._spoken_replies: list[str] = []
         #: This reply's new sentences, and the duplicates withheld from it.
         self._reply_new_sentences = 0
         self._reply_dropped: list[str] = []
@@ -860,30 +864,33 @@ class CascadeTurnStream:
             )
 
     def _add_repeat_note(self) -> None:
-        """Hold the last replies for this request as a refusal to reuse them.
+        """Hold the recent replies for this request as a refusal to reuse them.
 
         Added once per logical turn, before its first model request, and only
         when the caller has already heard a reply from this call: a first reply
-        and a hold return have nothing to avoid. The repair path names its own
+        and a hold return have nothing to avoid. The note lists the last
+        :data:`REPEAT_NOTE_WINDOW` replies; the exact-match guard above it
+        remembers every reply this call spoke, so a repeat after many turns
+        (a second invite) is still withheld. The repair path names its own
         duplicate, so it never stacks this note on top.
         """
-        if not self._recent_replies:
+        if not self._spoken_replies:
             return
-        self._history.add_hidden_context(_repeat_note(self._recent_replies))
+        recent = self._spoken_replies[-REPEAT_NOTE_WINDOW:]
+        self._history.add_hidden_context(_repeat_note(recent))
 
     def _remember_reply(self, text: str) -> None:
-        """Keep only the last two replies the caller actually heard."""
-        self._recent_replies.append(text)
-        self._recent_replies = self._recent_replies[-REPEAT_REPLY_WINDOW:]
+        """Keep every reply the caller actually heard this call, oldest first."""
+        self._spoken_replies.append(text)
 
     def _is_repeat(self, sentence: str) -> bool:
-        """Whether this sentence duplicates one from the last two replies."""
+        """Whether this sentence duplicates any reply already spoken this call."""
         normal = _normal_form(sentence)
         if len(normal.split()) < REPEAT_MIN_WORDS:
             return False
         return any(
             _normal_form(prior) == normal
-            for reply in self._recent_replies
+            for reply in self._spoken_replies
             for prior in _reply_sentences(reply)
         )
 
@@ -923,10 +930,23 @@ class CascadeTurnStream:
         ):
             return
         # The exact-repeat guard keeps precedence: a line already spoken is a
-        # repeat first, and its own repair runs before this rule.
-        if not force and self._is_repeat(text):
-            self._drop_repeat(text)
-            return
+        # repeat first, and its own repair runs before this rule. One _speak
+        # may carry several sentences (the synthesis session batches them), so
+        # a repeated sentence embedded beside a new one must be withheld on its
+        # own rather than letting the whole chunk through. Only split a chunk
+        # when a duplicate is actually in it, so ordinary batching is unchanged.
+        if not force:
+            pieces = _reply_sentences(text) or [text]
+            if len(pieces) > 1 and any(self._is_repeat(piece) for piece in pieces):
+                for piece in pieces:
+                    if self._is_repeat(piece):
+                        self._drop_repeat(piece)
+                    else:
+                        await self._speak(piece)
+                return
+            if self._is_repeat(text):
+                self._drop_repeat(text)
+                return
         if not force and self._must_not_ask and _is_question(text):
             # A batched piece may carry a statement and a question: withhold
             # only the question sentences and speak the remainder.

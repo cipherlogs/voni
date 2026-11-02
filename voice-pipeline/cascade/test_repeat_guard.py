@@ -1,9 +1,9 @@
 """The repeat guard: a reply line already spoken is never spoken again.
 
 Seam: :meth:`cascade.turn_stream.CascadeTurnStream._speak`, which is the point
-between a complete sentence and its synthesis request. The guard remembers the
-last two replies the caller heard, withholds a duplicate sentence before any
-audio is generated, and asks one bounded repair when a whole reply was a
+between a complete sentence and its synthesis request. The guard remembers
+every reply the caller heard this call, withholds a duplicate sentence before
+any audio is generated, and asks one bounded repair when a whole reply was a
 repeat. The tests drive the public event seam and assert what the caller hears.
 
 The exact-match guard is the backstop. The general guard is a per-turn hidden
@@ -29,6 +29,12 @@ from cascade.turn_stream import CascadeTurnStream, ReplyRepeatedOnly
 from metrics import TimingLedger
 
 QUESTION = "What went wrong with the order you placed?"
+
+#: The live call's invite sentence: the same tag, the second time.
+INVITE = (
+    "Send me an email from your work address with Violet 20 in the subject, "
+    "and tell me when it's sent."
+)
 
 #: The general guard's closing instruction; the note lists replies above it.
 NO_REUSE = (
@@ -308,23 +314,66 @@ class RepeatGuardTests(unittest.TestCase):
         self.assertEqual(0, stream.repeat_dropped)
         self.assertEqual(0, stream.repeat_repair)
 
-    def test_a_line_three_replies_back_is_allowed(self):
+    def test_a_line_three_replies_back_is_still_withheld(self):
+        repair = "Let us start with the order you placed."
         stream = self.make(
             replies=[
                 {"deltas": [QUESTION]},
                 {"deltas": ["I can check that now for you."]},
                 {"deltas": ["Let me look at that booking."]},
                 {"deltas": [QUESTION]},
+                {"deltas": [repair]},
             ]
         )
 
-        # The caller answers the opening question, so the unanswered-question
-        # guard is not what decides this turn: the repeat window alone is.
+        # The product rule is one line per call, so the exact-match guard
+        # remembers every reply, not just the last two. The caller answers the
+        # opening question, so the unanswered-question guard is not what
+        # decides this turn.
         self.run_turns(stream, 4, ["turn 1", "the order", "turn 3", "turn 4"])
 
-        self.assertEqual(QUESTION, self.tts.spoken[0])
-        self.assertEqual(QUESTION, self.tts.spoken[-1])
+        self.assertEqual(
+            [QUESTION, "I can check that now for you.", "Let me look at that booking.", repair],
+            self.tts.spoken,
+        )
+        self.assertEqual(1, stream.repeat_dropped)
+        self.assertEqual(1, stream.repeat_repair)
+
+    def test_the_first_invite_is_spoken_once(self):
+        stream = self.make(
+            replies=[{"deltas": ["Let me get that test up. ", INVITE]}]
+        )
+
+        self.run_turns(stream, 1, ["Yes, let's do it."])
+
+        self.assertEqual(1, sum(1 for line in self.tts.spoken if INVITE in line))
         self.assertEqual(0, stream.repeat_dropped)
+
+    def test_a_second_invite_three_replies_later_is_withheld(self):
+        stream = self.make(
+            replies=[
+                {"deltas": ["Nope — I'm Voni, live on the demo. " + INVITE]},
+                {"deltas": ["Fair point, can't argue much there."]},
+                {"deltas": ["Nope, I'm Voni running this live demo."]},
+                {"deltas": ["I handle calls, bookings and follow-ups. " + INVITE]},
+            ]
+        )
+
+        self.run_turns(
+            stream,
+            4,
+            [
+                "Are you a real person?",
+                "That is what a bot would say.",
+                "Prove it.",
+                "Fine. Then tell me what you can actually do.",
+            ],
+        )
+
+        # The first invite is heard; the identical sentence on the fourth
+        # reply is withheld, even though two other replies came between them.
+        self.assertEqual(1, sum(1 for line in self.tts.spoken if INVITE in line))
+        self.assertEqual(1, stream.repeat_dropped)
         self.assertEqual(0, stream.repeat_repair)
 
 
