@@ -155,6 +155,10 @@ const timelineBootstrap = (): void => {
     }
     if (opened && state === "speaking") record("agent-speech-start");
     if (opened && state === "listening" && last === "speaking") {
+      // The client moves `speaking` -> `listening` only when the playout
+      // worklet reports its queue drained, so this mark is the last played
+      // sample's, not the final caption's. A trigger placed on it therefore
+      // answers when a human would, never over the reply's tail.
       record("agent-speech-end");
       record("agent-turn-end");
     }

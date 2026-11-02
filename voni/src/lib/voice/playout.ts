@@ -25,6 +25,19 @@ export type Playout = {
    */
   onFirstAudible?: () => void;
   /**
+   * Fires when playback runs dry: every queued sample has been rendered, not
+   * when the last chunk was queued. This is the turn's real end — a reply's
+   * transcript finishes streaming long before its audio has played, so the
+   * caller's state must follow this event, never the caption. A barge-in or a
+   * hang-up flushes the queue and does not fire it: that reply is cut, not
+   * finished.
+   *
+   * A stall also drains the queue; the worklet resumes the same reply when
+   * audio arrives inside its resume window, and the next frame re-opens the
+   * turn. The caller decides if a drain was an underrun.
+   */
+  onDrained?: () => void;
+  /**
    * Lower the cushion a cold reply starts on, for a browser-only surface.
    * The worklet clamps it to the owner's 500 ms ceiling; higher values are
    * ignored, so a caller can never weaken the phone buffer.
@@ -57,8 +70,6 @@ export type WorkletPlayout = Playout & {
   sentSamples?: () => number;
   /** Source samples played (or flushed) at the worklet's last report. */
   consumedSamples?: () => number;
-  /** Fires when playback runs dry. The caller decides if that was an underrun. */
-  onDrained?: () => void;
   /** Dev pop recorder on/off (worklet flags jumps and overloads). */
   probe: (on: boolean) => void;
   /** A flagged output discontinuity, while the probe is on. */

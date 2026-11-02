@@ -1273,10 +1273,10 @@ export function VoiceCall({
             );
             marks?.mark("turn", { role: caption.role, index: turnsRef.current.length });
             if (caption.role === "agent") {
-              speakingRef.current = false;
+              // The text is complete; the audio is not. `speaking` stays until
+              // the playout drains (`onSpeechEnd`), or the caller answers over
+              // a turn the caption would have ended 1.3 s early.
               setFiller(null);
-              setCallState("listening");
-              cascadeFloorRef.current?.replyDone(false);
             } else {
               // The caller's final words: they held the floor, and the
               // service's answer window follows before quiet can count.
@@ -1379,6 +1379,16 @@ export function VoiceCall({
         // The connected chime waits for the first audible sample, not this
         // frame's arrival (the playout holds it for the pre-roll).
         onFirstAudible: playConnectedChime,
+        // The turn ends when its audio has played out, not when its caption
+        // finished streaming. The old caption-driven flip ended the greeting
+        // at 460 ms over 1.76 s of speech; this is the worklet's drain event.
+        onSpeechEnd: () => {
+          speakingRef.current = false;
+          overheardRef.current = false;
+          cascadeFloorRef.current?.replyDone(false);
+          setFiller(null);
+          setCallState("listening");
+        },
         onInterrupted: () => {
           speakingRef.current = false;
           overheardRef.current = false;
