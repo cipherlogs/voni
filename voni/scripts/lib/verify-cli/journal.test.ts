@@ -55,6 +55,7 @@ const HEADER: JournalHeader = {
   ],
   plan: {
     mode: "full",
+    scope: ["en", "es"],
     repetitions: 3,
     calls: 6,
     scenarios: [
@@ -215,6 +216,7 @@ test("resume refuses when the code, corpus, builds, plan or target moved", () =>
       plan: {
         mode: "full" as const,
         target: "local" as const,
+        scope: ["en", "es"] as const,
         locale: null,
         scenario: null,
         repetitions: 3,

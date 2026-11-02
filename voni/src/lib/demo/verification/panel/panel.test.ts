@@ -405,6 +405,7 @@ test("an unsigned clean certificate is pending-human even when H7 is the only fa
         gapRows: 0,
         status: "measured" as const,
         gap: null,
+        decision: null,
       })),
     },
     panel: null,

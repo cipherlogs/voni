@@ -90,6 +90,7 @@ function certificate(calls: readonly string[], failing: readonly string[] = []):
           gapRows: 0,
           status: "measured",
           gap: null,
+          decision: null,
         },
       ],
     },

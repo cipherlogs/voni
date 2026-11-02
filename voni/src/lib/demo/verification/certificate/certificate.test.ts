@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import type { Contract, ContractPropertyEntry } from "../contract";
 import { loadContract } from "../contract";
+import type { CertificateCorpusScenario } from "./types";
 import { RUN_SCENARIO } from "../economics";
 import { LOCALES, type Locale } from "../scenarios";
 import {
@@ -96,7 +97,14 @@ const CONTRACT: Contract = {
   properties: [T1, C9],
 };
 
-const SCENARIOS = LOCALES.map((locale) => ({
+type TestScenario = {
+  readonly name: string;
+  readonly locale: Locale;
+  readonly heldOut: boolean;
+  readonly class: CertificateCorpusScenario["class"];
+};
+
+const SCENARIOS: readonly TestScenario[] = LOCALES.map((locale) => ({
   name: `hello-${locale}`,
   locale,
   heldOut: false,
@@ -108,7 +116,7 @@ const ENGLISH_SCENARIOS = SCENARIOS.filter((scenario) => scenario.locale === "en
 
 function attempts(
   filter: (locale: Locale) => boolean = () => true,
-  scenarios: typeof SCENARIOS = SCENARIOS,
+  scenarios: readonly TestScenario[] = SCENARIOS,
 ): NonNullable<CertificateBuildInput["attempts"]> {
   return scenarios.filter((scenario) => filter(scenario.locale)).flatMap((scenario) =>
     [1, 2, 3].map((repetition) => ({
@@ -132,7 +140,7 @@ function englishOnlyInput(overrides: Partial<CertificateBuildInput> = {}): Certi
 
 function evidence(
   failing?: { scenario: string; repetition: number },
-  scenarios: typeof SCENARIOS = SCENARIOS,
+  scenarios: readonly TestScenario[] = SCENARIOS,
 ): PropertyEvidence[] {
   const numeric: PropertyMeasurement[] = [];
   const categorical: PropertyMeasurement[] = [];
@@ -176,7 +184,7 @@ function runWith(overrides: {
   failing?: { scenario: string; repetition: number };
   calls?: Parameters<typeof judgeRun>[0]["calls"];
   evidence?: PropertyEvidence[];
-  scenarios?: typeof SCENARIOS;
+  scenarios?: readonly TestScenario[];
 } = {}): RunVerdict {
   return judgeRun({
     runId: "run-2026-10-31-01",
@@ -576,7 +584,7 @@ test("a declared Locale with no scenario and no calls is a gap, not out of scope
   assert.equal(certificate.verdict, "not-demo-ready", "an in-scope Locale is never neutral");
 });
 
-const MULTI_ENGLISH = [
+const MULTI_ENGLISH: readonly TestScenario[] = [
   { name: "hello-en", locale: "en" as const, heldOut: false, class: "golden-flow" as const },
   { name: "barge-en", locale: "en" as const, heldOut: false, class: "turn-taking" as const },
   { name: "goodbye-en", locale: "en" as const, heldOut: false, class: "ending" as const },

@@ -96,7 +96,7 @@ test("the owner's signature and the real one-session labels name H2 unmeasured, 
   // The English scope reaches the signing judge: H1 is not read as four missing
   // Locales, so the only human-property failure is the unreachable H2 floor.
   const h1 = completed.properties.find((property) => property.propertyId === "H1");
-  assert.equal(h1?.status, "PASS", h1?.detail);
+  assert.equal(h1?.status, "PASS", h1?.gaps.join("; "));
   assert.equal(completed.properties.find((property) => property.propertyId === "H7")?.status, "PASS");
   assert.doesNotThrow(() => verifyPanelSignature({ certificate: completed, session, ratings }));
 
@@ -113,8 +113,8 @@ test("signing an English-only certificate judges H1 over en, not over four missi
   const completed = completeCertificateSignature(certificate, signature, gold, contract);
 
   const h1 = completed.properties.find((property) => property.propertyId === "H1");
-  assert.equal(h1?.status, "PASS", h1?.detail);
-  assert.doesNotMatch(h1?.detail ?? "", /no panel label for Locale\(s\) es/);
+  assert.equal(h1?.status, "PASS", h1?.gaps.join("; "));
+  assert.doesNotMatch(h1?.gaps.join(" ") ?? "", /no panel label for Locale\(s\) es/);
   const h2 = completed.properties.find((property) => property.propertyId === "H2");
   assert.equal(h2?.reason, "unmeasured");
   assert.match(

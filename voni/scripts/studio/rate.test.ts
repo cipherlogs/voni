@@ -79,6 +79,7 @@ function certificate(options: {
           gapRows: 0,
           status: "measured",
           gap: null,
+          decision: null,
         },
       ],
     },

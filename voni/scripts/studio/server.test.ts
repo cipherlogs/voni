@@ -352,7 +352,7 @@ function rateCertificate(calls: readonly string[], failing = false): Certificate
       gapRows: 0,
       rows,
       byLocale: [
-        { locale: "en", expectedScenarios: 1, measuredScenarios: 1, gapRows: 0, status: "measured", gap: null },
+        { locale: "en", expectedScenarios: 1, measuredScenarios: 1, gapRows: 0, status: "measured", gap: null, decision: null },
       ],
     },
     properties: [
