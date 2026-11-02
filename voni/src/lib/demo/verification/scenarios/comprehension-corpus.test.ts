@@ -42,6 +42,23 @@ test("the ten ticket-13 scenarios load with their hashed takes", async () => {
   }
 });
 
+test("the ambiguous request's first line waits for the agent's turn, never call-open", async () => {
+  const loaded = await corpus();
+  const scenario = loaded.scenarios.find((entry) => entry.name === "comprehension-ambiguous-request");
+  assert.ok(scenario);
+  assert.deepEqual(
+    scenario.script.map((step) => ({ take: step.take, trigger: step.trigger.type })),
+    [
+      { take: "intro", trigger: "agent-turn-end" },
+      { take: "vague", trigger: "agent-turn-end" },
+      { take: "detail", trigger: "agent-turn-end" },
+    ],
+    "the app holds microphone frames until the service's first audio, so a call-open take plays " +
+      "before admission, is largely lost, and cuts the greeting; the first line must wait for the " +
+      "agent's turn so the caller is heard and the opening is not barged",
+  );
+});
+
 test("the ten are exactly five comprehension and five emotion scenarios", async () => {
   const loaded = await corpus();
   const selected = loaded.scenarios.filter((scenario) => (names as readonly string[]).includes(scenario.name));
