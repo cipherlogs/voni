@@ -47,14 +47,21 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from cascade.assemblyai_tts import split_sentences
 from cascade.end_intent import wants_to_end
 from cascade.event_rules import EventKind, EventRules
 from cascade.events import TurnLedger
-from cascade.meta_llm import MessageHistory, MetaLLMTurn, last_complete_sentence
+from cascade.meta_llm import (
+    MessageHistory,
+    MetaLLMTurn,
+    TurnUsage,
+    last_complete_sentence,
+)
 from cascade.meta_stt import SpeechComplete, SpeechStart
 from cascade.thresholds import require_bound
 from cascade.tools import (
@@ -96,6 +103,64 @@ KEEPALIVE_BOUND = "tts.keepalive_interval_ms"
 
 #: How long a reply may stay silent before one short spoken ack covers it.
 ACK_DELAY_BOUND = "reply.ack_delay_ms"
+
+#: How many already spoken replies the repeat guard remembers.
+REPEAT_REPLY_WINDOW = 2
+
+#: The duplicate bar, in words, after normalisation. This is a rule, not a
+#: tunable: one-word agreements ("Yes.", "Right.") must never be dropped for
+#: agreeing twice, while the measured two-word loop ("Fair enough.") is caught.
+REPEAT_MIN_WORDS = 2
+
+#: Punctuation is a separator, not content: "what's" and "what s" are one form.
+_NON_WORD = re.compile(r"[^\w\s]+", re.UNICODE)
+
+
+class ReplyRepeatedOnly(RuntimeError):
+    """The bounded repair still only repeated a line already spoken.
+
+    The turn has nothing new to say. Naming the failure is deliberate: the
+    caller hears nothing more and the trace records the turn as failed rather
+    than looping the same sentence or going silent with no record.
+    """
+
+
+def _normal_form(text: str) -> str:
+    """The duplicate rule's normal form: case-folded, punctuation to space."""
+    return " ".join(_NON_WORD.sub(" ", text.casefold()).split())
+
+
+def _reply_sentences(text: str) -> list[str]:
+    """Every spoken sentence in one reply, including an unterminated last one.
+
+    ``last_complete_sentence`` deliberately returns the *longest* complete
+    prefix so one ``_speak`` can carry several sentences. Duplicate matching
+    needs the individual sentences, so this uses the synthesis session's one
+    sentence splitter instead of re-deriving boundaries here.
+    """
+    return [piece.strip() for piece in split_sentences(text) if piece.strip()]
+
+
+def _merged_usage(first: TurnUsage, second: TurnUsage) -> TurnUsage:
+    """One logical turn's two requests, summed only where both are measured."""
+    if not first.measured:
+        return second
+    if not second.measured:
+        return first
+
+    def add(left: int | None, right: int | None) -> int | None:
+        if left is None or right is None:
+            return None
+        return left + right
+
+    return TurnUsage(
+        prompt_tokens=add(first.prompt_tokens, second.prompt_tokens),
+        completion_tokens=add(first.completion_tokens, second.completion_tokens),
+        total_tokens=add(first.total_tokens, second.total_tokens),
+        cached_tokens=add(first.cached_tokens, second.cached_tokens),
+        reasoning_tokens=add(first.reasoning_tokens, second.reasoning_tokens),
+        measured=True,
+    )
 
 
 class CascadeTurnStream:
@@ -177,6 +242,18 @@ class CascadeTurnStream:
         #: The text spoken in the current reply, so the browser gets one final
         #: caption after the audio (not only sentence partials).
         self._reply_text = ""
+        #: The last two replies the caller actually heard, oldest first. A
+        #: duplicate is only a duplicate of one of these; seeded hold-return
+        #: history is not a reply this call spoke and is never consulted.
+        self._recent_replies: list[str] = []
+        #: This reply's new sentences, and the duplicates withheld from it.
+        self._reply_new_sentences = 0
+        self._reply_dropped: list[str] = []
+        #: One repair request per logical turn, never retried.
+        self._repeat_repaired = False
+        #: Metric counters: a repair was asked for, and a sentence was withheld.
+        self.repeat_repair = 0
+        self.repeat_dropped = 0
         #: Whether the caller's final asked to end (call control, not a tool).
         self._caller_wants_end = False
         self._buffer = ""
@@ -318,6 +395,9 @@ class CascadeTurnStream:
         await asyncio.sleep(0)
         key = state.id.event_id
         self._buffer = ""
+        self._reply_new_sentences = 0
+        self._reply_dropped = []
+        self._repeat_repaired = False
         # The caller's words end the call, not the model's tool choice: Spark
         # does not call the hang-up tool on a caller request (measured 0/20).
         self._caller_wants_end = wants_to_end(state.final_text, self._locale_code)
@@ -326,6 +406,8 @@ class CascadeTurnStream:
         try:
             self._history.append_user(state.final_text)
             record = await self._run_turn(state, record)
+            if self._should_repair_repeated_reply():
+                await self._repair_repeated_reply(record)
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -346,6 +428,7 @@ class CascadeTurnStream:
             spoken = self._reply_text.strip()
             self._reply_text = ""
             if spoken:
+                self._remember_reply(spoken)
                 await self._caption("agent", spoken, True)
             if not cancelled:
                 # The turn's usage chunk exists now: the call records and
@@ -589,6 +672,83 @@ class CascadeTurnStream:
         if sentence:
             await self._speak(sentence)
 
+    def _should_repair_repeated_reply(self) -> bool:
+        """Whether this turn spoke nothing new and may ask one repair."""
+        return (
+            not self._ending
+            and not self._repeat_repaired
+            and self._reply_new_sentences == 0
+            and bool(self._reply_dropped)
+            and (self._may_request is None or self._may_request("llm"))
+        )
+
+    async def _repair_repeated_reply(self, record: MetaLLMTurn) -> None:
+        """One bounded re-ask naming the line already said, then speak it.
+
+        The guard has already withheld every sentence of the first reply, so
+        the caller has heard nothing this turn. The repair must produce new
+        content: a repair that only repeats again fails the turn by name rather
+        than looping. One repair per turn, counted, never retried.
+        """
+        self._repeat_repaired = True
+        line = self._reply_dropped[0]
+        self.repeat_repair += 1
+        self._count_metric("repeat_repair")
+        self._history.add_hidden_context(
+            f"You already said, verbatim: '{line}'. Do not repeat it; "
+            "answer only what the caller just said."
+        )
+        repair = MetaLLMTurn()
+        self._count_request()
+        try:
+            async for item in self._llm.complete(
+                messages=self._history.request_messages(),
+                tools=None,
+                turn=repair,
+            ):
+                if isinstance(item, TokenDelta):
+                    await self._say(item.text)
+            await self._flush()
+        finally:
+            repair.close()
+        record.usage = _merged_usage(record.usage, repair.usage)
+        if self._reply_new_sentences == 0:
+            raise ReplyRepeatedOnly(
+                "the repair reply only repeated a line already spoken"
+            )
+
+    def _remember_reply(self, text: str) -> None:
+        """Keep only the last two replies the caller actually heard."""
+        self._recent_replies.append(text)
+        self._recent_replies = self._recent_replies[-REPEAT_REPLY_WINDOW:]
+
+    def _is_repeat(self, sentence: str) -> bool:
+        """Whether this sentence duplicates one from the last two replies."""
+        normal = _normal_form(sentence)
+        if len(normal.split()) < REPEAT_MIN_WORDS:
+            return False
+        return any(
+            _normal_form(prior) == normal
+            for reply in self._recent_replies
+            for prior in _reply_sentences(reply)
+        )
+
+    def _drop_repeat(self, sentence: str) -> None:
+        """Withhold one duplicate sentence before its audio is generated."""
+        self._reply_dropped.append(sentence)
+        self.repeat_dropped += 1
+        self._count_metric("repeat_dropped")
+
+    def _count_metric(self, name: str) -> None:
+        """Count one repeat metric; an unreadable sink never ends the call."""
+        counter = getattr(self._ledger, "count", None)
+        if not callable(counter):
+            return
+        try:
+            counter(name)
+        except Exception:
+            _log.exception(f"the {name} metric could not be counted")
+
     async def _speak(self, text: str, *, force: bool = False) -> None:
         if not text:
             return
@@ -602,7 +762,12 @@ class CascadeTurnStream:
             and not self._may_request("tts")
         ):
             return
+        if not force and self._is_repeat(text):
+            self._drop_repeat(text)
+            return
         self._reply_text = f"{self._reply_text} {text}".strip()
+        if not force:
+            self._reply_new_sentences += 1
         self._active_leg = "tts"
         await self._caption("agent", text, False)
         async with self._voice_lock:
@@ -778,12 +943,17 @@ class CascadeTurnStream:
 
     def _turn_failed(self, state: TurnState, error: BaseException) -> None:
         """One failed reply: the leg and the error class, never its message."""
+        reason = (
+            "the reply only repeated a line already spoken"
+            if isinstance(error, ReplyRepeatedOnly)
+            else "the reply failed"
+        )
         self._write_turn_row(
             "turn_failed",
             state.id.event_id,
             leg=self._active_leg,
             name=type(error).__name__,
-            reason="the reply failed",
+            reason=reason,
         )
 
     async def _caption(self, role: str, text: str, final: bool) -> None:
@@ -798,4 +968,4 @@ def _call_name(outcome: Any) -> str:
     return name if isinstance(name, str) and name.strip() else type(outcome).__name__
 
 
-__all__ = ["CascadeTurnStream"]
+__all__ = ["CascadeTurnStream", "ReplyRepeatedOnly"]
