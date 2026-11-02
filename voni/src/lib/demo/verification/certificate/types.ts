@@ -87,6 +87,25 @@ export type PanelSignature = {
   readonly signature: string;
 };
 
+/**
+ * How a certificate was assembled across an interruption. It names the
+ * original run, when it started, when it continued, and the calls each half
+ * contributed. A reused call is never presented as freshly measured, and a
+ * certificate that spans an interruption says so where the owner reads it.
+ */
+export type CertificateResume = {
+  /** The original run id; it is also the certificate's own run id. */
+  readonly journalRunId: string;
+  /** The journal this run continued, for audit. */
+  readonly journalPath: string;
+  readonly originalStartedAt: string;
+  readonly resumedAt: string;
+  /** Call ids reused from the journal's completed half. */
+  readonly reusedCalls: readonly string[];
+  /** Call ids the resumed half made. */
+  readonly madeCalls: readonly string[];
+};
+
 /** What one run planned to execute. Coverage is judged against it. */
 export type CertificatePlan = {
   readonly mode: CertificateMode;
@@ -228,6 +247,8 @@ export type Certificate = {
   readonly residualRiskIds: readonly string[];
   /** Null until the owner has signed; then the panel session and reviewer. */
   readonly panel: PanelSignature | null;
+  /** Null for a run made in one piece; set when it was resumed. */
+  readonly resume: CertificateResume | null;
   readonly verdict: CertificateVerdict;
   /** True only for `certified`; every other verdict is not a pass. */
   readonly pass: boolean;
@@ -250,6 +271,8 @@ export type CertificateBuildInput = {
   readonly cost: CertificateCost;
   readonly residualRiskIds: readonly string[];
   readonly panel?: PanelSignature | null;
+  /** Set only when this certificate was assembled across an interruption. */
+  readonly resume?: CertificateResume | null;
 };
 
 /** What a reader must prove before it may use a certificate for a run. */

@@ -24,6 +24,9 @@ export type VerifyMode = (typeof VERIFY_MODES)[number];
 /** One lower-case slug, the corpus directory-name rule. */
 const SCENARIO_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+/** A run id is a directory and journal name; a path is never one. */
+const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
 export type VerifyRequest = {
   readonly mode: VerifyMode;
   readonly target: CertificateTarget;
@@ -34,6 +37,11 @@ export type VerifyRequest = {
   readonly eventsDir?: string;
   readonly capturesDir?: string;
   readonly runRoot?: string;
+  /**
+   * The run id of an interrupted certification whose journal this run
+   * continues. Explicit only: a run never resumes by accident.
+   */
+  readonly resume?: string;
   readonly corpusDir?: string;
   readonly vendorBuildsPath?: string;
   readonly timingLockPath?: string;
@@ -50,6 +58,7 @@ const VALUE_FLAGS = {
   "--events-dir": "eventsDir",
   "--captures-dir": "capturesDir",
   "--run-root": "runRoot",
+  "--resume": "resume",
   "--corpus-dir": "corpusDir",
   "--vendor-builds": "vendorBuildsPath",
   "--timing-lock": "timingLockPath",
@@ -184,6 +193,23 @@ export function parseVerifyArgs(argv: readonly string[]): VerifyRequest {
     );
   }
 
+  const resume = values.resume;
+  if (resume !== undefined) {
+    if (!SAFE_RUN_ID.test(resume) || resume.includes("..")) {
+      refuse(
+        "bad-input",
+        `"${resume}" is not a safe run id; use letters, digits, dot, dash or underscore`,
+      );
+    }
+    if (mode !== "full" && mode !== "nightly") {
+      refuse(
+        "bad-input",
+        `--resume belongs to a certification run (--full or --nightly); a ${mode} run has ` +
+          "no journal to continue",
+      );
+    }
+  }
+
   return {
     mode,
     target,
@@ -194,6 +220,7 @@ export function parseVerifyArgs(argv: readonly string[]): VerifyRequest {
     ...(values.eventsDir === undefined ? {} : { eventsDir: values.eventsDir }),
     ...(values.capturesDir === undefined ? {} : { capturesDir: values.capturesDir }),
     ...(values.runRoot === undefined ? {} : { runRoot: values.runRoot }),
+    ...(resume === undefined ? {} : { resume }),
     ...(values.corpusDir === undefined ? {} : { corpusDir: values.corpusDir }),
     ...(values.vendorBuildsPath === undefined
       ? {}
@@ -224,6 +251,9 @@ export const VERIFY_USAGE = `usage: npm run demo:verify -- --target <local|stagi
   --events-dir PATH   the pipeline's per-call trace directory
   --captures-dir PATH the app's gitignored .captures directory
   --run-root PATH     where run directories are written
+  --resume RUN-ID     continue an interrupted certification from its journal;
+                      only the missing calls are made, and a failed call stays
+                      failed
   --corpus-dir PATH   a different corpus root
   --vendor-builds P   the committed vendor-build record
   --timing-lock P     the machine-wide timing lock path

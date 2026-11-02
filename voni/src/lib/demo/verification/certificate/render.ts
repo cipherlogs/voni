@@ -66,6 +66,15 @@ export function renderCertificate(certificate: Certificate): string {
     `risks ${certificate.residualRiskIds.join(" ")}`,
   ];
 
+  if (certificate.resume !== null) {
+    lines.push(
+      `RESUMED ${certificate.resume.journalRunId} at ${certificate.resume.resumedAt} ` +
+        `(started ${certificate.resume.originalStartedAt}): ` +
+        `${certificate.resume.reusedCalls.length} reused, ` +
+        `${certificate.resume.madeCalls.length} made`,
+    );
+  }
+
   if (!certificate.eligibility.eligible) {
     lines.push(
       ...certificate.eligibility.reasons.map((reason) => `INELIGIBLE ${reason}`),

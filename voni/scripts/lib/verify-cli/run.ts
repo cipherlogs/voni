@@ -36,6 +36,7 @@ import {
   validateCertificate,
   type Certificate,
   type CertificateExpectation,
+  type CertificateResume,
   type CertificationAttempt,
   type PanelSignature,
   type VendorBuild,
@@ -77,6 +78,21 @@ import {
 import type { VendorBuildRecord } from "../protocol-adapter/types";
 import type { VerifyRequest } from "./args";
 import { VerifyCliError, refuse } from "./errors";
+import {
+  JOURNAL_SCHEMA_VERSION,
+  assertEvidencePresent,
+  assertResumable,
+  callKey,
+  journalPath,
+  openJournal,
+  readJournal,
+  writeJournal,
+  type JournalCallRecord,
+  type JournalHeader,
+  type JournalRetryRecord,
+  type JournalWriter,
+  type LoadedJournal,
+} from "./journal";
 import { planVerify, runKindOf, type VerifyPlan } from "./plan";
 
 /**
@@ -133,6 +149,12 @@ export type ScenarioCallOutcome = {
   readonly eligibility: CallEligibilityFact | null;
   /** The pipeline build the call served; a certificate records it. */
   readonly pipelineImage: string | null;
+  /**
+   * The artifacts that support this call, by path. The journal records them so
+   * a resume can prove the evidence on disk still backs the call; an empty
+   * list means the attempt carries its evidence inline.
+   */
+  readonly evidenceRefs?: readonly string[];
 };
 
 /**
@@ -176,6 +198,29 @@ export type VerifyDeps = {
   readonly signature?: PanelSignature | null;
   /** The panel's gold labels and signature, when the panel has run. */
   readonly panel?: PanelJudgementInput | null;
+  /**
+   * Where certification journals live. Absent uses `--run-root` (then
+   * `.demo-runs`); tests inject a temporary root so a suite never writes beside
+   * a live run; `null` disables journaling.
+   */
+  readonly journalRoot?: string | null;
+};
+
+/**
+ * How a certificate was assembled across an interruption. The owner must be
+ * able to see that the run stopped and continued, and which calls each half
+ * contributed; a reused call is never presented as freshly measured.
+ */
+export type ResumeRecord = {
+  /** The original run id; a certificate keeps it. */
+  readonly runId: string;
+  readonly journalPath: string;
+  readonly originalStartedAt: string;
+  readonly resumedAt: string;
+  /** Call ids reused from the journal's completed half. */
+  readonly reusedCalls: readonly string[];
+  /** Call ids this half made. */
+  readonly madeCalls: readonly string[];
 };
 
 export type VerifyStatus =
@@ -217,6 +262,11 @@ export type VerifyResult = {
    * result and never turns a failure green.
    */
   readonly retries: readonly EvidenceRetry[];
+  /**
+   * Non-null only when `--resume` continued an interrupted run. A fresh run is
+   * never labelled resumed, even though it journals as it goes.
+   */
+  readonly resumed: ResumeRecord | null;
 };
 
 function emptyResult(
@@ -242,6 +292,7 @@ function emptyResult(
     failedPropertyIds: [],
     ineligible: false,
     retries: [],
+    resumed: null,
   };
 }
 
@@ -349,6 +400,26 @@ export const RETRYABLE_NO_EVIDENCE: ReadonlySet<string> = new Set([
   "app-unreachable",
 ]);
 
+/** The open journal one certification run reads and extends. */
+type JournalSession = {
+  readonly path: string;
+  readonly header: JournalHeader;
+  readonly resume: boolean;
+  readonly calls: ReadonlyMap<string, JournalCallRecord>;
+  readonly retries: ReadonlyMap<string, JournalRetryRecord>;
+  readonly interrupted: ReadonlySet<string>;
+  readonly writer: JournalWriter;
+  readonly resumedAt: string;
+};
+
+/** A journaled failure carried forward: it stays failed and is not re-made. */
+type ReusedFailure = {
+  readonly scenario: string;
+  readonly repetition: number;
+  readonly code: string;
+  readonly message: string;
+};
+
 type Collected = {
   readonly attempts: readonly ScenarioAttempt[];
   readonly callAttempts: readonly CertificationAttempt[];
@@ -356,23 +427,105 @@ type Collected = {
   readonly costs: readonly RunCostRow[];
   readonly pipelineImage: string | null;
   readonly retries: readonly EvidenceRetry[];
+  /** Failed calls the journal carried; they are not in `attempts`. */
+  readonly failures: readonly ReusedFailure[];
+  readonly resumed: ResumeRecord | null;
 };
+
+function nowIso(deps: VerifyDeps): string {
+  return (deps.now ?? (() => new Date()))().toISOString();
+}
 
 async function collectCalls(
   request: VerifyRequest,
   plan: VerifyPlan,
   deps: VerifyDeps,
+  journal: JournalSession | null,
 ): Promise<Collected> {
   const attempts: ScenarioAttempt[] = [];
   const callAttempts: CertificationAttempt[] = [];
   const eligibility: CallEligibilityFact[] = [];
   const costs: RunCostRow[] = [];
   let pipelineImage: string | null = null;
-  let lastStart: number | null = null;
+  // A resume starts a new pacing window: the old run's last start is not this
+  // half's, and the TTS allowance must be re-proved after the gap. The first
+  // made call therefore waits the full interval even when the journal stopped
+  // one call ago. A fresh run has no previous start.
+  let lastStart: number | null = journal?.resume === true ? (deps.clock?.() ?? Date.now()) : null;
   const retries: EvidenceRetry[] = [];
+  const failures: ReusedFailure[] = [];
+  const reusedIds: string[] = [];
+  const madeIds: string[] = [];
+
+  // A re-made call's record belongs to the whole run, not to one half. Carry
+  // every journaled retry verbatim so the resumed result names it once.
+  for (const retry of journal?.retries.values() ?? []) {
+    retries.push({
+      scenario: retry.scenario,
+      repetition: retry.repetition,
+      code: retry.code,
+      message: retry.message,
+      at: retry.at,
+    });
+  }
 
   for (const scenario of plan.scenarios) {
     for (let repetition = 1; repetition <= plan.repetitions; repetition += 1) {
+      const key = callKey(scenario.name, repetition);
+      const recorded = journal?.calls.get(key);
+      // A completed call is reused as-is: its attempt, eligibility and cost
+      // row are the journal's own, never re-derived from a vendor.
+      if (recorded?.outcome === "completed") {
+        const attempt: ScenarioAttempt = {
+          ...(recorded.attempt as ScenarioAttempt),
+          scenario: scenario.name,
+          repetition,
+          locale: scenario.locale,
+          target: plan.target,
+        };
+        const callId = recorded.callId;
+        attempts.push(attempt);
+        callAttempts.push({
+          scenario: scenario.name,
+          locale: scenario.locale,
+          repetition,
+          callId,
+        });
+        eligibility.push({
+          ...(recorded.eligibility as CallEligibilityFact),
+          callId,
+          scenario: scenario.name,
+        });
+        costs.push({ callId, scenario: scenario.name, cost: recorded.cost });
+        if (pipelineImage === null) pipelineImage = recorded.pipelineImage;
+        reusedIds.push(callId);
+        continue;
+      }
+      // A failed call stays failed. It is not re-made: no evidence can turn a
+      // measured failure green, and re-running it would be exactly that.
+      if (recorded?.outcome === "failed") {
+        failures.push({
+          scenario: scenario.name,
+          repetition,
+          code: recorded.refusal?.code ?? "adapter-refused",
+          message: recorded.refusal?.message ?? "the journal records a failed call",
+        });
+        continue;
+      }
+      // A call that was already re-made once but whose result never landed has
+      // spent its one retry. It stays a failure rather than being tried again.
+      if (journal?.interrupted.has(key) === true) {
+        failures.push({
+          scenario: scenario.name,
+          repetition,
+          code: "journal-interrupted",
+          message:
+            "the journal records the one allowed re-make of this call with no result; the " +
+            "interruption stays a failure and the call is not made again",
+        });
+        continue;
+      }
+
       // TTS sessions are vendor-limited (five a minute per account), and a call
       // opens at least one. Pacing the starts keeps a run inside that allowance
       // instead of retrying a call that never had a chance to exist; a retry
@@ -396,13 +549,17 @@ async function collectCalls(
       // second attempt's refusal stands, unretried.
       if (outcome.refusal !== null && RETRYABLE_NO_EVIDENCE.has(outcome.refusal.code)) {
         const first = outcome.refusal;
-        retries.push({
+        const retry = {
           scenario: scenario.name,
           repetition,
           code: first.code,
           message: first.message,
-          at: new Date().toISOString(),
-        });
+          at: nowIso(deps),
+        };
+        retries.push(retry);
+        // Write the re-make before it happens: a process death during the retry
+        // must not let a later resume make the call a second time.
+        journal?.writer.append({ type: "retry", ...retry });
         const interval = callIntervalMs(deps.env);
         await (deps.sleep?.(interval) ?? sleepMs(interval));
         lastStart = deps.clock?.() ?? Date.now();
@@ -420,6 +577,23 @@ async function collectCalls(
             ? ""
             : `; this run re-made ${retries.length} call(s) that produced no evidence ` +
               `(${retries.map((retry) => `${retry.scenario}#${retry.repetition} ${retry.code}`).join(", ")})`;
+        // The failure is durable before the refusal is thrown, so `--resume`
+        // carries it instead of paying for the call again.
+        journal?.writer.append({
+          type: "call",
+          scenario: scenario.name,
+          repetition,
+          locale: scenario.locale,
+          callId: outcome.eligibility?.callId ?? key,
+          outcome: "failed",
+          attempt: null,
+          eligibility: null,
+          cost: null,
+          pipelineImage: null,
+          evidenceRefs: [],
+          refusal: outcome.refusal,
+          at: nowIso(deps),
+        });
         refuse(
           "adapter-refused",
           `${scenario.name} repetition ${repetition} refused (${outcome.refusal.code}): ` +
@@ -435,7 +609,7 @@ async function collectCalls(
             "without evidence is a refusal, never a skipped scenario",
         );
       }
-      const callId = outcome.eligibility?.callId ?? `${scenario.name}#${repetition}`;
+      const callId = outcome.eligibility?.callId ?? key;
       const attempt: ScenarioAttempt = {
         ...outcome.attempt,
         scenario: scenario.name,
@@ -443,6 +617,28 @@ async function collectCalls(
         locale: scenario.locale,
         target: plan.target,
       };
+      const eligibilityFact: CallEligibilityFact = {
+        ...(outcome.eligibility ?? { callId, scenario: scenario.name }),
+        callId,
+        scenario: scenario.name,
+      };
+      journal?.writer.append({
+        type: "call",
+        scenario: scenario.name,
+        repetition,
+        locale: scenario.locale,
+        callId,
+        outcome: "completed",
+        attempt,
+        eligibility: eligibilityFact,
+        // A missing cost row is recorded as null, an unmeasured leg that fails
+        // the total closed; it is never omitted from a completed call.
+        cost: attempt.evidence.cost ?? null,
+        pipelineImage: outcome.pipelineImage,
+        evidenceRefs: [...(outcome.evidenceRefs ?? [])],
+        refusal: null,
+        at: nowIso(deps),
+      });
       attempts.push(attempt);
       callAttempts.push({
         scenario: scenario.name,
@@ -450,17 +646,35 @@ async function collectCalls(
         repetition,
         callId,
       });
-      eligibility.push({
-        ...(outcome.eligibility ?? { callId, scenario: scenario.name }),
-        callId,
-        scenario: scenario.name,
-      });
+      eligibility.push(eligibilityFact);
       costs.push({ callId, scenario: scenario.name, cost: attempt.evidence.cost });
       if (pipelineImage === null) pipelineImage = outcome.pipelineImage;
+      madeIds.push(callId);
     }
   }
 
-  return { attempts, callAttempts, eligibility, costs, pipelineImage, retries };
+  const resumed: ResumeRecord | null =
+    journal !== null && journal.resume
+      ? {
+          runId: journal.header.runId,
+          journalPath: journal.path,
+          originalStartedAt: journal.header.startedAt,
+          resumedAt: journal.resumedAt,
+          reusedCalls: [...reusedIds],
+          madeCalls: [...madeIds],
+        }
+      : null;
+
+  return {
+    attempts,
+    callAttempts,
+    eligibility,
+    costs,
+    pipelineImage,
+    retries,
+    failures,
+    resumed,
+  };
 }
 
 function measuredCost(costs: readonly RunCostRow[]): number {
@@ -497,6 +711,7 @@ function certificateFor(input: {
   readonly collected: Collected;
   readonly fingerprint: CodeFingerprint;
   readonly panel: PanelSignature | null;
+  readonly resume: CertificateResume | null;
 }): Certificate {
   if (input.collected.pipelineImage === null) {
     refuse(
@@ -532,7 +747,22 @@ function certificateFor(input: {
     cost: { usd, callCount: input.collected.attempts.length },
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: input.panel,
+    resume: input.resume,
   });
+}
+
+/** The certificate's run record of an interruption, from the resume itself. */
+function certificateResume(resumed: ResumeRecord | null): CertificateResume | null {
+  return resumed === null
+    ? null
+    : {
+        journalRunId: resumed.runId,
+        journalPath: resumed.journalPath,
+        originalStartedAt: resumed.originalStartedAt,
+        resumedAt: resumed.resumedAt,
+        reusedCalls: [...resumed.reusedCalls],
+        madeCalls: [...resumed.madeCalls],
+      };
 }
 
 /**
@@ -597,7 +827,7 @@ async function fastRun(
   deps: VerifyDeps,
   startedAt: string,
 ): Promise<VerifyResult> {
-  const collected = await collectCalls(request, plan, deps);
+  const collected = await collectCalls(request, plan, deps, null);
   const endedAt = (deps.now ?? (() => new Date()))().toISOString();
   // E3 is run-scoped and has one owner: the economics run gate. The fast
   // module presents that owner's total and boolean verbatim and narrows the
@@ -663,6 +893,86 @@ async function fastRun(
   };
 }
 
+/**
+ * Open the run's journal: a fresh file with its header, or the interrupted
+ * run's journal after every proof a resume needs. The run id and the code
+ * fingerprint the certificate keeps are the journal's, never a fresh guess.
+ */
+function certificationJournal(input: {
+  readonly request: VerifyRequest;
+  readonly plan: VerifyPlan;
+  readonly corpus: Corpus;
+  readonly builds: readonly VendorBuild[];
+  readonly fingerprint: CodeFingerprint;
+  readonly runId: string;
+  readonly resumedAt: string;
+  readonly deps: VerifyDeps;
+}): JournalSession | null {
+  const configured = input.deps.journalRoot;
+  if (configured === null) return null;
+  if (input.plan.mode !== "full" && input.plan.mode !== "nightly") {
+    refuse(
+      "resume-mode-unsupported",
+      `the ${input.plan.mode} run has no certification journal; only --full and --nightly ` +
+        "runs journal their calls",
+    );
+  }
+  const mode: "full" | "nightly" = input.plan.mode;
+  const path = journalPath(configured ?? input.request.runRoot, input.runId);
+  const header: JournalHeader = {
+    type: "header",
+    schemaVersion: JOURNAL_SCHEMA_VERSION,
+    runId: input.runId,
+    startedAt: input.resumedAt,
+    target: input.plan.target,
+    mode,
+    codeFingerprint: input.fingerprint,
+    corpus: { version: input.corpus.version, sha256: input.corpus.fingerprint },
+    vendorBuilds: [...input.builds],
+    plan: {
+      mode,
+      repetitions: input.plan.repetitions,
+      calls: input.plan.calls,
+      scenarios: input.plan.scenarios.map((scenario) => ({
+        name: scenario.name,
+        locale: scenario.locale,
+        heldOut: scenario.heldOut,
+      })),
+    },
+  };
+
+  if (input.request.resume === undefined) {
+    writeJournal(path, header);
+    return {
+      path,
+      header,
+      resume: false,
+      calls: new Map(),
+      retries: new Map(),
+      interrupted: new Set(),
+      writer: openJournal(path),
+      resumedAt: input.resumedAt,
+    };
+  }
+
+  const loaded: LoadedJournal = readJournal(path);
+  assertResumable(loaded, {
+    runId: input.runId,
+    target: input.plan.target,
+    codeFingerprint: input.fingerprint,
+    corpus: { version: input.corpus.version, sha256: input.corpus.fingerprint },
+    vendorBuilds: input.builds,
+    plan: input.plan,
+  });
+  assertEvidencePresent(loaded);
+  return {
+    ...loaded,
+    resume: true,
+    writer: openJournal(path),
+    resumedAt: input.resumedAt,
+  };
+}
+
 async function certificationRun(
   request: VerifyRequest,
   plan: VerifyPlan,
@@ -672,7 +982,36 @@ async function certificationRun(
   builds: readonly VendorBuild[],
   deps: VerifyDeps,
 ): Promise<VerifyResult> {
-  const collected = await collectCalls(request, plan, deps);
+  const fingerprint = deps.readCodeFingerprint();
+  if (fingerprint === null) {
+    refuse(
+      "certificate-refused",
+      "the repository has no readable HEAD; a run that journals and certifies must bind to " +
+        "the code it ran",
+    );
+  }
+  // A resume keeps the original run id and fingerprint; a fresh run claims a
+  // new one before its first call, so the journal's header can prove it.
+  const runId = request.resume ?? (deps.newRunId ?? defaultRunId)();
+  const resumedAt = nowIso(deps);
+  const journal = certificationJournal({
+    request,
+    plan,
+    corpus,
+    builds,
+    fingerprint,
+    runId,
+    resumedAt,
+    deps,
+  });
+
+  let collected: Collected;
+  try {
+    collected = await collectCalls(request, plan, deps, journal);
+  } finally {
+    journal?.writer.close();
+  }
+
   const kind = request.mode === "full" ? "full" : "nightly";
   const scoped = scopeRunToCeiling({
     contract,
@@ -685,7 +1024,7 @@ async function certificationRun(
     calls: [...collected.costs],
   });
   const verdict = judgeRun({
-    runId: (deps.newRunId ?? defaultRunId)(),
+    runId,
     contract: scoped.contract,
     evidence: scoped.evidence,
     calls: [...collected.eligibility],
@@ -707,21 +1046,52 @@ async function certificationRun(
           : "not-demo-ready";
     return {
       ...emptyResult(request, status, 1),
+      runId,
       calls: collected.attempts.length,
       failedPropertyIds: verdict.failedPropertyIds,
       ineligible: verdict.verdict === "ineligible",
+      retries: collected.retries,
+      resumed: collected.resumed,
       detail:
         `${verdict.detail}. Nightly health is a report, not a certificate: exit 0 requires a ` +
         "signed full certification",
-      unrun: unique([...verdict.failures, scoped.check.detail]),
+      unrun: unique([
+        ...verdict.failures,
+        ...collected.failures.map(
+          (failure) =>
+            `${failure.scenario} repetition ${failure.repetition} stays failed and was not ` +
+            `re-made (${failure.code}: ${failure.message.slice(0, 120)})`,
+        ),
+        scoped.check.detail,
+      ]),
     };
   }
 
-  const fingerprint = deps.readCodeFingerprint();
-  if (fingerprint === null) {
+  // Read the fingerprint again at the end, as a fresh run always did: a tree
+  // that moved while the calls ran may not certify the reading it started
+  // with. A resumed run must still be the code its journal measured.
+  const endFingerprint = deps.readCodeFingerprint();
+  if (endFingerprint === null) {
     refuse(
       "certificate-refused",
-      "the repository has no readable HEAD; a certificate must bind to the code it ran",
+      "the repository has no readable HEAD at the end of the run; a certificate must bind " +
+        "to the code it ran",
+    );
+  }
+  const journalFingerprint = journal?.header.codeFingerprint ?? null;
+  if (
+    journal?.resume === true &&
+    journalFingerprint !== null &&
+    (journalFingerprint.head !== endFingerprint.head ||
+      journalFingerprint.dirty !== endFingerprint.dirty ||
+      journalFingerprint.dirtyHash !== endFingerprint.dirtyHash)
+  ) {
+    refuse(
+      "journal-code-mismatch",
+      `journal ${journal?.path ?? ""} started on code fingerprint ` +
+        `${journalFingerprint.head}${journalFingerprint.dirty ? "+dirty" : ""}, but the ` +
+        `repository is now ${endFingerprint.head}${endFingerprint.dirty ? "+dirty" : ""}; ` +
+        "a certificate may not claim code it did not measure",
     );
   }
   const certificate = certificateFor({
@@ -731,8 +1101,14 @@ async function certificationRun(
     corpus,
     builds,
     collected,
-    fingerprint,
+    // A resumed certificate names the fingerprint the run started with; the
+    // check above proved it still describes the code that finished the run. A
+    // fresh run keeps the end reading it always had.
+    fingerprint: journal?.resume === true && journalFingerprint !== null
+      ? journalFingerprint
+      : endFingerprint,
     panel: panelInput?.signature ?? deps.signature ?? null,
+    resume: certificateResume(collected.resumed),
   });
   const exitCode = exitForCertificate(certificate, {
     target: plan.target,
@@ -750,6 +1126,7 @@ async function certificationRun(
     failedPropertyIds: judged.failedPropertyIds,
     ineligible: judged.verdict === "ineligible",
     retries: collected.retries,
+    resumed: collected.resumed,
     certificate,
     certificatePath: fileURLToPath(certificateFile(certificate.runId)),
     certificateVerdict: certificate.verdict,
@@ -760,6 +1137,11 @@ async function certificationRun(
         : `; signed by ${certificate.panel.reviewer} on ${certificate.panel.signedAt}`),
     unrun: unique([
       ...verdict.failures,
+      ...collected.failures.map(
+        (failure) =>
+          `${failure.scenario} repetition ${failure.repetition} stays failed and was not ` +
+          `re-made (${failure.code}: ${failure.message.slice(0, 120)})`,
+      ),
       ...certificate.properties.filter((property) => property.status === "FAIL").map(
         (property) => `${property.propertyId} failed (${property.reason})`,
       ),
@@ -783,6 +1165,15 @@ export async function runVerify(
 
   let lock: TimingLock | null = null;
   try {
+    // Parsing already refuses this; the dispatch keeps the same rule for a
+    // caller that builds a request directly. A scoped report has no journal.
+    if (request.resume !== undefined && request.mode !== "full" && request.mode !== "nightly") {
+      refuse(
+        "resume-mode-unsupported",
+        `--resume belongs to a certification run (--full or --nightly); a ${request.mode} run ` +
+          "has no journal to continue",
+      );
+    }
     const contract = await deps.loadContract();
     let corpus: Corpus;
     try {

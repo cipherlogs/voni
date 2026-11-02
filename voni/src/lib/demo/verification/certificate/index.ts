@@ -25,6 +25,7 @@ export {
   type CertificateMode,
   type CertificatePlan,
   type CertificateProperty,
+  type CertificateResume,
   type CertificateScenarioVerdict,
   type CertificateTarget,
   type CertificateVerdict,

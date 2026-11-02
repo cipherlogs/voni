@@ -529,6 +529,39 @@ test("the compact render states the verdict, the panel and the gap count", () =>
   assert.match(unsigned, /panel UNSIGNED/);
 });
 
+test("a resumed certificate records the interruption and every reused call", () => {
+  const resume = {
+    journalRunId: "run-2026-10-31-01",
+    journalPath: "/tmp/runs/run-2026-10-31-01/journal.jsonl",
+    originalStartedAt: "2026-10-31T08:00:00.000Z",
+    resumedAt: "2026-10-31T10:00:00.000Z",
+    reusedCalls: ["a-1", "a-2"],
+    madeCalls: ["a-3"],
+  };
+  const certificate = buildCertificate(buildInput({ resume }));
+  assert.deepEqual(certificate.resume, resume);
+  assert.equal(certificate.runId, "run-2026-10-31-01", "the original run id is kept");
+  const rendered = renderCertificate(certificate);
+  assert.match(rendered, /RESUMED run-2026-10-31-01/);
+  assert.match(rendered, /2 reused, 1 made/);
+
+  const empty = mutable(certificate);
+  empty.resume = { ...resume, reusedCalls: [], madeCalls: [] };
+  assertRefusal(
+    () => validateCertificate(empty),
+    "malformed-certificate",
+    /resume records no calls/,
+  );
+
+  const notADate = mutable(certificate);
+  notADate.resume = { ...resume, resumedAt: "yesterday" };
+  assertRefusal(
+    () => validateCertificate(notADate),
+    "malformed-certificate",
+    /resumedAt/,
+  );
+});
+
 test("certificates are committable while audio and event artifacts stay gitignored", () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../../../../../");
   const ignore = readFileSync(join(repoRoot, ".gitignore"), "utf8");

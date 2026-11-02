@@ -10,7 +10,15 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -44,6 +52,8 @@ import {
   callIntervalMs,
   exitForCertificate,
   runVerify,
+  type ScenarioCallInput,
+  type ScenarioCallOutcome,
   type VerifyDeps,
   type VerifyResult,
 } from "./run";
@@ -64,6 +74,13 @@ const KEYS = {
 };
 
 const FINGERPRINT = { head: "abc123", dirty: false, dirtyHash: "clean" };
+
+/**
+ * Every test run writes its journal here, never into the repository's live
+ * `.demo-runs` directory (a certification run may be executing beside the
+ * suite). A resume test overrides this with its own temporary root.
+ */
+const JOURNAL_ROOT = join(tmpdir(), "voni-verify-cli-journals");
 
 const COST_ROW = {
   measured: true,
@@ -147,6 +164,7 @@ function baseDeps(overrides: Partial<VerifyDeps> = {}): VerifyDeps {
     readVendorBuilds: async () => VENDOR_BUILDS,
     acquireLock: () => noLock(),
     readCodeFingerprint: () => FINGERPRINT,
+    journalRoot: JOURNAL_ROOT,
     newRunId: () => "verify-test-01",
     diagnose: async () => ({
       status: "clean-diagnosis",
@@ -657,6 +675,17 @@ async function fullResult(input: {
   readonly target?: string;
   readonly contract?: Contract;
   readonly panelInput?: PanelJudgementInput;
+  readonly runRoot?: string;
+  readonly journalRoot?: string;
+  readonly runId?: string;
+  readonly resume?: string;
+  readonly corpus?: Corpus;
+  readonly runScenario?: VerifyDeps["runScenario"];
+  readonly readCodeFingerprint?: VerifyDeps["readCodeFingerprint"];
+  readonly readVendorBuilds?: VerifyDeps["readVendorBuilds"];
+  readonly plan?: (corpus: Corpus) => VerifyPlan;
+  readonly clock?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
 } = {}): Promise<VerifyResult> {
   const contract = input.contract ?? (await fullContract());
   // A narrowed contract still judges only the machine families this suite
@@ -670,7 +699,7 @@ async function fullResult(input: {
             (FULL_CONTRACT_IDS as readonly string[]).includes(property.id),
           ),
         };
-  const corpus = fullCorpus();
+  const corpus = input.corpus ?? fullCorpus();
   const evaluators = passingEvaluators(judged).map((evaluator) =>
     evaluator.propertyId === input.failProperty
       ? {
@@ -683,13 +712,30 @@ async function fullResult(input: {
         }
       : evaluator,
   );
-  return runVerify(request(["--target", input.target ?? "local", "--full"]), {
+  const argv = ["--target", input.target ?? "local", "--full"];
+  if (input.runRoot !== undefined) argv.push("--run-root", input.runRoot);
+  if (input.resume !== undefined) argv.push("--resume", input.resume);
+  return runVerify(request(argv), {
     ...baseDeps(),
     loadContract: async () => contract,
     loadCorpus: async () => corpus,
     loadEvaluators: async () => evaluators,
-    plan: () => fullPlan(corpus),
+    plan:
+      input.plan === undefined
+        ? () => fullPlan(corpus)
+        : (args: { corpus: Corpus }) => input.plan!(args.corpus),
     signature: input.panel ?? null,
+    newRunId: () => input.runId ?? "verify-test-01",
+    ...(input.journalRoot === undefined ? {} : { journalRoot: input.journalRoot }),
+    ...(input.runScenario === undefined ? {} : { runScenario: input.runScenario }),
+    ...(input.readCodeFingerprint === undefined
+      ? {}
+      : { readCodeFingerprint: input.readCodeFingerprint }),
+    ...(input.readVendorBuilds === undefined
+      ? {}
+      : { readVendorBuilds: input.readVendorBuilds }),
+    ...(input.clock === undefined ? {} : { clock: input.clock }),
+    ...(input.sleep === undefined ? {} : { sleep: input.sleep }),
     ...(input.panelInput === undefined ? {} : { panel: input.panelInput }),
   });
 }
@@ -910,6 +956,611 @@ test("the certificate store path is a safe single component", () => {
     rmSync(root, { recursive: true, force: true });
   }
   assert.equal(OPEN_RESIDUAL_RISK_IDS.length > 0, true);
+});
+
+/* ------------------------------------------------------------------------- *
+ * Resumable certification runs.
+ *
+ * A run journals its plan, its identity and every call as it goes. A process
+ * death leaves the completed calls in the journal; `--resume` reuses them and
+ * makes only the missing ones. Every refusal below is a named exit 2.
+ * ------------------------------------------------------------------------- */
+
+const RESUME_RUN_ID = "verify-journal-01";
+
+function completedOutcome(
+  input: ScenarioCallInput,
+  overrides: Partial<ScenarioCallOutcome> = {},
+): ScenarioCallOutcome {
+  return {
+    refusal: null,
+    attempt: {
+      scenario: input.scenario,
+      repetition: input.repetition,
+      locale: input.locale,
+      target: input.target,
+      evidence: EVIDENCE,
+    },
+    eligibility: { callId: `${input.scenario}#${input.repetition}`, scenario: input.scenario },
+    pipelineImage: "pipeline-test",
+    evidenceRefs: [],
+    ...overrides,
+  };
+}
+
+function journalFile(root: string, runId = RESUME_RUN_ID): string {
+  return join(root, runId, "journal.jsonl");
+}
+
+function journalEntries(path: string): Record<string, unknown>[] {
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function rewriteHeader(path: string, mutate: (header: Record<string, unknown>) => void): void {
+  const entries = journalEntries(path);
+  mutate(entries[0] as Record<string, unknown>);
+  writeFileSync(path, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+}
+
+/** The plan's keys in order: every scenario, then every repetition. */
+function plannedKeys(corpus: Corpus = fullCorpus(), repetitions = 3): string[] {
+  return corpus.scenarios.flatMap((scenario) =>
+    Array.from({ length: repetitions }, (_, index) => `${scenario.name}#${index + 1}`),
+  );
+}
+
+/** Run a certification that dies (not refuses) at the Nth call. */
+async function interruptedRun(
+  root: string,
+  options: {
+    readonly runId?: string;
+    readonly crashAt?: number;
+    readonly runScenario?: VerifyDeps["runScenario"];
+  } = {},
+): Promise<string[]> {
+  const made: string[] = [];
+  const crashAt = options.crashAt ?? 7;
+  await assert.rejects(
+    fullResult({
+      runRoot: root,
+      journalRoot: root,
+      runId: options.runId ?? RESUME_RUN_ID,
+      runScenario: async (input) => {
+        made.push(`${input.scenario}#${input.repetition}`);
+        const outcome =
+          options.runScenario === undefined
+            ? completedOutcome(input)
+            : await options.runScenario(input);
+        if (made.length === crashAt) throw new Error("the run process died");
+        return outcome;
+      },
+    }),
+    /process died/,
+  );
+  return made;
+}
+
+function resumeResult(
+  root: string,
+  extra: Parameters<typeof fullResult>[0] = {},
+): Promise<VerifyResult> {
+  return fullResult({
+    runRoot: root,
+    journalRoot: root,
+    resume: RESUME_RUN_ID,
+    ...extra,
+  });
+}
+
+test("a certification run journals its header and each call as it proceeds", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-journal-"));
+  try {
+    const result = await fullResult({
+      runRoot: root,
+      journalRoot: root,
+      runId: RESUME_RUN_ID,
+      panel: FULL_PANEL,
+    });
+    assert.equal(result.exitCode, 0, result.refusals.join("\n"));
+
+    const entries = journalEntries(journalFile(root));
+    const [header, ...calls] = entries;
+    assert.equal(header?.type, "header");
+    assert.equal(header?.schemaVersion, 1);
+    assert.equal(header?.runId, RESUME_RUN_ID);
+    assert.equal(typeof header?.startedAt, "string");
+    assert.equal(header?.target, "local");
+    assert.deepEqual(header?.codeFingerprint, FINGERPRINT);
+    assert.deepEqual(header?.corpus, { version: 7, sha256: "a".repeat(64) });
+    assert.deepEqual(
+      (header?.vendorBuilds as { leg: string }[]).map((build) => build.leg),
+      ["stt", "tts", "llm"],
+    );
+    const plan = header?.plan as {
+      mode: string;
+      repetitions: number;
+      calls: number;
+      scenarios: { name: string }[];
+    };
+    assert.equal(plan.mode, "full");
+    assert.equal(plan.repetitions, 3);
+    assert.equal(plan.calls, 15);
+    assert.deepEqual(
+      plan.scenarios.map((scenario) => scenario.name),
+      fullCorpus().scenarios.map((scenario) => scenario.name),
+    );
+
+    assert.equal(calls.length, 15, "one call entry per completed call");
+    for (const entry of calls) {
+      assert.equal(entry.type, "call");
+      assert.equal(entry.outcome, "completed");
+      assert.ok(entry.attempt, `${String(entry.scenario)} carries its attempt`);
+      assert.ok(entry.eligibility, `${String(entry.scenario)} carries eligibility`);
+      assert.ok("cost" in entry, `${String(entry.scenario)} carries its cost row`);
+      assert.deepEqual(entry.evidenceRefs, []);
+      assert.equal(entry.retry ?? null, null);
+    }
+    assert.equal(result.resumed, null, "a fresh run is not a resumed run");
+
+    const torn = readFileSync(journalFile(root), "utf8");
+    assert.ok(torn.endsWith("\n"), "every completed entry is newline-terminated");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--resume reuses completed calls, makes only the missing ones and names the union", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-reuse-"));
+  try {
+    const first = await interruptedRun(root, { crashAt: 7 });
+    assert.equal(first.length, 7);
+
+    const made: string[] = [];
+    const result = await resumeResult(root, {
+      panel: FULL_PANEL,
+      runScenario: async (input) => {
+        made.push(`${input.scenario}#${input.repetition}`);
+        return completedOutcome(input);
+      },
+    });
+
+    assert.equal(result.exitCode, 0, result.refusals.join("\n"));
+    assert.equal(result.calls, 15);
+    assert.deepEqual(made, plannedKeys().slice(6), "only the missing nine calls were made");
+    assert.equal(result.resumed?.runId, RESUME_RUN_ID);
+    assert.equal(result.resumed?.journalPath, journalFile(root));
+    assert.deepEqual(result.resumed?.reusedCalls, plannedKeys().slice(0, 6));
+    assert.deepEqual(result.resumed?.madeCalls, plannedKeys().slice(6));
+
+    const certificate = result.certificate;
+    assert.ok(certificate, "the resumed run issues one certificate");
+    assert.equal(certificate.runId, RESUME_RUN_ID, "the certificate names the original run");
+    assert.deepEqual(certificate.code.fingerprint, FINGERPRINT);
+    assert.equal(certificate.cost.callCount, 15, "the call count is the union");
+    assert.equal(certificate.cost.usd, 15 * 0.0001, "cost is summed across both halves");
+    assert.deepEqual(certificate.resume?.reusedCalls, plannedKeys().slice(0, 6));
+    assert.deepEqual(certificate.resume?.madeCalls, plannedKeys().slice(6));
+    assert.equal(certificate.resume?.originalStartedAt, result.resumed?.originalStartedAt);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the resumed half waits a full pacing interval before its first call", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-pace-"));
+  try {
+    await interruptedRun(root, { crashAt: 4 });
+
+    let now = 1_000_000;
+    const starts: number[] = [];
+    const sleeps: number[] = [];
+    const result = await resumeResult(root, {
+      clock: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+      runScenario: async (input) => {
+        starts.push(now);
+        now += 5_000;
+        return completedOutcome(input);
+      },
+    });
+
+    assert.equal(result.exitCode, 3, result.refusals.join("\n"));
+    assert.equal(starts.length, 12);
+    assert.ok(
+      starts[0]! - 1_000_000 >= DEFAULT_CALL_INTERVAL_MS,
+      `the first resumed call started ${starts[0]! - 1_000_000}ms after resume`,
+    );
+    assert.equal(sleeps[0], DEFAULT_CALL_INTERVAL_MS, "the gap is paced, not burst");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a call the journal records as failed stays failed and is never re-made", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-failed-"));
+  try {
+    const failed = await fullResult({
+      runRoot: root,
+      journalRoot: root,
+      runId: RESUME_RUN_ID,
+      runScenario: async (input) => {
+        if (input.scenario === "en-one" && input.repetition === 2) {
+          return {
+            refusal: { code: "trigger-unresolved", message: "no agent-turn-end event" },
+            attempt: null,
+            eligibility: null,
+            pipelineImage: null,
+          };
+        }
+        return completedOutcome(input);
+      },
+    });
+    assert.equal(failed.exitCode, 2, "the original half stops at the failed call");
+    const recorded = journalEntries(journalFile(root)).filter((entry) => entry.type === "call");
+    assert.equal(recorded.length, 2);
+    assert.equal(recorded[1]?.outcome, "failed");
+
+    const made: string[] = [];
+    const resumed = await resumeResult(root, {
+      panel: FULL_PANEL,
+      runScenario: async (input) => {
+        made.push(`${input.scenario}#${input.repetition}`);
+        return completedOutcome(input);
+      },
+    });
+
+    assert.ok(!made.includes("en-one#2"), "a failed call is never re-made");
+    assert.equal(made.length, 13);
+    assert.equal(resumed.exitCode, 1, "a failure cannot become a pass");
+    assert.equal(resumed.certificate?.pass, false);
+    assert.equal(
+      resumed.certificate?.coverage.rows.find((row) => row.scenario === "en-one")
+        ?.measuredRepetitions,
+      2,
+      "the failed repetition is a coverage gap, never an omission",
+    );
+    assert.match(
+      resumed.unrun.join("\n"),
+      /en-one repetition 2 .*stays failed|en-one repetition 2 .*not re-made/,
+    );
+    assert.equal(resumed.resumed?.reusedCalls.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a no-evidence retry record carries across an interruption, once", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-retry-"));
+  try {
+    let attempts = 0;
+    let calls = 0;
+    await assert.rejects(
+      fullResult({
+        runRoot: root,
+        journalRoot: root,
+        runId: RESUME_RUN_ID,
+        runScenario: async (input) => {
+          attempts += 1;
+          if (attempts === 1) {
+            return {
+              refusal: { code: "marks-missing", message: "the harness recorded no marks" },
+              attempt: null,
+              eligibility: null,
+              pipelineImage: null,
+            };
+          }
+          calls += 1;
+          if (calls === 4) throw new Error("the run process died");
+          return completedOutcome(input);
+        },
+      }),
+      /process died/,
+    );
+
+    const entries = journalEntries(journalFile(root));
+    assert.equal(entries.filter((entry) => entry.type === "retry").length, 1);
+
+    const made: string[] = [];
+    const resumed = await resumeResult(root, {
+      runScenario: async (input) => {
+        made.push(`${input.scenario}#${input.repetition}`);
+        return completedOutcome(input);
+      },
+    });
+
+    assert.ok(!made.includes("en-one#1"), "a completed retry is reused, not re-made");
+    assert.equal(resumed.exitCode, 3, resumed.refusals.join("\n"));
+    assert.equal(resumed.retries.length, 1, "the first half's retry is carried, not lost");
+    assert.equal(resumed.retries[0]?.code, "marks-missing");
+    assert.equal(resumed.retries[0]?.scenario, "en-one");
+    assert.equal(resumed.resumed?.reusedCalls.length, 3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a re-made call whose result never landed is not re-made a second time", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-interrupted-retry-"));
+  try {
+    await interruptedRun(root, { crashAt: 4 });
+    appendFileSync(
+      journalFile(root),
+      `${JSON.stringify({
+        type: "retry",
+        scenario: "es-one",
+        repetition: 1,
+        code: "marks-missing",
+        message: "the harness recorded no marks",
+        at: "2026-11-02T09:00:02.000Z",
+      })}\n`,
+      "utf8",
+    );
+
+    const made: string[] = [];
+    const resumed = await resumeResult(root, {
+      runScenario: async (input) => {
+        made.push(`${input.scenario}#${input.repetition}`);
+        return completedOutcome(input);
+      },
+    });
+
+    assert.ok(!made.includes("es-one#1"), "the one allowed re-make already happened");
+    assert.equal(resumed.exitCode, 1, "the interrupted re-make stays a failure");
+    assert.equal(
+      resumed.certificate?.coverage.rows.find((row) => row.scenario === "es-one")
+        ?.measuredRepetitions,
+      2,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resume refuses a journal whose evidence file is gone, naming both", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-evidence-"));
+  try {
+    const evidence = (input: ScenarioCallInput): string =>
+      join(root, "evidence", `${input.scenario}-${input.repetition}.wav`);
+    await interruptedRun(root, {
+      crashAt: 4,
+      runScenario: async (input) => {
+        const file = evidence(input);
+        mkdirSync(join(root, "evidence"), { recursive: true });
+        writeFileSync(file, "wav", "utf8");
+        return completedOutcome(input, { evidenceRefs: [file] });
+      },
+    });
+    unlinkSync(join(root, "evidence", "en-one-3.wav"));
+
+    const resumed = await resumeResult(root, {
+      runScenario: async (input) => completedOutcome(input),
+    });
+    assert.equal(resumed.exitCode, 2);
+    assert.equal(resumed.status, "refused");
+    assert.match(resumed.refusals.join("\n"), /en-one-3\.wav/);
+    assert.match(resumed.refusals.join("\n"), /en-one#3/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resume refuses by name when the journal is missing, unknown, torn or another world", async () => {
+  const cases: {
+    readonly name: string;
+    readonly prepare: (root: string) => Promise<unknown>;
+    readonly extra?: Parameters<typeof fullResult>[0];
+    readonly pattern: RegExp;
+  }[] = [
+    {
+      name: "missing",
+      prepare: async () => {},
+      pattern: /no journal at .*verify-journal-01/,
+    },
+    {
+      name: "unknown schema",
+      prepare: async (root) => {
+        await interruptedRun(root, { crashAt: 2 });
+        rewriteHeader(journalFile(root), (header) => {
+          header.schemaVersion = 99;
+        });
+      },
+      pattern: /schema version 99/,
+    },
+    {
+      name: "code moved",
+      prepare: (root) => interruptedRun(root, { crashAt: 2 }),
+      extra: {
+        readCodeFingerprint: () => ({ ...FINGERPRINT, head: "def456" }),
+      },
+      pattern: /code fingerprint .*def456/,
+    },
+    {
+      name: "corpus moved",
+      prepare: (root) => interruptedRun(root, { crashAt: 2 }),
+      extra: { corpus: { ...fullCorpus(), fingerprint: "b".repeat(64) } },
+      pattern: /corpus v7 b{64}/,
+    },
+    {
+      name: "vendor builds moved",
+      prepare: (root) => interruptedRun(root, { crashAt: 2 }),
+      extra: {
+        readVendorBuilds: async () => ({
+          schemaVersion: 1,
+          builds: VENDOR_BUILDS.builds.map((build) =>
+            build.leg === "tts" ? { ...build, buildId: "tts-moved" } : build,
+          ),
+        }),
+      },
+      pattern: /vendor build tts .*tts-moved/,
+    },
+    {
+      name: "plan moved",
+      prepare: (root) => interruptedRun(root, { crashAt: 2 }),
+      extra: {
+        plan: (corpus: Corpus) => ({
+          ...fullPlan(corpus),
+          repetitions: 1,
+          calls: corpus.scenarios.length,
+        }),
+      },
+      pattern: /plan .*repetitions|plan repetitions/,
+    },
+    {
+      name: "target moved",
+      prepare: async (root) => {
+        await interruptedRun(root, { crashAt: 2 });
+        rewriteHeader(journalFile(root), (header) => {
+          header.target = "staging";
+        });
+      },
+      pattern: /target "staging".*"local"|target/,
+    },
+    {
+      name: "torn middle",
+      prepare: async (root) => {
+        await interruptedRun(root, { crashAt: 4 });
+        const entries = journalEntries(journalFile(root));
+        writeFileSync(
+          journalFile(root),
+          `${entries.map((entry, index) => (index === 2 ? '{"type":"call"' : JSON.stringify(entry))).join("\n")}\n`,
+          "utf8",
+        );
+      },
+      pattern: /torn|not JSON/,
+    },
+  ];
+
+  for (const entry of cases) {
+    const root = mkdtempSync(join(tmpdir(), "dv-resume-refuse-"));
+    try {
+      await entry.prepare(root);
+      const result = await resumeResult(root, entry.extra ?? {});
+      assert.equal(result.exitCode, 2, `${entry.name}: ${result.refusals.join("\n")}`);
+      assert.equal(result.status, "refused", entry.name);
+      assert.match(result.refusals.join("\n"), entry.pattern, entry.name);
+      assert.match(result.detail, /journal/, entry.name);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a torn tail is truncated and only the missing calls are made", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-torn-"));
+  try {
+    await interruptedRun(root, { crashAt: 7 });
+    appendFileSync(journalFile(root), '{"type":"call","scenario":"fr-on', "utf8");
+
+    const made: string[] = [];
+    const resumed = await resumeResult(root, {
+      runScenario: async (input) => {
+        made.push(`${input.scenario}#${input.repetition}`);
+        return completedOutcome(input);
+      },
+    });
+
+    assert.equal(resumed.exitCode, 3, resumed.refusals.join("\n"));
+    assert.equal(resumed.resumed?.reusedCalls.length, 6);
+    assert.deepEqual(made, plannedKeys().slice(6));
+    const text = readFileSync(journalFile(root), "utf8");
+    assert.ok(text.endsWith("\n"), "the torn tail was truncated, not appended after");
+    const lines = text.trim().split("\n");
+    assert.equal(lines.length, 16, "the header and the union's fifteen calls remain");
+    for (const line of lines) {
+      assert.doesNotThrow(() => JSON.parse(line), "no half-written line remains");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a resume with no completed calls reuses nothing and still records the interruption", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-empty-"));
+  try {
+    await interruptedRun(root, { crashAt: 1 });
+
+    const made: string[] = [];
+    const resumed = await resumeResult(root, {
+      runScenario: async (input) => {
+        made.push(`${input.scenario}#${input.repetition}`);
+        return completedOutcome(input);
+      },
+    });
+
+    assert.equal(resumed.exitCode, 3, resumed.refusals.join("\n"));
+    assert.equal(made.length, 15, "every call was still missing");
+    assert.deepEqual(resumed.resumed?.reusedCalls, []);
+    assert.deepEqual(resumed.resumed?.madeCalls, plannedKeys());
+    assert.equal(resumed.certificate?.resume?.reusedCalls.length, 0);
+    assert.equal(resumed.certificate?.resume?.madeCalls.length, 15);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unmeasured cost in either half fails the resumed certificate closed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dv-resume-cost-"));
+  try {
+    const unmeasured = {
+      measured: false,
+      totalUsd: null,
+      rateTableVersion: "test-rates",
+      unmeasuredReason: "tts: the vendor did not report characters",
+      legs: {},
+    };
+    await interruptedRun(root, {
+      crashAt: 4,
+      runScenario: async (input) => {
+        const outcome = completedOutcome(input);
+        if (input.scenario === "en-one" && input.repetition === 2) {
+          return {
+            ...outcome,
+            attempt: {
+              ...(outcome.attempt as NonNullable<typeof outcome.attempt>),
+              evidence: { ...EVIDENCE, cost: unmeasured },
+            },
+          };
+        }
+        return outcome;
+      },
+    });
+
+    const made: string[] = [];
+    const resumed = await resumeResult(root, {
+      runScenario: async (input) => {
+        made.push(`${input.scenario}#${input.repetition}`);
+        return completedOutcome(input);
+      },
+    });
+
+    assert.equal(made.length, 12, "the missing calls are made before the total is judged");
+    assert.equal(resumed.exitCode, 2);
+    assert.equal(resumed.status, "refused");
+    assert.match(resumed.refusals.join("\n"), /en-one#2/);
+    assert.match(resumed.refusals.join("\n"), /unmeasured|characters|no cost total/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resume is explicit: a fast or diagnose run cannot be resumed", async () => {
+  const base = request(["--target", "local"]);
+  const fast = await runVerify({ ...base, mode: "fast", resume: RESUME_RUN_ID }, baseDeps());
+  assert.equal(fast.exitCode, 2);
+  assert.match(fast.refusals.join("\n"), /--resume belongs to a certification run/);
+
+  const diagnose = await runVerify(
+    { ...base, mode: "diagnose", scenario: "golden-flow-hello", resume: RESUME_RUN_ID },
+    baseDeps(),
+  );
+  assert.equal(diagnose.exitCode, 2);
+  assert.match(diagnose.refusals.join("\n"), /--resume belongs to a certification run/);
 });
 
 test("the committed corpus is still the source the fast plan reads", async () => {

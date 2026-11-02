@@ -147,6 +147,54 @@ test("Adapter flags pass through; an unknown value is still bad input", () => {
   assert.equal(request.json, true);
 });
 
+test("--resume names an existing certification journal explicitly", () => {
+  const full = parseVerifyArgs(["--target", "local", "--full", "--resume", "verify-run-01"]);
+  assert.equal(full.resume, "verify-run-01");
+  assert.equal(full.mode, "full");
+
+  const nightly = parseVerifyArgs(["--nightly", "--resume", "verify-run-02"]);
+  assert.equal(nightly.resume, "verify-run-02");
+
+  // Nothing resumes implicitly: a run without the flag has no journal target.
+  assert.equal(parseVerifyArgs(["--target", "local", "--full"]).resume, undefined);
+});
+
+test("--resume belongs to a certification run and needs a value", () => {
+  assert.match(
+    refusal(["--target", "local", "--fast", "--resume", "verify-run-01"]).message,
+    /--resume belongs to a certification run/,
+  );
+  assert.match(
+    refusal([
+      "--scenario",
+      "golden-flow-hello",
+      "--target",
+      "local",
+      "--diagnose",
+      "--resume",
+      "verify-run-01",
+    ]).message,
+    /--resume belongs to a certification run/,
+  );
+  assert.match(refusal(["--target", "local", "--full", "--resume"]).message, /--resume needs a value/);
+  assert.match(
+    refusal([
+      "--target",
+      "local",
+      "--full",
+      "--resume",
+      "verify-run-01",
+      "--resume",
+      "verify-run-02",
+    ]).message,
+    /--resume is given twice/,
+  );
+  assert.match(
+    refusal(["--target", "local", "--full", "--resume", "../escape"]).message,
+    /not a safe run id/,
+  );
+});
+
 test("--help is a request for usage, not a run", () => {
   const help = parseVerifyArgs(["--help"]);
   assert.equal(help.help, true);

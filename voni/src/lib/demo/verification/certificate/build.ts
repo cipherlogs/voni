@@ -33,6 +33,7 @@ import {
   type CertificateCorpusScenario,
   type CertificateEligibility,
   type CertificateProperty,
+  type CertificateResume,
   type CertificateScenarioVerdict,
   type CertificationAttempt,
   type CoverageRow,
@@ -403,6 +404,7 @@ export function buildCertificate(input: CertificateBuildInput): Certificate {
   const vendorBuilds = assertVendorBuilds(input.vendorBuilds);
   const residualRiskIds = assertResidualRisks(input.residualRiskIds);
   const panel = input.panel ?? null;
+  const resume: CertificateResume | null = input.resume ?? null;
 
   const verdict = deriveCertificateVerdict({
     eligibility,
@@ -442,6 +444,7 @@ export function buildCertificate(input: CertificateBuildInput): Certificate {
             signedAt: panel.signedAt,
             signature: panel.signature,
           },
+    resume,
     verdict,
     pass: verdict === "certified",
   };
