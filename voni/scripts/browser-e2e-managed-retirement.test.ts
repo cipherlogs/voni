@@ -72,9 +72,13 @@ test("the behavior suite runs no managed demo hold path", () => {
 
 test("no browser spec answers the demo mint with the retired managed body", () => {
   const specs = readdirSync(E2E).filter((name) => name.endsWith(".spec.ts"));
-  const minting = specs.filter((name) =>
-    readFileSync(resolve(E2E, name), "utf8").includes("/api/demo/token"),
-  );
+  // A spec that *routes* the mint answers it and must carry the cascade
+  // contract. A spec that only observes the mint's response (the certifying
+  // harness reads the call id from it) answers nothing and is not a fake.
+  const minting = specs.filter((name) => {
+    const text = readFileSync(resolve(E2E, name), "utf8");
+    return text.includes("/api/demo/token") && /\broute\s*\(/.test(text);
+  });
   assert.ok(minting.length > 0, "the cascade rig must still answer the one mint");
   for (const name of minting) {
     assert.match(
