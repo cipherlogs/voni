@@ -884,13 +884,21 @@ class CascadeTurnStream:
         self._spoken_replies.append(text)
 
     def _is_repeat(self, sentence: str) -> bool:
-        """Whether this sentence duplicates any reply already spoken this call."""
+        """Whether this sentence duplicates any already spoken in this call.
+
+        The comparison covers the replies already heard and the sentences
+        already spoken in the current reply, so a model that emits the same
+        line twice inside one reply cannot say it twice.
+        """
         normal = _normal_form(sentence)
         if len(normal.split()) < REPEAT_MIN_WORDS:
             return False
+        replies = list(self._spoken_replies)
+        if self._reply_text.strip():
+            replies.append(self._reply_text)
         return any(
             _normal_form(prior) == normal
-            for reply in self._spoken_replies
+            for reply in replies
             for prior in _reply_sentences(reply)
         )
 
@@ -937,13 +945,23 @@ class CascadeTurnStream:
         # when a duplicate is actually in it, so ordinary batching is unchanged.
         if not force:
             pieces = _reply_sentences(text) or [text]
-            if len(pieces) > 1 and any(self._is_repeat(piece) for piece in pieces):
-                for piece in pieces:
-                    if self._is_repeat(piece):
-                        self._drop_repeat(piece)
-                    else:
+            if len(pieces) > 1:
+                normals = [_normal_form(piece) for piece in pieces]
+                duplicated = any(
+                    len(normals[index].split()) >= REPEAT_MIN_WORDS
+                    and (
+                        self._is_repeat(pieces[index])
+                        or normals[index] in normals[:index]
+                    )
+                    for index in range(len(pieces))
+                )
+                if duplicated:
+                    # Speak sentence by sentence so the exact guard can see
+                    # each new sentence in _reply_text before the next one is
+                    # compared; a duplicate inside this one chunk is withheld.
+                    for piece in pieces:
                         await self._speak(piece)
-                return
+                    return
             if self._is_repeat(text):
                 self._drop_repeat(text)
                 return
