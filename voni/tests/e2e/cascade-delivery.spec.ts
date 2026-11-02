@@ -485,6 +485,7 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
     "socket_open",
     "admitted",
     "connected_painted",
+    "capture_started",
     "first_audible",
     "chime",
     "turn",
@@ -506,8 +507,18 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
   // asserting either order. An L2 evaluator (ticket 18) judges it.
   const connectedBeforeAdmission = at("connected_painted") < at("admitted");
   expect(at("connected_painted")).toBeGreaterThanOrEqual(0);
+  expect(at("capture_started")).toBeGreaterThan(at("microphone_acquired"));
   expect(at("first_audible")).toBeGreaterThan(at("admitted"));
   expect(at("chime")).toBeGreaterThan(at("first_audible"));
+
+  // The capture's real origin is a page-clock reading, never a wall-clock
+  // approximation; the preview mix places caller takes against it.
+  const captureStarted = marks.marks.find((mark) => mark.name === "capture_started");
+  expect(captureStarted!.detail?.atMs, "capture_started carries a page-clock atMs").toEqual(
+    expect.any(Number),
+  );
+  expect(Number.isFinite(captureStarted!.detail?.atMs as number)).toBe(true);
+  expect(captureStarted!.detail?.atMs as number).toBeGreaterThanOrEqual(0);
   expect(at("end_call_received")).toBeGreaterThan(at("chime"));
   expect(at("teardown")).toBeGreaterThan(at("end_call_received"));
 

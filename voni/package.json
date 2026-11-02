@@ -59,6 +59,7 @@
     "check:real-legs": "node --env-file-if-exists=.env.local --import tsx scripts/real-legs.mts",
     "demo:verify": "node --env-file-if-exists=.env.local --import tsx scripts/demo-verify.mts",
     "demo:usage": "node --env-file-if-exists=.env.local --import tsx scripts/demo-usage.mts",
+    "demo:preview-mix": "node scripts/demo-preview-mix.mjs",
     "demo:studio": "node --import tsx scripts/studio/server.mts",
     "demo:certificate": "node --import tsx scripts/demo-certificate.mts",
     "demo:cutover": "node --import tsx scripts/demo-cutover.mts",

@@ -17,6 +17,7 @@ import {
   callMarksRequested,
   createCallMarks,
   isCallMarksArtifact,
+  pageClockMs,
   type CallMarksArtifact,
 } from "./call-marks";
 
@@ -223,4 +224,17 @@ test("a finished recorder refuses a late call-id rebind", async () => {
   await marks.finish();
   assert.equal(marks.adoptCallId("call-06"), false);
   assert.equal(marks.callId, "call-05");
+});
+
+test("the page clock is the harness timeline's clock when one is installed", () => {
+  const harness = globalThis as { __voniAgentTimeline?: { origin?: unknown } };
+  try {
+    harness.__voniAgentTimeline = { origin: 100 };
+    assert.equal(pageClockMs(175), 75, "raw performance.now less the harness origin");
+    harness.__voniAgentTimeline = { origin: "not-a-number" };
+    assert.equal(pageClockMs(175), 175, "a malformed origin is never subtracted");
+  } finally {
+    delete harness.__voniAgentTimeline;
+  }
+  assert.equal(pageClockMs(175), 175, "no harness timeline keeps the same monotonic clock");
 });

@@ -126,6 +126,7 @@ type PostedTap =
   | { type: "level"; idle: boolean; consumed?: number }
   | { type: "pop"; kind?: string; size?: number }
   | { type: "tap"; samples?: Float32Array }
+  | { type: "tap-start"; at?: number }
   | { type: "tap-end" };
 
 /** Concatenate the tap's posted blocks, as the main thread's capture would. */
@@ -271,6 +272,28 @@ test("delivered capture: the tap posts exactly the samples the worklet emitted",
   assertSameSamples(captured, out, "capture vs emitted stream");
   // The ack follows the final block, so teardown can await a complete file.
   assert.equal(posted.at(-1)?.type, "tap-end");
+});
+
+test("delivered capture: the tap names its first written sample exactly once", () => {
+  const { posted } = runPlayout({ arrivals: jitteryReply(), seconds: 1.5, tap: true });
+  const starts = posted.filter((message) => message.type === "tap-start");
+  assert.equal(starts.length, 1, "one capture-start message per tap start");
+  const startAt = posted.findIndex((message) => message.type === "tap-start");
+  const firstBlock = posted.findIndex(
+    (message) => message.type === "tap" && (message.samples?.length ?? 0) > 0,
+  );
+  assert.ok(startAt >= 0 && firstBlock > startAt, "the origin precedes the first captured block");
+  const origin = posted[startAt] as Extract<PostedTap, { type: "tap-start" }>;
+  assert.equal(
+    Number.isFinite(origin.at),
+    true,
+    "the worklet names the context time of the first written sample",
+  );
+});
+
+test("delivered capture: no capture-start mark while the tap is off", () => {
+  const { posted } = runPlayout({ arrivals: jitteryReply(), seconds: 1.5 });
+  assert.equal(posted.filter((message) => message.type === "tap-start").length, 0);
 });
 
 /**

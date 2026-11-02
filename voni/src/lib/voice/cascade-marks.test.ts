@@ -66,9 +66,10 @@ function makePlayout() {
   return playout as Playout & { onFirstAudible?: () => void };
 }
 
-/** A playout with the worklet's tap accessor, plus a way to emit a block. */
+/** A playout with the worklet's tap accessors, plus a way to emit a block. */
 function makeTappablePlayout() {
   let collector: ((samples: Float32Array) => void) | undefined;
+  let captureStarted: (() => void) | undefined;
   const playout = {
     onFirstAudible: undefined as (() => void) | undefined,
     play() {},
@@ -81,10 +82,17 @@ function makeTappablePlayout() {
     set onTap(fn: ((samples: Float32Array) => void) | undefined) {
       collector = fn;
     },
+    get onCaptureStarted() {
+      return captureStarted;
+    },
+    set onCaptureStarted(fn: (() => void) | undefined) {
+      captureStarted = fn;
+    },
   };
   return {
     playout: playout as unknown as Playout,
     emit: (samples: Float32Array) => collector?.(samples),
+    startCapture: () => captureStarted?.(),
   };
 }
 
@@ -299,6 +307,48 @@ test("the delivered WAV and the marks artifact share the call id", async () => {
   });
   assert.equal(posted[0]!.callId, "call-marks-05");
   assert.ok(written[0]!.name.includes(posted[0]!.callId), "the WAV name carries the same call id");
+});
+
+test("the capture's first written sample is one capture_started mark", async () => {
+  const socket = makeSocket();
+  const { marks, posted } = recorder();
+  const { playout, emit, startCapture } = makeTappablePlayout();
+
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {},
+        audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+        playout,
+      }),
+      writeCapture: () => undefined,
+      marks,
+    },
+  );
+  session.setDeliveredCapture(true, "call-marks-05");
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  startCapture();
+  startCapture();
+  emit(new Float32Array([0.25, -0.25]));
+  await session.stop();
+  await settleMarks();
+
+  const started = posted[0]!.marks.filter((mark) => mark.name === "capture_started");
+  assert.equal(started.length, 1, "one anchor, never one per tap block or report");
+  assert.equal(typeof started[0]!.detail?.atMs, "number");
+  assert.equal(
+    Number.isFinite(started[0]!.detail?.atMs),
+    true,
+    "the anchor is a page-clock reading",
+  );
+  assert.ok(
+    (started[0]!.detail?.atMs as number) >= 0,
+    "the anchor never precedes the page clock's origin",
+  );
 });
 
 test("a caller hang-up waits (bounded) for the service's end and marks it", async () => {

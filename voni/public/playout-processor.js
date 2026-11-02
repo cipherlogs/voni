@@ -52,6 +52,8 @@
  *               blocks. The tap copies after rendering, so it never changes a
  *               sample. Turning it off posts the final partial block, then
  *               {type:"tap-end"} so the main thread can close a complete WAV.
+ *               {type:"tap-start"}  once, at the first sample the tap writes:
+ *               the capture's real origin, for the page clock's mark writer.
  */
 /**
  * The target cushion: how much audio a reply holds before it starts. This is
@@ -259,6 +261,8 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.tapOn = false;
     this.tapBuf = null;
     this.tapLen = 0;
+    /** Whether the tap has named the capture's first written sample yet. */
+    this.tapStarted = false;
     this.port.onmessage = (e) => this.receive(e.data);
   }
 
@@ -477,6 +481,7 @@ class PlayoutProcessor extends AudioWorkletProcessor {
     this.tapBlock = Math.max(128, Math.round(sampleRate * TAP_BLOCK_S));
     this.tapBuf = new Float32Array(this.tapBlock);
     this.tapLen = 0;
+    this.tapStarted = false;
     this.tapOn = true;
   }
 
@@ -494,6 +499,17 @@ class PlayoutProcessor extends AudioWorkletProcessor {
    * what the speaker receives.
    */
   tapWrite(out) {
+    // The capture's real origin: the first sample this tap writes, not when
+    // the tap was turned on and not when audio was queued. One message per
+    // tap start; the main thread stamps the page clock on receipt and the
+    // preview mix places every caller take against that one anchor.
+    if (!this.tapStarted) {
+      this.tapStarted = true;
+      // `at` is the context time of this quantum, so the main thread can
+      // recover the first written sample's page time without waiting for the
+      // message to be handled.
+      this.port.postMessage({ type: "tap-start", at: currentTime });
+    }
     for (let i = 0; i < out.length; i++) {
       if (this.tapLen === this.tapBlock) this.postTap();
       this.tapBuf[this.tapLen++] = out[i];
