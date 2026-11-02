@@ -92,6 +92,7 @@ function writeCertificate(
   runId: string,
   rows: readonly { readonly scenario: string; readonly locale: string; readonly calls: readonly string[] }[],
   callCount: number,
+  usd = 0,
 ): string {
   const dir = join(evidenceRoot, "certificates");
   mkdirSync(dir, { recursive: true });
@@ -102,7 +103,7 @@ function writeCertificate(
       {
         schemaVersion: 1,
         runId,
-        cost: { usd: 0, callCount },
+        cost: { usd, callCount },
         coverage: {
           rows: rows.map((row) => ({
             locale: row.locale,
@@ -150,6 +151,7 @@ test("resolves a certificate run id through its coverage call ids", () => {
         { scenario: MEASURED_LLM.scenario, locale: "en", calls: [MEASURED_LLM.callId] },
       ],
       2,
+      0.008584,
     );
 
     const run = resolveRun("verify-20261102-01", { runRoot, evidenceRoot });
@@ -216,6 +218,7 @@ test("--latest prefers a newer certificate over an older adapter run", () => {
       "verify-20261102-02",
       [{ scenario: MEASURED.scenario, locale: "en", calls: [MEASURED.callId] }],
       1,
+      0.003085,
     );
     const old = new Date("2026-11-01T10:00:00Z");
     const fresh = new Date("2026-11-02T10:00:00Z");
@@ -318,8 +321,29 @@ test("refuses a certificate whose call count disagrees with the resolved calls",
       "verify-count",
       [{ scenario: MEASURED.scenario, locale: "en", calls: [MEASURED.callId] }],
       2,
+      0.003085,
     );
     const code = refusalCode(() => resolveRun("verify-count", { runRoot, evidenceRoot }));
+    assert.equal(code, "torn-row");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a certificate whose usd disagrees with its priced rows", () => {
+  const root = tempRoot();
+  try {
+    const runRoot = join(root, ".demo-runs");
+    const evidenceRoot = join(root, "evidence");
+    writeRun(runRoot, "browser-usd", [MEASURED]);
+    writeCertificate(
+      evidenceRoot,
+      "verify-usd",
+      [{ scenario: MEASURED.scenario, locale: "en", calls: [MEASURED.callId] }],
+      1,
+      0.009999,
+    );
+    const code = refusalCode(() => resolveRun("verify-usd", { runRoot, evidenceRoot }));
     assert.equal(code, "torn-row");
   } finally {
     rmSync(root, { recursive: true, force: true });

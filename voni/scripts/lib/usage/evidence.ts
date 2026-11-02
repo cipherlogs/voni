@@ -282,6 +282,10 @@ function certificateCalls(certificate: Record<string, unknown>, runId: string): 
   if (typeof callCount !== "number" || !Number.isInteger(callCount) || callCount < 0) {
     refuse("torn-row", `certificate ${runId} cost.callCount is not a non-negative integer`);
   }
+  const certificateUsd = cost.usd;
+  if (typeof certificateUsd !== "number" || !Number.isFinite(certificateUsd) || certificateUsd < 0) {
+    refuse("torn-row", `certificate ${runId} cost.usd is not a finite, non-negative amount`);
+  }
   const coverage = certificate.coverage;
   if (!isObject(coverage)) refuse("torn-row", `certificate ${runId} has no coverage object`);
   const rows = coverage.rows;
@@ -398,6 +402,25 @@ function certificateRun(
     }
     return readCallDir(callDir, entry.callId, entry.scenario, entry.locale);
   });
+  // The certificate rounds its aggregate to six decimals; compare at that
+  // precision so a rounded claim is not a torn one, but a drifted total is.
+  const certificateUsd = (certificate.cost as Record<string, unknown>).usd as number;
+  const measuredUsd = resolved.reduce(
+    (sum, call) =>
+      sum +
+      call.priced.legs.reduce(
+        (legSum, leg) => legSum + (leg.measured ? (leg.amountUsd ?? 0) : 0),
+        0,
+      ),
+    0,
+  );
+  if (Math.round(certificateUsd * 1e6) !== Math.round(measuredUsd * 1e6)) {
+    refuse(
+      "torn-row",
+      `certificate ${runId} claims $${certificateUsd.toFixed(6)} but its priced rows sum to ` +
+        `$${measuredUsd.toFixed(6)}; the committed claim and the local trace disagree`,
+    );
+  }
   return {
     runId,
     kind: "certificate",
