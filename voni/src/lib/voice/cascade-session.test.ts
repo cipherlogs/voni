@@ -14,8 +14,10 @@ import {
   encodeContextMessage,
   parseServerMessage,
   MIC_GATE_FALLBACK_MS,
+  RECONNECT_HANDSHAKE_MS,
   type CascadeCallConfig,
 } from "./cascade-session";
+import { CallMarks } from "./call-marks";
 import { createWorkletPlayout } from "./playout";
 import {
   MICROPHONE_MUTED_CONTEXT,
@@ -310,7 +312,7 @@ type FakeSocket = {
   onopen: (() => void) | null;
   onmessage: ((event: { data: string }) => void) | null;
   onerror: (() => void) | null;
-  onclose: (() => void) | null;
+  onclose: ((event?: { code?: number; reason?: string }) => void) | null;
   closed: boolean;
   readyState: number;
   OPEN: number;
@@ -1115,4 +1117,339 @@ test("a socket that closes after the service accepted the call stays an ordinary
 
   assert.deepEqual(failures, [], "an accepted call ending is not a connect fallback");
   assert.deepEqual(ended, { turns: 0 });
+});
+
+// ── One bounded client reconnect after a live socket drop (R2) ─────────────
+//
+// The demo client used to end a mid-call transport drop as `dropped` with no
+// evidence. It now re-mints the resume body for the same call id (the hold
+// return the pipeline already supports), reconnects once and re-sends config;
+// the resumed body carries no greeting, so nothing is replayed. Every case
+// below is a fake socket and a fake mint: no vendor, no browser.
+
+const RESUME_CONFIG: CascadeCallConfig = {
+  ...CONFIG,
+  serviceUrl: "ws://127.0.0.1:8766/v1/browser-call-resume",
+  callToken: "call-token-resumed",
+};
+
+function testMarks(callId = "call-reconnect"): CallMarks {
+  return new CallMarks({ callId, post: async () => undefined });
+}
+
+function namedMarks(marks: CallMarks, name: string) {
+  return marks.artifact().marks.filter((mark) => mark.name === name);
+}
+
+/** Two fakes plus the factory the session opens them from, in order. */
+function socketPair() {
+  const sockets = [makeSocket(), makeSocket()];
+  let opened = 0;
+  return {
+    sockets,
+    factory: () => sockets[opened++] as unknown as WebSocket,
+    get opened() {
+      return opened;
+    },
+  };
+}
+
+test("an unexpected drop on a live call reconnects once with the resumed identity", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  const requests: Array<{ reason: string; attempt: number }> = [];
+  const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  let micStarts = 0;
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1) },
+    {
+      socketFactory: pair.factory,
+      startMic: async (_owner, onFrame) => {
+        micStarts += 1;
+        mic.onFrame = onFrame;
+        return { stop: () => {} };
+      },
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async (request) => {
+        requests.push(request);
+        return RESUME_CONFIG;
+      },
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const first = pair.sockets[0];
+  first.readyState = first.OPEN;
+  first.onopen?.();
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+  // The service is live (its first audio opens the mic gate).
+  first.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([0]).toString("base64"),
+      sample_rate: 24_000,
+    }),
+  );
+
+  first.onclose?.({ code: 1006, reason: "transport dropped" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(requests, [{ reason: "socket-closed", attempt: 1 }]);
+  assert.equal(pair.opened, 2, "one replacement socket, never a loop");
+  assert.equal(ended, 0, "a call that is reconnecting has not ended");
+  assert.equal(micStarts, 1, "the live microphone is kept, never re-acquired");
+  assert.equal(pair.sockets[1].sent.length, 0, "nothing is sent before it opens");
+
+  const reconnects = namedMarks(marks, "reconnect");
+  assert.equal(reconnects.length, 1);
+  assert.deepEqual(reconnects[0].detail, { reason: "socket-closed", attempt: 1, code: 1006 });
+
+  // The resumed call sends config on the new socket and replays nothing: the
+  // resume body omits the greeting, so the client has no greeting to re-send.
+  const second = pair.sockets[1];
+  second.readyState = second.OPEN;
+  second.onopen?.();
+  assert.deepEqual(
+    second.sent.map((raw) => JSON.parse(raw).type),
+    ["config"],
+    "the reconnected socket opens with config alone",
+  );
+  assert.deepEqual(JSON.parse(second.sent[0]), {
+    type: "config",
+    protocolVersion: CASCADE_PROTOCOL_VERSION,
+    agentId: CONFIG.agentId,
+    callToken: RESUME_CONFIG.callToken,
+  });
+
+  // The same microphone now reaches the new socket (the old closure held the
+  // first socket and would have gone silent).
+  second.emit(JSON.stringify({ type: "caption", role: "agent", text: "go on", final: true }));
+  mic.onFrame?.(new Uint8Array([7]).buffer);
+  assert.equal(
+    second.sent.filter((raw) => JSON.parse(raw).type === "audio").length,
+    1,
+    "caller audio follows the reconnected socket",
+  );
+  assert.equal(ended, 0);
+});
+
+test("a caller's stop never reconnects", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  let requests = 0;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => {
+        requests += 1;
+        return RESUME_CONFIG;
+      },
+    },
+  );
+  const clock = mock.timers;
+  clock.enable({ apis: ["setTimeout"] });
+  try {
+    await session.start(CONFIG, "test-owner");
+    const socket = pair.sockets[0];
+    socket.readyState = socket.OPEN;
+    socket.onopen?.();
+    socket.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+    const stopping = session.stop();
+    clock.tick(CALLER_END_WAIT_MS);
+    await stopping;
+    // The browser fires close after a teardown.
+    socket.onclose?.({ code: 1000, reason: "caller hung up" });
+    await Promise.resolve();
+
+    assert.equal(requests, 0, "a stop is not a drop");
+    assert.equal(namedMarks(marks, "reconnect").length, 0);
+    assert.equal(pair.opened, 1, "no second socket is opened");
+  } finally {
+    clock.reset();
+  }
+});
+
+test("a connect failure before the call is live never reconnects", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  const failures: DrainingError[] = [];
+  let requests = 0;
+  const session = new CascadeSession(
+    { onConnectFailure: (error) => failures.push(error) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => {
+        requests += 1;
+        return RESUME_CONFIG;
+      },
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  pair.sockets[0].readyState = pair.sockets[0].OPEN;
+  pair.sockets[0].onerror?.();
+  pair.sockets[0].onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].code, "unavailable");
+  assert.equal(requests, 0, "nothing was live, so there is nothing to resume");
+  assert.equal(namedMarks(marks, "reconnect").length, 0);
+  assert.equal(pair.opened, 1);
+});
+
+test("a failed reconnect ends the call once with its named cause", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  const causes: string[] = [];
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1), onReconnectFailed: (cause) => causes.push(cause) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => {
+        throw new Error("the mint refused the resume");
+      },
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const socket = pair.sockets[0];
+  socket.readyState = socket.OPEN;
+  socket.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+  socket.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(pair.opened, 1, "a refused attempt opens no second socket");
+  assert.equal(ended, 1, "the call ends honestly");
+  assert.deepEqual(causes, ["mint-failed"]);
+  const failed = namedMarks(marks, "reconnect_failed");
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].detail?.cause, "mint-failed");
+  assert.equal(failed[0].detail?.attempt, 1);
+});
+
+test("a second drop ends the call with the named cause, never a third socket", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  let requests = 0;
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => {
+        requests += 1;
+        return RESUME_CONFIG;
+      },
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const first = pair.sockets[0];
+  first.readyState = first.OPEN;
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+  first.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const second = pair.sockets[1];
+  second.readyState = second.OPEN;
+  second.onopen?.();
+  second.emit(JSON.stringify({ type: "caption", role: "agent", text: "hello again", final: true }));
+
+  second.onclose?.({ code: 1006, reason: "dropped again" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(requests, 1, "exactly one reconnect is attempted");
+  assert.equal(pair.opened, 2, "the second drop opens no third socket");
+  assert.equal(ended, 1);
+  const failed = namedMarks(marks, "reconnect_failed");
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].detail?.cause, "second-drop");
+  assert.equal(failed[0].detail?.attempt, 2);
+});
+
+test("a reconnect that is never admitted is bounded and names the timeout", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: () => new Promise<CascadeCallConfig>(() => undefined),
+    },
+  );
+  const clock = mock.timers;
+  clock.enable({ apis: ["setTimeout"] });
+  try {
+    await session.start(CONFIG, "test-owner");
+    const socket = pair.sockets[0];
+    socket.readyState = socket.OPEN;
+    socket.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+    socket.onclose?.({ code: 1006 });
+    // The mint hangs; only the recorded handshake bound releases the call.
+    clock.tick(RECONNECT_HANDSHAKE_MS);
+    await Promise.resolve();
+
+    assert.equal(ended, 1, "a stuck reconnect never holds the call open");
+    const failed = namedMarks(marks, "reconnect_failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].detail?.cause, "timeout");
+    assert.equal(failed[0].detail?.attempt, 1);
+    assert.equal(pair.opened, 1, "the socket never opened");
+  } finally {
+    clock.reset();
+  }
+});
+
+test("a service refusal during the reconnect is a reconnect failure, not a connect refusal", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  const failures: DrainingError[] = [];
+  let ended = 0;
+  const session = new CascadeSession(
+    { onConnectFailure: (error) => failures.push(error), onEnd: () => (ended += 1) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => RESUME_CONFIG,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const first = pair.sockets[0];
+  first.readyState = first.OPEN;
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+  first.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const second = pair.sockets[1];
+  second.readyState = second.OPEN;
+  second.emit(JSON.stringify({ type: "error", code: "draining", message: "draining now" }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(failures, [], "the call was live; this is not a connect refusal");
+  assert.equal(ended, 1);
+  const failed = namedMarks(marks, "reconnect_failed");
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].detail?.cause, "refused:draining");
 });

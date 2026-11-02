@@ -54,6 +54,26 @@ function browserEdge(context: EvaluatorContext): Row | null {
   return rowOf(browser?.edge);
 }
 
+/**
+ * The client's own marks (`browser.marks`, the artifact the adapter copies
+ * beside the delivered WAV). The artifact nests its entries under `marks`; a
+ * fixture may hand the array directly.
+ */
+function browserMarkRows(context: EvaluatorContext): Row[] {
+  const browser = rowOf(context.evidence.browser);
+  const artifact = rowOf(browser?.marks);
+  const entries = Array.isArray(browser?.marks) ? browser.marks : artifact?.marks;
+  return Array.isArray(entries) ? entries.filter(isRow) : [];
+}
+
+function markTime(row: Row): number | null {
+  return number(row.tMs) ?? number(row.epochMs);
+}
+
+function markDetail(row: Row): Row | null {
+  return rowOf(row.detail);
+}
+
 function strings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === "string");
@@ -166,7 +186,23 @@ const R2: PropertyEvaluator = {
               (condition.kind === "page-freeze" || condition.kind === "page-hidden"),
           )
         : false);
-    if (reconnectRows.length === 0 && !rejoined) {
+    // A transport-level reconnect is the client's, not a pipeline leg's: it is
+    // recorded as a `reconnect` mark. The claim only holds when a later
+    // `admitted` mark proves the replacement socket reached the service.
+    const markRows = browserMarkRows(context);
+    const reconnectMarks = markRows.filter((mark) => mark.name === "reconnect");
+    const failedMarks = markRows.filter((mark) => mark.name === "reconnect_failed");
+    const admittedMarks = markRows.filter((mark) => mark.name === "admitted");
+    const lastReconnect = reconnectMarks[reconnectMarks.length - 1] ?? null;
+    const reconnectAt = lastReconnect === null ? null : markTime(lastReconnect);
+    const reAdmitted =
+      reconnectAt !== null &&
+      admittedMarks.some((mark) => {
+        const at = markTime(mark);
+        return at !== null && at > reconnectAt;
+      });
+    const clientClaim = reconnectMarks.length > 0;
+    if (reconnectRows.length === 0 && !rejoined && !clientClaim) {
       return unmeasured(
         "the call recorded no reconnect and applied no freeze/rejoin edge condition; " +
           "R2 cannot be claimed from a call that never reconnected",
@@ -186,14 +222,31 @@ const R2: PropertyEvaluator = {
       .filter((value) => Number.isInteger(value));
     const outOfOrder = epochs.some((value, index) => index > 0 && value < epochs[index - 1]!);
     const greetings = greetingStarts(rows);
-    const passed = duplicateIds === 0 && !outOfOrder && greetings <= 1;
+    const failedCause =
+      failedMarks.length === 0
+        ? ""
+        : text(markDetail(failedMarks[failedMarks.length - 1]!)?.cause) || "unknown";
+    const reconnected = reconnectRows.length > 0 || rejoined || reAdmitted;
+    // The client's reconnect mark never relaxes the ledger's own checks: a
+    // duplicate turn, a backwards epoch, a second greeting or a failed
+    // reconnect still fails R2.
+    const passed =
+      duplicateIds === 0 && !outOfOrder && greetings <= 1 && failedCause === "" && reconnected;
     return categorical(
       context,
       passed,
       `reconnect rows ${reconnectRows.length}; turn ids ${ids.length} with ` +
         `${duplicateIds} duplicate(s); ${greetings} greeting start(s)` +
-        `${outOfOrder ? "; turn epochs went backwards" : ""}`,
-      [...new Set(ids.map((id) => `turn:${id}`)), ...reconnectRows.map(() => "trace:reconnect")],
+        `${outOfOrder ? "; turn epochs went backwards" : ""}` +
+        (clientClaim
+          ? `; client reconnect ${reAdmitted ? "re-admitted" : "not re-admitted"}`
+          : "") +
+        (failedCause === "" ? "" : `; reconnect failed: ${failedCause}`),
+      [
+        ...new Set(ids.map((id) => `turn:${id}`)),
+        ...reconnectRows.map(() => "trace:reconnect"),
+        ...(clientClaim ? ["browser:reconnect"] : []),
+      ],
     );
   },
   source: "resilience.evaluators",

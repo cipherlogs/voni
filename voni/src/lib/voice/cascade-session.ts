@@ -16,6 +16,7 @@
  * vendor keys either way.
  */
 
+import BOUNDS from "./cascade-bounds.json";
 import { acquireMicStream, startAudioGraph } from "./mic-capture";
 import { releaseMic } from "./mic-owner";
 import type { Playout, WorkletPlayout } from "./playout";
@@ -58,6 +59,15 @@ export const CASCADE_PROTOCOL_VERSION = 1;
  * left unheard.
  */
 export const MIC_GATE_FALLBACK_MS = 8_000;
+
+/**
+ * How long one client reconnect may spend minting the resume body and opening
+ * the replacement socket before it is a named failure. The bound is the
+ * pipeline's recorded reconnect handshake (`reconnect.handshake_ms`), copied
+ * once into `cascade-bounds.json`; a reconnect never waits on an invented
+ * number.
+ */
+export const RECONNECT_HANDSHAKE_MS = BOUNDS.reconnectHandshakeMs;
 
 /**
  * How long a caller's hang-up keeps the socket open for the service's `end`.
@@ -132,6 +142,15 @@ export class DrainingError extends Error {
   }
 }
 
+/**
+ * What a live call's one reconnect attempt is doing: the transport drop it is
+ * answering and which attempt this is (always 1 today).
+ */
+export type CascadeReconnectRequest = {
+  reason: string;
+  attempt: number;
+};
+
 export type CascadeHandlers = {
   onCaption?: (caption: CascadeCaption) => void;
   onAudio?: (pcm: Uint8Array, sampleRate: number) => void;
@@ -139,6 +158,12 @@ export type CascadeHandlers = {
   onMetrics?: (metrics: unknown, turns: number) => void;
   onError?: (message: string) => void;
   onEnd?: (info: { turns: number }) => void;
+  /**
+   * The live call could not be resumed: the one attempt timed out, its mint
+   * was refused, or a second drop arrived. Fires once with the named cause,
+   * immediately before `onEnd`; the visitor is owed the reason.
+   */
+  onReconnectFailed?: (cause: string) => void;
   /** The playout emitted its first audible sample for this connection (once). */
   onFirstAudible?: () => void;
   /**
@@ -297,6 +322,12 @@ export type CascadeDeps = {
    * page posts on teardown. Absent means the stream is off.
    */
   marks?: CallMarks | null;
+  /**
+   * Re-mint the resume body for the same call id and return the replacement
+   * identity (the hold-return mint the pipeline already supports). Absent means
+   * a live drop keeps the old behaviour: the call ends.
+   */
+  reconnect?: (request: CascadeReconnectRequest) => Promise<CascadeCallConfig>;
 };
 
 /** The worklet handle `out` is a `WorkletPlayout`; a test playout may not be. */
@@ -384,6 +415,18 @@ export class CascadeSession {
   private endMissingMarked = false;
   /** A `stop` waiter for the service's end, resolved by the frame or the bound. */
   private endWaiters: Array<(received: boolean) => void> = [];
+  /**
+   * One client reconnect per call: a second transport drop ends the call. The
+   * count is the attempt number the reconnect marks carry; it resets only with
+   * a fresh session.
+   */
+  private reconnectAttempts = 0;
+  /** A reconnect is minting/connecting; the replacement socket has not admitted. */
+  private reconnecting = false;
+  /** The named reconnect failure was already reported (one report per call). */
+  private reconnectFailedReported = false;
+  /** The handshake bound that releases a stuck reconnect. */
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly writeCapture: CaptureWrite;
   private readonly captureNow: (() => Date) | undefined;
   private readonly marks: CallMarks | null;
@@ -416,36 +459,22 @@ export class CascadeSession {
     this.callerStop = false;
     this.endMissingMarked = false;
     this.endWaiters = [];
-    const socketFactory = this.deps.socketFactory ?? ((url: string) => new WebSocket(url));
-    const ws = socketFactory(config.serviceUrl);
-    this.ws = ws;
-    ws.onopen = () => {
-      this.marks?.mark("socket_open");
-      this.sendConfig(config);
-    };
-    ws.onmessage = (event: MessageEvent) => {
-      this.receive(typeof event.data === "string" ? event.data : "");
-    };
-    ws.onerror = () => {
-      if (!this.accepted) {
-        this.failConnect("unavailable", "Connection to the voice service failed.");
-        return;
-      }
-      this.handlers.onError?.("Connection to the voice service failed.");
-    };
-    ws.onclose = () => {
-      if (!this.accepted && !this.ended && !this.connectFailureReported) {
-        this.failConnect(
-          "unavailable",
-          "The voice service closed the connection before the call started.",
-        );
-        return;
-      }
-      this.finish(0);
-    };
+    this.reconnectAttempts = 0;
+    this.reconnecting = false;
+    this.reconnectFailedReported = false;
+    this.clearReconnectTimer();
+    this.openSocket(config);
     const startMic = this.deps.startMic ?? defaultStartMic;
     const handle = await startMic(micOwner, (data) => {
-      if (this.started && this.micLive && !this.inputMuted && ws.readyState === ws.OPEN) {
+      // The current socket, never the first one: a reconnect replaces `ws`, and
+      // a closure over the dropped socket would leave the caller unheard.
+      if (
+        this.started &&
+        this.micLive &&
+        !this.inputMuted &&
+        this.ws !== null &&
+        this.ws.readyState === this.ws.OPEN
+      ) {
         this.send(encodeAudioFrame(data));
       }
     });
@@ -491,7 +520,139 @@ export class CascadeSession {
     // bound keeps that call able to speak rather than silent forever.
     this.micGateTimer = setTimeout(() => this.openMicGate(), MIC_GATE_FALLBACK_MS);
     // Socket may already be open (fake sockets, fast localhost): flush config now.
-    if (ws.readyState === ws.OPEN) this.sendConfig(config);
+    if (this.ws !== null && this.ws.readyState === this.ws.OPEN) this.sendConfig(config);
+  }
+
+  /**
+   * Wire one socket. The drop handlers are the only place a live call decides
+   * whether to reconnect; a connect failure before acceptance stays a named
+   * refusal, and a caller's stop is never a drop.
+   */
+  private openSocket(config: CascadeCallConfig): void {
+    const socketFactory = this.deps.socketFactory ?? ((url: string) => new WebSocket(url));
+    const ws = socketFactory(config.serviceUrl);
+    this.ws = ws;
+    ws.onopen = () => {
+      this.marks?.mark("socket_open");
+      this.sendConfig(config);
+    };
+    ws.onmessage = (event: MessageEvent) => {
+      this.receive(typeof event.data === "string" ? event.data : "");
+    };
+    ws.onerror = () => {
+      if (this.reconnecting) {
+        this.failReconnect("socket-error");
+        return;
+      }
+      if (!this.accepted) {
+        this.failConnect("unavailable", "Connection to the voice service failed.");
+        return;
+      }
+      // An accepted socket's error is followed by close; let that decide
+      // between the one reconnect and the end. Reporting it here would paint
+      // an error over a call that is about to resume.
+      if (this.deps.reconnect !== undefined) return;
+      this.handlers.onError?.("Connection to the voice service failed.");
+    };
+    ws.onclose = (event?: { code?: number; reason?: string }) => {
+      if (this.ended) return;
+      if (this.reconnecting) {
+        // The replacement socket never admitted: the one attempt is over.
+        this.failReconnect("socket-closed");
+        return;
+      }
+      if (!this.accepted && !this.connectFailureReported) {
+        this.failConnect(
+          "unavailable",
+          "The voice service closed the connection before the call started.",
+        );
+        return;
+      }
+      this.unexpectedDrop(event?.code ?? null);
+    };
+  }
+
+  /**
+   * A socket closed after the call was live and nothing asked it to. Reconnect
+   * once; a second drop, or no reconnect seam, ends the call as before.
+   */
+  private unexpectedDrop(code: number | null): void {
+    if (this.ended) return;
+    if (
+      this.deps.reconnect === undefined ||
+      !this.started ||
+      this.callerStop ||
+      this.endSeen
+    ) {
+      this.finish(0);
+      return;
+    }
+    if (this.reconnectAttempts === 0) {
+      void this.beginReconnect("socket-closed", code);
+      return;
+    }
+    this.failReconnect("second-drop", this.reconnectAttempts + 1);
+  }
+
+  /**
+   * Spend the call's one reconnect: mint a resume body for the same call id
+   * (the hold-return mint), then open a replacement socket and send config.
+   * The resumed body omits the greeting, so nothing is replayed; the live
+   * microphone, playout and call-level audio sequence are kept.
+   */
+  private async beginReconnect(reason: string, code: number | null): Promise<void> {
+    if (this.reconnecting || this.ended) return;
+    const reconnect = this.deps.reconnect;
+    if (reconnect === undefined) {
+      this.finish(0);
+      return;
+    }
+    this.reconnecting = true;
+    this.reconnectAttempts += 1;
+    const attempt = this.reconnectAttempts;
+    this.marks?.mark("reconnect", {
+      reason,
+      attempt,
+      ...(code === null ? {} : { code }),
+    });
+    this.reconnectTimer = setTimeout(
+      () => this.failReconnect("timeout", attempt),
+      RECONNECT_HANDSHAKE_MS,
+    );
+    let config: CascadeCallConfig;
+    try {
+      config = await reconnect({ reason, attempt });
+    } catch {
+      this.failReconnect("mint-failed", attempt);
+      return;
+    }
+    // A caller's stop, a failure or the bound may have landed while minting.
+    if (!this.reconnecting || this.ended || this.reconnectAttempts !== attempt) return;
+    this.configSent = false;
+    this.accepted = false;
+    this.openSocket(config);
+    if (this.ws !== null && this.ws.readyState === this.ws.OPEN) this.sendConfig(config);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  /**
+   * The one reconnect is over without a resumed call. Name the cause, tell the
+   * visitor, and end the call; no further socket is opened.
+   */
+  private failReconnect(cause: string, attempt = this.reconnectAttempts): void {
+    if (this.reconnectFailedReported || this.ended) return;
+    this.reconnectFailedReported = true;
+    this.reconnecting = false;
+    this.clearReconnectTimer();
+    this.marks?.mark("reconnect_failed", { cause, attempt });
+    this.handlers.onReconnectFailed?.(cause);
+    this.finish(0);
   }
 
   /**
@@ -611,6 +772,13 @@ export class CascadeSession {
             event.code === "managed" ||
             event.code === "protocol_version")
         ) {
+          // A refusal of the replacement socket is a failed reconnect, not a
+          // refused connect: the call was already live, so the visitor hears
+          // the drop's cause instead of the start's unavailable state.
+          if (this.reconnecting || this.reconnectAttempts > 0) {
+            this.failReconnect(`refused:${event.code}`, this.reconnectAttempts);
+            break;
+          }
           this.failConnect(
             event.code === "protocol_version" ? "protocol" : event.code,
             event.message,
@@ -629,7 +797,16 @@ export class CascadeSession {
   private admit(via: string): void {
     if (this.accepted) return;
     this.accepted = true;
-    this.marks?.mark("admitted", { via });
+    // The replacement admitted inside the bound: the reconnect succeeded and
+    // the handshake timer has nothing left to release.
+    if (this.reconnecting) {
+      this.reconnecting = false;
+      this.clearReconnectTimer();
+    }
+    this.marks?.mark("admitted", {
+      via,
+      ...(this.reconnectAttempts > 0 ? { attempt: this.reconnectAttempts } : {}),
+    });
   }
 
   /**
@@ -667,6 +844,10 @@ export class CascadeSession {
     if (!this.started) return;
     this.started = false;
     this.callerStop = true;
+    // The visitor hung up: cancel any reconnect that is still minting. A stop
+    // is never a drop, so no replacement socket may open after it.
+    this.reconnecting = false;
+    this.clearReconnectTimer();
     try {
       if (this.ws?.readyState === this.ws?.OPEN) this.send(JSON.stringify({ type: "stop" }));
     } catch {
@@ -767,6 +948,7 @@ export class CascadeSession {
    */
   private teardown(): Promise<void> {
     if (this.teardownPromise) return this.teardownPromise;
+    this.clearReconnectTimer();
     if (this.micGateTimer !== null) {
       clearTimeout(this.micGateTimer);
       this.micGateTimer = null;

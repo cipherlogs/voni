@@ -168,6 +168,99 @@ test("R2 is unmeasured when the call never reconnected", () => {
   assert.equal(result.kind, "unmeasured");
 });
 
+/** The browser marks artifact as the adapter reads it. */
+function marksArtifact(
+  entries: Array<{ name: string; tMs: number; detail?: Record<string, unknown> }>,
+) {
+  return {
+    schemaVersion: 1,
+    callId: "call-r2",
+    startedAt: "2026-11-02T10:00:00.000Z",
+    endedAt: null,
+    marks: entries.map((entry) => ({
+      name: entry.name,
+      at: new Date(Date.UTC(2026, 10, 2, 10, 0, 0) + entry.tMs).toISOString(),
+      epochMs: Date.UTC(2026, 10, 2, 10, 0, 0) + entry.tMs,
+      tMs: entry.tMs,
+      ...(entry.detail === undefined ? {} : { detail: entry.detail }),
+    })),
+  };
+}
+
+const REJOINED_TURNS = [
+  row("greeting.start"),
+  row("turn.user_final", "1:user"),
+  row("turn.reply_start", "1:reply"),
+  row("turn.user_final", "2:user"),
+  row("turn.reply_start", "2:reply"),
+];
+
+test("R2 passes the client's own reconnect mark when re-admission follows it", () => {
+  const bundle: EvidenceBundle = {
+    trace: trace(REJOINED_TURNS),
+    browser: {
+      marks: marksArtifact([
+        { name: "admitted", tMs: 120 },
+        { name: "reconnect", tMs: 3_000, detail: { reason: "socket-closed", attempt: 1 } },
+        { name: "config_sent", tMs: 3_410 },
+        { name: "admitted", tMs: 3_500 },
+      ]),
+    },
+  };
+  const result = measured(run("R2", context("R2", bundle)));
+  assert.equal(result.passed, true);
+  assert.ok(result.citations?.includes("browser:reconnect"));
+});
+
+test("R2 fails a reconnect mark that was never re-admitted", () => {
+  const bundle: EvidenceBundle = {
+    trace: trace(REJOINED_TURNS),
+    browser: {
+      marks: marksArtifact([
+        { name: "admitted", tMs: 120 },
+        { name: "reconnect", tMs: 3_000, detail: { reason: "socket-closed", attempt: 1 } },
+      ]),
+    },
+  };
+  assert.equal(measured(run("R2", context("R2", bundle))).passed, false);
+});
+
+test("R2 fails a call whose one reconnect gave up, by its named cause", () => {
+  const bundle: EvidenceBundle = {
+    trace: trace(REJOINED_TURNS),
+    browser: {
+      marks: marksArtifact([
+        { name: "admitted", tMs: 120 },
+        { name: "reconnect", tMs: 3_000, detail: { reason: "socket-closed", attempt: 1 } },
+        { name: "reconnect_failed", tMs: 3_400, detail: { cause: "timeout", attempt: 1 } },
+      ]),
+    },
+  };
+  const result = measured(run("R2", context("R2", bundle)));
+  assert.equal(result.passed, false);
+  assert.match(result.detail ?? "", /reconnect failed: timeout/);
+});
+
+test("R2 never lets a reconnect mark launder a duplicate turn or a second greeting", () => {
+  const bundle: EvidenceBundle = {
+    trace: trace([
+      row("greeting.start"),
+      row("greeting.start"),
+      row("turn.user_final", "1:user"),
+      row("turn.reply_start", "1:reply"),
+      row("turn.user_final", "1:user"),
+    ]),
+    browser: {
+      marks: marksArtifact([
+        { name: "admitted", tMs: 120 },
+        { name: "reconnect", tMs: 3_000, detail: { reason: "socket-closed", attempt: 1 } },
+        { name: "admitted", tMs: 3_500 },
+      ]),
+    },
+  };
+  assert.equal(measured(run("R2", context("R2", bundle))).passed, false);
+});
+
 test("R3 passes a hold return that kept memory, re-greeted nobody and played no ringback", () => {
   const bundle: EvidenceBundle = {
     trace: trace([
