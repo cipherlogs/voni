@@ -36,7 +36,7 @@
     {
       "take": "intro",
       "trigger": {
-        "type": "call-open"
+        "type": "agent-turn-end"
       }
     },
     {
