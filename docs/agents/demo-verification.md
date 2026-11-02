@@ -259,6 +259,16 @@ artifact disappears.
   a stream that arrives ahead of real time ("Audio processing backlog too
   large"). A resumed call speaks no greeting, so `MIC_GATE_FALLBACK_MS` (8 s)
   opens the gate even when no audio ever arrives.
+- **A run's code fingerprint covers code, not working notes (2026-11-02).**
+  The end-of-run check refuses a certificate when the tree moved during the
+  run. It hashes tracked edits, the committed HEAD and the contents of untracked
+  files (porcelain alone collapses an untracked directory). That caught a real
+  hole, but it also counted `.scratch/` agent notes: run 11 completed all 273
+  calls and then refused because another session wrote research notes at 13:22.
+  Working notes are now gitignored rather than merely untracked, so a note
+  cannot move the fingerprint; anything that can affect a run still does.
+  Corollary: do not commit, merge or edit the tree while a certifying run is
+  live.
 - **A call that died in the opening handshake is no evidence (2026-11-02).**
   The harness reports any caller trigger that never resolved as
   `trigger-unresolved`, which reads like a judged failure. When the call's end

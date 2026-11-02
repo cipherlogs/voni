@@ -34,6 +34,9 @@ __pycache__/
 # Local indexes & scratch
 ruvector.db
 .superpowers/
+# Agent working notes (tickets, specs, research). Intentionally untracked; ignored
+# so a note written during a certification run cannot move the code fingerprint.
+.scratch/
 
 # Voni gate ledger (unlazy runner output, regenerated per run)
 voni/GATES.md
