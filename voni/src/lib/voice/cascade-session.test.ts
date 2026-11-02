@@ -1234,6 +1234,55 @@ test("an unexpected drop on a live call reconnects once with the resumed identit
   assert.equal(ended, 0);
 });
 
+test("the reconnected session's call sequence restarts and still plays", async () => {
+  // The pipeline's `seq` is per browser session, not per call id: a
+  // replacement socket's first frame starts again at seq 1. Keeping the first
+  // session's high-water mark would drop every frame of the resumed call.
+  const pair = socketPair();
+  const played: number[] = [];
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({
+        play: (pcm: Uint8Array) => played.push(pcm[0] ?? -1),
+        flush: () => {},
+      }),
+      reconnect: async () => RESUME_CONFIG,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const first = pair.sockets[0];
+  first.readyState = first.OPEN;
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+  first.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([5]).toString("base64"),
+      sample_rate: 24_000,
+      seq: 5,
+    }),
+  );
+  assert.deepEqual(played, [5]);
+
+  first.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const second = pair.sockets[1];
+  second.readyState = second.OPEN;
+  second.onopen?.();
+  second.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([1]).toString("base64"),
+      sample_rate: 24_000,
+      seq: 1,
+    }),
+  );
+
+  assert.deepEqual(played, [5, 1], "the resumed session's seq 1 is played, not dropped");
+});
+
 test("a caller's stop never reconnects", async () => {
   const pair = socketPair();
   const marks = testMarks();
@@ -1380,6 +1429,39 @@ test("a second drop ends the call with the named cause, never a third socket", a
   assert.equal(failed.length, 1);
   assert.equal(failed[0].detail?.cause, "second-drop");
   assert.equal(failed[0].detail?.attempt, 2);
+});
+
+test("a replacement socket that cannot open is a named reconnect failure", async () => {
+  const first = makeSocket();
+  const marks = testMarks();
+  const causes: string[] = [];
+  let opened = 0;
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1), onReconnectFailed: (cause) => causes.push(cause) },
+    {
+      socketFactory: () => {
+        opened += 1;
+        if (opened === 2) throw new Error("malformed service URL");
+        return first as unknown as WebSocket;
+      },
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => RESUME_CONFIG,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  first.readyState = first.OPEN;
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+  first.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(opened, 2, "the replacement was attempted once");
+  assert.equal(ended, 1);
+  assert.deepEqual(causes, ["socket-error"]);
+  assert.equal(namedMarks(marks, "reconnect_failed")[0]?.detail?.cause, "socket-error");
 });
 
 test("a reconnect that is never admitted is bounded and names the timeout", async () => {

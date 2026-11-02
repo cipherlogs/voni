@@ -268,9 +268,10 @@ export function decodeAudioMessage(raw: string): {
   pcm: Uint8Array;
   sampleRate: number;
   /**
-   * The call-level monotonic number the service stamped (`seq`), when present.
-   * Absent on a service that predates the sequence (and in unit fixtures).
-   * It belongs to the call, not the TTS flush, so a reconnect continues it.
+   * The browser session's monotonic number the service stamped (`seq`), when
+   * present. Absent on a service that predates the sequence (and in unit
+   * fixtures). It continues across a pipeline leg reconnect and restarts with
+   * a replacement browser socket, never with the TTS flush.
    */
   seq?: number;
 } | null {
@@ -386,9 +387,11 @@ export class CascadeSession {
   /**
    * The highest call-level audio `seq` already played. The receiving contract
    * (`CallPlayout` in voice-pipeline/cascade/call.py) is: a frame whose seq is
-   * not greater is dropped, never played twice. A gap is played through; the
-   * number is per call, so a reconnect continues it. Reset with the session,
-   * because one connection is one call.
+   * not greater is dropped, never played twice. A gap is played through. The
+   * number is per browser session: it continues across a pipeline leg
+   * reconnect, and a replacement browser socket starts a fresh `CallSequence`,
+   * so a client reconnect resets the high-water mark (no old socket is left to
+   * replay a frame).
    */
   private highestPlayedSeq = 0;
   /**
@@ -630,8 +633,15 @@ export class CascadeSession {
     if (!this.reconnecting || this.ended || this.reconnectAttempts !== attempt) return;
     this.configSent = false;
     this.accepted = false;
-    this.openSocket(config);
-    if (this.ws !== null && this.ws.readyState === this.ws.OPEN) this.sendConfig(config);
+    // The replacement socket's pipeline session numbers its audio from the
+    // start again; the old socket is gone, so nothing can replay.
+    this.highestPlayedSeq = 0;
+    try {
+      this.openSocket(config);
+      if (this.ws !== null && this.ws.readyState === this.ws.OPEN) this.sendConfig(config);
+    } catch {
+      this.failReconnect("socket-error", attempt);
+    }
   }
 
   private clearReconnectTimer(): void {
@@ -706,9 +716,9 @@ export class CascadeSession {
       this.openMicGate();
       if (audio.seq !== undefined) {
         if (audio.seq <= this.highestPlayedSeq) {
-          // The call-level contract: an audio frame that is not newer is never
-          // played twice. A replay after a reconnect arrives as an old seq, so
-          // this is also the reconnect guard.
+          // The session-level contract: an audio frame that is not newer is
+          // never played twice. A duplicate inside one session is dropped; a
+          // replacement session resets the mark in `beginReconnect`.
           console.debug(
             `[cascade-session] dropped duplicate audio seq=${audio.seq}; the highest played is ${this.highestPlayedSeq}`,
           );
