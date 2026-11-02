@@ -147,13 +147,42 @@ test("the invite comes once, from the show tool's own result: no lead-in, no sec
   assert.doesNotMatch(rules, /Let me put something on your screen|a note follows/);
 });
 
-test("the call opens with the hook, and a yes goes straight to the test", async () => {
+test("the call opens as itself, and a yes goes straight to the test", async () => {
   const { VONI_GREETINGS, voniConfig } = await import("./voni-agent");
-  assert.match(VONI_GREETINGS.en, /Let's try something cool/);
+  assert.equal(VONI_GREETINGS.en, "Hi, I'm Voni.", "the opening is a greeting, not a hook");
   assert.doesNotMatch(VONI_GREETINGS.en, /business/, "the business comes later");
   const rules = voniConfig("any").knowledge;
   assert.match(rules, /As soon as they say yes[\s\S]*in that same turn, put the test on their screen/);
   assert.doesNotMatch(rules, /Once they've told you a little about their business/);
+});
+
+test("Voni talks like a person, varies her lines, and never promises a fix", async () => {
+  const { voniConfig } = await import("./voni-agent");
+  const rules = voniConfig("any").knowledge;
+
+  assert.match(rules, /one short sentence, two at most/, "brevity stays pinned");
+  assert.match(rules, /contractions, plain casual words, no corporate stiffness/, "the register is casual");
+  assert.match(rules, /Never say 'I'll show you what I can do properly'/, "the stiff line is named, not just implied");
+  assert.match(rules, /'assist' or 'address your concern'/, "corporate wording is banned");
+  assert.match(rules, /A discourse marker can open a real reply \('Right,', 'Okay,', 'Alright,', 'Yeah,'\)/, "markers are allowed, and named");
+  assert.match(
+    rules,
+    /'Right, I'll sort it\.' is a marker plus content, not an acknowledgement-only reply/,
+    "a marker plus content is not the banned acknowledgement-only reply",
+  );
+  assert.match(
+    rules,
+    /Never promise to fix, change, or look into something this demo cannot actually do[\s\S]*'I'll fix that' promises a repair you can't make/,
+    "the demo never promises work it cannot do",
+  );
+  assert.match(rules, /Vary it, never the same twice/, "no single line to repeat");
+
+  // One register, two example questions: enough to show it, not a script.
+  assert.equal(
+    (rules.match(/what's broken\?|what's the problem\?/g) ?? []).length,
+    2,
+    "exactly two alternatives, so there is no rotation to fall into",
+  );
 });
 
 test("a personal address: acknowledged, asked again, never a hang-up", async () => {
