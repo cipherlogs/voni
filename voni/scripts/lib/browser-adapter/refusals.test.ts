@@ -25,6 +25,7 @@ import {
   testBuildReason,
 } from "./refusals";
 import { CLEAN_VENDOR_BUILDS } from "../protocol-adapter/fixtures";
+import { loadSoundscapes } from "../soundscapes";
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "dv17-refusals-"));
@@ -204,6 +205,25 @@ test("a missing soundscape refuses rather than mixing silence", async () => {
       { name: "golden-flow-smoke", soundscape: { id: "living-room-tv" } },
     ]);
     const answer = await preflightBrowserRun(preflightInput(root));
+    assert.equal(answer.ok, false);
+    if (!answer.ok) {
+      assert.ok(answer.missing.some((item) => item.item === "soundscape:living-room-tv"));
+      assert.equal(refusalCodeFor(answer.missing), "missing-soundscape");
+    }
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("loading the committed beds does not stand in for an id the loader does not hold", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(join(root, "corpus"), [
+      { name: "golden-flow-smoke", soundscape: { id: "living-room-tv" } },
+    ]);
+    const answer = await preflightBrowserRun(
+      preflightInput(root, { soundscapes: loadSoundscapes() }),
+    );
     assert.equal(answer.ok, false);
     if (!answer.ok) {
       assert.ok(answer.missing.some((item) => item.item === "soundscape:living-room-tv"));

@@ -41,6 +41,7 @@ import {
 } from "./lib/verify-cli";
 import { readBrowserE2eBudget } from "./browser-e2e-budget.mjs";
 import { adapterRefusalFor } from "./lib/verify-cli/adapter-refusal";
+import { SoundscapeError, loadSoundscapes } from "./lib/soundscapes";
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -55,6 +56,10 @@ function budgetCeiling(): number | null {
 
 function realDeps(): VerifyDeps {
   const elapsedBudgetS = budgetCeiling();
+  // The committed beds are evidence: load them once, or refuse the command by
+  // name. A scenario that names a bed this map does not hold refuses in the
+  // adapter's own preflight.
+  const soundscapes = loadSoundscapes();
   // One contract and one evaluator set per command: a full run makes hundreds
   // of calls, and discovering the registry again per call would be pure waste.
   let contractPromise: ReturnType<typeof loadContract> | null = null;
@@ -90,6 +95,7 @@ function realDeps(): VerifyDeps {
         ...(request.eventsDir === undefined ? {} : { eventsDir: request.eventsDir }),
         ...(request.runRoot === undefined ? {} : { runRoot: request.runRoot }),
         repoRoot: REPO_ROOT,
+        soundscapes,
       });
       return {
         status: result.status,
@@ -135,6 +141,7 @@ function realDeps(): VerifyDeps {
           : { vendorBuildsPath: input.request.vendorBuildsPath }),
         elapsedBudgetS,
         repoRoot: REPO_ROOT,
+        soundscapes,
       };
       const result = await runBrowserCertification(runInput);
       return {
@@ -205,7 +212,16 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
 
-  const result = await runVerify(request, realDeps());
+  let result: VerifyResult;
+  try {
+    result = await runVerify(request, realDeps());
+  } catch (error) {
+    if (error instanceof SoundscapeError) {
+      process.stderr.write(`[verify] REFUSED (${error.code}): ${error.message}\n`);
+      return 2;
+    }
+    throw error;
+  }
   writeCertificate(result);
   print(result, request.json);
   return result.exitCode;

@@ -338,6 +338,7 @@ export function probeRunInput(input: {
   readonly parityRunDir?: BrowserRunInput["parityRunDir"];
   readonly certificate?: BrowserRunInput["certificate"];
   readonly plan?: BrowserRunInput["plan"];
+  readonly soundscapes?: BrowserRunInput["soundscapes"];
 }): BrowserRunInput {
   return {
     scenarioName: input.scenarioName ?? "golden-flow-smoke",
@@ -354,7 +355,7 @@ export function probeRunInput(input: {
     capturesDir: input.capturesDir,
     vendorBuilds:
       input.vendorBuilds === undefined ? CLEAN_VENDOR_BUILDS : input.vendorBuilds,
-    soundscapes: {},
+    soundscapes: input.soundscapes ?? {},
     modules: PROBE_MODULES,
     repoRoot: basename(process.cwd()) === "voni" ? resolve(process.cwd(), "..") : process.cwd(),
     elapsedBudgetS: input.elapsedBudgetS === undefined ? 120 : input.elapsedBudgetS,

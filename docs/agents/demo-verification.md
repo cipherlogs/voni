@@ -43,7 +43,7 @@ have is a defect in this map.
 | Verdict and statistics | pooling, per-scenario tails, fail-closed unknowns, ineligibility | `voni/src/lib/demo/verification/verdict/` — `statistics.ts` pools, `judge.ts` judges, `evaluators.ts` discovers one `evaluators/*.evaluators.ts` module per family | 07 |
 | Certificate | schema, builder, validator, target binding, residual-risk ids, panel signature | `voni/src/lib/demo/verification/certificate/` — `types.ts` is the schema, `build.ts` turns one verdict-core run into one certificate, `validate.ts` refuses an unknown schema, a mismatched target/fingerprint/corpus, an uncited verdict and a certified claim with no panel signature, `risks.ts` mirrors this register's ids (drift-tested), `render.ts` is the compact view; committed files live in `voni/evidence/certificates/` | 08 |
 | Defect cards | one card per failed property with turn, excerpt, bar and replay command | `voni/src/lib/demo/verification/cards/` — `build.ts` refuses a card without a session, a turn (for turn-level evidence) or an existing evidence file; `wav.ts` bounds every excerpt inside the named take/WAV; `replay.ts` is the one parser the runner must accept unchanged; `render.ts` is the compact card | 09 |
-| Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest, the ten-scenario English fast contract, the twelve-scenario Locale core | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take; `corpus/` is the committed corpus at version 2 (91 scenarios, 227 real TTS takes): the ten fast-contract scenarios (twenty takes), ticket 13's five comprehension and five emotion scenarios (thirty takes), ticket 14's soundscape/connectivity/meta-security entries (nineteen takes), and ticket 15's `tools-slow-email` plus the sealed held-out `two-tools-in-turn` (five new takes; the three tools scenarios carry seven), ticket 16's forty-eight `locale-<behaviour>-<locale>` scenarios (120 real TTS takes, twelve behaviours on es/fr/de/pt), ticket 20's six resilience edge scenarios (eleven takes, R2–R7), and the three closing English scenarios (`golden-flow-booking`, `turn-taking-overlap`, `caller-hangup-mid-word`; nine takes) that bring English to the spec's 40, and the sealed `sarcastic`, `distressed` and `mispronounced-email` (nine takes) that complete the eight held-out names, and `generate.ts` + `scripts/generate-caller-takes.mts` (`npm run corpus:takes`) record a take once or a deliberate `--retake`; `fast.ts` selects its ten, proves the six call-path capabilities, scopes the verdict (uncited families are `OUT-OF-SCOPE`, never green), and presents the economics owner's settled fast-run check (`economy/run-ceiling.ts`) instead of resolving E3 or summing cost itself; `locale.ts` proves the four Locales hold the same class, triggers, properties, soundscape and fault per behaviour, scopes each Locale's contract, and bounds the 48-call nightly Locale core with the economics owner (a per-Locale full is refused until each Locale has a full set). `facts.ts` resolves each scenario's script to its authored take text for the exactness evaluators. Ticket 19 adds the filler-cut scenario (a cut, then a filler that resumes the tail) and gives a scenario an optional `holdOpenMs` so a greeting-only call is actually held open (32 s) before the harness hangs up. `CALLER-CORPUS.md` records the voice, model and retake rule; `SOUNDSCAPES.md` records the television gap and the second-voice/speakerphone scope. The English corpus is complete at 43; all eight held-out names are committed | 10, 12–16, 19, 30 |
+| Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest, the ten-scenario English fast contract, the twelve-scenario Locale core | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take; `corpus/` is the committed corpus at version 2 (91 scenarios, 227 real TTS takes): the ten fast-contract scenarios (twenty takes), ticket 13's five comprehension and five emotion scenarios (thirty takes), ticket 14's soundscape/connectivity/meta-security entries (nineteen takes), and ticket 15's `tools-slow-email` plus the sealed held-out `two-tools-in-turn` (five new takes; the three tools scenarios carry seven), ticket 16's forty-eight `locale-<behaviour>-<locale>` scenarios (120 real TTS takes, twelve behaviours on es/fr/de/pt), ticket 20's six resilience edge scenarios (eleven takes, R2–R7), and the three closing English scenarios (`golden-flow-booking`, `turn-taking-overlap`, `caller-hangup-mid-word`; nine takes) that bring English to the spec's 40, and the sealed `sarcastic`, `distressed` and `mispronounced-email` (nine takes) that complete the eight held-out names, and `generate.ts` + `scripts/generate-caller-takes.mts` (`npm run corpus:takes`) record a take once or a deliberate `--retake`; `fast.ts` selects its ten, proves the six call-path capabilities, scopes the verdict (uncited families are `OUT-OF-SCOPE`, never green), and presents the economics owner's settled fast-run check (`economy/run-ceiling.ts`) instead of resolving E3 or summing cost itself; `locale.ts` proves the four Locales hold the same class, triggers, properties, soundscape and fault per behaviour, scopes each Locale's contract, and bounds the 48-call nightly Locale core with the economics owner (a per-Locale full is refused until each Locale has a full set). `facts.ts` resolves each scenario's script to its authored take text for the exactness evaluators. Ticket 19 adds the filler-cut scenario (a cut, then a filler that resumes the tail) and gives a scenario an optional `holdOpenMs` so a greeting-only call is actually held open (32 s) before the harness hangs up. `CALLER-CORPUS.md` records the voice, model and retake rule; `SOUNDSCAPES.md` records the committed television bed and the second-voice/speakerphone scope. The English corpus is complete at 43; all eight held-out names are committed | 10, 12–16, 19, 30 |
 | Locale matrix | four Locales judged independently; understanding held as RR-02 until a named native reviewer signs | `voni/src/lib/demo/verification/verdict/locale.ts` — `judgeLocaleMatrix` requires exactly one complete evidence set and twelve calls per Locale at the run's repetition count, refuses a measurement recorded under another Locale or a scenario outside that Locale's core, judges each Locale against its own scoped contract, and returns `pending-human` with RR-02 when `judgeLocaleUnderstanding` has no valid named sign-off; a role word, a malformed date or a missing sample/gold-label id is unverified, never a pass | 16 |
 | Protocol adapter | diagnosis runs over the existing live-call socket; never certifies | `voni/scripts/lib/protocol-adapter/` — `refusals.ts` names a missing key, corpus, scenario, vendor build, soundscape or test inbox before any vendor opens, `transport.ts` drives `POST /v1/call-body` + `WS /v1/browser-call` at the browser's 128-sample cadence and keeps the service's captions, `faults.ts` applies the scenario's media faults, `tool-evidence.ts` reads the demo tool log (`voni/src/lib/demo/tool-log.ts`, `tool-log-store.ts`, the `demo_tool_calls` table) and the real inbox by tag (`voni/src/lib/demo/verification/tools/inbox.ts`), `evidence.ts` writes the per-run directory under `voni/.demo-runs/`, `runner.ts` turns one call into one verdict and any provable card; `voni/scripts/protocol-diagnose.mts` accepts a card's replay command unchanged and never returns 0. `npm run demo:inbox:probe` is the read-only live inbox check | 11, 15 |
 | Browser adapter | certifying runs on the real page, synthetic mic, delivered WAV, browser marks | `voni/scripts/lib/browser-adapter/` — `refusals.ts` names a fake pipeline, a test build, a missing key, corpus, scenario, vendor build, soundscape or capture sink before Chromium opens; `synthetic-mic.ts` replaces `getUserMedia` from a Playwright init script before app code; `call.ts` builds the one invocation and runs `voni/tests/e2e/browser-adapter.spec.ts`; `evidence.ts` requires the delivered WAV, browser marks, trace and end document to cite one call id — except a scenario with the `mic-denied` edge, which must instead carry R5's named refusal and which names the audio and documents it genuinely never produced — and reads cost from the call's own priced row; the browser report carries the visitor's transcript, joined to the call clock through the client's own per-turn marks, and each caller take's wall-clock start, and `runner.ts` passes the scenario's `expectedProperties` and authored facts to the verdict core; it also reads the demo tool log and the real inbox delivery, so X2/X3/X5/X6/X7/X8/X9 are measurable here when the page rendered the lines, and X4 is measurable only when a tagged email actually reached the test inbox (nothing sends one during a run; see the named gaps); a caption/turn-mark count mismatch withholds the transcript by name rather than guessing a time; `runner.ts` judges the bundle, builds the certificate (exit 0/3) or withholds it by name, and records a parity comparison; `voni/scripts/browser-verify.mts` is the command. Ticket 20 adds the media-fault seam (the scenario's jitter/dropout/latency applied to caller playback at the mic edge, never replayed), the browser-edge vocabulary (`page-freeze`, `page-hidden`, `mic-denied`, `device-switch`, `deploy-drain` in `scenarios/types.ts`), the harness observations R2–R7 read (`edge` on the call bundle), and one producing corpus scenario per property (`resilience-reconnect`, `-hold-return`, `-hidden-page`, `-mic-denied`, `-device-switch`, `-deploy-drain`; R1's are the existing connectivity scenarios) | 17, 20 |
@@ -462,13 +462,14 @@ repetitions.
 ### Soundscape and security evidence gaps
 
 Ticket 14 added the soundscape, connectivity and meta/security scenarios (class
-totals 4/3/3) and the S1–S6 evaluators. Three gaps are recorded rather than
+totals 4/3/3) and the S1–S6 evaluators. The gaps are recorded rather than
 papered over:
 
-- **Television media.** No television or background PCM exists. The
-  `soundscape-television` scenario names `television`, and the protocol adapter
-  refuses `soundscape:television` by name before any vendor opens. It never
-  substitutes `quiet-room`, which is digital silence. See
+- **Television media (closed).** `voni/evidence/soundscapes/television.wav` is
+  committed with a sidecar, and the loader refuses a missing, unreadable,
+  misdescribed or drifted pair by name. The five scenarios that name
+  `television` run with a real bed; `quiet-room` remains digital silence. See
+  "The committed television bed" below and
   `voni/src/lib/demo/verification/scenarios/SOUNDSCAPES.md`.
 - **S1's reply evidence.** S1's contract evidence source is `judge`: the
   evaluator needs the exact caller line and the agent's reply. A protocol run
@@ -489,6 +490,29 @@ papered over:
 S4's exact caller-name matching also depends on a runner attaching the
 scenario's private caller values; the generic email, phone, national-id, card
 and IBAN shapes are scanned today.
+
+### The committed television bed
+
+`voni/evidence/soundscapes/television.wav` is a 30 s, 24 kHz mono PCM16 excerpt
+of the owner-supplied television audio, captured on 2026-11-02 from
+`https://www.youtube.com/watch?v=-q4pH8bZ1SU` (audio track extracted with
+`yt-dlp`, 30 s at 1800 s). Its sha256 is
+`36ddea2738b19f4a0e2561bf8c3df8e901b10cbe53aef232d242a091f6047657`; the sidecar
+`television.json` records the source, window, rights note and what the bed is
+not. `voni/scripts/lib/soundscapes.ts` loads the pair, validates id, file name,
+rate, channels, bit depth, duration and hash against the decoded WAV, and
+refuses a missing, unreadable, misdescribed or drifted file by name
+(`soundscape-missing`, `soundscape-unreadable`, `soundscape-sidecar-invalid`,
+`soundscape-audio-mismatch`) with the path and the reproduction command. It
+never resamples.
+
+`demo:verify` and `demo:certify:browser` load the map once and pass it as the
+adapter's `soundscapes`. The protocol seam mixes the bed under the caller's
+uplink at the scenario's declared level; the browser harness loops it into the
+synthetic microphone's bus. The five scenarios that name it are
+`soundscape-television` and `locale-television-{de,es,fr,pt}`. It is mixed
+ambience only: never evidence of Voni's own audio and never a reference for a
+property. The rights decision for committing this excerpt is the owner's.
 
 ### Audio evidence gaps
 
@@ -580,9 +604,12 @@ fails closed; none may be relabelled as a pass.
   transport socket. The client now retries once (bounded and marked, fakes
   only), but R2 stays `unmeasured` until a run observes a real drop and rejoin.
   Owner: operator (drain window) and engineer (a live drop observation).
-- **The television bed is absent.** `soundscape-television` names a real id and
-  the adapters refuse it by name; there is no committed PCM bed and no
-  substitute of `quiet-room` (digital silence). Owner: engineer.
+- **The television bed is committed; its rights decision is the owner's.**
+  `soundscape-television` and the four `locale-television-*` scenarios mix
+  `voni/evidence/soundscapes/television.wav` under the caller. The bed is
+  ambience, never evidence of Voni's audio; a missing or drifted pair refuses by
+  name rather than substituting `quiet-room` (digital silence). The owner
+  carries the decision for committing the excerpt. Owner: owner (rights).
 - **A per-Locale full set exists only for English.** The es, fr, de and pt
   corpora hold the twelve-behaviour core, not the full set, so
   `--full --locale <es|fr|de|pt>` refuses by name instead of issuing a full

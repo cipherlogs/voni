@@ -54,6 +54,12 @@ type Invocation = {
   eventsDir: string;
   resultPath: string;
   takes: InvocationTake[];
+  soundscape?: {
+    id: string;
+    levelDb: number | null;
+    sampleRate: number;
+    pcmBase64: string;
+  } | null;
   script: readonly {
     take: string;
     trigger:
@@ -559,6 +565,17 @@ test("a certifying browser call on the real stack", async ({ page }) => {
   await installSyntheticMic(page, micTakes, {
     faults: spec.faults ?? [],
     denyMicrophone: micDenied,
+    ...(spec.soundscape === null || spec.soundscape === undefined
+      ? {}
+      : {
+          soundscape: {
+            pcmBase64: spec.soundscape.pcmBase64,
+            sampleRate: spec.soundscape.sampleRate,
+            ...(spec.soundscape.levelDb === null
+              ? {}
+              : { levelDb: spec.soundscape.levelDb }),
+          },
+        }),
   });
   await page.addInitScript({ content: `(${timelineBootstrap.toString()})();` });
 

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "television",
+  "file": "television.wav",
+  "capturedOn": "2026-11-02",
+  "source": "https://www.youtube.com/watch?v=-q4pH8bZ1SU",
+  "method": "owner-supplied link; audio track extracted with yt-dlp, 30 s excerpt at 1800 s",
+  "sampleRate": 24000,
+  "channels": 1,
+  "bitsPerSample": 16,
+  "durationMs": 30000,
+  "sha256": "36ddea2738b19f4a0e2561bf8c3df8e901b10cbe53aef232d242a091f6047657",
+  "why": "The television soundscape scenario names a real bed. Mixing digital silence under the caller and calling it a television would measure nothing; this is continuous ambience with no silence above -35 dB across the source.",
+  "rights": "The owner supplied the link and asked for it to be used as the ambience bed; the owner carries the rights decision for committing this excerpt.",
+  "notUsedFor": "It is mixed under the caller's uplink at the scenario's declared level only. It is never evidence of Voni's own audio and never a reference for a property."
+}

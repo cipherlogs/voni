@@ -33,6 +33,7 @@ import {
   type BrowserRunResult,
 } from "./lib/browser-adapter/index";
 import { runProtocolDiagnosis } from "./lib/protocol-adapter/runner";
+import { SoundscapeError, loadSoundscapes } from "./lib/soundscapes";
 import { readBrowserE2eBudget, budgetVerdict } from "./browser-e2e-budget.mjs";
 
 const USAGE = `usage: npm run demo:certify:browser -- --scenario <name> [options]
@@ -119,6 +120,7 @@ async function main(): Promise<number> {
   const certifiedScenario = scenarioName;
   const contract = await loadContract();
   const evaluators = await loadEvaluators(contract);
+  const soundscapes = loadSoundscapes();
   // Every discovered evaluator names the one module a defect card points at.
   // The map is derived from the registry, never hand-listed, so a new family
   // file cannot forget its pointer.
@@ -142,6 +144,7 @@ async function main(): Promise<number> {
     runRoot: values["run-root"],
     elapsedBudgetS,
     repoRoot: REPO_ROOT,
+    soundscapes,
     call: (input: Parameters<typeof runPlaywrightBrowserCall>[0]) =>
       runPlaywrightBrowserCall(input),
   };
@@ -163,6 +166,7 @@ async function main(): Promise<number> {
       eventsDir: values["events-dir"],
       runRoot: values["run-root"],
       repoRoot: REPO_ROOT,
+      soundscapes,
     });
     parityVerdict = protocol.verdict;
     parityRunDir = protocol.runDir;
@@ -224,7 +228,10 @@ async function main(): Promise<number> {
 try {
   process.exitCode = await main();
 } catch (error) {
-  if (error instanceof BrowserAdapterError) {
+  if (error instanceof SoundscapeError) {
+    console.error(`[browser] REFUSED (${error.code}): ${error.message}`);
+    process.exitCode = 2;
+  } else if (error instanceof BrowserAdapterError) {
     console.error(`[browser] REFUSED (${error.code}): ${error.message}`);
     process.exitCode = error.exitCode;
   } else {
