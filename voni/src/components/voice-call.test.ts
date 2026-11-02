@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { tickAllowed } from "../lib/voice/call-sounds";
-import { overheardLabel, settleOverheardTurn, userCaption } from "../lib/voice/overheard-caption";
+import { overheardLabel, settleOverheardTurn, transcriptRole, userCaption } from "../lib/voice/overheard-caption";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -713,4 +713,13 @@ test("a barge-in still ends the turn at the cut, not at a drain that never comes
   const body = call.slice(start, call.indexOf("},", start));
   assert.ok(body.includes('setCallState("listening")'));
   assert.ok(body.includes("replyDone(true)"), "the cut reply is recorded as interrupted");
+});
+
+test("the transcript label reader maps both visitor labels to the caller", () => {
+  // Call 875aae04: the caller's final landed as `You · overheard`; the harness
+  // reader only knew `You`, so the caller's line was filed as an agent line.
+  assert.equal(transcriptRole("You"), "caller");
+  assert.equal(transcriptRole("You · overheard"), "caller", "an overheard visitor line is still the caller");
+  assert.equal(transcriptRole("Voni"), "agent");
+  assert.equal(transcriptRole(""), "agent", "an unknown label is never credited to the caller");
 });

@@ -392,10 +392,9 @@ test("session sends config on open and dispatches server events", async () => {
   assert.equal(socket.closed, true);
 });
 
-test("a turn ends when its audio drains, not when its caption finishes", async () => {
+test("a turn ends only when its caption is final and its audio has drained", async () => {
   // The live greeting: a 460 ms transcript over 1.76 s of 24 kHz speech. The
-  // caption is complete while most of the audio is still queued; only the
-  // playout knows when the last sample has sounded.
+  // final caption alone must not end it; the drain after it must.
   const socket = makeSocket();
   let speechEnds = 0;
   const playout: Playout = { play: () => {}, flush: () => {} };
@@ -412,31 +411,69 @@ test("a turn ends when its audio drains, not when its caption finishes", async (
   socket.onopen?.();
   assert.equal(typeof playout.onDrained, "function", "the session listens for the playout's drain");
 
-  socket.emit(
-    JSON.stringify({
-      type: "audio",
-      seq: 1,
-      sample_rate: 24000,
-      data: Buffer.alloc(84480).toString("base64"),
-    }),
-  );
-  socket.emit(JSON.stringify({ type: "caption", role: "agent", text: "Hi, I'm Voni.", final: true }));
-  assert.equal(speechEnds, 0, "a final caption is text; the turn's audio is still playing");
+  const audio = (seq: number, bytes = 9600) =>
+    socket.emit(
+      JSON.stringify({
+        type: "audio",
+        seq,
+        sample_rate: 24000,
+        data: Buffer.alloc(bytes).toString("base64"),
+      }),
+    );
+  const final = (text: string) =>
+    socket.emit(JSON.stringify({ type: "caption", role: "agent", text, final: true }));
+
+  audio(1, 84480);
+  final("Hi, I'm Voni.");
+  assert.equal(speechEnds, 0, "a final caption while the audio plays is half a turn end");
 
   playout.onDrained!();
-  assert.equal(speechEnds, 1, "the drain is the turn's real end");
+  assert.equal(speechEnds, 1, "the drain after the final caption ends the turn");
 
-  // A second reply is its own turn: the drain fires again for it.
+  // The next reply is its own turn: the pair is consumed, not reused.
+  audio(2);
+  final("What needs fixing?");
+  assert.equal(speechEnds, 1, "a new reply needs its own final and drain");
+  playout.onDrained!();
+  assert.equal(speechEnds, 2, "each finished reply is exactly one turn end");
+  await session.stop();
+});
+
+test("a mid-reply drain is a TTS stall, not a turn end; the resumed reply still ends", async () => {
+  // Live call 875aae04: reply 1 played 6,811-7,767, the queue drained while the
+  // agent's final caption had not arrived, the reply resumed at 8,831. The
+  // drain alone must keep `speaking`; the final caption while the resumed audio
+  // is still playing must too; the drain after both ends the turn once.
+  const socket = makeSocket();
+  let speechEnds = 0;
+  const playout: Playout = { play: () => {}, flush: () => {} };
+  const session = new CascadeSession(
+    { onSpeechEnd: () => (speechEnds += 1) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => playout,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+
   socket.emit(
-    JSON.stringify({
-      type: "audio",
-      seq: 2,
-      sample_rate: 24000,
-      data: Buffer.alloc(9600).toString("base64"),
-    }),
+    JSON.stringify({ type: "audio", seq: 1, sample_rate: 24000, data: Buffer.alloc(9600).toString("base64") }),
   );
   playout.onDrained!();
-  assert.equal(speechEnds, 2, "each reply's drain is one turn end");
+  assert.equal(speechEnds, 0, "a drain before the final caption is a stall");
+
+  // The same reply resumes: the stall's drain is cleared, not banked.
+  socket.emit(
+    JSON.stringify({ type: "audio", seq: 2, sample_rate: 24000, data: Buffer.alloc(38400).toString("base64") }),
+  );
+  socket.emit(JSON.stringify({ type: "caption", role: "agent", text: "That's fair.", final: true }));
+  assert.equal(speechEnds, 0, "the final caption lands while the resumed audio plays");
+
+  playout.onDrained!();
+  assert.equal(speechEnds, 1, "only the drain after the final ends the resumed reply");
   await session.stop();
 });
 

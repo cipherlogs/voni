@@ -156,10 +156,11 @@ export type CascadeHandlers = {
   onAudio?: (pcm: Uint8Array, sampleRate: number) => void;
   onInterrupted?: () => void;
   /**
-   * The reply's audio finished playing: the playout's queue drained after the
-   * last sample sounded. This — not the final agent caption, which streams in
-   * while the audio is still playing — is when the agent stops holding the
-   * floor and the caller may answer.
+   * The reply's audio finished playing *and* its final caption had arrived:
+   * both halves of a finished turn. This — never the final caption alone
+   * (which streams in while the audio plays) and never a drain alone (a TTS
+   * stall drains and then resumes the same reply) — is when the agent stops
+   * holding the floor and the caller may answer.
    */
   onSpeechEnd?: () => void;
   onMetrics?: (metrics: unknown, turns: number) => void;
@@ -417,6 +418,21 @@ export class CascadeSession {
   private captureOutcome: CaptureResult | null = null;
   private captureCallId: string | null = null;
   private teardownMarked = false;
+  /**
+   * The current agent reply's two turn-end facts, reset together per reply:
+   *
+   *  - `replyComplete`: the agent's final caption for this turn has arrived, so
+   *    no more text — and therefore no more audio — will be produced.
+   *  - `replyDrained`: the playout's queue has run dry since the reply started.
+   *
+   * Either alone is not the end. A drain before the final caption is a TTS
+   * stall (the same reply resumes when audio arrives), and a final caption
+   * streams in while most of the reply's audio is still playing. The turn ends
+   * only when both are true; no timer is involved.
+   */
+  private replyActive = false;
+  private replyComplete = false;
+  private replyDrained = false;
   /** The one capture close, so teardown can wait for an in-flight tap ack. */
   private captureClosing: Promise<void> | null = null;
   /** Teardown runs once; all paths await the same completion. */
@@ -527,14 +543,14 @@ export class CascadeSession {
         this.marks?.mark("first_audible");
         this.handlers.onFirstAudible?.();
       };
-      // The turn's real end: the queue drained after the last sample sounded.
-      // A caption's `final` flag says the text is complete, not the audio; the
-      // greeting proved it (a 460 ms caption over 1.76 s of speech). A flush
-      // (barge-in, hang-up) never reaches here: the playout marks itself
-      // not-busy before the worklet's idle report can be read.
+      // One half of a turn end: the queue ran dry after the last sample
+      // sounded. A drain before the final caption is a TTS stall — the same
+      // reply resumes when audio arrives — so it must not open the caller's
+      // turn. `endReplyIfDrained` only ends a reply whose text is complete.
       this.playout.onDrained = () => {
         if (this.ended) return;
-        this.handlers.onSpeechEnd?.();
+        this.replyDrained = true;
+        this.endReplyIfDrained();
       };
     }
     this.started = true;
@@ -746,6 +762,17 @@ export class CascadeSession {
         }
         this.highestPlayedSeq = audio.seq;
       }
+      // A played frame after a drained reply is either the next turn's first
+      // audio or the same reply resuming after a TTS stall. In both cases the
+      // queue is no longer empty, so `drained` is no longer true for this
+      // reply; a first frame starts a fresh pair.
+      if (!this.replyActive) {
+        this.replyActive = true;
+        this.replyComplete = false;
+        this.replyDrained = false;
+      } else if (this.replyDrained) {
+        this.replyDrained = false;
+      }
       this.playout?.play(audio.pcm, audio.sampleRate);
       this.handlers.onAudio?.(audio.pcm, audio.sampleRate);
       return;
@@ -757,6 +784,13 @@ export class CascadeSession {
       case "caption":
         if (event.role === "user") this.endCallArmed = false;
         this.handlers.onCaption?.({ role: event.role, text: event.text, final: event.final });
+        // The agent's final caption closes its *text*, not its audio. It is
+        // one half of the turn end: the drain is the other. A reply whose
+        // audio already drained (a stall the final outlived) ends here.
+        if (event.role === "agent" && event.final) {
+          this.replyComplete = true;
+          this.endReplyIfDrained();
+        }
         break;
       case "listening":
         // The service opens the line before the greeting so a caller who
@@ -766,6 +800,11 @@ export class CascadeSession {
         break;
       case "interrupted":
         this.endCallArmed = false;
+        // The cut reply never finishes: drop both turn-end facts so the next
+        // reply's audio starts a clean pair, never inheriting a final.
+        this.replyActive = false;
+        this.replyComplete = false;
+        this.replyDrained = false;
         this.playout?.flush();
         this.handlers.onInterrupted?.();
         break;
@@ -827,6 +866,21 @@ export class CascadeSession {
         if (event.code === "protocol_version") this.abort();
         break;
     }
+  }
+
+  /**
+   * End the current reply only when both turn-end facts hold: its final
+   * caption has arrived (no more audio will be queued) and its playout has
+   * drained (the last queued sample sounded). Called from both edges, so the
+   * later of the two decides. The pair is consumed here, never reused, and a
+   * drain before the final is left as a stall for the resumed audio to clear.
+   */
+  private endReplyIfDrained(): void {
+    if (!this.replyActive || !this.replyComplete || !this.replyDrained) return;
+    this.replyActive = false;
+    this.replyComplete = false;
+    this.replyDrained = false;
+    this.handlers.onSpeechEnd?.();
   }
 
   /** The service accepted the call: the first non-error frame is the admission. */
