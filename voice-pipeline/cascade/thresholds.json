@@ -90,6 +90,15 @@
       "date": "2026-10-29",
       "note": "The keepalive interval must sit strictly below this and inside the control-frame budget."
     },
+    "tts.close_timeout_ms": {
+      "unit": "ms",
+      "gate": "tts.close",
+      "ticket": "tts-stall",
+      "value": 1000,
+      "source": "owner decision 2026-11-02 (tts-stall): a synthesis socket being replaced is closed within 1 s; the vendor client's 10 s default put the close in front of the caller's first reply",
+      "date": "2026-11-02",
+      "note": "Bounded close only; a close that misses it is abandoned, never retried, and the reply's new socket is opened regardless."
+    },
     "tts.generate_char_cap": {
       "unit": "chars",
       "gate": "tts.sentence-scheduling",

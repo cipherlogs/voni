@@ -46,6 +46,12 @@ as the voice failure it is instead of a silent gap. ``Begin.expires_at`` is
 armed as a deadline: a session that reaches it hands over at a sentence
 boundary — the reply in flight drains and the new session opens between turns,
 never mid-sentence.
+
+Frames are read one at a time with the client's cancellation-safe ``recv``,
+never through its async iterator. The turn layer cancels a read when the caller
+takes the floor mid-greeting, and a cancelled read must leave the session
+usable: a finalized iterator reads as a closed socket, which would put the
+call's one reconnect in front of the caller's first reply.
 """
 
 from __future__ import annotations
@@ -97,6 +103,11 @@ KEEPALIVE_INTERVAL_S = float(require_bound("tts.keepalive_interval_ms")) / 1000.
 #: silent gap.
 IDLE_TIMEOUT_S = float(require_bound("tts.idle_timeout_ms")) / 1000.0
 
+#: How long a synthesis socket we are replacing may take to close. The vendor
+#: client's own default is ten seconds of waiting for the peer's TCP teardown;
+#: that wait would sit in front of the caller's next reply.
+CLOSE_TIMEOUT_S = float(require_bound("tts.close_timeout_ms")) / 1000.0
+
 #: How far the vendor's reported flush duration may sit from the duration the
 #: received bytes actually are, from the one threshold registry.
 AUDIO_LOSS_TOLERANCE_MS = float(require_bound("tts.audio_loss_tolerance_ms"))
@@ -120,7 +131,58 @@ SocketFactory = Callable[[str, dict[str, str]], Awaitable[Any]]
 def _default_socket_factory(url: str, extra_headers: dict[str, str]) -> Awaitable[Any]:
     import websockets
 
-    return websockets.connect(url, additional_headers=extra_headers)  # type: ignore[no-any-return]
+    return websockets.connect(
+        url,
+        additional_headers=extra_headers,
+        # A synthesis socket we are done with is closed inside a caller's turn
+        # (a reconnect in front of the first reply). The vendor client's default
+        # is ten seconds of waiting for the peer's TCP teardown, which is the
+        # whole first-audio budget; the close never holds the caller beyond the
+        # registry's named bound.
+        close_timeout=CLOSE_TIMEOUT_S,
+    )  # type: ignore[no-any-return]
+
+
+class _RecvFrames:
+    """Read one frame at a time with ``recv``, which is cancellation-safe.
+
+    The vendor client exposes two ways to read: its async iterator, and
+    ``recv``. The iterator *is* an async generator, so cancelling a read
+    finalizes it: the socket stays open but every later read raises
+    ``StopAsyncIteration``, which is the same fact as the vendor closing the
+    session. The turn layer cancels a greeting mid-read when the caller takes
+    the floor, so reading through the iterator told the first reply its session
+    had died and made it pay the call's one reconnect in front of its first
+    audio. ``recv`` is documented cancel-safe: a cancelled read loses nothing,
+    and the next read returns the next frame.
+    """
+
+    def __init__(self, recv: Callable[[], Awaitable[Any]]) -> None:
+        self._recv = recv
+
+    def __aiter__(self) -> "_RecvFrames":
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            return await self._recv()
+        except StopAsyncIteration:
+            raise
+        except Exception as error:
+            if getattr(error, "code", None) == 1000:
+                # A normal closure ends the frame stream the way the vendor's
+                # iterator does; the read loop sees an ended socket, not a
+                # protocol error.
+                raise StopAsyncIteration from None
+            raise
+
+
+def _frames_for(socket: Any) -> Any:
+    """The frame reader for one socket: ``recv`` when the client offers it."""
+    recv = getattr(socket, "recv", None)
+    if callable(recv):
+        return _RecvFrames(recv)
+    return socket.__aiter__()
 
 
 @dataclass(frozen=True)
@@ -747,7 +809,7 @@ class AssemblyAIStreamingTTS(StreamingTTS):
             self.url, {"Authorization": self._api_key}
         )
         self._socket = socket
-        self._frames = socket.__aiter__()
+        self._frames = _frames_for(socket)
         try:
             self.begin = self._read_begin(await self._first_frame())
             self._record_begin(self.begin)

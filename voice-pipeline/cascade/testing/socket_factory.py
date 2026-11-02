@@ -59,6 +59,7 @@ class Frame:
         Frame(json.dumps(partial), repeat=2)      # duplicate frame (chaos)
         Frame(close_code=1011, reason="boom")     # abnormal close (chaos)
         Frame(exc=TimeoutError("stalled"))        # connection dropped
+        Frame(json.dumps(partial), gate=event)    # held until the test opens it
     """
 
     data: str | bytes | None = None
@@ -67,6 +68,11 @@ class Frame:
     close_code: int | None = None
     reason: str = ""
     exc: BaseException | None = None
+    #: An ``asyncio.Event`` the frame waits on before it is delivered, so a test
+    #: can hold a read in flight (a caller barges in while the vendor owes a
+    #: frame). A cancelled read leaves the frame at the head of the plan, which
+    #: is the ``recv`` contract the vendor client documents.
+    gate: Any = None
 
     def __post_init__(self) -> None:
         if self.repeat < 1:
@@ -125,29 +131,64 @@ class Response:
 
 
 class ScriptedSocket:
-    """Websocket-shaped connection: ``await send``, ``async for``, ``await close``."""
+    """Websocket-shaped connection: ``await send``, ``recv``, ``async for``, ``await close``.
+
+    ``recv`` is cancellation-safe, exactly as the vendor client's is: a read
+    that is cancelled leaves the frame at the head of the plan, so the next read
+    returns it.
+
+    ``iterator="generator"`` makes ``__aiter__`` an async generator over
+    ``recv`` — the shape ``websockets`` actually exposes — so a test can express
+    the hazard of cancelling a read through the iterator instead of through
+    ``recv``: the generator is finalized and the next read raises
+    ``StopAsyncIteration``. The default (``"self"``) keeps the socket its own
+    iterator, because the replay harnesses drive one phase per event loop and a
+    generator created in one loop cannot be read in the next.
+    """
 
     def __init__(
-        self, plan: Iterable[Frame | str | bytes], *, clock: Clock | None = None
+        self,
+        plan: Iterable[Frame | str | bytes],
+        *,
+        clock: Clock | None = None,
+        iterator: str = "self",
     ) -> None:
+        if iterator not in ("self", "generator"):
+            raise ValueError(
+                f'unknown iterator shape {iterator!r}; expected "self" or "generator"'
+            )
         self._frames: list[Frame] = []
         for item in plan:
             frame = item if isinstance(item, Frame) else Frame(item)
             self._frames.extend(frame for _ in range(frame.repeat))
         self._clock = clock
+        self._iterator = iterator
         self.sent: list[str | bytes] = []
         self.closed = False
         self.connected = True
 
-    def __aiter__(self) -> "ScriptedSocket":
+    def __aiter__(self) -> Any:
+        if self._iterator == "generator":
+            return self._generator()
         return self
 
+    async def _generator(self) -> AsyncIterator[str | bytes]:
+        while True:
+            yield await self.recv()
+
     async def __anext__(self) -> str | bytes:
+        return await self.recv()
+
+    async def recv(self) -> str | bytes:
+        """The next frame, cancellation-safely: a cancelled read loses nothing."""
         if not self._frames:
             self.connected = False
             raise StopAsyncIteration
-        frame = self._frames.pop(0)
+        frame = self._frames[0]
+        if frame.gate is not None:
+            await frame.gate.wait()
         await _sleep_ms(frame.delay_ms, self._clock)
+        self._frames.pop(0)
         if frame.exc is not None:
             self.connected = False
             raise frame.exc
@@ -174,7 +215,8 @@ class ScriptedSocketFactory:
     ``plans`` is either a single plan (a list of Frame/str/bytes) or a list of
     plans; the last plan repeats for further reconnects so a reconnect test
     does not index-error. ``connect_delay_ms`` and ``error`` script the
-    handshake itself.
+    handshake itself. ``iterator`` chooses the socket's read shape
+    (``"self"`` or the vendor's ``"generator"``).
     """
 
     def __init__(
@@ -184,11 +226,13 @@ class ScriptedSocketFactory:
         clock: Clock | None = None,
         connect_delay_ms: float = 0.0,
         error: BaseException | None = None,
+        iterator: str = "self",
     ) -> None:
         self._plans = _normalise_plans(plans)
         self._clock = clock
         self._connect_delay_ms = connect_delay_ms
         self._error = error
+        self._iterator = iterator
         self.connections: list[dict[str, Any]] = []
 
     async def __call__(
@@ -199,7 +243,7 @@ class ScriptedSocketFactory:
             raise self._error
         index = len(self.connections)
         plan = self._plans[min(index, len(self._plans) - 1)]
-        socket = ScriptedSocket(plan, clock=self._clock)
+        socket = ScriptedSocket(plan, clock=self._clock, iterator=self._iterator)
         self.connections.append(
             {"url": url, "headers": dict(extra_headers or {}), "socket": socket}
         )
