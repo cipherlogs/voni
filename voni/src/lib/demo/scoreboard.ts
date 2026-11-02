@@ -63,8 +63,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { getVoice } from "../agents/voices";
 import { BARGE_IN_JUDGE_MS, judgeOverlap, type OverlapVerdict } from "../voice/barge-in";
 import { EN_RECOGNITION } from "../voice/recognition";
@@ -101,6 +101,7 @@ import {
   BEHAVIOR_RUN_EVIDENCE_KIND,
   BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
   codeFingerprintFromGit,
+  untrackedMaterial,
 } from "./behavior-evidence.mjs";
 import { DEMO_VOICE_IDS, SILENCE_CHECK_IN_INSTRUCTIONS } from "./voni-agent";
 import { DEMO_INBOX_ADDRESS } from "./email-test";
@@ -7198,18 +7199,37 @@ export { BEHAVIOR_RUN_EVIDENCE_KIND, BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION, codeF
  * Read the fingerprint from git at run time (score-demo writes it into the
  * artifact; the streak command reads the behavior runner's copy). Both read
  * the same repository root so a change anywhere in the repo moves the hash,
- * including a change outside `voni/`. Null when git cannot answer: a missing
- * HEAD must fail the streak, never look clean.
+ * including a change outside `voni/`. Porcelain collapses an untracked
+ * directory to `?? dir/`, so every untracked file's own bytes are hashed too;
+ * a clean tree keeps the exact hash earlier fingerprints recorded. Null when
+ * git cannot answer: a missing HEAD must fail the streak, never look clean.
  */
 export function readCodeFingerprint(cwd = process.cwd()): CodeFingerprint | null {
   try {
-    const git = (args: string[]): string =>
-      execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).trim();
+    const raw = (args: string[]): string =>
+      execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const git = (args: string[]): string => raw(args).trim();
     const top = git(["rev-parse", "--show-toplevel"]);
     const head = git(["-C", top, "rev-parse", "HEAD"]);
     const status = git(["-C", top, "status", "--porcelain=v1"]);
     const diff = git(["-C", top, "diff", "HEAD"]);
-    return codeFingerprintFromGit({ head, status, diff });
+    const untrackedPaths = raw([
+      "-C",
+      top,
+      "ls-files",
+      "-o",
+      "--exclude-standard",
+      "-z",
+    ])
+      .split("\0")
+      .filter((path) => path !== "");
+    const untracked = untrackedMaterial(
+      untrackedPaths.map((path) => ({
+        path,
+        bytes: readFileSync(join(top, path)),
+      })),
+    );
+    return codeFingerprintFromGit({ head, status, diff, untracked });
   } catch {
     return null;
   }

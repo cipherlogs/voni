@@ -21,7 +21,15 @@
 // the runner refuses to fall back to ordinary DATABASE_URL.
 
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +38,7 @@ import {
   BEHAVIOR_RUN_EVIDENCE_KIND,
   BEHAVIOR_RUN_EVIDENCE_SCHEMA_VERSION,
   codeFingerprintFromGit,
+  untrackedMaterial,
 } from "../src/lib/demo/behavior-evidence.mjs";
 import {
   budgetVerdict,
@@ -127,13 +136,27 @@ function portOccupied(port) {
 
 function fingerprint() {
   // Repo-wide, the same shape score-demo writes: HEAD plus a sha256 of the
-  // porcelain status and the full unstaged/staged diff. A change anywhere in
-  // the repo (not only voni/) moves the fingerprint.
+  // porcelain status, the full unstaged/staged diff and every untracked file's
+  // own bytes. A change anywhere in the repo (not only voni/) moves the
+  // fingerprint, including content inside an already-untracked directory.
   const top = capture("git", ["rev-parse", "--show-toplevel"], { cwd: appDir });
   const head = capture("git", ["-C", top, "rev-parse", "HEAD"]);
   const status = capture("git", ["-C", top, "status", "--porcelain=v1"]);
   const diff = capture("git", ["-C", top, "diff", "HEAD"]);
-  const fingerprint = codeFingerprintFromGit({ head, status, diff });
+  // NUL-separated, never trimmed: a path may contain whitespace.
+  const untrackedRaw =
+    spawnSync("git", ["-C", top, "ls-files", "-o", "--exclude-standard", "-z"], {
+      cwd: appDir,
+      encoding: "utf8",
+    }).stdout ?? "";
+  const untrackedPaths = untrackedRaw.split("\0").filter((path) => path !== "");
+  const untracked = untrackedMaterial(
+    untrackedPaths.map((path) => ({
+      path,
+      bytes: readFileSync(join(top, path)),
+    })),
+  );
+  const fingerprint = codeFingerprintFromGit({ head, status, diff, untracked });
   if (!fingerprint) throw new Error("git has no HEAD: cannot fingerprint the candidate");
   return {
     ...fingerprint,
