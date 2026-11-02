@@ -8,8 +8,13 @@ same voice at the registry's delay. It is not the reply:
 * it is skipped when the reply starts speaking first;
 * it carries no model request and no tool call.
 
-The table is per Locale because the demo roster is one voice per Locale. "Mhm."
-is deliberately shared: it is a listening sound, not an English word.
+The table is per Locale because the demo roster is one voice per Locale.
+
+Every line is a real word in its Locale. A listening sound spelled as letters
+("Mhm.") is not one: the vendor synthesises it as the letters m-h-m, which no
+caller has ever said, and because acks are never captioned the defect is
+invisible in every transcript. The first line of each Locale used to be "Mhm."
+and is now a word.
 """
 
 from __future__ import annotations
@@ -19,11 +24,11 @@ from collections.abc import Mapping
 #: One to three short listening sounds per Locale. Lowercase is not used;
 #: these are spoken verbatim, so each keeps its own punctuation and accents.
 ACK_LINES: Mapping[str, tuple[str, ...]] = {
-    "en": ("Mhm.", "Right.", "Got it."),
-    "de": ("Mhm.", "Alles klar.", "Okay."),
-    "es": ("Mhm.", "Vale.", "Claro."),
-    "fr": ("Mhm.", "D'accord.", "Très bien."),
-    "pt": ("Mhm.", "Certo.", "Tá."),
+    "en": ("Right.", "Got it.", "Okay."),
+    "de": ("Okay.", "Alles klar.", "Genau."),
+    "es": ("Vale.", "Claro.", "De acuerdo."),
+    "fr": ("D'accord.", "Très bien.", "Voilà."),
+    "pt": ("Certo.", "Claro.", "Tá."),
 }
 
 
