@@ -21,7 +21,6 @@ import {
 } from "../../../src/lib/demo/verification/scenarios/types";
 import { RATING_AXES } from "../rate";
 import { judgeRun, type RunVerdict } from "../../../src/lib/demo/verification/verdict";
-import { applyPanelVerdict, judgePanel } from "../../../src/lib/demo/verification/panel";
 import type { PanelGoldLabel, PanelGoldLabelSet } from "../../../src/lib/demo/verification/panel/types";
 
 export const RUN_ID = "run-panel-1";
@@ -296,19 +295,33 @@ export function buildSigningCertificate(input: {
     signedAt: string;
     signature: string;
   };
+  /** Defaults to every demo Locale; the English-only fixture declares `en`. */
+  scope?: readonly Locale[];
+  /** One scenario per Locale unless a one-Locale session needs twelve calls. */
+  scenariosPerLocale?: number;
 }): Certificate {
-  const scenarios = LOCALES.map((locale) => ({
-    name: `panel-${locale}`,
-    locale,
-    heldOut: false,
-    class: "golden-flow" as ScenarioClass,
-  }));
+  const scope = input.scope ?? LOCALES;
+  const classes: readonly ScenarioClass[] = [
+    "golden-flow",
+    "turn-taking",
+    "comprehension",
+    "emotion",
+  ];
+  const perLocale = input.scenariosPerLocale ?? 1;
+  const scenarios = scope.flatMap((locale) =>
+    Array.from({ length: perLocale }, (_, index) => ({
+      name: perLocale === 1 ? `panel-${locale}` : `panel-${locale}-${index + 1}`,
+      locale,
+      heldOut: false,
+      class: classes[index % classes.length]!,
+    })),
+  );
   const attempts = scenarios.flatMap((scenario) =>
     [1, 2, 3].map((repetition) => ({
       scenario: scenario.name,
       locale: scenario.locale,
       repetition,
-      callId: `call-${scenario.locale}-${repetition}`,
+      callId: `call-${scenario.name}-${repetition}`,
     })),
   );
   return buildCertificate({
@@ -316,10 +329,13 @@ export function buildSigningCertificate(input: {
     run: input.run,
     target: "local",
     scope: {
-      locales: [...LOCALES],
+      locales: [...scope],
       decidedBy: "owner",
       decidedOn: "2026-11-02",
-      reason: "full five-Locale panel fixture",
+      reason:
+        scope.length === 1
+          ? "English-only panel fixture"
+          : "full five-Locale panel fixture",
     },
     plan: { mode: "nightly", repetitions: 3 },
     corpus: { version: 1, fingerprint: "c".repeat(64), scenarios },
@@ -348,10 +364,14 @@ export async function loadHumanContract() {
 }
 
 /**
- * A pending-human certificate whose H1-H5 pass from a 200-label ledger and
- * whose H7 fails only because the owner has not signed yet.
+ * A pending-human certificate and the one panel session the owner actually
+ * rates: twelve calls, no accumulated-label ledger, and H1-H5 as the run
+ * recorded them (unmeasured until the signature). H7 fails only because the
+ * owner has not signed yet.
  */
-export async function pendingSigningFixture(): Promise<{
+export async function pendingSigningFixture(
+  scope?: readonly Locale[],
+): Promise<{
   certificate: Certificate;
   session: RatingSession;
   ratings: RatingRecord[];
@@ -362,27 +382,14 @@ export async function pendingSigningFixture(): Promise<{
   const baseRun = judgeRun({
     runId: RUN_ID,
     contract,
-    evidence: [h6Evidence("panel-en")],
+    evidence: [h6Evidence(scope?.length === 1 ? "panel-en-1" : "panel-en")],
   });
-
-  const labels: PanelGoldLabel[] = [];
-  for (const locale of LOCALES) {
-    for (let index = 0; index < 40; index += 1) {
-      labels.push(
-        goldLabel({
-          locale,
-          humanDetected: index < 20 ? false : true,
-          axes: { soundsHuman: 5, turnTaking: 5 },
-        }),
-      );
-    }
-  }
-  const panel = judgePanel(contract, {
-    goldLabels: goldSet(labels),
-    signature: null,
+  const certificate = buildSigningCertificate({
+    run: baseRun,
+    panel: null,
+    ...(scope === undefined ? {} : { scope }),
+    ...(scope?.length === 1 ? { scenariosPerLocale: 4 } : {}),
   });
-  const merged = applyPanelVerdict(baseRun, panel);
-  const certificate = buildSigningCertificate({ run: merged, panel: null });
 
   const calls = callsFor(certificate);
   const { session } = buildPanelSession({

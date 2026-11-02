@@ -199,6 +199,7 @@ export type RatingErrorCode =
   | "invalid-clean-sample"
   | "invalid-sample-size"
   | "sample-shortfall"
+  | "sample-overflow"
   | "invalid-session"
   | "duplicate-call"
   | "unknown-call"
@@ -575,6 +576,16 @@ export function buildRatingSession(input: RatingSessionInput): RatingSession {
     random,
     input.cleanGroupOf,
   );
+  // A grouped base larger than the sample cannot be honoured by a fixed-size
+  // session: refuse by name rather than silently queueing more labels than the
+  // panel says it samples (one per class beyond twelve would do exactly that).
+  if (sampleSize > 0 && perLocaleClean.length > sampleSize) {
+    throw new RatingError(
+      "sample-overflow",
+      `the clean base is ${perLocaleClean.length} calls but this session samples ${sampleSize}; ` +
+        "a grouping with more groups than slots cannot be honoured, so the session refuses",
+    );
+  }
 
   const selected = new Set(perLocaleClean.map((call) => call.callId));
   const topUpCount = Math.max(0, sampleSize - failingCalls.length - perLocaleClean.length);

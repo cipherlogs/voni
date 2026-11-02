@@ -251,6 +251,36 @@ test("a one-Locale scope needs no call for the four Locales it excludes", () => 
   assert.deepEqual([...sampled].sort(), [...classes].sort(), "every class is represented");
 });
 
+test("more classes than the panel samples refuses by name, never queues extra labels", () => {
+  const classes = [
+    "golden-flow",
+    "turn-taking",
+    "comprehension",
+    "emotion",
+    "soundscape",
+    "connectivity",
+    "meta-security",
+    "ending",
+    "tools",
+    "locale",
+    "one",
+    "two",
+    "three",
+  ] as unknown as NonNullable<Parameters<typeof sessionCertificate>[0]>["classes"];
+  const certificate = sessionCertificate({ callsPerLocale: 3, scope: ["en"], classes });
+  assert.throws(
+    () =>
+      buildPanelSession({
+        certificate,
+        calls: callsFor(certificate),
+        reviewer: "owner",
+        seed: 1,
+        createdAt: "2026-10-31T10:00:00.000Z",
+      }),
+    refusal("class-shortfall", /13 classes.*samples 12/),
+  );
+});
+
 test("an in-scope Locale with no call refuses, while an excluded Locale is neutral", () => {
   const certificate = sessionCertificate({ callsPerLocale: 3, scope: ["en", "es"] });
   assert.throws(

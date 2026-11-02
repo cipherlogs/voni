@@ -28,10 +28,13 @@ export const PANEL_CALLS_PER_LOCALE = 2;
 
 /**
  * A one-Locale scope cannot draw "two per Locale" as breadth: that is two
- * calls. Its twelve are one clean call per scenario class (the corpus's nine
- * classes give nine), the remaining slots to the worst clean calls, and every
- * failing call mandatory. One per class, not two, because nine classes at two
- * each is eighteen and the sample is fixed at twelve.
+ * calls. Its twelve are one clean call per scenario class **present in the
+ * certificate's recorded scenario set** (the current English corpus has nine of
+ * the ten declared classes), the remaining slots to the worst clean calls, and
+ * every failing call mandatory. One per class, not two, because two per class
+ * would already exceed the fixed twelve; and a class set with more classes than
+ * slots refuses (`class-shortfall`) rather than queueing more labels than the
+ * panel says it samples.
  */
 export const PANEL_CALLS_PER_CLASS = 1;
 

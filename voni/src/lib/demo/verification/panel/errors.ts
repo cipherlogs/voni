@@ -25,6 +25,7 @@ export type PanelErrorCode =
   | "invalid-scope"
   | "out-of-scope-call"
   | "missing-scenario-class"
+  | "class-shortfall"
   | "missing-failing-call"
   | "panel-shortfall"
   | "empty-panel"

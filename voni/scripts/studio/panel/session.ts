@@ -4,11 +4,13 @@
  * A panel session is a Studio rating session with a fixed shape: twelve calls,
  * every failing call mandatory, and a clean base drawn from the certificate's
  * declared scope. A multi-Locale scope keeps two calls per Locale; a one-Locale
- * scope draws one clean call per scenario class (the corpus's nine classes, not
- * two per class, which would exceed twelve) and fills the remaining slots with
- * the worst clean calls. A Locale inside the scope with no call, a call from a
- * Locale the scope excludes, a failing call whose evidence is missing, or a run
- * with fewer than twelve eligible calls refuses the session by name.
+ * scope draws one clean call per scenario class in the certificate's recorded
+ * scenario set (nine in the current English corpus, of ten declared; not two per
+ * class, which would exceed twelve) and fills the remaining slots with the worst
+ * clean calls. A Locale inside the scope with no call, a call from a Locale the
+ * scope excludes, more classes than the sample can hold, a failing call whose
+ * evidence is missing, or a run with fewer than twelve eligible calls refuses
+ * the session by name.
  *
  * This module lives under `scripts/studio/` because the Studio is a local-only
  * script process; `voni/src/` holds the pure panel vocabulary and verdict.
@@ -146,6 +148,19 @@ export function buildPanelSession(input: BuildPanelSessionInput): PanelSession {
       groups[call.callId] = scenarioClass;
     }
     cleanGroupOf = groups;
+    const cleanClasses = new Set(
+      input.calls
+        .filter((entry) => !failing.has(entry.scenario))
+        .map((entry) => groups[entry.callId]),
+    );
+    if (cleanClasses.size > PANEL_SAMPLE_SIZE) {
+      throw new PanelError(
+        "class-shortfall",
+        `a one-Locale scope samples one clean call per scenario class, but this run holds ` +
+          `${cleanClasses.size} classes and the panel samples ${PANEL_SAMPLE_SIZE}; a grouping ` +
+          "with more classes than slots refuses rather than queueing more labels than claimed",
+      );
+    }
   }
 
   if (input.calls.length < PANEL_SAMPLE_SIZE) {

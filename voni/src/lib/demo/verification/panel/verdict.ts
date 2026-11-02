@@ -139,12 +139,13 @@ function unmeasured(
   detail: string,
   citations: readonly string[],
   gaps: readonly string[] = [],
+  sampleCount = 0,
 ): PropertyVerdict {
   return verdict(property, {
     status: "FAIL",
     reason: "unmeasured",
     detail,
-    sampleCount: 0,
+    sampleCount,
     citations,
     gaps,
   });
@@ -302,11 +303,19 @@ function h2(property: ContractPropertyEntry, input: PanelJudgementInput): Proper
   if (short.length > 0) {
     return unmeasured(
       property,
-      `${detail}; below the ${minJudgments}-judgment floor per Locale for ` +
-        `${short.map((entry) => `${entry.locale} (${entry.count})`).join(", ")}; ` +
-        "below-bar agreement is unverified, which is a failure",
+      `H2: one panel session exports ${ab.length} A/B judgments; the floor is ` +
+        `${minJudgments} per Locale (short: ` +
+        `${short.map((entry) => `${entry.locale} (${entry.count})`).join(", ")}). ` +
+        `${detail}; below-bar agreement is unverified, which is a failure (RR-10: no merge path ` +
+        "accumulates a later session's labels; the owner decides whether the floor or the " +
+        "accumulation changes)",
       citations,
-      ["H2 accumulates judgments per Locale across panel sessions; one certification is 12 calls."],
+      [
+        `RR-10: one panel session exports ${ab.length} A/B judgments; the floor is ` +
+          `${minJudgments} per Locale. No merge path accumulates a later session's labels; the ` +
+          "owner decides whether the floor or the accumulation changes.",
+      ],
+      ab.length,
     );
   }
   const outside = byLocale.filter(

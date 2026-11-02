@@ -129,7 +129,8 @@ test("H2 refuses below 40 judgments per Locale and judges 40-60% only above the 
   });
   assert.equal(property(belowFloor, "H2").status, "FAIL");
   assert.equal(property(belowFloor, "H2").reason, "unmeasured");
-  assert.match(property(belowFloor, "H2").detail, /40-judgment floor/);
+  assert.match(property(belowFloor, "H2").detail, /the floor is 40 per Locale/);
+  assert.equal(property(belowFloor, "H2").sampleCount, 10);
 
   const inRange = judgePanel(contract, {
     goldLabels: set(
@@ -178,7 +179,8 @@ test("a one-Locale scope applies H1 and the H2 floor to that Locale only", async
   });
   assert.equal(property(short, "H2").status, "FAIL");
   assert.equal(property(short, "H2").reason, "unmeasured");
-  assert.match(property(short, "H2").detail, /40-judgment floor/);
+  assert.match(property(short, "H2").detail, /the floor is 40 per Locale/);
+  assert.equal(property(short, "H2").sampleCount, 39);
 
   const noEnglish = judgePanel(contract, {
     goldLabels: set(byLocale(40, (locale) => label({ locale })).filter((entry) => entry.locale !== "en")),
