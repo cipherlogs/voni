@@ -52,6 +52,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from cascade.assemblyai_tts import split_sentences
 from cascade.end_intent import wants_to_end
 from cascade.event_rules import EventKind, EventRules
 from cascade.events import TurnLedger
@@ -107,9 +108,9 @@ ACK_DELAY_BOUND = "reply.ack_delay_ms"
 REPEAT_REPLY_WINDOW = 2
 
 #: The duplicate bar, in words, after normalisation. This is a rule, not a
-#: tunable: short agreements ("Yes.", "Right.") must never be dropped for
-#: agreeing twice, so a sentence shorter than this is never a repeat.
-REPEAT_MIN_WORDS = 4
+#: tunable: one-word agreements ("Yes.", "Right.") must never be dropped for
+#: agreeing twice, while the measured two-word loop ("Fair enough.") is caught.
+REPEAT_MIN_WORDS = 2
 
 #: Punctuation is a separator, not content: "what's" and "what s" are one form.
 _NON_WORD = re.compile(r"[^\w\s]+", re.UNICODE)
@@ -130,18 +131,14 @@ def _normal_form(text: str) -> str:
 
 
 def _reply_sentences(text: str) -> list[str]:
-    """Every spoken sentence in one reply, including an unterminated last one."""
-    sentences: list[str] = []
-    rest = text
-    while True:
-        sentence = last_complete_sentence(rest)
-        if not sentence:
-            break
-        sentences.append(sentence)
-        rest = rest[len(sentence) :].lstrip()
-    if rest.strip():
-        sentences.append(rest.strip())
-    return sentences
+    """Every spoken sentence in one reply, including an unterminated last one.
+
+    ``last_complete_sentence`` deliberately returns the *longest* complete
+    prefix so one ``_speak`` can carry several sentences. Duplicate matching
+    needs the individual sentences, so this uses the synthesis session's one
+    sentence splitter instead of re-deriving boundaries here.
+    """
+    return [piece.strip() for piece in split_sentences(text) if piece.strip()]
 
 
 def _merged_usage(first: TurnUsage, second: TurnUsage) -> TurnUsage:

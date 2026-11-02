@@ -163,7 +163,39 @@ class RepeatGuardTests(unittest.TestCase):
             "the reply only repeated a line already spoken", fields["reason"]
         )
 
-    def test_short_agreements_may_repeat(self):
+    def test_the_measured_two_word_loop_is_caught_and_repaired(self):
+        repair = "Let us start with the order you placed."
+        stream = self.make(
+            replies=[
+                {"deltas": ["Fair enough. ", "What went wrong?"]},
+                {"deltas": ["Fair enough. ", "What went wrong?"]},
+                {"deltas": [repair]},
+            ]
+        )
+
+        self.run_turns(stream, 2)
+
+        # The whole second reply was the measured loop; the caller hears the
+        # first turn and the one repair, never the pair again.
+        self.assertEqual(
+            ["Fair enough.", "What went wrong?", repair], self.tts.spoken
+        )
+        self.assertEqual(2, stream.repeat_dropped)
+        self.assertEqual(1, stream.repeat_repair)
+        self.assertEqual(3, stream.request_count())
+        repair_messages = self.llm.requests[2]
+        system = [
+            message["content"]
+            for message in repair_messages
+            if message["role"] == "system"
+        ]
+        self.assertIn(
+            "You already said, verbatim: 'Fair enough.'. Do not repeat it; "
+            "answer only what the caller just said.",
+            system,
+        )
+
+    def test_a_repeated_one_word_agreement_is_still_spoken(self):
         stream = self.make(
             replies=[
                 {"deltas": ["Yes."]},
