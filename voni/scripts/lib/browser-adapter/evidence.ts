@@ -8,9 +8,12 @@
  * one is missing, malformed, incomplete or bound to a different call.
  *
  * Cost is the call's own `cost.priced` row, copied verbatim; the runner never
- * recomputes it. The delivered WAV is required: unlike the protocol adapter's
- * optional received PCM, a certifying run without the delivered audio has not
- * heard what the visitor heard.
+ * recomputes it. A denied call that opened no session carries a measured zero
+ * row with no legs (zero audio, tokens and characters), built by
+ * `zeroSessionCostRow`; a session that ran but left no priced row stays a gap.
+ * The delivered WAV is required: unlike the protocol adapter's optional
+ * received PCM, a certifying run without the delivered audio has not heard what
+ * the visitor heard.
  *
  * Spec: `.scratch/demo-verification/spec.md`, "Ground truth comes first" and
  * "Evidence artifacts".
@@ -52,6 +55,7 @@ import {
   type AdapterErrorFactory,
 } from "../adapter-evidence";
 import { BrowserAdapterError } from "./errors";
+import { zeroSessionCostRow } from "./zero-cost";
 import type {
   AssembledBrowserEvidence,
   BrowserCallRecord,
@@ -521,8 +525,17 @@ export async function assembleBrowserEvidence(input: {
   if (wavFile !== null && captureSource !== null) await copyFile(captureSource, wavFile);
   if (marksFile !== null && marksSource !== null) await copyFile(marksSource, marksFile);
 
-  const priced = rows.length === 0 ? null : pricedRow(rows, gaps);
-  if (rows.length === 0) {
+  // A denied call with no trace opened no session at all: no audio, tokens or
+  // characters were spent, so the call's cost is a measured zero. A trace that
+  // exists means the service may have run, so a missing priced row there stays
+  // a named gap and is never replaced by a zero.
+  const noSession = deniedCall && traceText === null;
+  const priced = noSession
+    ? zeroSessionCostRow()
+    : rows.length === 0
+      ? null
+      : pricedRow(rows, gaps);
+  if (priced === null && rows.length === 0) {
     gaps.push(
       "the call carries no cost.priced row; a denied call with no trace has no priced cost " +
         "and the runner never computes one",

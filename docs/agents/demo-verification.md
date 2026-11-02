@@ -450,10 +450,14 @@ repetitions.
   a call socket still open with no observed teardown. R5 and the adapter share
   `judgeMicDenial`, so a denied call can never pass on the absence of evidence
   alone; every other scenario keeps the hard `capture-missing` refusal.
-  A denied call has no priced row, so a *single-scenario* certificate for it is
-  withheld by `cost-missing` (the run-level E3 cost also stays unmeasured until
-  a run can account for a scenario that placed no call); R5 itself is judged
-  from the refusal evidence and is not weakened.
+  A denied call that reached no service opened no session: no audio, token or
+  character was spent, so its `cost.priced` row is a measured zero with no legs
+  (`totalUsd: 0`), citing the committed rate table and the reason "no session
+  opened (the app refused before any vendor call)". E1 and E2 read that row as
+  zero usage and zero price, and the run total includes it without inventing a
+  price. A denied call that did reach the service and wrote no priced row stays
+  a named gap and withholds the certificate (`cost-missing`); R5 itself is
+  judged from the refusal evidence and is not weakened.
 
 ### Soundscape and security evidence gaps
 

@@ -162,6 +162,55 @@ test("a measured leg without its priced amount is refused, not read as zero", ()
   assert.equal(codeOf(() => readPricedRow(broken)), "malformed-cost");
 });
 
+test("a measured zero-leg row is a call that opened no session, not an invented price", () => {
+  const cost = readPricedRow(
+    row({
+      totalUsd: 0,
+      legs: {},
+      source: "no session opened (the app refused before any vendor call)",
+    }),
+  );
+  assert.equal(cost.measured, true);
+  assert.equal(cost.totalUsd, 0);
+  assert.deepEqual(cost.legs, []);
+  assert.equal(cost.source, "no session opened (the app refused before any vendor call)");
+  assert.equal(cost.rateTableVersion, "cascade v1");
+  assert.match(legBreakdown(cost), /no session opened/);
+});
+
+test("a zero-leg row must price zero and say why no session opened", () => {
+  // A zero-leg row is only honest as a measured zero with its reason.
+  assert.equal(
+    codeOf(() =>
+      readPricedRow(
+        row({
+          totalUsd: 0.01,
+          legs: {},
+          source: "no session opened (the app refused before any vendor call)",
+        }),
+      ),
+    ),
+    "malformed-cost",
+  );
+  assert.equal(
+    codeOf(() => readPricedRow(row({ totalUsd: 0, legs: {} }))),
+    "malformed-cost",
+  );
+  assert.equal(
+    codeOf(() =>
+      readPricedRow(
+        row({
+          measured: false,
+          totalUsd: null,
+          legs: {},
+          source: "no session opened (the app refused before any vendor call)",
+        }),
+      ),
+    ),
+    "malformed-cost",
+  );
+});
+
 test("a cost row with no legs, or a non-object, is refused by name", () => {
   assert.equal(codeOf(() => readPricedRow(row({ legs: {} }))), "malformed-cost");
   assert.equal(codeOf(() => readPricedRow(null)), "malformed-cost");
