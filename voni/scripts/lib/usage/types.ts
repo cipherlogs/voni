@@ -19,10 +19,12 @@ export const USAGE_REFUSAL_EXIT_CODE = 2 as const;
 export const USAGE_ERROR_CODES = [
   "bad-input",
   "unknown-run",
+  "incomplete-run",
   "missing-evidence",
   "torn-row",
   "missing-rate-table",
   "unknown-vendor",
+  "run-journal-not-implemented",
 ] as const;
 
 export type UsageErrorCode = (typeof USAGE_ERROR_CODES)[number];
@@ -69,33 +71,79 @@ export type UnitLine = {
   readonly vendor: VendorId;
   readonly unit: string;
   readonly label: string;
+  /**
+   * True only when the row's quantity is the one the rate multiplies. The LLM
+   * parent lines are reported but netted before pricing, so a rate beside them
+   * would invite arithmetic the row never charged.
+   */
+  readonly rateApplies: boolean;
+  /** How to read a reported-but-not-billed quantity; null on a direct line. */
+  readonly note: string | null;
 };
 
 export const UNIT_LINES: readonly UnitLine[] = [
-  { id: "stt.audio_seconds", leg: "stt", vendor: "meta", unit: "audio_seconds", label: "audio seconds" },
-  { id: "llm.prompt_tokens", leg: "llm", vendor: "meta", unit: "prompt_tokens", label: "prompt tokens" },
+  {
+    id: "stt.audio_seconds",
+    leg: "stt",
+    vendor: "meta",
+    unit: "audio_seconds",
+    label: "audio seconds",
+    rateApplies: true,
+    note: null,
+  },
+  {
+    id: "llm.prompt_tokens",
+    leg: "llm",
+    vendor: "meta",
+    unit: "prompt_tokens",
+    label: "prompt tokens",
+    rateApplies: false,
+    note: "reported, includes cached",
+  },
   {
     id: "llm.completion_tokens",
     leg: "llm",
     vendor: "meta",
     unit: "completion_tokens",
     label: "completion tokens",
+    rateApplies: false,
+    note: "reported, includes reasoning",
   },
-  { id: "llm.cached_tokens", leg: "llm", vendor: "meta", unit: "cached_tokens", label: "cached tokens" },
+  {
+    id: "llm.cached_tokens",
+    leg: "llm",
+    vendor: "meta",
+    unit: "cached_tokens",
+    label: "cached tokens",
+    rateApplies: true,
+    note: "billed at the cached rate, inside prompt tokens",
+  },
   {
     id: "llm.reasoning_tokens",
     leg: "llm",
     vendor: "meta",
     unit: "reasoning_tokens",
     label: "reasoning tokens",
+    rateApplies: false,
+    note: "reported, inside completion tokens",
   },
-  { id: "tts.characters", leg: "tts", vendor: "assemblyai", unit: "characters", label: "characters" },
+  {
+    id: "tts.characters",
+    leg: "tts",
+    vendor: "assemblyai",
+    unit: "characters",
+    label: "characters",
+    rateApplies: true,
+    note: null,
+  },
   {
     id: "tts.audio_seconds",
     leg: "tts",
     vendor: "assemblyai",
     unit: "audio_seconds",
     label: "audio seconds",
+    rateApplies: true,
+    note: null,
   },
   {
     id: "tts.session_seconds",
@@ -103,6 +151,8 @@ export const UNIT_LINES: readonly UnitLine[] = [
     vendor: "assemblyai",
     unit: "session_seconds",
     label: "session seconds",
+    rateApplies: true,
+    note: null,
   },
 ];
 
@@ -122,9 +172,9 @@ export type UsageCall = {
 /** The evidence set one run id resolves to. */
 export type UsageRun = {
   readonly runId: string;
-  readonly kind: "directory" | "certificate";
+  readonly kind: "directory" | "certificate" | "journal";
   readonly calls: readonly UsageCall[];
-  /** The certificate's own `cost.callCount`; null for a directory run. */
+  /** The plan's calls: the certificate's required repetitions, or one adapter call. */
   readonly expectedCalls: number | null;
   /** Human-readable path(s) the run was read from. */
   readonly source: string;
@@ -150,6 +200,8 @@ export type UsageLineTotal = {
   readonly vendor: VendorId;
   readonly unit: string;
   readonly label: string;
+  readonly note: string | null;
+  readonly rateApplies: boolean;
   readonly quantity: number | null;
   /** Calls that recorded this unit; zero is a measured value, not absence. */
   readonly measuredCalls: number;
@@ -205,6 +257,10 @@ export type UsageLedger = {
   readonly complete: boolean;
   /** The measured subset; a complete run's total. */
   readonly totalUsd: number;
+  /** The plan's calls; null only when the evidence records no plan. */
+  readonly expectedCalls: number | null;
+  /** Why measured calls fall short of the plan; null when the plan is met. */
+  readonly planGap: string | null;
   readonly rateVersions: readonly string[];
   /** Calls that opened no session and are measured zeros. */
   readonly zeroCalls: number;

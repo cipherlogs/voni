@@ -13,9 +13,10 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PricedCostError, readPricedRow } from "@/lib/demo/verification/economics";
+import { PricedCostError, readPricedRow, type PricedCost } from "@/lib/demo/verification/economics";
 
 import { parseTrace } from "../adapter-evidence";
+import { sameUsd, sumMeasuredCalls } from "./sums";
 import { UsageCliError, refuse, type UsageCall, type UsageRun } from "./types";
 
 /** The repository root, resolved from this module (`voni/scripts/lib/usage/`). */
@@ -70,38 +71,10 @@ function optionalText(record: Record<string, unknown>, field: string): string | 
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
-/** The row's own `units` maps, validated; an absent map stays absent. */
-function unitsOf(row: Record<string, unknown>, callId: string): Record<string, Record<string, number>> {
-  const legs = row.legs;
-  if (!isObject(legs)) {
-    throw new UsageCliError("torn-row", `call ${callId}: cost.priced has no legs object`);
-  }
+/** The leg units the priced-row reader already validated, in the ledger's shape. */
+function unitsOf(priced: PricedCost): Record<string, Record<string, number>> {
   const units: Record<string, Record<string, number>> = {};
-  for (const [leg, rawLeg] of Object.entries(legs)) {
-    if (!isObject(rawLeg)) {
-      throw new UsageCliError("torn-row", `call ${callId}: cost leg "${leg}" is not an object`);
-    }
-    const rawUnits = rawLeg.units;
-    if (rawUnits === undefined || rawUnits === null) continue;
-    if (!isObject(rawUnits)) {
-      throw new UsageCliError(
-        "torn-row",
-        `call ${callId}: cost leg "${leg}".units is not an object`,
-      );
-    }
-    const line: Record<string, number> = {};
-    for (const [unit, quantity] of Object.entries(rawUnits)) {
-      if (typeof quantity !== "number" || !Number.isFinite(quantity) || quantity < 0) {
-        throw new UsageCliError(
-          "torn-row",
-          `call ${callId}: cost leg "${leg}".units.${unit} must be a finite, non-negative ` +
-            `number, got ${JSON.stringify(quantity)}`,
-        );
-      }
-      line[unit] = quantity;
-    }
-    units[leg] = line;
-  }
+  for (const leg of priced.legs) units[leg.leg] = { ...leg.units };
   return units;
 }
 
@@ -143,7 +116,7 @@ export function readUsageCall(input: UsageCallInput): UsageCall {
     scenario: input.scenario.trim(),
     locale: input.locale === null ? null : input.locale.trim() || null,
     priced,
-    units: unitsOf(input.row, callId),
+    units: unitsOf(priced),
     tracePath: input.tracePath,
   };
 }
@@ -245,15 +218,60 @@ function exists(file: string): boolean {
   }
 }
 
+/** Count call traces without refusing on an empty run; readiness names it. */
+function countCallTraces(runDir: string): number {
+  if (exists(traceOf(runDir))) return 1;
+  try {
+    return readdirSync(join(runDir, "calls"), { withFileTypes: true }).filter(
+      (entry) => entry.isDirectory() && exists(traceOf(join(runDir, "calls", entry.name))),
+    ).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * A run directory is readable only after the adapter wrote a terminal
+ * `run.json`. Mid-run, the directory holds one call's trace and no endedAt, so
+ * refusing here stops a fragment printing as a complete run.
+ */
+function terminalRunRecord(runDir: string, callsSeen: number): Record<string, unknown> {
+  const runFile = join(runDir, "run.json");
+  const seen = `${callsSeen} call trace${callsSeen === 1 ? "" : "s"} seen`;
+  if (!exists(runFile)) {
+    refuse(
+      "incomplete-run",
+      `${runDir} has no run.json; the adapter writes it only when the run ends (${seen})`,
+    );
+  }
+  const record = readJson(runFile, "run.json");
+  const endedAt = optionalText(record, "endedAt");
+  const status = optionalText(record, "status");
+  if (endedAt === null || status === null) {
+    refuse(
+      "incomplete-run",
+      `${runFile} has no terminal endedAt/status; a run is readable only after it ends (${seen})`,
+    );
+  }
+  return record;
+}
+
 function directoryRun(runId: string, runRoot: string): UsageRun | null {
   const runDir = resolve(runRoot, runId);
   if (!exists(runDir)) return null;
   if (!statSync(runDir).isDirectory()) {
     refuse("missing-evidence", `${runDir} is not a run directory`);
   }
-  const runFile = join(runDir, "run.json");
-  const runRecord = exists(runFile) ? readJson(runFile, "run.json") : null;
+  // The adapter writes one call per run directory. Readiness is proved by the
+  // terminal run.json, never by "a trace exists".
+  const runRecord = terminalRunRecord(runDir, countCallTraces(runDir));
   const dirs = callDirsOf(runDir);
+  if (dirs.length !== 1) {
+    refuse(
+      "torn-row",
+      `${runDir} holds ${dirs.length} calls; one adapter run directory holds exactly one call`,
+    );
+  }
   const calls = dirs.map((callDir) => {
     const callId = callDir === runDir ? runId : basename(callDir);
     const { scenario, locale } = callScenario(callDir, runRecord);
@@ -263,7 +281,7 @@ function directoryRun(runId: string, runRoot: string): UsageRun | null {
     runId,
     kind: "directory",
     calls,
-    expectedCalls: calls.length,
+    expectedCalls: 1,
     source: runDir,
   };
 }
@@ -274,8 +292,14 @@ type CertificateCall = {
   readonly locale: string | null;
 };
 
+type CertificateCoverage = {
+  readonly calls: readonly CertificateCall[];
+  /** The plan's calls: the sum of every coverage row's required repetitions. */
+  readonly expectedCalls: number;
+};
+
 /** Every call id a certificate's coverage rows name, in row order. */
-function certificateCalls(certificate: Record<string, unknown>, runId: string): CertificateCall[] {
+function certificateCalls(certificate: Record<string, unknown>, runId: string): CertificateCoverage {
   const cost = certificate.cost;
   if (!isObject(cost)) refuse("torn-row", `certificate ${runId} has no cost object`);
   const callCount = cost.callCount;
@@ -292,12 +316,21 @@ function certificateCalls(certificate: Record<string, unknown>, runId: string): 
   if (!Array.isArray(rows)) refuse("torn-row", `certificate ${runId} has no coverage rows`);
 
   const byCall = new Map<string, CertificateCall>();
+  let expectedCalls = 0;
   for (const rawRow of rows) {
     if (!isObject(rawRow)) refuse("torn-row", `certificate ${runId} has a non-object coverage row`);
     const scenario = optionalText(rawRow, "scenario");
     if (scenario === null) {
       refuse("torn-row", `certificate ${runId} has a coverage row without a scenario`);
     }
+    const required = rawRow.requiredRepetitions;
+    if (typeof required !== "number" || !Number.isInteger(required) || required < 1) {
+      refuse(
+        "torn-row",
+        `certificate ${runId} coverage row "${scenario}" has no positive integer requiredRepetitions`,
+      );
+    }
+    expectedCalls += required;
     const locale = optionalText(rawRow, "locale");
     const calls = rawRow.calls;
     if (!Array.isArray(calls)) {
@@ -337,7 +370,14 @@ function certificateCalls(certificate: Record<string, unknown>, runId: string): 
   if (byCall.size === 0) {
     refuse("missing-evidence", `certificate ${runId} names no calls; there is no usage to read`);
   }
-  return [...byCall.values()];
+  if (byCall.size > expectedCalls) {
+    refuse(
+      "torn-row",
+      `certificate ${runId} names ${byCall.size} calls but its coverage plans ${expectedCalls}; ` +
+        "a run cannot measure more calls than it planned",
+    );
+  }
+  return { calls: [...byCall.values()], expectedCalls };
 }
 
 /** Index every call directory under the run root by its call id. */
@@ -389,9 +429,9 @@ function certificateRun(
       `certificate at ${file} names run ${JSON.stringify(certificateRunId)}; the file name is ${runId}`,
     );
   }
-  const calls = certificateCalls(certificate, runId);
+  const coverage = certificateCalls(certificate, runId);
   const index = callIndex(options.runRoot);
-  const resolved = calls.map((entry) => {
+  const resolved = coverage.calls.map((entry) => {
     const callDir = index.get(entry.callId);
     if (callDir === undefined) {
       refuse(
@@ -400,21 +440,32 @@ function certificateRun(
           `${options.runRoot} holds it; the committed claim and the local trace cannot be joined`,
       );
     }
-    return readCallDir(callDir, entry.callId, entry.scenario, entry.locale);
+    // The certificate's coverage row is a claim about this call. If the local
+    // call.json names a different scenario or Locale, the join would relabel
+    // the evidence; refuse instead.
+    const local = callScenario(callDir, {
+      scenario: entry.scenario,
+      ...(entry.locale === null ? {} : { locale: entry.locale }),
+    });
+    if (local.scenario !== entry.scenario) {
+      refuse(
+        "torn-row",
+        `certificate ${runId} names call ${entry.callId} as scenario "${entry.scenario}", ` +
+          `but its call.json says "${local.scenario}"; the join would relabel the evidence`,
+      );
+    }
+    if (entry.locale !== null && local.locale !== null && local.locale !== entry.locale) {
+      refuse(
+        "torn-row",
+        `certificate ${runId} names call ${entry.callId} as Locale "${entry.locale}", ` +
+          `but its call.json says "${local.locale}"; the join would relabel the evidence`,
+      );
+    }
+    return readCallDir(callDir, entry.callId, entry.scenario, entry.locale ?? local.locale);
   });
-  // The certificate rounds its aggregate to six decimals; compare at that
-  // precision so a rounded claim is not a torn one, but a drifted total is.
   const certificateUsd = (certificate.cost as Record<string, unknown>).usd as number;
-  const measuredUsd = resolved.reduce(
-    (sum, call) =>
-      sum +
-      call.priced.legs.reduce(
-        (legSum, leg) => legSum + (leg.measured ? (leg.amountUsd ?? 0) : 0),
-        0,
-      ),
-    0,
-  );
-  if (Math.round(certificateUsd * 1e6) !== Math.round(measuredUsd * 1e6)) {
+  const measuredUsd = sumMeasuredCalls(resolved);
+  if (!sameUsd(certificateUsd, measuredUsd)) {
     refuse(
       "torn-row",
       `certificate ${runId} claims $${certificateUsd.toFixed(6)} but its priced rows sum to ` +
@@ -425,7 +476,7 @@ function certificateRun(
     runId,
     kind: "certificate",
     calls: resolved,
-    expectedCalls: calls.length,
+    expectedCalls: coverage.expectedCalls,
     source: file,
   };
 }
@@ -457,16 +508,13 @@ function mtimeOf(file: string): number {
   }
 }
 
-/** A run directory is a latest candidate only once a call has written a trace. */
-function hasCallTrace(runDir: string): boolean {
-  if (exists(traceOf(runDir))) return true;
-  try {
-    return readdirSync(join(runDir, "calls"), { withFileTypes: true }).some(
-      (entry) => entry.isDirectory() && exists(traceOf(join(runDir, "calls", entry.name))),
-    );
-  } catch {
-    return false;
-  }
+/**
+ * A directory is a latest candidate as soon as it exists with a `run.json` or
+ * a `calls/` directory. An in-progress directory must be selected and then
+ * refused as incomplete, never skipped for an older completed run.
+ */
+function hasRunEvidence(runDir: string): boolean {
+  return exists(join(runDir, "run.json")) || exists(join(runDir, "calls")) || exists(traceOf(runDir));
 }
 
 function candidates(options: ResolveOptions): Candidate[] {
@@ -480,7 +528,7 @@ function candidates(options: ResolveOptions): Candidate[] {
   for (const entry of runEntries) {
     if (!entry.isDirectory()) continue;
     const dir = join(options.runRoot, entry.name);
-    if (!hasCallTrace(dir)) continue;
+    if (!hasRunEvidence(dir)) continue;
     found.push({
       runId: entry.name,
       mtimeMs: Math.max(mtimeOf(join(dir, "run.json")), mtimeOf(dir)),
@@ -508,8 +556,8 @@ function candidates(options: ResolveOptions): Candidate[] {
 
 /**
  * The newest readable evidence set. A newer certificate wins over an older
- * adapter directory; a torn newest candidate is refused, never skipped for an
- * older clean one.
+ * adapter directory; an in-progress newest directory is refused as incomplete,
+ * never skipped for an older clean one.
  */
 export function resolveLatest(options: ResolveOptions): UsageRun {
   const found = candidates(options).sort((a, b) => {
@@ -525,4 +573,19 @@ export function resolveLatest(options: ResolveOptions): UsageRun {
     );
   }
   return resolveRun(newest.runId, options);
+}
+
+/**
+ * The run-journal seam. The next change feeds this tool an append-only JSONL
+ * journal instead of `--latest`'s mtime guess; the interface is written down in
+ * `run-journal.md` beside this file. It is deliberately not implemented on this
+ * branch (the resume branch lands first), and it refuses by name rather than
+ * falling back to mtime.
+ */
+export function readRunJournal(_runId: string, _journalRoot: string): never {
+  refuse(
+    "run-journal-not-implemented",
+    "the append-only run journal reader lands after the resume branch merges; this branch reads " +
+      "a terminal run directory or a committed certificate only",
+  );
 }

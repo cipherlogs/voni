@@ -63,7 +63,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       return error.exitCode;
     }
     process.stderr.write(`demo:usage: FAILED: ${(error as Error).message}\n`);
-    return 2;
+    return 1;
   }
 }
 
@@ -78,6 +78,6 @@ if (invokedDirectly) {
     })
     .catch((error: unknown) => {
       process.stderr.write(`demo:usage: FAILED: ${(error as Error).message}\n`);
-      process.exitCode = 2;
+      process.exitCode = 1;
     });
 }

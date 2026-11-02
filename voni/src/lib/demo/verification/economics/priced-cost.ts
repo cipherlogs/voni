@@ -37,6 +37,8 @@ export type PricedLeg = {
   readonly amountUsd: number | null;
   readonly unit: string;
   readonly quantity: number | null;
+  /** The vendor's own reported units, validated; an absent map stays empty. */
+  readonly units: Readonly<Record<string, number>>;
   /** The vendor's own words for an unmeasured leg; empty when measured. */
   readonly reasons: readonly string[];
 };
@@ -72,6 +74,23 @@ function amountOf(value: unknown, what: string): number | null {
     );
   }
   return value;
+}
+
+function unitsOf(name: string, raw: unknown): Readonly<Record<string, number>> {
+  if (raw === undefined || raw === null) return {};
+  const record = objectOf(raw, `cost leg "${name}".units`);
+  const units: Record<string, number> = {};
+  for (const [unit, value] of Object.entries(record)) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      throw new PricedCostError(
+        "malformed-cost",
+        `cost leg "${name}".units.${unit} must be a finite, non-negative number, ` +
+          `got ${JSON.stringify(value)}`,
+      );
+    }
+    units[unit] = value;
+  }
+  return units;
 }
 
 function legOf(name: string, raw: unknown): PricedLeg {
@@ -115,6 +134,7 @@ function legOf(name: string, raw: unknown): PricedLeg {
     amountUsd: amount,
     unit: text(record.unit) || "unknown",
     quantity: typeof quantity === "number" ? quantity : null,
+    units: unitsOf(name, record.units),
     reasons: source === "" ? [] : [source],
   };
 }

@@ -9,6 +9,7 @@
  */
 
 import { RateBook } from "./rates";
+import { sameUsd, shortRateVersion, sortRateVersions, sumMeasuredLegs, roundUsd } from "./sums";
 import {
   LEG_VENDOR,
   UNIT_LINES,
@@ -31,12 +32,6 @@ export type LedgerOptions = {
   /** Rate tables already loaded, or a loader; default reads the committed dir. */
   readonly rates?: RateBook | { get(id: string): ReturnType<RateBook["get"]> };
 };
-
-const USD_PRECISION = 100_000_000;
-
-function roundUsd(amount: number): number {
-  return Math.round((amount + Number.EPSILON) * USD_PRECISION) / USD_PRECISION;
-}
 
 function addTo<K>(map: Map<K, number>, key: K, amount: number): void {
   map.set(key, (map.get(key) ?? 0) + amount);
@@ -65,7 +60,7 @@ function assertConsistent(call: UsageCall, legSum: number): void {
   if (priced.totalUsd === null) {
     refuse("torn-row", `call ${call.callId}: a measured row carries no total`);
   }
-  if (Math.abs(priced.totalUsd - legSum) > 1e-9) {
+  if (!sameUsd(priced.totalUsd, legSum)) {
     refuse(
       "torn-row",
       `call ${call.callId}: the row's total $${priced.totalUsd.toFixed(6)} does not equal the ` +
@@ -146,7 +141,7 @@ export function buildLedger(run: UsageRun, options: LedgerOptions = {}): UsageLe
   let totalUsd = 0;
 
   for (const call of run.calls) {
-    const legSum = call.priced.legs.reduce((sum, leg) => sum + (leg.amountUsd ?? 0), 0);
+    const legSum = sumMeasuredLegs(call.priced.legs);
     assertConsistent(call, legSum);
     totalUsd += legSum;
 
@@ -218,15 +213,18 @@ export function buildLedger(run: UsageRun, options: LedgerOptions = {}): UsageLe
   }
 
   const lines: UsageLineTotal[] = UNIT_LINES.map((line) => {
-    const tableVersions = [...(lineVersions.get(line.id) ?? [])].sort();
-    const table = tableVersions.length > 0 ? tableFor(tableVersions[0] as string) : null;
-    const rate = table?.rates.get(line.id);
-    if (table !== null && rate === undefined) {
-      refuse(
-        "missing-rate-table",
-        `rate table ${table.id} has no line "${line.id}"; the ledger cannot show its unit rate`,
-      );
+    const tableVersions = sortRateVersions(lineVersions.get(line.id) ?? []);
+    for (const version of tableVersions) {
+      const table = tableFor(version);
+      if (!table.rates.has(line.id)) {
+        refuse(
+          "missing-rate-table",
+          `rate table ${table.id} has no line "${line.id}"; the ledger cannot show its unit rate`,
+        );
+      }
     }
+    const single = tableVersions.length === 1 ? tableFor(tableVersions[0] as string) : null;
+    const rate = single?.rates.get(line.id);
     const measured = lineMeasuredCalls.get(line.id) ?? 0;
     return {
       id: line.id,
@@ -234,10 +232,13 @@ export function buildLedger(run: UsageRun, options: LedgerOptions = {}): UsageLe
       vendor: line.vendor,
       unit: line.unit,
       label: line.label,
+      note: line.note,
+      rateApplies: line.rateApplies,
       quantity: measured === 0 ? null : roundQuantity(lineQuantity.get(line.id) ?? 0),
       measuredCalls: measured,
       missingCalls: lineMissingCalls.get(line.id) ?? 0,
       unmeasuredCalls: lineUnmeasuredCalls.get(line.id) ?? 0,
+      // A quantity summed across rate versions cannot carry one version's rate.
       rateUsdPerUnit: rate?.usdPerUnit ?? null,
       rateVersions: tableVersions,
     };
@@ -248,10 +249,10 @@ export function buildLedger(run: UsageRun, options: LedgerOptions = {}): UsageLe
     return {
       leg,
       vendor,
-      usd: roundUsd(legUsd.get(leg) ?? 0),
+      usd: roundUsd(legUsd.get(leg) ?? 0, 8),
       pricedCalls: legPricedCalls.get(leg) ?? 0,
       unmeasuredCalls: legUnmeasuredCalls.get(leg)?.size ?? 0,
-      rateVersions: [...(legVersions.get(leg) ?? [])].sort(),
+      rateVersions: sortRateVersions(legVersions.get(leg) ?? []),
     };
   });
 
@@ -263,7 +264,7 @@ export function buildLedger(run: UsageRun, options: LedgerOptions = {}): UsageLe
     }
     return {
       vendor,
-      usd: roundUsd(vendorLegs.reduce((sum, leg) => sum + leg.usd, 0)),
+      usd: roundUsd(vendorLegs.reduce((sum, leg) => sum + leg.usd, 0), 8),
       legs: vendorLegs,
       pricedCalls: vendorLegs.reduce((sum, leg) => sum + leg.pricedCalls, 0),
       unmeasuredCalls: unmeasuredCalls.size,
@@ -291,12 +292,12 @@ export function buildLedger(run: UsageRun, options: LedgerOptions = {}): UsageLe
         }
       }
       for (const call of calls) {
-        for (const leg of call.priced.legs) {
-          const vendor = vendorOf(leg, call.callId);
-          if (!leg.measured) continue;
-          if (vendor === "meta") metaUsd += leg.amountUsd ?? 0;
-          else assemblyUsd += leg.amountUsd ?? 0;
-        }
+        metaUsd += sumMeasuredLegs(
+          call.priced.legs.filter((leg) => LEG_VENDOR[leg.leg] === "meta"),
+        );
+        assemblyUsd += sumMeasuredLegs(
+          call.priced.legs.filter((leg) => LEG_VENDOR[leg.leg] === "assemblyai"),
+        );
         if (callComplete.get(call.callId) === false) unmeasuredCalls += 1;
       }
       const metaComplete = !calls.some((call) => vendorGaps.has(`${call.callId}\u0000meta`));
@@ -307,9 +308,9 @@ export function buildLedger(run: UsageRun, options: LedgerOptions = {}): UsageLe
         scenario,
         locale,
         calls: calls.length,
-        usd: roundUsd(metaUsd + assemblyUsd),
-        metaUsd: roundUsd(metaUsd),
-        assemblyaiUsd: roundUsd(assemblyUsd),
+        usd: roundUsd(metaUsd + assemblyUsd, 8),
+        metaUsd: roundUsd(metaUsd, 8),
+        assemblyaiUsd: roundUsd(assemblyUsd, 8),
         unmeasuredCalls,
         metaComplete,
         assemblyaiComplete,
@@ -317,7 +318,20 @@ export function buildLedger(run: UsageRun, options: LedgerOptions = {}): UsageLe
     })
     .sort((a, b) => a.scenario.localeCompare(b.scenario));
 
-  const complete = unmeasured.length === 0;
+  const expectedCalls = run.expectedCalls;
+  if (expectedCalls !== null && run.calls.length > expectedCalls) {
+    refuse(
+      "torn-row",
+      `run ${run.runId} measured ${run.calls.length} calls but plans ${expectedCalls}; ` +
+        "a run cannot measure more calls than it planned",
+    );
+  }
+  const planGap =
+    expectedCalls !== null && run.calls.length < expectedCalls
+      ? `${run.calls.length} of ${expectedCalls} planned calls were measured; ` +
+        `${expectedCalls - run.calls.length} have no priced row`
+      : null;
+  const complete = unmeasured.length === 0 && planGap === null;
   return {
     runId: run.runId,
     source: run.source,
@@ -328,8 +342,10 @@ export function buildLedger(run: UsageRun, options: LedgerOptions = {}): UsageLe
     scenarios,
     unmeasured,
     complete,
-    totalUsd: roundUsd(totalUsd),
-    rateVersions: [...rateVersions].sort(),
+    totalUsd: roundUsd(totalUsd, 8),
+    expectedCalls,
+    planGap,
+    rateVersions: sortRateVersions(rateVersions),
     zeroCalls,
   };
 }
@@ -358,23 +374,6 @@ function fmtQuantity(quantity: number | null): string {
   return Number(quantity.toFixed(3)).toLocaleString("en-US");
 }
 
-function fmtUnit(unit: string): string {
-  switch (unit) {
-    case "audio_seconds":
-    case "session_seconds":
-      return "s";
-    case "prompt_tokens":
-    case "completion_tokens":
-    case "cached_tokens":
-    case "reasoning_tokens":
-      return "tok";
-    case "characters":
-      return "chars";
-    default:
-      return unit;
-  }
-}
-
 function pad(value: string, width: number): string {
   return value.length >= width ? value : value + " ".repeat(width - value.length);
 }
@@ -387,21 +386,27 @@ function legLine(line: UsageLineTotal, indent: string, zeroAll: boolean): string
   const label = `${line.id}`;
   const zero = zeroAll && line.quantity === null && line.missingCalls === 0;
   const notes: string[] = [];
+  if (line.note !== null) notes.push(line.note);
   if (line.missingCalls > 0) {
     notes.push(`${line.missingCalls} call${line.missingCalls === 1 ? "" : "s"} missing this unit`);
   }
   if (line.unmeasuredCalls > 0) {
     notes.push(`${line.unmeasuredCalls} call${line.unmeasuredCalls === 1 ? "" : "s"} unmeasured`);
   }
-  const suffix = notes.length === 0 ? "" : ` (${notes.join(", ")})`;
+  const suffix = notes.length === 0 ? "" : ` (${notes.join("; ")})`;
   const quantity =
     line.quantity === null
       ? zero
         ? `0 ${line.label} (measured zero)`
         : "unmeasured"
       : `${fmtQuantity(line.quantity)} ${line.label}${suffix}`;
-  const rate = line.quantity === null ? "" : fmtRate(line.rateUsdPerUnit);
-  return `${indent}${pad(label, 24)}${padLeft(quantity, 44)}${padLeft(rate, 22)}`;
+  const rate =
+    line.quantity === null || !line.rateApplies
+      ? ""
+      : line.rateVersions.length > 1
+        ? `mixed ${line.rateVersions.map(shortRateVersion).join("/")}`
+        : fmtRate(line.rateUsdPerUnit);
+  return `${indent}${pad(label, 24)}${padLeft(quantity, 58)}${padLeft(rate, 24)}`;
 }
 
 function legTotal(ledger: UsageLedger, leg: LegTotal, indent: string): string {
@@ -414,7 +419,10 @@ function legTotal(ledger: UsageLedger, leg: LegTotal, indent: string): string {
         : leg.pricedCalls === 0 && ledger.zeroCalls > 0
           ? fmtUsd(0)
           : fmtUsd(leg.usd);
-  const versions = hasUnmeasured && leg.pricedCalls === 0 ? "" : leg.rateVersions.join(", ");
+  const versions =
+    leg.rateVersions.length > 1
+      ? `mixed ${leg.rateVersions.map(shortRateVersion).join("/")}`
+      : leg.rateVersions.join(", ");
   return `${indent}${pad(`${leg.leg} leg`, 24)}${padLeft(amount, 40)}${versions === "" ? "" : `  ${versions}`}`;
 }
 
@@ -451,10 +459,12 @@ export function formatLedger(ledger: UsageLedger): string {
   lines.push(`demo:usage · run ${ledger.runId}`);
   lines.push(`source: ${ledger.source}`);
   lines.push(
-    `calls: ${ledger.calls.length}` +
+    `calls: ${ledger.calls.length} measured · ` +
+      `${ledger.expectedCalls === null ? "plan not recorded" : `${ledger.expectedCalls} planned`}` +
       (ledger.zeroCalls > 0 ? ` (${ledger.zeroCalls} measured zero)` : "") +
       (ledger.rateVersions.length === 0 ? "" : ` · rate table${ledger.rateVersions.length === 1 ? "" : "s"} ${ledger.rateVersions.join(", ")}`),
   );
+  if (ledger.planGap !== null) lines.push(`plan: ${ledger.planGap}`);
   lines.push("");
   lines.push("VENDORS");
   for (const vendor of ledger.vendors) {
@@ -488,7 +498,7 @@ export function formatLedger(ledger: UsageLedger): string {
   lines.push("");
   lines.push("PER CALL");
   lines.push(
-    pad("call", 12) +
+    pad("call", 38) +
       pad("scenario", 32) +
       padLeft("stt s", 11) +
       padLeft("llm tok (p/c)", 15) +
@@ -503,12 +513,10 @@ export function formatLedger(ledger: UsageLedger): string {
     const stt = pricedLegs.get("stt");
     const tts = pricedLegs.get("tts");
     const llm = pricedLegs.get("llm");
-    const meta = call.priced.legs
-      .filter((leg) => LEG_VENDOR[leg.leg] === "meta" && leg.measured)
-      .reduce((sum, leg) => sum + (leg.amountUsd ?? 0), 0);
-    const assembly = call.priced.legs
-      .filter((leg) => LEG_VENDOR[leg.leg] === "assemblyai" && leg.measured)
-      .reduce((sum, leg) => sum + (leg.amountUsd ?? 0), 0);
+    const meta = sumMeasuredLegs(call.priced.legs.filter((leg) => LEG_VENDOR[leg.leg] === "meta"));
+    const assembly = sumMeasuredLegs(
+      call.priced.legs.filter((leg) => LEG_VENDOR[leg.leg] === "assemblyai"),
+    );
     const complete = !ledger.unmeasured.some((entry) => entry.callId === call.callId);
     const sttQuantity = call.units.stt?.audio_seconds;
     const ttsQuantity = call.units.tts?.characters;
@@ -519,12 +527,12 @@ export function formatLedger(ledger: UsageLedger): string {
       const legs = call.priced.legs.filter((leg) => LEG_VENDOR[leg.leg] === vendor);
       const measured = legs.filter((leg) => leg.measured);
       if (measured.length === 0) return legs.length === 0 ? "zero" : "unmeasured";
-      const sum = measured.reduce((total, leg) => total + (leg.amountUsd ?? 0), 0);
+      const sum = sumMeasuredLegs(measured);
       if (sum === 0 && measured.length < legs.length) return "unmeasured";
-      return `${fmtUsd(roundUsd(sum))}${flags}`;
+      return `${fmtUsd(roundUsd(sum, 8))}${flags}`;
     };
     lines.push(
-      pad(call.callId.slice(0, 8), 12) +
+      pad(call.callId, 38) +
         pad(call.scenario, 32) +
         padLeft(sttQuantity === undefined ? (stt === undefined ? "zero" : "unmeasured") : fmtQuantity(sttQuantity), 11) +
         padLeft(
@@ -540,9 +548,9 @@ export function formatLedger(ledger: UsageLedger): string {
         padLeft(vendorCell("assemblyai"), 15) +
         padLeft(
           complete
-            ? fmtUsd(roundUsd(meta + assembly))
+            ? fmtUsd(roundUsd(meta + assembly, 8))
             : call.priced.measured
-              ? `${fmtUsd(roundUsd(meta + assembly))}*`
+              ? `${fmtUsd(roundUsd(meta + assembly, 8))}*`
               : "unmeasured",
           15,
         ) +
@@ -551,17 +559,25 @@ export function formatLedger(ledger: UsageLedger): string {
   }
 
   lines.push("");
-  if (ledger.unmeasured.length === 0) {
+  if (ledger.unmeasured.length === 0 && ledger.planGap === null) {
     lines.push("UNMEASURED");
     lines.push("  none — every leg is priced and every unit is present");
   } else {
-    lines.push(`UNMEASURED (${ledger.unmeasured.length} leg${ledger.unmeasured.length === 1 ? "" : "s"})`);
+    lines.push(
+      ledger.unmeasured.length === 0
+        ? "UNMEASURED"
+        : `UNMEASURED (${ledger.unmeasured.length} leg${ledger.unmeasured.length === 1 ? "" : "s"})`,
+    );
+    if (ledger.unmeasured.length === 0) {
+      lines.push("  none — every priced leg and unit is present");
+    }
     for (const entry of ledger.unmeasured) {
       lines.push(
-        `  call ${entry.callId.slice(0, 8)} · ${entry.scenario} · ${entry.lineId ?? entry.leg} — ` +
+        `  call ${entry.callId} · ${entry.scenario} · ${entry.lineId ?? entry.leg} — ` +
           `${entry.kind} unmeasured: ${entry.reason}`,
       );
     }
+    if (ledger.planGap !== null) lines.push(`  plan — ${ledger.planGap}`);
   }
 
   lines.push("");
@@ -571,14 +587,20 @@ export function formatLedger(ledger: UsageLedger): string {
 
 function totalLine(ledger: UsageLedger): string {
   const calls = `${ledger.calls.length} call${ledger.calls.length === 1 ? "" : "s"}`;
+  const reasons: string[] = [];
   if (ledger.unmeasured.length > 0) {
-    const legs = `${ledger.unmeasured.length} unmeasured leg${ledger.unmeasured.length === 1 ? "" : "s"}`;
-    if (ledger.totalUsd === 0) {
-      return `TOTAL unmeasured — ${legs}; no priced total exists (see UNMEASURED)`;
+    reasons.push(
+      `${ledger.unmeasured.length} unmeasured leg${ledger.unmeasured.length === 1 ? "" : "s"}`,
+    );
+  }
+  if (ledger.planGap !== null) reasons.push(ledger.planGap);
+  if (reasons.length > 0) {
+    if (ledger.totalUsd === 0 && ledger.unmeasured.length > 0) {
+      return `TOTAL unmeasured — ${reasons.join("; ")}; no priced total exists (see UNMEASURED)`;
     }
     return (
       `TOTAL (measured subset) ${fmtUsd(ledger.totalUsd)} across ${calls} · ` +
-      `NOT RECONCILABLE: ${legs} — see UNMEASURED`
+      `NOT RECONCILABLE: ${reasons.join("; ")}`
     );
   }
   const table =
