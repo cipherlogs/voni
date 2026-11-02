@@ -33,6 +33,7 @@ import {
   type CertificateCorpusScenario,
   type CertificateEligibility,
   type CertificateProperty,
+  type CertificateResume,
   type CertificateScenarioVerdict,
   type CertificationAttempt,
   type CoverageRow,
@@ -141,6 +142,7 @@ function buildCoverage(
 ): CertificateCoverage {
   const measured = new Map<string, CertificationAttempt[]>();
   const seen = new Set<string>();
+  const callOwners = new Map<string, string>();
   for (const attempt of input.attempts) {
     const scenario = scenarios.get(attempt.scenario);
     if (scenario === undefined) {
@@ -176,6 +178,17 @@ function buildCoverage(
       );
     }
     seen.add(key);
+    if (attempt.callId !== undefined) {
+      const owner = callOwners.get(attempt.callId);
+      if (owner !== undefined && owner !== key) {
+        refuse(
+          "duplicate-call-id",
+          `call id "${attempt.callId}" is claimed by both ${owner} and ${key}; one call id ` +
+            "cannot measure two attempts",
+        );
+      }
+      callOwners.set(attempt.callId, key);
+    }
     const list = measured.get(attempt.scenario) ?? [];
     list.push(attempt);
     measured.set(attempt.scenario, list);
@@ -403,6 +416,7 @@ export function buildCertificate(input: CertificateBuildInput): Certificate {
   const vendorBuilds = assertVendorBuilds(input.vendorBuilds);
   const residualRiskIds = assertResidualRisks(input.residualRiskIds);
   const panel = input.panel ?? null;
+  const resume: CertificateResume | null = input.resume ?? null;
 
   const verdict = deriveCertificateVerdict({
     eligibility,
@@ -442,6 +456,7 @@ export function buildCertificate(input: CertificateBuildInput): Certificate {
             signedAt: panel.signedAt,
             signature: panel.signature,
           },
+    resume,
     verdict,
     pass: verdict === "certified",
   };

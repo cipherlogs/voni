@@ -21,8 +21,13 @@ import type { Contract } from "../contract";
 import type { CorpusReference, Locale } from "../scenarios";
 import type { PropertyStatus, PropertyVerdictReason, RunVerdict } from "../verdict";
 
-/** The schema version every committed certificate must carry. */
-export const CERTIFICATE_SCHEMA_VERSION = 1 as const;
+/**
+ * The schema version every committed certificate must carry. Version 2 makes
+ * `resume` required (null for a run made in one piece), so a reader can never
+ * mistake an interrupted run for a clean one by omission. A version 1
+ * certificate stays readable and is read as `resume: null`.
+ */
+export const CERTIFICATE_SCHEMA_VERSION = 2 as const;
 
 /** The targets a certificate may be true for. A green never inherits. */
 export const CERTIFICATE_TARGETS = ["local", "staging", "production"] as const;
@@ -85,6 +90,25 @@ export type PanelSignature = {
    * is present and non-empty; ticket 27 owns producing and verifying it.
    */
   readonly signature: string;
+};
+
+/**
+ * How a certificate was assembled across an interruption. It names the
+ * original run, when it started, when it continued, and the calls each half
+ * contributed. A reused call is never presented as freshly measured, and a
+ * certificate that spans an interruption says so where the owner reads it.
+ */
+export type CertificateResume = {
+  /** The original run id; it is also the certificate's own run id. */
+  readonly journalRunId: string;
+  /** The journal this run continued, for audit. */
+  readonly journalPath: string;
+  readonly originalStartedAt: string;
+  readonly resumedAt: string;
+  /** Call ids reused from the journal's completed half. */
+  readonly reusedCalls: readonly string[];
+  /** Call ids the resumed half made. */
+  readonly madeCalls: readonly string[];
 };
 
 /** What one run planned to execute. Coverage is judged against it. */
@@ -228,6 +252,8 @@ export type Certificate = {
   readonly residualRiskIds: readonly string[];
   /** Null until the owner has signed; then the panel session and reviewer. */
   readonly panel: PanelSignature | null;
+  /** Null for a run made in one piece; set when it was resumed. */
+  readonly resume: CertificateResume | null;
   readonly verdict: CertificateVerdict;
   /** True only for `certified`; every other verdict is not a pass. */
   readonly pass: boolean;
@@ -250,6 +276,8 @@ export type CertificateBuildInput = {
   readonly cost: CertificateCost;
   readonly residualRiskIds: readonly string[];
   readonly panel?: PanelSignature | null;
+  /** Set only when this certificate was assembled across an interruption. */
+  readonly resume?: CertificateResume | null;
 };
 
 /** What a reader must prove before it may use a certificate for a run. */

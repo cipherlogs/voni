@@ -30,6 +30,7 @@ export {
   runVerify,
   type DiagnoseInput,
   type DiagnoseOutcome,
+  type ResumeRecord,
   type ScenarioCallInput,
   type ScenarioCallOutcome,
   type VerifyDeps,

@@ -34,6 +34,7 @@ import {
   type CertificateEligibility,
   type CertificateExpectation,
   type CertificateProperty,
+  type CertificateResume,
   type CertificateScenarioVerdict,
   type CertificateVerdict,
   type CoverageRow,
@@ -557,6 +558,54 @@ function validatePanel(raw: unknown, verdict: CertificateVerdict): PanelSignatur
   return signature;
 }
 
+function validateResume(raw: unknown, legacy: boolean): CertificateResume | null {
+  if (legacy) {
+    if (raw !== undefined) {
+      refuse("malformed-certificate", "a version 1 certificate cannot carry resume");
+    }
+    return null;
+  }
+  if (raw === undefined) {
+    refuse(
+      "malformed-certificate",
+      "a version 2 certificate must carry resume (null for a run made in one piece)",
+    );
+  }
+  if (raw === null) return null;
+  const resume = record(raw, "resume");
+  const reusedCalls = strings(
+    resume.reusedCalls,
+    "resume.reusedCalls",
+    "malformed-certificate",
+  );
+  const madeCalls = strings(resume.madeCalls, "resume.madeCalls", "malformed-certificate");
+  const all = [...reusedCalls, ...madeCalls];
+  if (all.length === 0) {
+    refuse(
+      "malformed-certificate",
+      "resume records no calls; a resumed certificate names what each half contributed",
+    );
+  }
+  if (new Set(all).size !== all.length) {
+    refuse("malformed-certificate", "resume records the same call in both halves");
+  }
+  const instant = (value: unknown, field: string): string => {
+    const stamp = text(value, field, "malformed-certificate");
+    if (Number.isNaN(Date.parse(stamp))) {
+      refuse("malformed-certificate", `${field} "${stamp}" is not a date`);
+    }
+    return stamp;
+  };
+  return {
+    journalRunId: text(resume.journalRunId, "resume.journalRunId", "malformed-certificate"),
+    journalPath: text(resume.journalPath, "resume.journalPath", "malformed-certificate"),
+    originalStartedAt: instant(resume.originalStartedAt, "resume.originalStartedAt"),
+    resumedAt: instant(resume.resumedAt, "resume.resumedAt"),
+    reusedCalls,
+    madeCalls,
+  };
+}
+
 function sameFingerprint(
   left: Certificate["code"]["fingerprint"],
   right: Certificate["code"]["fingerprint"],
@@ -581,11 +630,12 @@ export function validateCertificate(
   if (typeof root.schemaVersion !== "number" || !Number.isInteger(root.schemaVersion)) {
     refuse("malformed-certificate", "certificate.schemaVersion is not an integer");
   }
-  if (root.schemaVersion !== CERTIFICATE_SCHEMA_VERSION) {
+  const legacy = root.schemaVersion === 1;
+  if (!legacy && root.schemaVersion !== CERTIFICATE_SCHEMA_VERSION) {
     refuse(
       "unknown-schema-version",
       `certificate schema version ${root.schemaVersion} is unknown; this reader understands ` +
-        `${CERTIFICATE_SCHEMA_VERSION}`,
+        `1 and ${CERTIFICATE_SCHEMA_VERSION}`,
     );
   }
   const runId = text(root.runId, "runId");
@@ -609,6 +659,7 @@ export function validateCertificate(
   const residualRiskIds = validateResidualRisks(root.residualRiskIds);
   const verdict = oneOf(root.verdict, CERTIFICATE_VERDICTS, "verdict", "malformed-certificate");
   const panel = validatePanel(root.panel, verdict);
+  const resume = validateResume(root.resume, legacy);
   const pass = boolean(root.pass, "pass");
 
   if (pass !== (verdict === "certified")) {
@@ -679,6 +730,7 @@ export function validateCertificate(
     cost,
     residualRiskIds,
     panel,
+    resume,
     verdict,
     pass,
   };

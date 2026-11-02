@@ -144,6 +144,15 @@ function realDeps(): VerifyDeps {
         soundscapes,
       };
       const result = await runBrowserCertification(runInput);
+      // The call's own artifacts, by path. The journal records them so a
+      // resume can prove the completed call is still backed by the disk.
+      const files = result.call?.files;
+      const evidenceRefs =
+        files === undefined
+          ? []
+          : [files.call, files.trace, files.end, files.deliveredWav, files.marks].filter(
+              (file): file is string => typeof file === "string" && file.trim() !== "",
+            );
       return {
         refusal: adapterRefusalFor({
           refused: result.exitCode === 2,
@@ -154,6 +163,8 @@ function realDeps(): VerifyDeps {
         attempt: result.attempt,
         eligibility: result.eligibility,
         pipelineImage: result.pipelineImage,
+        evidenceRefs,
+        cost: result.cost ?? undefined,
       };
     },
   };
@@ -179,6 +190,12 @@ function print(result: VerifyResult, json: boolean): void {
       ` → ${result.status} (exit ${result.exitCode})`,
   ];
   if (result.runId !== null) lines.push(`[verify] run ${result.runId}`);
+  if (result.resumed !== null) {
+    lines.push(
+      `[verify] resumed ${result.resumed.runId}: ${result.resumed.reusedCalls.length} reused, ` +
+        `${result.resumed.madeCalls.length} made (journal ${result.resumed.journalPath})`,
+    );
+  }
   if (result.calls > 0) lines.push(`[verify] calls ${result.calls}`);
   if (result.certificatePath !== null) lines.push(`[verify] certificate ${result.certificatePath}`);
   if (result.detail !== "" && result.status !== "refused") {

@@ -10,6 +10,7 @@ import { exportGoldLabels } from "./gold-labels";
 import { loadContract } from "../../../src/lib/demo/verification/contract";
 import { OPEN_RESIDUAL_RISK_IDS } from "../../../src/lib/demo/verification/certificate/risks";
 import {
+  CERTIFICATE_SCHEMA_VERSION,
   buildCertificate,
   type Certificate,
 } from "../../../src/lib/demo/verification/certificate";
@@ -117,7 +118,7 @@ export function sessionCertificate(options: {
       })),
   }));
   return {
-    schemaVersion: 1,
+    schemaVersion: CERTIFICATE_SCHEMA_VERSION,
     runId: RUN_ID,
     target: "local",
     code: {
@@ -151,6 +152,7 @@ export function sessionCertificate(options: {
     cost: { usd: 0.42, callCount: rows.reduce((sum, row) => sum + row.calls.length, 0) },
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: null,
+    resume: null,
     verdict: failing.size > 0 ? "not-demo-ready" : "pending-human",
     pass: false,
   };

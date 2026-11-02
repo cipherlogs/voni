@@ -249,6 +249,8 @@ async function refused(
     readonly call: BrowserCallRecord | null;
     readonly budget: BrowserRunRecord["browserBudget"];
     readonly previous: readonly string[];
+    /** The call's priced row when it served one; null is unmeasured. */
+    readonly cost?: Record<string, unknown> | null;
   },
 ): Promise<BrowserRunResult> {
   const record: BrowserRunRecord = {
@@ -289,6 +291,7 @@ async function refused(
     attempt: null,
     eligibility: null,
     pipelineImage: null,
+    cost: context.cost ?? null,
     exitCode: 2,
     verdict: null,
     certificateFile: null,
@@ -841,6 +844,7 @@ export async function runBrowserCertification(
     attempt,
     eligibility: assembled.eligibility,
     pipelineImage: preflightAnswer.pipelineBuild,
+    cost: (assembled.bundle.cost as Record<string, unknown> | undefined) ?? null,
     exitCode,
     verdict,
     certificateFile,

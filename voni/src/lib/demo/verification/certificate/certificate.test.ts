@@ -385,13 +385,41 @@ test("an unsigned clean run is pending-human; a certified verdict without a pane
 });
 
 test("an unknown schema version is refused by name, not reinterpreted", () => {
-  assert.equal(CERTIFICATE_SCHEMA_VERSION, 1);
+  assert.equal(CERTIFICATE_SCHEMA_VERSION, 2);
   const copy = mutable(certified());
   copy.schemaVersion = CERTIFICATE_SCHEMA_VERSION + 1;
   assertRefusal(
     () => validateCertificate(copy),
     "unknown-schema-version",
-    /schema version 2 is unknown/,
+    /schema version 3 is unknown/,
+  );
+});
+
+test("a v1 certificate stays readable; a v2 certificate must carry resume", () => {
+  const v1 = mutable(certified());
+  v1.schemaVersion = 1;
+  delete v1.resume;
+  const parsed = validateCertificate(v1);
+  assert.equal(parsed.resume, null, "a v1 certificate predates the resume record");
+  assert.equal(parsed.schemaVersion, 2, "a v1 document is read as the current schema");
+
+  const missing = mutable(certified());
+  delete missing.resume;
+  assertRefusal(
+    () => validateCertificate(missing),
+    "malformed-certificate",
+    /resume/,
+  );
+});
+
+test("a call id claimed by two attempts is refused, not deduped", () => {
+  const duplicated = attempts().map((attempt, index) =>
+    index === 1 ? { ...attempt, callId: attempts()[0]!.callId } : attempt,
+  );
+  assertRefusal(
+    () => buildCertificate(buildInput({ attempts: duplicated })),
+    "duplicate-call-id",
+    /call id/,
   );
 });
 
@@ -527,6 +555,39 @@ test("the compact render states the verdict, the panel and the gap count", () =>
   const unsigned = renderCertificate(buildCertificate(buildInput({ panel: null })));
   assert.match(unsigned, /^CERTIFICATE PENDING-HUMAN \(NOT A PASS\)/);
   assert.match(unsigned, /panel UNSIGNED/);
+});
+
+test("a resumed certificate records the interruption and every reused call", () => {
+  const resume = {
+    journalRunId: "run-2026-10-31-01",
+    journalPath: "/tmp/runs/run-2026-10-31-01/journal.jsonl",
+    originalStartedAt: "2026-10-31T08:00:00.000Z",
+    resumedAt: "2026-10-31T10:00:00.000Z",
+    reusedCalls: ["a-1", "a-2"],
+    madeCalls: ["a-3"],
+  };
+  const certificate = buildCertificate(buildInput({ resume }));
+  assert.deepEqual(certificate.resume, resume);
+  assert.equal(certificate.runId, "run-2026-10-31-01", "the original run id is kept");
+  const rendered = renderCertificate(certificate);
+  assert.match(rendered, /RESUMED run-2026-10-31-01/);
+  assert.match(rendered, /2 reused, 1 made/);
+
+  const empty = mutable(certificate);
+  empty.resume = { ...resume, reusedCalls: [], madeCalls: [] };
+  assertRefusal(
+    () => validateCertificate(empty),
+    "malformed-certificate",
+    /resume records no calls/,
+  );
+
+  const notADate = mutable(certificate);
+  notADate.resume = { ...resume, resumedAt: "yesterday" };
+  assertRefusal(
+    () => validateCertificate(notADate),
+    "malformed-certificate",
+    /resumedAt/,
+  );
 });
 
 test("certificates are committable while audio and event artifacts stay gitignored", () => {
