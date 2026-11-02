@@ -114,9 +114,9 @@ function writeCertificate(
     file,
     `${JSON.stringify(
       {
-        schemaVersion: 1,
+        schemaVersion: 4,
         runId,
-        cost: { usd, callCount },
+        cost: { usdMeasured: usd, complete: true, callCount, unpriced: [] },
         coverage: {
           rows: rows.map((row) => ({
             locale: row.locale,
@@ -527,10 +527,10 @@ test("buildLedger's total equals the certificate's aggregate at one precision", 
     const ledger = buildLedger(run);
     const certificate = JSON.parse(
       readFileSync(join(evidenceRoot, "certificates", "verify-total.json"), "utf8"),
-    ) as { cost: { usd: number } };
+    ) as { cost: { usdMeasured: number } };
     assert.equal(ledger.complete, true);
     assert.equal(ledger.expectedCalls, 2);
-    assert.equal(roundUsd(ledger.totalUsd), roundUsd(certificate.cost.usd));
+    assert.equal(roundUsd(ledger.totalUsd), roundUsd(certificate.cost.usdMeasured));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

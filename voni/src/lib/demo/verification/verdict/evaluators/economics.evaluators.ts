@@ -41,14 +41,25 @@ const e1: PropertyEvaluator = {
   evaluate(context) {
     try {
       const cost = readPricedRow(context.source);
+      if (!cost.measured || cost.totalUsd === null) {
+        // A partial row is not a failed price: the leg was never reported, so
+        // E1 has no measurement. It must not pass and must not silently fail on
+        // a number the row never gave.
+        return {
+          kind: "unmeasured",
+          reason:
+            `the call's cost row is unmeasured, so E1 cannot pass: ` +
+            `${cost.unmeasuredReason ?? "no reason recorded"} [${legBreakdown(cost)}]`,
+          citations: auditOf(cost),
+        };
+      }
       return {
         kind: "measured",
-        passed: cost.measured,
+        passed: true,
         citations: auditOf(cost),
-        detail: cost.measured
-          ? `cost measured: $${String(cost.totalUsd)} from ${cost.rateTableVersion}` +
-            (cost.source === null ? "" : `; ${cost.source}`)
-          : `cost unmeasured: ${cost.unmeasuredReason ?? "no reason recorded"}`,
+        detail:
+          `cost measured: $${String(cost.totalUsd)} from ${cost.rateTableVersion}` +
+          (cost.source === null ? "" : `; ${cost.source}`),
       };
     } catch (error) {
       return {

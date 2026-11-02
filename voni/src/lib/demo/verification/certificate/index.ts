@@ -23,6 +23,7 @@ export {
   type CertificateCorpusScenario,
   type CertificateSchemaVersion,
   type CertificateCost,
+  type CertificateUnpricedLeg,
   type CertificateCoverage,
   type CertificateEligibility,
   type CertificateExpectation,

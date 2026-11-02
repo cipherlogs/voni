@@ -759,13 +759,67 @@ function validateEligibility(raw: unknown): CertificateEligibility {
   return { eligible, reasons };
 }
 
-function validateCost(raw: unknown): Certificate["cost"] {
+function validateCost(raw: unknown, version: number): Certificate["cost"] {
   const cost = record(raw, "cost");
-  if (typeof cost.usd !== "number" || !Number.isFinite(cost.usd) || cost.usd < 0) {
-    refuse("invalid-cost", `cost.usd is not a finite non-negative number (${String(cost.usd)})`);
-  }
   const callCount = integer(cost.callCount, "cost.callCount", "invalid-cost");
-  return { usd: cost.usd, callCount };
+  // A pre-v4 certificate recorded one exact total and was only written when
+  // every leg was measured, so reading it as complete is the honest mapping of
+  // its own refusal rule. A v4 document must carry the bound's terms.
+  const legacyUsd = cost.usd;
+  const measured = cost.usdMeasured;
+  if (measured === undefined) {
+    if (version >= 4) {
+      refuse(
+        "invalid-cost",
+        "a version 4 certificate must carry cost.usdMeasured, cost.complete and cost.unpriced; " +
+          "a bare usd cannot say whether it is exact or a lower bound",
+      );
+    }
+    if (typeof legacyUsd !== "number" || !Number.isFinite(legacyUsd) || legacyUsd < 0) {
+      refuse("invalid-cost", `cost.usd is not a finite non-negative number (${String(legacyUsd)})`);
+    }
+    return { usdMeasured: legacyUsd, complete: true, callCount, unpriced: [] };
+  }
+  if (typeof measured !== "number" || !Number.isFinite(measured) || measured < 0) {
+    refuse(
+      "invalid-cost",
+      `cost.usdMeasured is not a finite non-negative number (${String(measured)})`,
+    );
+  }
+  if (legacyUsd !== undefined) {
+    refuse(
+      "invalid-cost",
+      "cost carries both usd and usdMeasured; a document says one thing about its money",
+    );
+  }
+  const complete = boolean(cost.complete, "cost.complete", "invalid-cost");
+  if (!Array.isArray(cost.unpriced)) {
+    refuse("invalid-cost", "cost.unpriced is not an array; a bound names every unpriced leg");
+  }
+  const seen = new Set<string>();
+  const unpriced = cost.unpriced.map((entry, index) => {
+    const field = `cost.unpriced[${index}]`;
+    const leg = record(entry, field);
+    const callId = text(leg.callId, `${field}.callId`, "invalid-cost");
+    const legName = text(leg.leg, `${field}.leg`, "invalid-cost");
+    const unit = text(leg.unit, `${field}.unit`, "invalid-cost");
+    const source = text(leg.source, `${field}.source`, "invalid-cost");
+    const key = `${callId}:${legName}:${unit}`;
+    if (seen.has(key)) {
+      refuse("invalid-cost", `${field} records the unpriced leg "${key}" twice`);
+    }
+    seen.add(key);
+    return { callId, leg: legName, unit, source };
+  });
+  if (complete !== (unpriced.length === 0)) {
+    refuse(
+      "invalid-cost",
+      complete
+        ? "cost.complete is true but cost.unpriced names legs; an incomplete price is not exact"
+        : "cost.complete is false but cost.unpriced is empty; a bound must name what it cannot price",
+    );
+  }
+  return { usdMeasured: measured, complete, callCount, unpriced };
 }
 
 function validateResidualRisks(raw: unknown): string[] {
@@ -899,7 +953,7 @@ export function validateCertificate(
     refuse("malformed-certificate", "certificate.schemaVersion is not an integer");
   }
   const legacy = root.schemaVersion === 1;
-  const readable = [1, 2, CERTIFICATE_SCHEMA_VERSION];
+  const readable = [1, 2, 3, CERTIFICATE_SCHEMA_VERSION];
   if (!readable.includes(root.schemaVersion)) {
     refuse(
       "unknown-schema-version",
@@ -931,7 +985,7 @@ export function validateCertificate(
   const properties = validateProperties(root.properties);
   const eligibility = validateEligibility(root.eligibility);
   const runFailures = strings(root.runFailures, "runFailures", "malformed-certificate");
-  const cost = validateCost(root.cost);
+  const cost = validateCost(root.cost, root.schemaVersion);
   const residualRiskIds = validateResidualRisks(root.residualRiskIds);
   const verdict = oneOf(root.verdict, CERTIFICATE_VERDICTS, "verdict", "malformed-certificate");
   const panel = validatePanel(root.panel, verdict);

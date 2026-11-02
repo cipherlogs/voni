@@ -42,7 +42,7 @@ have is a defect in this map.
 | Contract registry | 82 property ids in ten families, each with a bar, one evidence source and its threshold key | `voni/src/lib/demo/verification/contract/` — one `families/*.family.ts` per family, discovered by `loader.ts`; `contractDocument()` is the machine-readable form | 06 |
 | Frozen budget record | the single threshold source; the drift test that fails a hand-edited number | `voni/src/lib/demo/scoreboard-budgets.ts` + `.json` (the contract's `dv*` keys; cascade-owned keys still come from `voice-pipeline/cascade/thresholds.json`), `voni/src/lib/demo/verification/contract/bars.ts` + `contract-bars.json`, moved only with `npm run contract:bars -- --write` | 06 |
 | Verdict and statistics | pooling, per-scenario tails, fail-closed unknowns, ineligibility | `voni/src/lib/demo/verification/verdict/` — `statistics.ts` pools, `judge.ts` judges, `evaluators.ts` discovers one `evaluators/*.evaluators.ts` module per family | 07 |
-| Certificate | schema, declared scope, corpus scenario set, builder, validator, target binding, residual-risk ids, panel signature | `voni/src/lib/demo/verification/certificate/` — `types.ts` is the schema (v3: a required `scope`, the covered `corpus.scenarios` and a per-row scenario `class`; v1/v2 read as an undeclared scope and keep their own version), `scope.ts` holds the owner's declared sets (`en`, all five) and the 2026-11-02 decision, `build.ts` turns one verdict-core run into one certificate and refuses an attempt or corpus row outside the declared scope, `validate.ts` refuses an unknown schema, a v3 certificate without a scope or scenario set, a missing/extra/re-classed coverage row (the self-declared-coverage forge), a scope narrowed after the run, a mismatched target/fingerprint/corpus, an out-of-scope row that carries a measurement or an invented decision, an uncited verdict and a certified claim with no panel signature, `risks.ts` mirrors this register's ids (drift-tested), `render.ts` prints the scope and the excluded Locales; committed files live in `voni/evidence/certificates/` | 08 |
+| Certificate | schema, declared scope, corpus scenario set, builder, validator, target binding, residual-risk ids, panel signature | `voni/src/lib/demo/verification/certificate/` — `types.ts` is the schema (v4: `cost` is a measured lower bound with its named `unpriced` legs; v3: a required `scope`, the covered `corpus.scenarios` and a per-row scenario `class`; v1/v2 read as an undeclared scope and keep their own version), `scope.ts` holds the owner's declared sets (`en`, all five) and the 2026-11-02 decision, `build.ts` turns one verdict-core run into one certificate and refuses an attempt or corpus row outside the declared scope, `validate.ts` refuses an unknown schema, a v3+ certificate without a scope or scenario set, a v4 cost claim that hides its bound, a missing/extra/re-classed coverage row (the self-declared-coverage forge), a scope narrowed after the run, a mismatched target/fingerprint/corpus, an out-of-scope row that carries a measurement or an invented decision, an uncited verdict and a certified claim with no panel signature, `risks.ts` mirrors this register's ids (drift-tested), `render.ts` prints the scope and the excluded Locales; committed files live in `voni/evidence/certificates/` | 08 |
 | Defect cards | one card per failed property with turn, excerpt, bar and replay command | `voni/src/lib/demo/verification/cards/` — `build.ts` refuses a card without a session, a turn (for turn-level evidence) or an existing evidence file; `wav.ts` bounds every excerpt inside the named take/WAV; `replay.ts` is the one parser the runner must accept unchanged; `render.ts` is the compact card | 09 |
 | Scenario runtime and caller corpus | parser, trigger rules, hashed takes, corpus manifest, the ten-scenario English fast contract, the twelve-scenario Locale core | `voni/src/lib/demo/verification/scenarios/` — `types.ts` is the adapter-agnostic record (takes, trigger rules, soundscape, expected property ids, faults); `parse.ts` refuses unknown fields, classes, locales, property ids, takes, triggers and faults by name and enforces the eight held-out names; `triggers.ts` resolves the caller script against the agent timeline deterministically and refuses an unresolved step; `corpus.ts` discovers `<root>/manifest.json` plus one directory per scenario and verifies each take's declared sha256, naming a drifted take; `corpus/` is the committed corpus at version 2 (91 scenarios, 227 real TTS takes): the ten fast-contract scenarios (twenty takes), ticket 13's five comprehension and five emotion scenarios (thirty takes), ticket 14's soundscape/connectivity/meta-security entries (nineteen takes), and ticket 15's `tools-slow-email` plus the sealed held-out `two-tools-in-turn` (five new takes; the three tools scenarios carry seven), ticket 16's forty-eight `locale-<behaviour>-<locale>` scenarios (120 real TTS takes, twelve behaviours on es/fr/de/pt), ticket 20's six resilience edge scenarios (eleven takes, R2–R7), and the three closing English scenarios (`golden-flow-booking`, `turn-taking-overlap`, `caller-hangup-mid-word`; nine takes) that bring English to the spec's 40, and the sealed `sarcastic`, `distressed` and `mispronounced-email` (nine takes) that complete the eight held-out names, and `generate.ts` + `scripts/generate-caller-takes.mts` (`npm run corpus:takes`) record a take once or a deliberate `--retake`; `fast.ts` selects its ten, proves the six call-path capabilities, scopes the verdict (uncited families are `OUT-OF-SCOPE`, never green), and presents the economics owner's settled fast-run check (`economy/run-ceiling.ts`) instead of resolving E3 or summing cost itself; `locale.ts` proves the four Locales hold the same class, triggers, properties, soundscape and fault per behaviour, scopes each Locale's contract, and bounds the 48-call nightly Locale core with the economics owner (a per-Locale full is refused until each Locale has a full set). `facts.ts` resolves each scenario's script to its authored take text for the exactness evaluators. Ticket 19 adds the filler-cut scenario (a cut, then a filler that resumes the tail) and gives a scenario an optional `holdOpenMs` so a greeting-only call is actually held open (32 s) before the harness hangs up. `CALLER-CORPUS.md` records the voice, model and retake rule; `SOUNDSCAPES.md` records the committed television bed and the second-voice/speakerphone scope. The English corpus is complete at 43; all eight held-out names are committed | 10, 12–16, 19, 30 |
 | Locale matrix | four Locales judged independently; understanding held as RR-02 until a named native reviewer signs; **out of scope** for the English-only certificate (RR-09, owner decision 2026-11-02) | `voni/src/lib/demo/verification/verdict/locale.ts` — `judgeLocaleMatrix` requires exactly one complete evidence set and twelve calls per Locale at the run's repetition count, refuses a measurement recorded under another Locale or a scenario outside that Locale's core, judges each Locale against its own scoped contract, and returns `pending-human` with RR-02 when `judgeLocaleUnderstanding` has no valid named sign-off; a role word, a malformed date or a missing sample/gold-label id is unverified, never a pass. The matrix still exists and a five-Locale run still judges it; the English-only certificate excludes it by the declared scope and cites RR-09 rather than reading the exclusion as a pass | 16 |
@@ -346,11 +346,23 @@ artifact disappears.
   `DEFAULT_CALL_INTERVAL_MS` (30 s, override `DEMO_VERIFY_CALL_INTERVAL_MS`);
   the wait is pacing before a call, never a retry of one, so it cannot turn a
   failure green.
-- A completed run whose `cost.priced` row is unmeasured **withholds** the
-  certificate (`cost-missing`) and keeps the verdict and cards. The 2026-10-31
-  live rehearsal observed the STT `audio_seconds` and the TTS termination summary
-  unmeasured, so its certificate was withheld; this is a pipeline evidence gap,
-  not a browser-adapter pass.
+- **A cut turn makes the certificate's cost a measured lower bound.** A
+  barge-in stops the agent's turn before the vendor sends its usage chunk, so
+  that turn's LLM leg stays `measured: false` and the row's `totalUsd` stays
+  `null`. The certificate records `cost: { usdMeasured, complete, unpriced[] }`:
+  `usdMeasured` sums every priced row and leg the vendors did report,
+  `complete` is false, and each unpriced leg is named by `callId`, `leg`, `unit`
+  and the row's own `source`. It is rendered "at least $X — not exact"; the
+  missing tokens are never priced and never a zero. E1/E2/E3 read an unpriced
+  leg as **unmeasured**, so a cut-bound run is `not-demo-ready`, never
+  `certified`. A row unpriced for any other reason, or a missing priced row,
+  still refuses the certificate by name: a cut cannot explain it.
+- A completed run whose `cost.priced` row is unmeasured **for a reason that is
+  not a recorded cut** refuses the certificate (`cost-missing` in the browser
+  adapter, `certificate-refused` in `demo:verify`) and keeps the verdict and
+  cards. The 2026-10-31 live rehearsal observed the STT `audio_seconds` and the
+  TTS termination summary unmeasured, so its certificate was withheld; this is a
+  pipeline evidence gap, not a browser-adapter pass.
 - Every family has a discovered evaluator, but a property whose evidence is
   absent still fails closed (for example the judge-backed conduct rows), so a
   browser run's verdict is `not-demo-ready` until its evidence lands; the run
@@ -966,6 +978,17 @@ the set; the run records it; the reader can recompute the verdict from it.
   set is refused (`missing-scope`, `invalid-corpus-reference`); v1 and v2
   certificates stay readable, keep their own `schemaVersion`, and re-serialize
   as v1/v2 with an undeclared all-Locale scope.
+- **Schema v4 and the cost bound.** A certificate's `cost` is
+  `{ usdMeasured, complete, unpriced[] }`. `usdMeasured` sums the calls' own
+  priced rows and legs; `complete` is true only when every leg was measured.
+  A designed turn cut leaves that turn's LLM usage chunk unreported, so its leg
+  stays `measured: false`: `complete` is false and each unpriced leg is named
+  by `callId`, `leg`, `unit` and the row's own `source`. A reader must quote the
+  bound as "at least $X — not exact", never as the cost. An unpriced leg for any
+  reason other than a recorded cut, or a missing priced row, refuses the
+  certificate by name. E1/E2/E3 read a bound as `unmeasured`; the run is
+  `not-demo-ready`, never `certified`. A pre-v4 certificate reads its exact
+  `usd` as a complete claim, which is what its own refusal rule guaranteed.
 - **Rows.** Every v3 declared scenario has exactly one coverage row; a missing
   row is `coverage-row-missing`, and a row not in the declared set or carrying a
   different class/held-out flag is `invalid-coverage`. This is what makes the

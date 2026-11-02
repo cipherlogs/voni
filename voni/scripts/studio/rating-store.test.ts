@@ -120,7 +120,7 @@ function certificate(calls: readonly string[], failing: readonly string[] = []):
     ],
     eligibility: { eligible: true, reasons: [] },
     runFailures: [],
-    cost: { usd: 0.1, callCount: calls.length },
+    cost: { usdMeasured: 0.1, complete: true, callCount: calls.length, unpriced: [] },
     residualRiskIds: ["RR-01"],
     panel: null,
     verdict: failing.length > 0 ? "not-demo-ready" : "pending-human",

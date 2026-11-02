@@ -176,7 +176,7 @@ function certificate(options: CertificateOptions): Certificate {
     appBuild: (options.fingerprint ?? FINGERPRINT).head,
     pipelineImage: options.image ?? IMAGE,
     vendorBuilds: VENDOR_BUILDS,
-    cost: { usd: 1.25, callCount: 5 },
+    cost: { usdMeasured: 1.25, complete: true, callCount: 5, unpriced: [] },
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: options.panel === undefined ? PANEL : options.panel,
     resume: options.resume ?? null,

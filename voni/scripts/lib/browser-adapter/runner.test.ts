@@ -149,7 +149,12 @@ test("a golden scenario runs once, writes a certificate bound to one call id, an
       corpus: { version: number; sha256: string };
       code: { appBuild: string; pipelineImage: string };
       vendorBuilds: unknown[];
-      cost: { usd: number; callCount: number };
+      cost: {
+        usdMeasured: number;
+        complete: boolean;
+        callCount: number;
+        unpriced: { callId: string; leg: string; unit: string; source: string }[];
+      };
       coverage: {
         gapRows: number;
         byLocale: { locale: string; status: string; gap: string | null }[];
@@ -162,7 +167,8 @@ test("a golden scenario runs once, writes a certificate bound to one call id, an
     assert.equal(certificate.code.pipelineImage, "pipeline-build-1");
     assert.ok(certificate.code.appBuild.length > 0);
     assert.equal(certificate.vendorBuilds.length, 3);
-    assert.equal(certificate.cost.usd, 0.012);
+    assert.equal(certificate.cost.usdMeasured, 0.012);
+    assert.equal(certificate.cost.complete, true);
     assert.equal(certificate.cost.callCount, 1);
     assert.equal(certificate.coverage.gapRows, 0);
     assert.deepEqual(

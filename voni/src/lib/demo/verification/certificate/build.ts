@@ -560,7 +560,17 @@ export function buildCertificate(input: CertificateBuildInput): Certificate {
     properties,
     eligibility,
     runFailures,
-    cost: { usd: input.cost.usd, callCount: input.cost.callCount },
+    cost: {
+      usdMeasured: input.cost.usdMeasured,
+      complete: input.cost.complete,
+      callCount: input.cost.callCount,
+      unpriced: input.cost.unpriced.map((leg) => ({
+        callId: leg.callId,
+        leg: leg.leg,
+        unit: leg.unit,
+        source: leg.source,
+      })),
+    },
     residualRiskIds,
     panel:
       panel === null

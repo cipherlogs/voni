@@ -20,6 +20,18 @@ export {
 } from "./priced-cost";
 
 export {
+  COST_BOUND_ERROR_CODES,
+  CostBoundError,
+  boundPricedCost,
+  cutCallIdsFromAttempts,
+  evidenceCallId,
+  evidenceHasCut,
+  type CostBound,
+  type CostBoundErrorCode,
+  type CostBoundUnpricedLeg,
+} from "./cost-bound";
+
+export {
   PER_CALL_CEILING_KEY,
   RUN_CEILING_ERROR_CODES,
   RUN_CEILING_KEYS,

@@ -204,7 +204,12 @@ export function sessionCertificate(options: {
     properties: failing.size === 0 ? [] : failedProperties,
     eligibility: { eligible: true, reasons: [] },
     runFailures: [],
-    cost: { usd: 0.42, callCount: rows.reduce((sum, row) => sum + row.calls.length, 0) },
+    cost: {
+      usdMeasured: 0.42,
+      complete: true,
+      callCount: rows.reduce((sum, row) => sum + row.calls.length, 0),
+      unpriced: [],
+    },
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: null,
     resume: null,
@@ -344,7 +349,7 @@ export function buildSigningCertificate(input: {
     appBuild: "app-build-1",
     pipelineImage: "pipeline-image-1",
     vendorBuilds: vendorBuilds(),
-    cost: { usd: 0.42, callCount: attempts.length },
+    cost: { usdMeasured: 0.42, complete: true, callCount: attempts.length, unpriced: [] },
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: input.panel,
   });

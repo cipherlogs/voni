@@ -302,6 +302,16 @@ export function probeTrace(callId: string, pricedUsd = 0.012): Record<string, un
       producer: "cascade.cost.cost_call",
       rateTableVersion: "rates-1",
       totalUsd: pricedUsd,
+      legs: {
+        llm: {
+          unit: "prompt_tokens",
+          quantity: null,
+          measured: true,
+          source: "fixture usage chunk",
+          amountUsd: pricedUsd,
+          units: {},
+        },
+      },
     },
     {
       schemaVersion: 1,

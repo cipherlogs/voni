@@ -37,6 +37,7 @@ import {
   declaredScopeFor,
   validateCertificate,
   type Certificate,
+  type CertificateCost,
   type CertificateExpectation,
   type CertificateResume,
   type CertificationAttempt,
@@ -45,9 +46,11 @@ import {
 } from "@/lib/demo/verification/certificate";
 import type { Contract } from "@/lib/demo/verification/contract";
 import {
+  CostBoundError,
   RunCeilingError,
+  boundPricedCost,
+  cutCallIdsFromAttempts,
   preflightRunCeiling,
-  readPricedRow,
   scopeRunToCeiling,
   type RunCostRow,
 } from "@/lib/demo/verification/economics";
@@ -718,29 +721,23 @@ async function collectCalls(
   };
 }
 
-function measuredCost(costs: readonly RunCostRow[]): number {
-  const unmeasured: string[] = [];
-  let total = 0;
-  for (const call of costs) {
-    try {
-      const priced = readPricedRow(call.cost);
-      if (!priced.measured || priced.totalUsd === null) {
-        unmeasured.push(`${call.callId} (${priced.unmeasuredReason ?? "unmeasured"})`);
-        continue;
-      }
-      total += priced.totalUsd;
-    } catch (error) {
-      unmeasured.push(`${call.callId} (${(error as Error).message})`);
+/**
+ * The run's cost claim. A designed cut leaves one leg unpriced; the result is
+ * then a measured lower bound with that leg named, never a partial sum. Any
+ * other unpriced leg (or a missing row) refuses the certificate by name.
+ */
+function measuredCost(collected: Collected): CertificateCost {
+  try {
+    return boundPricedCost({
+      calls: collected.costs,
+      cutCallIds: cutCallIdsFromAttempts(collected.attempts),
+    });
+  } catch (error) {
+    if (error instanceof CostBoundError) {
+      refuse("certificate-refused", error.message);
     }
+    throw error;
   }
-  if (unmeasured.length > 0) {
-    refuse(
-      "certificate-refused",
-      `the run has no cost total: ${unmeasured.join(", ")}. A certificate carries the calls' ` +
-        "own priced rows and never a partial sum",
-    );
-  }
-  return Math.round(total * 1_000_000) / 1_000_000;
 }
 
 function certificateFor(input: {
@@ -763,7 +760,7 @@ function certificateFor(input: {
   if (input.builds.length === 0) {
     refuse("certificate-refused", "no vendor build was recorded for this run (RR-03)");
   }
-  const usd = measuredCost(input.collected.costs);
+  const cost = measuredCost(input.collected);
   const scope = declaredScopeFor(input.plan.scope);
   if (scope === null) {
     refuse(
@@ -808,7 +805,7 @@ function certificateFor(input: {
     appBuild: input.fingerprint.head,
     pipelineImage: input.collected.pipelineImage,
     vendorBuilds: [...input.builds],
-    cost: { usd, callCount: input.collected.costs.length },
+    cost,
     residualRiskIds: [...OPEN_RESIDUAL_RISK_IDS],
     panel: input.panel,
     resume: input.resume,
