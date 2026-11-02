@@ -3,8 +3,10 @@
  *
  * The builder copies what the verdict core measured and records the gaps it
  * could not measure. It never invents a bar, a sample, a citation, a vendor
- * build or a signature: a missing citation on a pass refuses the build, and a
- * scenario the run did not attempt becomes an explicit gap row. The finished
+ * build, a scope or a signature: the declared scope is an input, a missing
+ * citation on a pass refuses the build, a scenario inside the scope the run did
+ * not attempt becomes an explicit gap row, and a Locale the scope excludes is
+ * an explicit out-of-scope row carrying the owner's decision. The finished
  * document is passed through the validator, so the builder cannot emit a
  * certificate its own reader would refuse.
  *
@@ -15,17 +17,19 @@
 
 import { FAMILIES } from "../contract";
 import { RUN_SCENARIO } from "../economics";
-import { LOCALES, type Locale } from "../scenarios";
+import { LOCALES, SCENARIO_CLASSES, type Locale } from "../scenarios";
 import type { RunVerdict } from "../verdict";
 import { CertificateError } from "./errors";
 import type { CertificateErrorCode } from "./errors";
 import { deriveCertificateVerdict } from "./derive";
 import { OPEN_RESIDUAL_RISK_IDS, knownResidualRisk } from "./risks";
+import { outOfScopeLocales } from "./scope";
 import {
   CERTIFICATE_MODES,
   CERTIFICATE_SCHEMA_VERSION,
   CERTIFICATE_TARGETS,
   REQUIRED_VENDOR_LEGS,
+  SCOPE_DECIDERS,
   VENDOR_LEGS,
   type Certificate,
   type CertificateBuildInput,
@@ -36,8 +40,10 @@ import {
   type CertificateResume,
   type CertificateScenarioVerdict,
   type CertificationAttempt,
+  type CertificationScope,
   type CoverageRow,
   type LocaleCoverage,
+  type ScopeDecision,
   type VendorBuild,
 } from "./types";
 import { validateCertificate } from "./validate";
@@ -102,7 +108,59 @@ function assertPlan(input: CertificateBuildInput): void {
   }
 }
 
-function assertCorpus(input: CertificateBuildInput): Map<string, CertificateCorpusScenario> {
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The declared scope, recorded as the owner set it. It is never derived from
+ * the attempts: a scope is an input, and a run outside it refuses below.
+ */
+function assertScope(raw: CertificationScope): CertificationScope {
+  if (!(SCOPE_DECIDERS as readonly string[]).includes(raw.decidedBy)) {
+    refuse(
+      "invalid-scope",
+      `scope.decidedBy is "${String(raw.decidedBy)}", not one of ${SCOPE_DECIDERS.join(", ")}; ` +
+        "narrowing a certificate is an owner decision",
+    );
+  }
+  if (!ISO_DATE.test(raw.decidedOn) || Number.isNaN(Date.parse(raw.decidedOn))) {
+    refuse("invalid-scope", `scope.decidedOn is "${String(raw.decidedOn)}", not a YYYY-MM-DD date`);
+  }
+  if (typeof raw.reason !== "string" || raw.reason.trim() === "") {
+    refuse("invalid-scope", "scope.reason is empty; a scope names why the Locales are the claim");
+  }
+  if (!Array.isArray(raw.locales) || raw.locales.length === 0) {
+    refuse("invalid-scope", "scope.locales is empty; a certificate is a claim about at least one Locale");
+  }
+  const seen = new Set<Locale>();
+  for (const locale of raw.locales) {
+    if (!(LOCALES as readonly string[]).includes(locale)) {
+      refuse("invalid-scope", `scope.locales names unknown Locale "${String(locale)}"`);
+    }
+    if (seen.has(locale)) {
+      refuse("invalid-scope", `scope.locales records Locale "${locale}" twice`);
+    }
+    seen.add(locale);
+  }
+  return {
+    locales: LOCALES.filter((locale) => seen.has(locale)),
+    decidedBy: raw.decidedBy,
+    decidedOn: raw.decidedOn,
+    reason: raw.reason,
+  };
+}
+
+function decisionOf(scope: CertificationScope): ScopeDecision {
+  return {
+    decidedBy: scope.decidedBy,
+    decidedOn: scope.decidedOn,
+    reason: scope.reason,
+  };
+}
+
+function assertCorpus(
+  input: CertificateBuildInput,
+  scope: CertificationScope,
+): Map<string, CertificateCorpusScenario> {
   if (!Number.isInteger(input.corpus.version) || input.corpus.version < 1) {
     refuse(
       "invalid-corpus-reference",
@@ -126,6 +184,20 @@ function assertCorpus(input: CertificateBuildInput): Map<string, CertificateCorp
         `corpus scenario "${scenario.name}" declares unknown Locale "${String(scenario.locale)}"`,
       );
     }
+    if (!(SCENARIO_CLASSES as readonly string[]).includes(scenario.class)) {
+      refuse(
+        "invalid-coverage",
+        `corpus scenario "${scenario.name}" declares unknown class "${String(scenario.class)}"`,
+      );
+    }
+    if (!scope.locales.includes(scenario.locale)) {
+      refuse(
+        "scope-violation",
+        `scenario "${scenario.name}" speaks Locale "${scenario.locale}", which the declared scope ` +
+          `(${scope.locales.join(", ")}) excludes. A Locale that ran is measured, never out of scope; ` +
+          "declare it in the scope or exclude it from the run",
+      );
+    }
     byName.set(scenario.name, scenario);
   }
   return byName;
@@ -139,11 +211,20 @@ function assertCorpus(input: CertificateBuildInput): Map<string, CertificateCorp
 function buildCoverage(
   input: CertificateBuildInput,
   scenarios: Map<string, CertificateCorpusScenario>,
+  scope: CertificationScope,
 ): CertificateCoverage {
   const measured = new Map<string, CertificationAttempt[]>();
   const seen = new Set<string>();
   const callOwners = new Map<string, string>();
   for (const attempt of input.attempts) {
+    if (!scope.locales.includes(attempt.locale)) {
+      refuse(
+        "scope-violation",
+        `attempt "${attempt.scenario}" ran Locale "${String(attempt.locale)}", which the ` +
+          `declared scope (${scope.locales.join(", ")}) excludes; a Locale that ran and failed ` +
+          "is a failure, never out of scope",
+      );
+    }
     const scenario = scenarios.get(attempt.scenario);
     if (scenario === undefined) {
       refuse(
@@ -209,6 +290,7 @@ function buildCoverage(
       locale: scenario.locale,
       scenario: scenario.name,
       heldOut: scenario.heldOut,
+      class: scenario.class,
       requiredRepetitions,
       measuredRepetitions,
       status: gap === null ? "measured" : "gap",
@@ -217,9 +299,30 @@ function buildCoverage(
     });
   }
 
+  const decision = decisionOf(scope);
+  const outOfScope = outOfScopeLocales(scope.locales);
   const byLocale: LocaleCoverage[] = [];
   for (const locale of LOCALES) {
     const localeRows = rows.filter((row) => row.locale === locale);
+    if (outOfScope.includes(locale)) {
+      if (localeRows.length > 0) {
+        refuse(
+          "scope-violation",
+          `Locale "${locale}" is out of scope but carries ${localeRows.length} coverage row(s); ` +
+            "a Locale that ran is measured, never out of scope",
+        );
+      }
+      byLocale.push({
+        locale,
+        expectedScenarios: 0,
+        measuredScenarios: 0,
+        gapRows: 0,
+        status: "out-of-scope",
+        gap: null,
+        decision,
+      });
+      continue;
+    }
     const measuredScenarios = localeRows.filter((row) => row.status === "measured").length;
     const gapRows = localeRows.length - measuredScenarios;
     const gap =
@@ -235,6 +338,7 @@ function buildCoverage(
       gapRows,
       status: gap === null ? "measured" : "gap",
       gap,
+      decision: null,
     });
   }
 
@@ -407,9 +511,10 @@ export function buildCertificate(input: CertificateBuildInput): Certificate {
   if (!(CERTIFICATE_TARGETS as readonly string[]).includes(input.target)) {
     refuse("unknown-target", `target "${String(input.target)}" is not a certificate target`);
   }
+  const scope = assertScope(input.scope);
 
-  const scenarios = assertCorpus(input);
-  const coverage = buildCoverage(input, scenarios);
+  const scenarios = assertCorpus(input, scope);
+  const coverage = buildCoverage(input, scenarios, scope);
   const properties = buildProperties(input.run, scenarios);
   const eligibility = eligibilityOf(input.run);
   const runFailures = unique(input.run.failures);
@@ -430,6 +535,7 @@ export function buildCertificate(input: CertificateBuildInput): Certificate {
     schemaVersion: CERTIFICATE_SCHEMA_VERSION,
     runId: input.run.runId,
     target: input.target,
+    scope,
     code: {
       fingerprint: { ...input.codeFingerprint },
       appBuild: input.appBuild,

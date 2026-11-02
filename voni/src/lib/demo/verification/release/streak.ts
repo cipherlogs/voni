@@ -77,7 +77,12 @@ export function isCleanCertification(certificate: Certificate): boolean {
     !certificate.code.fingerprint.dirty &&
     certificate.plan.mode === "full" &&
     certificate.coverage.gapRows === 0 &&
-    certificate.coverage.byLocale.every((locale) => locale.status === "measured") &&
+    // Every Locale inside the declared scope is measured; an out-of-scope
+    // Locale is neutral by the owner's decision (RR-09), never a clean row it
+    // did not earn. The validator already refused an out-of-scope row that ran.
+    certificate.coverage.byLocale.every(
+      (locale) => locale.status === "measured" || locale.status === "out-of-scope",
+    ) &&
     certificate.eligibility.eligible &&
     certificate.runFailures.length === 0 &&
     // A certificate assembled across an interruption is not one clean run. It

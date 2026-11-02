@@ -4,6 +4,7 @@ import test from "node:test";
 import type { Contract, ContractPropertyEntry } from "../contract";
 import { LOCALES } from "../scenarios";
 import {
+  FULL_SCOPE,
   OPEN_RESIDUAL_RISK_IDS,
   deriveCertificateVerdict,
   buildCertificate,
@@ -95,6 +96,7 @@ const SCENARIOS = LOCALES.map((locale) => ({
   name: `hello-${locale}`,
   locale,
   heldOut: false,
+  class: "golden-flow" as const,
 }));
 
 function attempts(): NonNullable<CertificateBuildInput["attempts"]> {
@@ -161,6 +163,7 @@ function certificate(options: CertificateOptions): Certificate {
     contract: CONTRACT,
     run,
     target: options.target ?? "staging",
+    scope: FULL_SCOPE,
     plan: { mode: "full", repetitions: 1 },
     corpus: { version: 1, fingerprint: CORPUS_HASH, scenarios: SCENARIOS },
     attempts: attempts(),
@@ -207,6 +210,66 @@ test("three consecutive clean certifications on one fingerprint and target form 
   assert.deepEqual(result.runIds, [STAGING_1.runId, STAGING_2.runId, STAGING_3.runId]);
   assert.deepEqual(result.fingerprint, FINGERPRINT);
   assert.match(result.detail, /3 consecutive clean/);
+});
+
+test("an English-only scoped certificate is clean, and a gap inside en still breaks it", () => {
+  const base = certificate({ runId: "run-2026-10-04-01" });
+  const decision = {
+    decidedBy: "owner" as const,
+    decidedOn: "2026-11-02",
+    reason: "English-only launch",
+  };
+  const scoped: Certificate = {
+    ...base,
+    scope: { locales: ["en"], ...decision },
+    coverage: {
+      ...base.coverage,
+      expectedScenarios: 1,
+      gapRows: 0,
+      rows: base.coverage.rows.filter((row) => row.locale === "en"),
+      byLocale: base.coverage.byLocale.map((locale) =>
+        locale.locale === "en"
+          ? {
+              ...locale,
+              expectedScenarios: 1,
+              measuredScenarios: 1,
+              gapRows: 0,
+              status: "measured" as const,
+              gap: null,
+              decision: null,
+            }
+          : {
+              locale: locale.locale,
+              expectedScenarios: 0,
+              measuredScenarios: 0,
+              gapRows: 0,
+              status: "out-of-scope" as const,
+              gap: null,
+              decision,
+            },
+      ),
+    },
+  };
+  assert.equal(isCleanCertification(scoped), true, "excluded Locales are neutral, not gaps");
+
+  const gap: Certificate = {
+    ...scoped,
+    coverage: {
+      ...scoped.coverage,
+      gapRows: 1,
+      byLocale: scoped.coverage.byLocale.map((locale) =>
+        locale.locale === "en"
+          ? {
+              ...locale,
+              status: "gap" as const,
+              gap: "1 of 1 scenarios not measured",
+              measuredScenarios: 0,
+            }
+          : locale,
+      ),
+    },
+  };
+  assert.equal(isCleanCertification(gap), false, "an in-scope gap is never neutral");
 });
 
 test("a dirty hash that moved while HEAD and the dirty flag stayed put breaks the streak", () => {

@@ -2,12 +2,14 @@
  * The certificate validator: one reader that refuses what it cannot prove.
  *
  * A certificate is only usable for the run it names. The reader refuses an
- * unknown schema version, a target it is not asked for, a code fingerprint or
- * corpus hash that differs from the run, a verdict without citations, an open
- * residual risk that was dropped, and a `certified` verdict with no panel
- * signature — each by name. It also recomputes the verdict from the recorded
- * facts, so a document that calls itself certified while carrying a failure or
- * a coverage gap cannot be read as a pass.
+ * unknown schema version, a v3 certificate with no declared scope, a target it
+ * is not asked for, a code fingerprint or corpus hash that differs from the
+ * run, a verdict without citations, an open residual risk that was dropped,
+ * and a `certified` verdict with no panel signature — each by name. It also
+ * recomputes the verdict from the recorded facts, and the coverage status of
+ * every Locale from the declared scope, so a document that calls itself
+ * certified while carrying a failure, a coverage gap, an out-of-scope Locale
+ * that ran, or an invented scope decision cannot be read as a pass.
  *
  * The schema is the contract; this file is the only shape check the builder,
  * the CLI and ticket 27's signing hook share.
@@ -16,18 +18,21 @@
 import { readFileSync } from "node:fs";
 
 import { FAMILIES } from "../contract";
-import { LOCALES } from "../scenarios";
+import { LOCALES, SCENARIO_CLASSES, type Locale } from "../scenarios";
 import type { PropertyVerdictReason } from "../verdict";
 import { CertificateError, type CertificateErrorCode } from "./errors";
 import { deriveCertificateVerdict } from "./derive";
 import { OPEN_RESIDUAL_RISK_IDS, knownResidualRisk } from "./risks";
+import { outOfScopeLocales } from "./scope";
 import {
   CERTIFICATE_MODES,
   CERTIFICATE_SCHEMA_VERSION,
   CERTIFICATE_TARGETS,
   CERTIFICATE_VERDICTS,
   COVERAGE_STATUSES,
+  LOCALE_COVERAGE_STATUSES,
   REQUIRED_VENDOR_LEGS,
+  SCOPE_DECIDERS,
   VENDOR_LEGS,
   type Certificate,
   type CertificateCoverage,
@@ -37,10 +42,12 @@ import {
   type CertificateResume,
   type CertificateScenarioVerdict,
   type CertificateVerdict,
+  type CertificationScope,
   type CoverageRow,
   type CoverageStatus,
   type LocaleCoverage,
   type PanelSignature,
+  type ScopeDecision,
   type VendorBuild,
 } from "./types";
 
@@ -198,16 +205,140 @@ function validateVendorBuilds(raw: unknown): VendorBuild[] {
   return builds;
 }
 
-function validateRows(raw: unknown, planRepetitions: number): CoverageRow[] {
+function validateScope(raw: unknown, version: number): CertificationScope | null {
+  if (raw === undefined || raw === null) {
+    if (version >= 3) {
+      refuse(
+        "missing-scope",
+        "a version 3 certificate must carry scope (the declared Locales and the owner decision); " +
+          "a claim that does not name its Locale set is refused",
+      );
+    }
+    return null;
+  }
+  if (version < 3) {
+    refuse(
+      "invalid-scope",
+      `a version ${version} certificate cannot carry a declared scope; a scoped claim is version 3`,
+    );
+  }
+  const scope = record(raw, "scope");
+  const decidedBy = oneOf(scope.decidedBy, SCOPE_DECIDERS, "scope.decidedBy", "invalid-scope");
+  const decidedOn = text(scope.decidedOn, "scope.decidedOn", "invalid-scope");
+  if (!ISO_DATE.test(decidedOn) || Number.isNaN(Date.parse(decidedOn))) {
+    refuse("invalid-scope", `scope.decidedOn "${decidedOn}" is not a YYYY-MM-DD date`);
+  }
+  const reason = text(scope.reason, "scope.reason", "invalid-scope");
+  if (!Array.isArray(scope.locales) || scope.locales.length === 0) {
+    refuse("invalid-scope", "scope.locales is empty; a certificate is a claim about at least one Locale");
+  }
+  const seen = new Set<Locale>();
+  for (const [index, value] of scope.locales.entries()) {
+    const locale = oneOf(value, LOCALES, `scope.locales[${index}]`, "invalid-scope");
+    if (seen.has(locale)) {
+      refuse("invalid-scope", `scope.locales records Locale "${locale}" twice`);
+    }
+    seen.add(locale);
+  }
+  return {
+    locales: LOCALES.filter((locale) => seen.has(locale)),
+    decidedBy,
+    decidedOn,
+    reason,
+  };
+}
+
+function scopeDecision(scope: CertificationScope): ScopeDecision {
+  return {
+    decidedBy: scope.decidedBy,
+    decidedOn: scope.decidedOn,
+    reason: scope.reason,
+  };
+}
+
+/** An out-of-scope row must carry the same decision the certificate declares. */
+function validateDecision(
+  raw: unknown,
+  field: string,
+  scope: CertificationScope,
+): ScopeDecision {
+  if (raw === undefined || raw === null) {
+    refuse(
+      "invalid-scope",
+      `${field}.decision is missing; an out-of-scope Locale names the owner decision that excludes it`,
+    );
+  }
+  const decision = record(raw, `${field}.decision`);
+  const decidedBy = oneOf(
+    decision.decidedBy,
+    SCOPE_DECIDERS,
+    `${field}.decision.decidedBy`,
+    "invalid-scope",
+  );
+  const decidedOn = text(decision.decidedOn, `${field}.decision.decidedOn`, "invalid-scope");
+  const reason = text(decision.reason, `${field}.decision.reason`, "invalid-scope");
+  if (
+    decidedBy !== scope.decidedBy ||
+    decidedOn !== scope.decidedOn ||
+    reason !== scope.reason
+  ) {
+    refuse(
+      "invalid-scope",
+      `${field}.decision does not match the certificate's declared decision ` +
+        `(${scope.decidedBy}, ${scope.decidedOn}, "${scope.reason}"); a row cannot invent its scope`,
+    );
+  }
+  return { decidedBy, decidedOn, reason };
+}
+
+function validateRows(
+  raw: unknown,
+  planRepetitions: number,
+  scope: CertificationScope | null,
+  requireClass: boolean,
+): CoverageRow[] {
   if (!Array.isArray(raw) || raw.length === 0) {
     refuse("invalid-coverage", "coverage.rows is not a non-empty array");
   }
   const seen = new Set<string>();
+  const classOf = new Map<string, string>();
   return raw.map((entry, index) => {
     const field = `coverage.rows[${index}]`;
     const row = record(entry, field);
     const locale = oneOf(row.locale, LOCALES, `${field}.locale`, "invalid-coverage");
+    if (scope !== null && !scope.locales.includes(locale)) {
+      refuse(
+        "scope-violation",
+        `${field} names Locale "${locale}", which the declared scope ` +
+          `(${scope.locales.join(", ")}) excludes; a Locale that ran is measured, never out of scope`,
+      );
+    }
     const scenario = text(row.scenario, `${field}.scenario`, "invalid-coverage");
+    let scenarioClass: CoverageRow["class"] = null;
+    if (row.class !== undefined && row.class !== null) {
+      scenarioClass = oneOf(
+        row.class,
+        SCENARIO_CLASSES,
+        `${field}.class`,
+        "invalid-coverage",
+      );
+    } else if (requireClass) {
+      refuse(
+        "invalid-coverage",
+        `${field}.class is missing; a version 3 coverage row names its scenario class`,
+      );
+    }
+    if (scenarioClass !== null) {
+      const known = classOf.get(scenario);
+      if (known !== undefined && known !== scenarioClass) {
+        refuse(
+          "invalid-coverage",
+          `scenario "${scenario}" is recorded as class "${known}" and "${scenarioClass}"; ` +
+            "a scenario has one class",
+        );
+      }
+      classOf.set(scenario, scenarioClass);
+    }
     const key = `${locale}:${scenario}`;
     if (seen.has(key)) {
       refuse("invalid-coverage", `coverage row "${key}" appears twice`);
@@ -262,6 +393,7 @@ function validateRows(raw: unknown, planRepetitions: number): CoverageRow[] {
       locale,
       scenario,
       heldOut,
+      class: scenarioClass,
       requiredRepetitions,
       measuredRepetitions,
       status,
@@ -271,7 +403,12 @@ function validateRows(raw: unknown, planRepetitions: number): CoverageRow[] {
   });
 }
 
-function validateCoverage(raw: unknown, planRepetitions: number): CertificateCoverage {
+function validateCoverage(
+  raw: unknown,
+  planRepetitions: number,
+  scope: CertificationScope | null,
+  requireClass: boolean,
+): CertificateCoverage {
   const coverage = record(raw, "coverage");
   const expectedScenarios = integer(
     coverage.expectedScenarios,
@@ -279,7 +416,7 @@ function validateCoverage(raw: unknown, planRepetitions: number): CertificateCov
     "invalid-coverage",
     1,
   );
-  const rows = validateRows(coverage.rows, planRepetitions);
+  const rows = validateRows(coverage.rows, planRepetitions, scope, requireClass);
   if (rows.length !== expectedScenarios) {
     refuse(
       "coverage-row-missing",
@@ -303,6 +440,8 @@ function validateCoverage(raw: unknown, planRepetitions: number): CertificateCov
     );
   }
   const seenLocales = new Set<string>();
+  const outOfScope = scope === null ? [] : outOfScopeLocales(scope.locales);
+  const decision = scope === null ? null : scopeDecision(scope);
   const byLocale: LocaleCoverage[] = coverage.byLocale.map((entry, index) => {
     const field = `coverage.byLocale[${index}]`;
     const localeRow = record(entry, field);
@@ -322,9 +461,42 @@ function validateCoverage(raw: unknown, planRepetitions: number): CertificateCov
       "invalid-coverage",
     );
     const gaps = integer(localeRow.gapRows, `${field}.gapRows`, "invalid-coverage");
-    const status = oneOf(localeRow.status, COVERAGE_STATUSES, `${field}.status`, "invalid-coverage");
+    const status = oneOf(
+      localeRow.status,
+      LOCALE_COVERAGE_STATUSES,
+      `${field}.status`,
+      "invalid-coverage",
+    );
 
     const localeRows = rows.filter((row) => row.locale === locale);
+    if (decision !== null && outOfScope.includes(locale)) {
+      if (expected !== 0 || measured !== 0 || gaps !== 0 || localeRows.length !== 0) {
+        refuse(
+          "scope-violation",
+          `${field} is out of scope but records ${localeRows.length} row(s), ` +
+            `${measured} measured, ${gaps} gap(s); a Locale that ran is measured, never out of scope`,
+        );
+      }
+      if (status !== "out-of-scope") {
+        refuse(
+          "invalid-coverage",
+          `${field}.status is "${status}" but Locale "${locale}" is excluded by the declared scope`,
+        );
+      }
+      if (localeRow.gap !== null) {
+        refuse("invalid-coverage", `${field}.gap must be null on an out-of-scope Locale`);
+      }
+      return {
+        locale,
+        expectedScenarios: 0,
+        measuredScenarios: 0,
+        gapRows: 0,
+        status: "out-of-scope" as const,
+        gap: null,
+        decision: validateDecision(localeRow.decision, field, scope!),
+      };
+    }
+
     const actualMeasured = localeRows.filter((row) => row.status === "measured").length;
     const actualGaps = localeRows.length - actualMeasured;
     if (expected !== localeRows.length || measured !== actualMeasured || gaps !== actualGaps) {
@@ -334,6 +506,13 @@ function validateCoverage(raw: unknown, planRepetitions: number): CertificateCov
           `measured ${measured}/${actualMeasured}, gaps ${gaps}/${actualGaps}`,
       );
     }
+    if (status !== "measured" && status !== "gap") {
+      refuse(
+        "invalid-coverage",
+        `${field}.status is "${status}" but Locale "${locale}" is inside the declared scope; ` +
+          "only a Locale the scope excludes may be out of scope",
+      );
+    }
     const expectedStatus: CoverageStatus =
       localeRows.length > 0 && actualGaps === 0 ? "measured" : "gap";
     if (status !== expectedStatus) {
@@ -341,6 +520,12 @@ function validateCoverage(raw: unknown, planRepetitions: number): CertificateCov
         "invalid-coverage",
         `${field}.status is "${status}" but ${actualMeasured}/${localeRows.length} scenarios ` +
           `were measured`,
+      );
+    }
+    if (localeRow.decision !== undefined && localeRow.decision !== null) {
+      refuse(
+        "invalid-coverage",
+        `${field}.decision must be null on an in-scope Locale; only an out-of-scope row carries it`,
       );
     }
     const gap =
@@ -354,6 +539,7 @@ function validateCoverage(raw: unknown, planRepetitions: number): CertificateCov
       gapRows: gaps,
       status,
       gap,
+      decision: null,
     };
   });
   for (const locale of LOCALES) {
@@ -631,15 +817,17 @@ export function validateCertificate(
     refuse("malformed-certificate", "certificate.schemaVersion is not an integer");
   }
   const legacy = root.schemaVersion === 1;
-  if (!legacy && root.schemaVersion !== CERTIFICATE_SCHEMA_VERSION) {
+  const readable = [1, 2, CERTIFICATE_SCHEMA_VERSION];
+  if (!readable.includes(root.schemaVersion)) {
     refuse(
       "unknown-schema-version",
       `certificate schema version ${root.schemaVersion} is unknown; this reader understands ` +
-        `1 and ${CERTIFICATE_SCHEMA_VERSION}`,
+        `${readable.join(", ")}`,
     );
   }
   const runId = text(root.runId, "runId");
   const target = oneOf(root.target, CERTIFICATE_TARGETS, "target", "unknown-target");
+  const scope = validateScope(root.scope, root.schemaVersion);
   const code = validateCode(root.code);
   const corpus = validateCorpus(root.corpus);
   const vendorBuilds = validateVendorBuilds(root.vendorBuilds);
@@ -651,7 +839,12 @@ export function validateCertificate(
     refuse("invalid-plan", `plan.repetitions ${repetitions} exceeds 100`);
   }
 
-  const coverage = validateCoverage(root.coverage, repetitions);
+  const coverage = validateCoverage(
+    root.coverage,
+    repetitions,
+    scope,
+    root.schemaVersion >= 3,
+  );
   const properties = validateProperties(root.properties);
   const eligibility = validateEligibility(root.eligibility);
   const runFailures = strings(root.runFailures, "runFailures", "malformed-certificate");
@@ -719,6 +912,7 @@ export function validateCertificate(
     schemaVersion: CERTIFICATE_SCHEMA_VERSION,
     runId,
     target,
+    scope,
     code,
     corpus,
     vendorBuilds,

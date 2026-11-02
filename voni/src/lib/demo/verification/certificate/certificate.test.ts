@@ -19,6 +19,8 @@ import {
   CERTIFICATE_SCHEMA_VERSION,
   CERTIFICATE_TARGETS,
   CertificateError,
+  ENGLISH_ONLY_SCOPE,
+  FULL_SCOPE,
   OPEN_RESIDUAL_RISK_IDS,
   RESIDUAL_RISKS,
   buildCertificate,
@@ -31,6 +33,7 @@ import {
   validateCertificate,
   type Certificate,
   type CertificateBuildInput,
+  type CertificationScope,
   type PanelSignature,
   type VendorBuild,
 } from "./index";
@@ -97,12 +100,17 @@ const SCENARIOS = LOCALES.map((locale) => ({
   name: `hello-${locale}`,
   locale,
   heldOut: false,
+  class: "golden-flow" as const,
 }));
+
+/** Only what an English-only run plans: one English scenario per repetition. */
+const ENGLISH_SCENARIOS = SCENARIOS.filter((scenario) => scenario.locale === "en");
 
 function attempts(
   filter: (locale: Locale) => boolean = () => true,
+  scenarios: typeof SCENARIOS = SCENARIOS,
 ): NonNullable<CertificateBuildInput["attempts"]> {
-  return SCENARIOS.filter((scenario) => filter(scenario.locale)).flatMap((scenario) =>
+  return scenarios.filter((scenario) => filter(scenario.locale)).flatMap((scenario) =>
     [1, 2, 3].map((repetition) => ({
       scenario: scenario.name,
       locale: scenario.locale,
@@ -112,10 +120,23 @@ function attempts(
   );
 }
 
-function evidence(failing?: { scenario: string; repetition: number }): PropertyEvidence[] {
+function englishOnlyInput(overrides: Partial<CertificateBuildInput> = {}): CertificateBuildInput {
+  return buildInput({
+    run: runWith({ scenarios: ENGLISH_SCENARIOS }),
+    scope: ENGLISH_ONLY_SCOPE,
+    corpus: { version: 1, fingerprint: CORPUS_HASH, scenarios: ENGLISH_SCENARIOS },
+    attempts: attempts(() => true, ENGLISH_SCENARIOS),
+    ...overrides,
+  });
+}
+
+function evidence(
+  failing?: { scenario: string; repetition: number },
+  scenarios: typeof SCENARIOS = SCENARIOS,
+): PropertyEvidence[] {
   const numeric: PropertyMeasurement[] = [];
   const categorical: PropertyMeasurement[] = [];
-  for (const scenario of SCENARIOS) {
+  for (const scenario of scenarios) {
     for (let repetition = 1; repetition <= 3; repetition += 1) {
       const failed =
         failing?.scenario === scenario.name && failing.repetition === repetition;
@@ -155,11 +176,13 @@ function runWith(overrides: {
   failing?: { scenario: string; repetition: number };
   calls?: Parameters<typeof judgeRun>[0]["calls"];
   evidence?: PropertyEvidence[];
+  scenarios?: typeof SCENARIOS;
 } = {}): RunVerdict {
   return judgeRun({
     runId: "run-2026-10-31-01",
     contract: CONTRACT,
-    evidence: overrides.evidence ?? evidence(overrides.failing),
+    evidence:
+      overrides.evidence ?? evidence(overrides.failing, overrides.scenarios ?? SCENARIOS),
     calls: overrides.calls ?? [],
   });
 }
@@ -169,6 +192,7 @@ function buildInput(overrides: Partial<CertificateBuildInput> = {}): Certificate
     contract: CONTRACT,
     run: runWith(),
     target: "local",
+    scope: FULL_SCOPE,
     plan: { mode: "full", repetitions: 3 },
     corpus: { version: 1, fingerprint: CORPUS_HASH, scenarios: SCENARIOS },
     attempts: attempts(),
@@ -212,6 +236,7 @@ test("a complete run builds one certificate with code, target, corpus, vendors, 
   assert.equal(certificate.schemaVersion, CERTIFICATE_SCHEMA_VERSION);
   assert.equal(certificate.runId, "run-2026-10-31-01");
   assert.equal(certificate.target, "local");
+  assert.deepEqual(certificate.scope, FULL_SCOPE);
   assert.deepEqual(certificate.code.fingerprint, FINGERPRINT);
   assert.equal(certificate.code.appBuild, "app-build-1");
   assert.equal(certificate.code.pipelineImage, `sha256:${"d".repeat(64)}`);
@@ -223,6 +248,7 @@ test("a complete run builds one certificate with code, target, corpus, vendors, 
   assert.equal(certificate.coverage.rows.length, 5);
   assert.equal(certificate.coverage.byLocale.length, LOCALES.length);
   assert.ok(certificate.coverage.byLocale.every((row) => row.status === "measured"));
+  assert.ok(certificate.coverage.rows.every((row) => row.class === "golden-flow"));
 
   assert.equal(certificate.properties.length, 2);
   for (const property of certificate.properties) {
@@ -385,31 +411,173 @@ test("an unsigned clean run is pending-human; a certified verdict without a pane
 });
 
 test("an unknown schema version is refused by name, not reinterpreted", () => {
-  assert.equal(CERTIFICATE_SCHEMA_VERSION, 2);
+  assert.equal(CERTIFICATE_SCHEMA_VERSION, 3);
   const copy = mutable(certified());
   copy.schemaVersion = CERTIFICATE_SCHEMA_VERSION + 1;
   assertRefusal(
     () => validateCertificate(copy),
     "unknown-schema-version",
-    /schema version 3 is unknown/,
+    /schema version 4 is unknown/,
   );
 });
 
-test("a v1 certificate stays readable; a v2 certificate must carry resume", () => {
+test("a v1 or v2 certificate stays readable; a v3 certificate must carry scope and resume", () => {
   const v1 = mutable(certified());
   v1.schemaVersion = 1;
   delete v1.resume;
-  const parsed = validateCertificate(v1);
-  assert.equal(parsed.resume, null, "a v1 certificate predates the resume record");
-  assert.equal(parsed.schemaVersion, 2, "a v1 document is read as the current schema");
+  delete v1.scope;
+  for (const row of (v1.coverage as Mutable).rows as Mutable[]) delete row.class;
+  const parsedV1 = validateCertificate(v1);
+  assert.equal(parsedV1.resume, null, "a v1 certificate predates the resume record");
+  assert.equal(parsedV1.scope, null, "a v1 certificate predates the declared scope");
+  assert.equal(parsedV1.schemaVersion, 3, "a v1 document is read as the current schema");
 
-  const missing = mutable(certified());
-  delete missing.resume;
+  const v2 = mutable(certified());
+  v2.schemaVersion = 2;
+  delete v2.scope;
+  for (const row of (v2.coverage as Mutable).rows as Mutable[]) delete row.class;
+  const parsedV2 = validateCertificate(v2);
+  assert.equal(parsedV2.scope, null, "a v2 certificate declared no scope; every Locale is required");
+  assert.equal(parsedV2.resume, null);
+  assert.equal(parsedV2.coverage.rows[0]?.class, null, "a v2 row predates the class field");
+
+  const missingResume = mutable(certified());
+  delete missingResume.resume;
   assertRefusal(
-    () => validateCertificate(missing),
+    () => validateCertificate(missingResume),
     "malformed-certificate",
     /resume/,
   );
+});
+
+test("a v3 certificate without a declared scope is refused by name", () => {
+  const missingScope = mutable(certified());
+  delete missingScope.scope;
+  assertRefusal(
+    () => validateCertificate(missingScope),
+    "missing-scope",
+    /must carry scope/,
+  );
+});
+
+test("an English-only scope certifies when every in-scope scenario passes and names the other Locales out of scope", () => {
+  const certificate = buildCertificate(englishOnlyInput());
+
+  assert.equal(certificate.verdict, "certified");
+  assert.equal(certificate.pass, true);
+  assert.equal(certificate.scope?.locales.join(","), "en");
+  assert.equal(certificate.coverage.expectedScenarios, 1);
+  assert.equal(certificate.coverage.gapRows, 0);
+  assert.equal(certificate.coverage.byLocale.find((row) => row.locale === "en")?.status, "measured");
+
+  for (const locale of ["es", "fr", "de", "pt"] as const) {
+    const row = certificate.coverage.byLocale.find((entry) => entry.locale === locale);
+    assert.ok(row, `${locale} is present, never silently absent`);
+    assert.equal(row.status, "out-of-scope");
+    assert.equal(row.gap, null);
+    assert.equal(row.expectedScenarios, 0);
+    assert.equal(row.decision?.decidedBy, "owner");
+    assert.equal(row.decision?.decidedOn, "2026-11-02");
+    assert.match(row.decision?.reason ?? "", /English-only/);
+  }
+
+  const text = renderCertificate(certificate);
+  assert.match(text, /scope en \(owner 2026-11-02/);
+  assert.match(text, /OUT OF SCOPE es, fr, de, pt/);
+  assert.match(text, /es OUT-OF-SCOPE/);
+});
+
+test("an English failure still makes a scoped certificate not-demo-ready", () => {
+  const failing = buildCertificate(
+    englishOnlyInput({
+      run: runWith({
+        scenarios: ENGLISH_SCENARIOS,
+        failing: { scenario: "hello-en", repetition: 2 },
+      }),
+    }),
+  );
+  assert.equal(failing.verdict, "not-demo-ready");
+  assert.equal(failing.pass, false);
+  assert.equal(failing.coverage.gapRows, 0, "the four other Locales are not the reason");
+  assert.ok(
+    failing.properties.some((property) => property.status === "FAIL"),
+    "the English failure is still the failing fact",
+  );
+
+  const gap = buildCertificate(
+    englishOnlyInput({
+      attempts: attempts((locale) => locale === "en", ENGLISH_SCENARIOS).filter(
+        (attempt) => !(attempt.scenario === "hello-en" && attempt.repetition === 3),
+      ),
+    }),
+  );
+  assert.equal(gap.verdict, "not-demo-ready", "an unmeasured English repetition fails closed");
+  assert.equal(gap.coverage.gapRows, 1);
+});
+
+test("out of scope cannot cover a Locale that ran, and a measured Locale cannot be a gap by choice", () => {
+  // The scope excludes es but the corpus (and the attempts) still hold it.
+  assertRefusal(
+    () => buildCertificate(englishOnlyInput({ corpus: buildInput().corpus })),
+    "scope-violation",
+    /Locale "es".*declared scope/,
+  );
+  assertRefusal(
+    () => buildCertificate(englishOnlyInput({ attempts: attempts() })),
+    "scope-violation",
+    /ran Locale "es"/,
+  );
+
+  // A forged row: es out of scope while carrying a measured scenario.
+  const forged = mutable(buildCertificate(englishOnlyInput()));
+  const es = (forged.coverage as Mutable).byLocale as Mutable[];
+  const spanish = es.find((row) => row.locale === "es")!;
+  spanish.expectedScenarios = 1;
+  assertRefusal(
+    () => validateCertificate(forged),
+    "scope-violation",
+    /is out of scope but records/,
+  );
+});
+
+test("an out-of-scope row carries the certificate's own decision and no invented one", () => {
+  const forged = mutable(buildCertificate(englishOnlyInput()));
+  const spanish = ((forged.coverage as Mutable).byLocale as Mutable[]).find(
+    (row) => row.locale === "es",
+  )!;
+  (spanish.decision as Mutable).reason = "we skipped Spanish";
+  assertRefusal(
+    () => validateCertificate(forged),
+    "invalid-scope",
+    /does not match the certificate's declared decision/,
+  );
+});
+
+test("a declared Locale with no scenario and no calls is a gap, not out of scope", () => {
+  const scope: CertificationScope = {
+    ...ENGLISH_ONLY_SCOPE,
+    locales: ["en", "es"],
+  };
+  const certificate = buildCertificate(
+    englishOnlyInput({
+      scope,
+      corpus: { version: 1, fingerprint: CORPUS_HASH, scenarios: ENGLISH_SCENARIOS },
+    }),
+  );
+  const spanish = certificate.coverage.byLocale.find((row) => row.locale === "es");
+  assert.equal(spanish?.status, "gap");
+  assert.match(spanish?.gap ?? "", /no scenario for this Locale/);
+  assert.equal(certificate.verdict, "not-demo-ready", "an in-scope Locale is never neutral");
+});
+
+test("every v3 coverage row names its scenario class", () => {
+  const missing = mutable(certified());
+  delete ((missing.coverage as Mutable).rows as Mutable[])[0]!.class;
+  assertRefusal(() => validateCertificate(missing), "invalid-coverage", /class is missing/);
+
+  const unknown = mutable(certified());
+  ((unknown.coverage as Mutable).rows as Mutable[])[0]!.class = "not-a-class";
+  assertRefusal(() => validateCertificate(unknown), "invalid-coverage", /not one of/);
 });
 
 test("a call id claimed by two attempts is refused, not deduped", () => {

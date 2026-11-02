@@ -2,32 +2,38 @@
  * The certificate's schema: one committed artifact per certification run.
  *
  * A certificate is the claim, not the account of it. It pins the code
- * fingerprint (with the dirty flag), the target it is true for, the corpus
- * version and hash, the vendor builds, every property verdict with its sample
- * count and citations, explicit coverage rows (gaps included), the measured
- * cost and call count, the residual-risk ids, and — when the owner has signed —
- * the panel session and reviewer. Its verdict is one of four, and only
- * `certified` may be called a pass.
+ * fingerprint (with the dirty flag), the target it is true for, the declared
+ * certification scope and the owner decision behind it, the corpus version and
+ * hash, the vendor builds, every property verdict with its sample count and
+ * citations, explicit coverage rows (gaps included, out-of-scope Locales named
+ * rather than dropped), the measured cost and call count, the residual-risk
+ * ids, and — when the owner has signed — the panel session and reviewer. Its
+ * verdict is one of four, and only `certified` may be called a pass.
  *
  * The schema never carries audio or event bytes: those are gitignored working
  * files, recorded here by path/hash elsewhere. A certificate is committed.
  *
- * Spec: `.scratch/demo-verification/spec.md`, "Evidence artifacts" and
- * "Targets, runs and cadence"; ADR 0013.
+ * Spec: `.scratch/demo-verification/spec.md`, "Evidence artifacts", "Targets,
+ * runs and cadence" and "Scenario corpus and Locale matrix"; ADR 0013; the
+ * declared scope and the English-only decision are recorded in
+ * docs/agents/demo-verification.md, "Certification scope".
  */
 
 import type { CodeFingerprint } from "../../scoreboard";
 import type { Contract } from "../contract";
-import type { CorpusReference, Locale } from "../scenarios";
+import type { CorpusReference, Locale, ScenarioClass } from "../scenarios";
 import type { PropertyStatus, PropertyVerdictReason, RunVerdict } from "../verdict";
 
 /**
- * The schema version every committed certificate must carry. Version 2 makes
- * `resume` required (null for a run made in one piece), so a reader can never
- * mistake an interrupted run for a clean one by omission. A version 1
- * certificate stays readable and is read as `resume: null`.
+ * The schema version every committed certificate must carry. Version 3 makes
+ * the certification `scope` required, so a certificate always names the
+ * Locales it is a claim about and the owner decision behind that set. Version 2
+ * makes `resume` required (null for a run made in one piece), so a reader can
+ * never mistake an interrupted run for a clean one by omission. Version 1
+ * certificates stay readable and are read as `resume: null`; both older
+ * versions are read as an undeclared scope, which means every demo Locale.
  */
-export const CERTIFICATE_SCHEMA_VERSION = 2 as const;
+export const CERTIFICATE_SCHEMA_VERSION = 3 as const;
 
 /** The targets a certificate may be true for. A green never inherits. */
 export const CERTIFICATE_TARGETS = ["local", "staging", "production"] as const;
@@ -77,6 +83,35 @@ export type VendorBuild = {
   readonly buildId: string;
 };
 
+/**
+ * Who may declare a certification scope. The demo's scope is an owner
+ * decision, never an engineer's convenience: narrowing what a certificate is
+ * about is exactly the decision an owner signs for.
+ */
+export const SCOPE_DECIDERS = ["owner"] as const;
+
+export type ScopeDecider = (typeof SCOPE_DECIDERS)[number];
+
+/** The dated, named decision behind a scope; carried into every out-of-scope row. */
+export type ScopeDecision = {
+  readonly decidedBy: ScopeDecider;
+  /** The day the decision was made, `YYYY-MM-DD`. */
+  readonly decidedOn: string;
+  /** Why the declared Locales are the claim, in the owner's words. */
+  readonly reason: string;
+};
+
+/**
+ * What a certificate is a claim about. It is an input to the build, never
+ * inferred from whatever happened to run: a Locale outside the set is neutral
+ * and explicitly recorded as out of scope, while every in-scope Locale must be
+ * fully measured or the certificate fails closed.
+ */
+export type CertificationScope = ScopeDecision & {
+  /** Non-empty, unique and drawn from {@link import("../scenarios").LOCALES}. */
+  readonly locales: readonly Locale[];
+};
+
 /** The owner's signature: a named panel session and reviewer, dated. */
 export type PanelSignature = {
   /** The panel session whose gold labels the signature covers. */
@@ -123,6 +158,8 @@ export type CertificateCorpusScenario = {
   readonly name: string;
   readonly locale: Locale;
   readonly heldOut: boolean;
+  /** The spec's scenario class; the one-Locale panel samples across it. */
+  readonly class: ScenarioClass;
 };
 
 /**
@@ -146,7 +183,11 @@ export type CertificationAttempt = {
   readonly callId?: string;
 };
 
-/** A coverage row is measured or an explicit gap; there is no third state. */
+/**
+ * A scenario coverage row is measured or an explicit gap; there is no third
+ * state. A scenario never becomes out of scope: only its Locale can be, by the
+ * declared owner decision, and a Locale that ran is never out of scope.
+ */
 export const COVERAGE_STATUSES = ["measured", "gap"] as const;
 
 export type CoverageStatus = (typeof COVERAGE_STATUSES)[number];
@@ -156,6 +197,11 @@ export type CoverageRow = {
   readonly locale: Locale;
   readonly scenario: string;
   readonly heldOut: boolean;
+  /**
+   * The scenario's class. Null only on a pre-v3 certificate, which predates the
+   * field; every certificate this builder issues records it.
+   */
+  readonly class: ScenarioClass | null;
   readonly requiredRepetitions: number;
   readonly measuredRepetitions: number;
   readonly status: CoverageStatus;
@@ -165,15 +211,26 @@ export type CoverageRow = {
   readonly calls: readonly string[];
 };
 
+/**
+ * A Locale is measured, an explicit gap, or out of scope by a recorded owner
+ * decision. Out of scope is neutral to the verdict, and only a Locale the
+ * declared scope excludes may carry it.
+ */
+export const LOCALE_COVERAGE_STATUSES = ["measured", "gap", "out-of-scope"] as const;
+
+export type LocaleCoverageStatus = (typeof LOCALE_COVERAGE_STATUSES)[number];
+
 /** One Locale's coverage. Every demo Locale appears, including an empty one. */
 export type LocaleCoverage = {
   readonly locale: Locale;
   readonly expectedScenarios: number;
   readonly measuredScenarios: number;
   readonly gapRows: number;
-  readonly status: CoverageStatus;
-  /** Named reason when the Locale is a gap; null only when fully measured. */
+  readonly status: LocaleCoverageStatus;
+  /** Named reason when the Locale is a gap; null otherwise. */
   readonly gap: string | null;
+  /** The owner decision when the Locale is out of scope; null otherwise. */
+  readonly decision: ScopeDecision | null;
 };
 
 /**
@@ -229,6 +286,12 @@ export type Certificate = {
   readonly runId: string;
   /** The one target this certificate is true for. */
   readonly target: CertificateTarget;
+  /**
+   * The Locales this certificate is a claim about, and the owner decision that
+   * set them. Null only for a pre-v3 certificate, which declared no scope and
+   * is read as requiring every demo Locale.
+   */
+  readonly scope: CertificationScope | null;
   readonly code: {
     readonly fingerprint: CodeFingerprint;
     /** The app build/deploy the run served, e.g. a git SHA or image tag. */
@@ -265,6 +328,8 @@ export type CertificateBuildInput = {
   /** The verdict core's run result (ticket 07); every property appears in it. */
   readonly run: RunVerdict;
   readonly target: CertificateTarget;
+  /** The declared claim; required. A run outside it refuses, it never narrows. */
+  readonly scope: CertificationScope;
   readonly plan: CertificatePlan;
   readonly corpus: CertificateCorpus;
   readonly attempts: readonly CertificationAttempt[];
