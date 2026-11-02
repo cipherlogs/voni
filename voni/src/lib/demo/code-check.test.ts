@@ -175,9 +175,15 @@ test("Voni's demo rules are principles, not a phrase ban-list", async () => {
   );
   assert.ok(
     rules.includes(
-      "If they complain or show frustration, don't echo the complaint, don't ask them to explain it, and don't promise a remedy this demo cannot deliver; stay on their side and give the next real step in a few ordinary words.",
+      "If they complain or show frustration, don't echo the complaint, don't ask them to explain it, and don't promise a remedy this demo cannot deliver; stay on their side, answer in a few ordinary words, and stop: no pitch and no question.",
     ),
-    "complaints get the next real step, not an echo or a request to explain",
+    "a complaint is answered and stopped, never echoed or steered",
+  );
+  assert.ok(
+    rules.includes(
+      "A complaint is answered, never steered: no test offer, no invite, and no question about their business in that reply; the test waits until they are warm or ask.",
+    ),
+    "the live test waits for warmth or a request, never a complaint",
   );
   assert.ok(
     rules.includes("Talk like a person on a phone, not like a company: contractions, ordinary words, short sentences."),

@@ -97,3 +97,53 @@ test("off-track: parses, decides offline, and reads Jev's probability", async ()
   assert.equal((await jev(0.9)).decision, "off-track");
   assert.equal((await jev(0.2)).decision, "on-track");
 });
+
+test("off-track asks whether the caller is upset in the same Jev evaluation", async () => {
+  const { tryJevGateway, offTrackQuestions } = await import("./voice-judge");
+  assert.deepEqual(Object.keys(offTrackQuestions()).sort(), ["judge", "upset"]);
+
+  let calls = 0;
+  let sent: { questions?: Record<string, unknown> } = {};
+  const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    sent = JSON.parse(String(init?.body));
+    return new Response(
+      JSON.stringify({
+        answers: { judge: { probability: 0.9 }, upset: { probability: 0.9 } },
+      }),
+    );
+  }) as typeof fetch;
+
+  const verdict = await tryJevGateway(
+    "off-track",
+    {
+      goal: "Answer the visitor's actual words.",
+      agentLine: "Hi, I'm Voni.",
+      userText: "This is ridiculous. Your service is useless.",
+    },
+    { apiKey: "k", fetchImpl },
+  );
+  assert.equal(verdict.decision, "off-track");
+  assert.equal(verdict.upset, true, "the complaint is read as upset, not as trolling");
+  assert.equal(calls, 1, "the second answer rides the existing evaluation");
+  assert.deepEqual(Object.keys(sent.questions ?? {}).sort(), ["judge", "upset"]);
+});
+
+test("an off-track turn that is not a complaint carries upset false", async () => {
+  const { tryJevGateway } = await import("./voice-judge");
+  const verdict = await tryJevGateway(
+    "off-track",
+    { goal: "Talk about their business.", agentLine: "Sound good?", userText: "lol lol lol" },
+    {
+      apiKey: "k",
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            answers: { judge: { probability: 0.9 }, upset: { probability: 0.1 } },
+          }),
+        )) as typeof fetch,
+    },
+  );
+  assert.equal(verdict.decision, "off-track");
+  assert.equal(verdict.upset, false);
+});

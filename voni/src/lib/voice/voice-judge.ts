@@ -32,6 +32,12 @@ export type VoiceJudgeResult = {
   decision: JudgeDecision;
   probability: number;
   source: VoiceJudgeSource;
+  /**
+   * Jev's reading of an upset/complaining visitor, asked alongside the
+   * off-track question in the same evaluation. Never inferred by the offline
+   * heuristic: it cannot tell a complaint from an answer.
+   */
+  upset?: boolean;
 };
 
 export function parseVoiceJudgeRequest(body: unknown): {
@@ -112,6 +118,23 @@ export function judgeQuestions(kind: JudgeKind): {
   };
 }
 
+/**
+ * The off-track evaluation asks two questions in one gateway call: is the turn
+ * off-track, and is the caller upset or complaining? The second answer keeps a
+ * complaint out of the stakes ladder — an upset caller is answered, never
+ * steered toward the demo's goal.
+ */
+export function offTrackQuestions(): { judge: JevQuestion; upset: JevQuestion } {
+  return {
+    judge: judgeQuestions("off-track"),
+    upset: {
+      type: "boolean",
+      instructions:
+        "Is the visitor upset, angry, frustrated, or complaining about Voni or the service — as opposed to joking, trolling, or deliberately stalling? A complaint, irritation, or a demand to be fixed counts; a calm question, a genuine answer, or a polite refusal does not. Read their words in context, not their volume.",
+    },
+  };
+}
+
 /** How a Jev call reaches the gateway; every field falls back to process env. */
 export type JevDeps = {
   fetchImpl?: typeof fetch;
@@ -165,7 +188,9 @@ export async function tryJevGateway(
   state: Record<string, unknown>,
   deps: JevDeps = {},
 ): Promise<VoiceJudgeResult> {
-  const answer = await jevEvaluate({ kind, ...state }, judgeQuestions(kind), deps);
+  const questions = kind === "off-track" ? offTrackQuestions() : { judge: judgeQuestions(kind) };
+  const answers = await jevEvaluateQuestions({ kind, ...state }, questions, deps);
+  const answer = answers?.judge;
   const probability =
     typeof answer?.probability === "number" ? answer.probability : 0.5;
   if (kind === "reply") {
@@ -193,22 +218,28 @@ export async function tryJevGateway(
       decision: probability >= OFF_TRACK_THRESHOLD ? "off-track" : "on-track",
       probability,
       source: "jev",
+      upset: (answers?.upset?.probability ?? 0) >= UPSET_THRESHOLD,
     };
   return { decision: probability >= 0.5 ? "allow" : "deny", probability, source: "jev" };
 }
 
+/** Jev's reading of an upset visitor leans lenient: a complaint is not misbehaviour. */
+export const UPSET_THRESHOLD = 0.6;
+
 export type JevQuestion = ReturnType<typeof judgeQuestions>;
 
+export type JevAnswer = { probability?: number; pick?: string };
+
 /**
- * One Jev evaluation through the Vercel AI Gateway: a state blob and one
- * typed question. Throws on any failure (no key, timeout, HTTP error), so
- * every caller keeps its own fallback.
+ * One Jev evaluation through the Vercel AI Gateway: a state blob and one or
+ * more typed questions. Throws on any failure (no key, timeout, HTTP error),
+ * so every caller keeps its own fallback.
  */
-export async function jevEvaluate(
+export async function jevEvaluateQuestions(
   state: Record<string, unknown>,
-  question: JevQuestion,
+  questions: Record<string, JevQuestion>,
   deps: JevDeps = {},
-): Promise<{ probability?: number; pick?: string } | undefined> {
+): Promise<Record<string, JevAnswer> | undefined> {
   const gatewayUrl = deps.gatewayUrl ?? resolveJudgeGatewayUrl();
   const apiKey = deps.apiKey ?? resolveJudgeApiKey();
   if (!apiKey) throw new Error("voice judge gateway not configured");
@@ -225,16 +256,24 @@ export async function jevEvaluate(
       body: JSON.stringify({
         model: deps.model ?? resolveJudgeModel(),
         state: JSON.stringify(state).slice(0, 4000),
-        questions: { judge: question },
+        questions,
       }),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`gateway ${res.status}`);
-    const data = (await res.json()) as {
-      answers?: { judge?: { probability?: number; pick?: string } };
-    };
-    return data?.answers?.judge;
+    const data = (await res.json()) as { answers?: Record<string, JevAnswer> };
+    return data?.answers;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** One Jev evaluation, one question. The multi-question form is above. */
+export async function jevEvaluate(
+  state: Record<string, unknown>,
+  question: JevQuestion,
+  deps: JevDeps = {},
+): Promise<JevAnswer | undefined> {
+  const answers = await jevEvaluateQuestions(state, { judge: question }, deps);
+  return answers?.judge;
 }

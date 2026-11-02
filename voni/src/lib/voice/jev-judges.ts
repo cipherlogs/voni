@@ -245,6 +245,14 @@ export type JudgeDecision =
   | "off-track"
   | "on-track";
 
+export type JudgeVerdict = {
+  decision: JudgeDecision;
+  probability: number;
+  source: JudgeSource;
+  /** The judge read this turn as upset/complaining; see `offTrackQuestions`. */
+  upset?: boolean;
+};
+
 function fallbackDecision(kind: JudgeKind, state: unknown): JudgeDecision {
   if (kind === "barge-in")
     return shouldYieldToBargeIn(state as BargeInState).yield ? "yield" : "keep-speaking";
@@ -266,7 +274,7 @@ export async function requestVoiceJudge(
     /** The signed-out demo authenticates with its call token here. */
     headers?: Record<string, string>;
   } = {},
-): Promise<{ decision: JudgeDecision; probability: number; source: JudgeSource }> {
+): Promise<JudgeVerdict> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? JUDGE_TIMEOUT_MS;
   const controller = new AbortController();
@@ -281,12 +289,17 @@ export async function requestVoiceJudge(
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`judge route ${res.status}`);
-    const data = (await res.json()) as { decision: JudgeDecision; probability: number };
+    const data = (await res.json()) as {
+      decision: JudgeDecision;
+      probability: number;
+      upset?: boolean;
+    };
     if (!data || typeof data.decision !== "string") throw new Error("bad judge payload");
     return {
       decision: data.decision,
       probability: typeof data.probability === "number" ? data.probability : 0.5,
       source: "jev",
+      upset: data.upset === true,
     };
   } catch {
     return { decision: fallbackDecision(kind, state), probability: 0.5, source: "fallback" };

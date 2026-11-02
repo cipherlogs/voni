@@ -1343,15 +1343,15 @@ export function VoiceCall({
                   },
                 ).then((verdict) => {
                   if (sessionRef.current !== cascade || closingRef.current) return;
-                  const rung = ladderRef.current?.onVerdict(
-                    verdict.decision === "off-track",
-                  );
+                  const rung = ladderRef.current?.onVerdict({
+                    offTrack: verdict.decision === "off-track",
+                    upset: verdict.upset,
+                  });
                   if (!rung) return;
                   console.debug("[voice-call] off-track", rung, verdict.source);
-                  const goal = beatGoal(emailTestRef.current);
-                  if (rung === "end") closeCall(rungInstructions(rung, goal));
+                  if (rung === "end") closeCall(rungInstructions(rung));
                   // No key: every rung is said, in order.
-                  else speak(rungInstructions(rung, goal));
+                  else speak(rungInstructions(rung));
                 });
               }
             }
