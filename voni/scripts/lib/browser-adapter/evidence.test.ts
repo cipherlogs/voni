@@ -7,7 +7,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -51,12 +51,12 @@ test("the assembled bundle carries the delivered WAV, marks, trace and end docum
       callDir: join(root, "call"),
     });
 
-    assert.equal(assembled.bundle.ledger.end.callId, BROWSER_CALL_ID);
-    assert.equal(assembled.bundle.ledger.marks.callId, BROWSER_CALL_ID);
-    assert.equal(assembled.bundle.wav.channels, 1);
-    assert.equal(assembled.bundle.wav.bitsPerSample, 16);
-    assert.ok(assembled.bundle.wav.durationMs > 0);
-    assert.equal(assembled.bundle.browser.marks.callId, BROWSER_CALL_ID);
+    assert.equal(assembled.bundle.ledger.end?.callId, BROWSER_CALL_ID);
+    assert.equal(assembled.bundle.ledger.marks?.callId, BROWSER_CALL_ID);
+    assert.equal(assembled.bundle.wav?.channels, 1);
+    assert.equal(assembled.bundle.wav?.bitsPerSample, 16);
+    assert.ok((assembled.bundle.wav?.durationMs ?? 0) > 0);
+    assert.equal(assembled.bundle.browser.marks?.callId, BROWSER_CALL_ID);
     assert.equal(assembled.bundle.browser.syntheticMic.method, "getUserMedia");
     assert.equal(record.sameCallId, true);
     assert.equal(record.files.marks, join(root, "call", "call-marks.json"));
@@ -334,6 +334,301 @@ test("a trace row bound to another call refuses", async () => {
         callDir: join(root, "call"),
       }),
       /different call id/,
+    );
+  } finally {
+    removeTree(root);
+  }
+});
+
+// ── A denied microphone is a named refusal, not a missing capture ───────────
+
+async function micDeniedScenarioAt(root: string): Promise<LoadedScenario> {
+  writeCorpus(join(root, "corpus"), [
+    {
+      name: "resilience-mic-denied",
+      expectedProperties: ["R5"],
+      edge: [{ kind: "mic-denied", atMs: 0 }],
+    },
+  ]);
+  const corpus = await loadCorpus({
+    dir: join(root, "corpus"),
+    knownProperties: ["R5"],
+  });
+  return corpus.scenarios[0]!;
+}
+
+const NAMED_DENIAL = {
+  conditions: [
+    {
+      kind: "mic-denied",
+      atMs: 0,
+      applied: true,
+      observed: "the denial named the microphone state (ended)",
+    },
+  ],
+  hold: null,
+  micDenied: {
+    namedState: "Call didn't connect",
+    errorText: "Voni needs your microphone for the call.",
+    socketOpenAfterMs: 8_000,
+    openSockets: 0,
+    teardownObserved: true,
+  },
+  deviceSwitch: null,
+  drain: null,
+} as const;
+
+test("a mic-denied call assembles its refusal evidence with no invented capture", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await micDeniedScenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const marks = marksArtifact(BROWSER_CALL_ID, "");
+    const call = fakeBrowserCall({
+      scenario,
+      eventsDir,
+      capturesDir,
+      runDir: root,
+      omitCapture: true,
+      edge: NAMED_DENIAL,
+      marksOverride: {
+        marks: marks.marks.filter((mark) => mark.name !== "delivered_capture"),
+      },
+    });
+    const { assembled, record } = await assembleBrowserEvidence({
+      call,
+      scenario,
+      target: "local",
+      eventsDir,
+      callDir: join(root, "call"),
+    });
+
+    assert.equal(assembled.bundle.wav, null, "a denied call delivered no WAV");
+    assert.equal(assembled.bundle.browser.capture, null);
+    assert.equal(record.files.deliveredWav, null);
+    assert.equal(
+      existsSync(join(root, "call", "delivered.wav")),
+      false,
+      "the adapter never invents a delivered capture",
+    );
+    assert.equal(
+      assembled.bundle.browser.edge?.micDenied?.namedState,
+      "Call didn't connect",
+      "the harness's named refusal reaches R5",
+    );
+    assert.equal(assembled.bundle.ledger.marks?.callId, BROWSER_CALL_ID);
+    assert.ok(
+      assembled.gaps.some((gap) => /no delivered capture/.test(gap)),
+      "the absent audio is named, not hidden",
+    );
+    assert.equal(record.sameCallId, true);
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a mic-denied call keeps the trace and end document it did write", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await micDeniedScenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = fakeBrowserCall({
+      scenario,
+      eventsDir,
+      capturesDir,
+      runDir: root,
+      omitCapture: true,
+      edge: NAMED_DENIAL,
+    });
+    const { assembled } = await assembleBrowserEvidence({
+      call,
+      scenario,
+      target: "local",
+      eventsDir,
+      callDir: join(root, "call"),
+    });
+    assert.ok(assembled.bundle.trace.rows.length > 0);
+    assert.equal(assembled.bundle.ledger.end?.callId, BROWSER_CALL_ID);
+    assert.equal(assembled.bundle.wav, null);
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a mic-denied call with no trace or end document names both, and never invents them", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await micDeniedScenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = fakeBrowserCall({
+      scenario,
+      eventsDir,
+      capturesDir,
+      runDir: root,
+      omitCapture: true,
+      omitEnd: true,
+      omitTrace: true,
+      edge: NAMED_DENIAL,
+    });
+    const { assembled } = await assembleBrowserEvidence({
+      call,
+      scenario,
+      target: "local",
+      eventsDir,
+      callDir: join(root, "call"),
+    });
+    assert.deepEqual(assembled.bundle.trace.rows, []);
+    assert.equal(assembled.bundle.ledger.end, null);
+    assert.equal(assembled.bundle.wav, null);
+    assert.ok(assembled.gaps.some((gap) => /no trace/.test(gap)));
+    assert.ok(assembled.gaps.some((gap) => /no end document/.test(gap)));
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a mic-denied call with no named refusal is refused by name, never passed on absence", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await micDeniedScenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = fakeBrowserCall({
+      scenario,
+      eventsDir,
+      capturesDir,
+      runDir: root,
+      omitCapture: true,
+      edge: {
+        ...NAMED_DENIAL,
+        micDenied: {
+          ...NAMED_DENIAL.micDenied,
+          namedState: "",
+          errorText: "NotAllowedError",
+        },
+      },
+    });
+    await assert.rejects(
+      assembleBrowserEvidence({
+        call,
+        scenario,
+        target: "local",
+        eventsDir,
+        callDir: join(root, "call"),
+      }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "mic-refusal-missing");
+        assert.match((error as Error).message, /not named|named the microphone/i);
+        return true;
+      },
+    );
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a mic-denied call with no denial observation at all is refused by name", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await micDeniedScenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = fakeBrowserCall({
+      scenario,
+      eventsDir,
+      capturesDir,
+      runDir: root,
+      omitCapture: true,
+      edge: null,
+    });
+    await assert.rejects(
+      assembleBrowserEvidence({
+        call,
+        scenario,
+        target: "local",
+        eventsDir,
+        callDir: join(root, "call"),
+      }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "mic-refusal-missing");
+        assert.match((error as Error).message, /no mic-denial observation|denied microphone/i);
+        return true;
+      },
+    );
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a mic-denied call with a zombie socket and no teardown is refused by name", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await micDeniedScenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = fakeBrowserCall({
+      scenario,
+      eventsDir,
+      capturesDir,
+      runDir: root,
+      omitCapture: true,
+      edge: {
+        ...NAMED_DENIAL,
+        micDenied: {
+          ...NAMED_DENIAL.micDenied,
+          openSockets: 1,
+          teardownObserved: false,
+        },
+      },
+    });
+    await assert.rejects(
+      assembleBrowserEvidence({
+        call,
+        scenario,
+        target: "local",
+        eventsDir,
+        callDir: join(root, "call"),
+      }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "mic-refusal-missing");
+        assert.match((error as Error).message, /socket|teardown/i);
+        return true;
+      },
+    );
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("every other scenario keeps the hard capture-missing refusal", async () => {
+  const root = tempRoot();
+  try {
+    const scenario = await scenarioAt(root);
+    const eventsDir = join(root, "events");
+    const capturesDir = join(root, "captures");
+    const call = fakeBrowserCall({
+      scenario,
+      eventsDir,
+      capturesDir,
+      runDir: root,
+      omitCapture: true,
+      edge: NAMED_DENIAL,
+    });
+    await assert.rejects(
+      assembleBrowserEvidence({
+        call,
+        scenario,
+        target: "local",
+        eventsDir,
+        callDir: join(root, "call"),
+      }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "capture-missing");
+        return true;
+      },
     );
   } finally {
     removeTree(root);

@@ -315,6 +315,45 @@ const R4: PropertyEvaluator = {
 
 // ── R5: microphone denial ───────────────────────────────────────────────────
 
+/** What R5 reads from a denied microphone, and the one rule it judges. */
+export type MicDenialJudgement = {
+  readonly named: boolean;
+  readonly namedState: string;
+  readonly errorText: string;
+  readonly openSockets: number;
+  readonly teardown: boolean;
+  readonly passed: boolean;
+  readonly detail: string;
+};
+
+/**
+ * The denial rule, in one place: a denied call passes only when the app named
+ * the refusal and left no call socket open (or was observed to tear down). The
+ * adapter and R5 read this same function, so a missing delivered capture can
+ * never be mistaken for a pass: the observation must exist and be named.
+ */
+export function judgeMicDenial(value: unknown): MicDenialJudgement | null {
+  const denial = rowOf(value);
+  if (denial === null) return null;
+  const namedState = text(denial.namedState);
+  const errorText = text(denial.errorText);
+  const named = namedState !== "" || /microphone|allow mic|mic access/i.test(errorText);
+  const openSockets = number(denial.openSockets) ?? 0;
+  const teardown = denial.teardownObserved === true;
+  const passed = named && (openSockets === 0 || teardown);
+  return {
+    named,
+    namedState,
+    errorText,
+    openSockets,
+    teardown,
+    passed,
+    detail:
+      `named ${named} (${namedState || "no status line"}); ` +
+      `${openSockets} open socket(s); teardown ${teardown}`,
+  };
+}
+
 const R5: PropertyEvaluator = {
   propertyId: "R5",
   bars: [],
@@ -324,17 +363,14 @@ const R5: PropertyEvaluator = {
     if (denial === null) {
       return unmeasured("the call recorded no microphone denial; R5 measures the refused mic");
     }
-    const named =
-      text(denial.namedState) !== "" ||
-      /microphone|allow mic|mic access/i.test(text(denial.errorText));
-    const openSockets = number(denial.openSockets) ?? 0;
-    const teardown = denial.teardownObserved === true;
-    const passed = named && (openSockets === 0 || teardown);
+    const judged = judgeMicDenial(denial);
+    if (judged === null) {
+      return unmeasured("the call recorded no microphone denial; R5 measures the refused mic");
+    }
     return categorical(
       context,
-      passed,
-      `named ${named} (${text(denial.namedState) || "no status line"}); ` +
-        `${openSockets} open socket(s); teardown ${teardown}`,
+      judged.passed,
+      judged.detail,
       ["browser:micDenied", "marks:start_failed"],
     );
   },

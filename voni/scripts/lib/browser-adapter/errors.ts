@@ -5,7 +5,9 @@
  * fake pipeline, a test build, a missing key, a missing corpus, scenario,
  * vendor build, soundscape, app, trace, end document, delivered capture or
  * marks artifact exits 2 and names the item. A browser call the harness cannot
- * complete is a named refusal too, never a measured pass.
+ * complete is a named refusal too, never a measured pass. A denied microphone
+ * is the one call expected to deliver no WAV: it is refused only when the
+ * named refusal R5 reads is absent.
  *
  * Spec: `.scratch/demo-verification/spec.md`, "Commands and exit codes" and
  * "Unexpected skips fail".
@@ -37,6 +39,7 @@ export const BROWSER_ERROR_CODES = [
   "capture-missing",
   "capture-incomplete",
   "capture-malformed",
+  "mic-refusal-missing",
   "call-id-mismatch",
   "cost-missing",
   "call-refused",

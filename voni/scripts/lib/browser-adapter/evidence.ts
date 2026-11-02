@@ -31,6 +31,7 @@ import {
 } from "@/lib/demo/verification/cards";
 import type { LoadedScenario } from "@/lib/demo/verification/scenarios";
 import type { RunVerdict } from "@/lib/demo/verification/verdict";
+import { judgeMicDenial } from "@/lib/demo/verification/verdict/evaluators/resilience.evaluators";
 import type { ToolLogRow } from "@/lib/demo/tool-log";
 import type { InboxDelivery } from "@/lib/demo/verification/tools/inbox";
 import {
@@ -216,13 +217,21 @@ type BrowserTranscriptEntry = {
  */
 function browserTranscript(
   captions: readonly { readonly role: "caller" | "agent"; readonly text: string }[] | undefined,
-  marks: CallMarksArtifact,
+  marks: CallMarksArtifact | null,
 ): { transcript: BrowserTranscriptEntry[] | null; gap: string | null } {
   const missing =
     "the page rendered no visitor transcript; the spoken words were not captured, so a " +
     "bridge, a continuation or a spoken leak cannot be judged on this adapter";
   if (captions === undefined || captions.length === 0) {
     return { transcript: null, gap: missing };
+  }
+  if (marks === null) {
+    return {
+      transcript: null,
+      gap:
+        "the client posted no marks, so the rendered transcript has no call clock to join " +
+        "and is withheld rather than guessed",
+    };
   }
   const turnMarks = marks.marks.filter((mark) => mark.name === "turn");
   if (turnMarks.length !== captions.length) {
@@ -317,14 +326,51 @@ export async function assembleBrowserEvidence(input: {
   const marksSource = input.call.marksPath;
   const captureSource = input.call.capturePath;
 
-  if (marksSource === null) {
+  // A denied microphone is the one call expected to deliver no audio: the
+  // visitor never acquired a microphone, so the playout tap wrote no WAV and
+  // the service may have written no trace or end. It is still judged: R5's
+  // named refusal must be present, and its absence is a named refusal here.
+  // Every other scenario keeps the hard capture refusal below.
+  const micDeniedExpected = (input.scenario.edge ?? []).some(
+    (condition) => condition.kind === "mic-denied",
+  );
+  const deniedCall = micDeniedExpected && captureSource === null;
+
+  if (deniedCall) {
+    const denial = judgeMicDenial(input.call.edge?.micDenied ?? null);
+    if (denial === null) {
+      throw new BrowserAdapterError(
+        "mic-refusal-missing",
+        `scenario "${input.scenario.name}" declares a denied microphone, but the harness ` +
+          "recorded no mic-denial observation; a denied call is judged by R5's named refusal, " +
+          "never by a missing capture",
+      );
+    }
+    if (!denial.named) {
+      throw new BrowserAdapterError(
+        "mic-refusal-missing",
+        "the microphone denial was not named: status " +
+          `${JSON.stringify(denial.namedState)} and error ${JSON.stringify(denial.errorText)}; ` +
+          "R5 needs the app to refuse by name, and an absent capture is never a pass",
+      );
+    }
+    if (denial.openSockets > 0 && !denial.teardown) {
+      throw new BrowserAdapterError(
+        "mic-refusal-missing",
+        `the microphone denial left ${denial.openSockets} call socket(s) open and no teardown ` +
+          "was observed; R5 fails a zombie call and the adapter refuses it by name",
+      );
+    }
+  }
+
+  if (marksSource === null && !deniedCall) {
     throw new BrowserAdapterError(
       "marks-missing",
       `the browser harness recorded no marks artifact for call "${callId}"; the marks ` +
         "are posted by the app on teardown and a certifying run has no evidence without them",
     );
   }
-  if (captureSource === null) {
+  if (captureSource === null && !deniedCall) {
     throw new BrowserAdapterError(
       "capture-missing",
       "the browser harness recorded no delivered capture for this call; the worklet's " +
@@ -332,20 +378,40 @@ export async function assembleBrowserEvidence(input: {
     );
   }
 
-  const marks = readMarks(marksSource, callId);
+  const gaps: string[] = [];
+  const marks = marksSource === null ? null : readMarks(marksSource, callId);
+  if (marksSource === null) {
+    gaps.push(
+      `the browser harness recorded no marks artifact for call "${callId}"; the denied call ` +
+        "has no client clock, and no mark is invented to replace it",
+    );
+  }
 
-  let traceText: string;
-  try {
-    traceText = await readFile(traceSource, "utf8");
-  } catch (error) {
+  let traceText: string | null = null;
+  if (existsSync(traceSource)) {
+    try {
+      traceText = await readFile(traceSource, "utf8");
+    } catch (error) {
+      throw new BrowserAdapterError(
+        "trace-missing",
+        `no readable trace at ${traceSource}; the service writes one JSONL per call and the ` +
+          `run has no evidence without it: ${(error as Error).message}`,
+      );
+    }
+  } else if (deniedCall) {
+    gaps.push(
+      `no trace at ${traceSource}; a denied microphone may never reach the service, so the ` +
+        "trace is genuinely absent and is not invented",
+    );
+  } else {
     throw new BrowserAdapterError(
       "trace-missing",
       `no trace at ${traceSource}; the service writes one JSONL per call and the run ` +
-        `has no evidence without it: ${(error as Error).message}`,
+        "has no evidence without it",
     );
   }
-  const rows = parseTrace(traceText, traceSource, browserError);
-  if (rows.length === 0) {
+  const rows = traceText === null ? [] : parseTrace(traceText, traceSource, browserError);
+  if (traceText !== null && rows.length === 0) {
     throw new BrowserAdapterError(
       "trace-missing",
       `the trace at ${traceSource} has no rows; a call with no trace is not evidence`,
@@ -360,79 +426,108 @@ export async function assembleBrowserEvidence(input: {
     );
   }
 
-  if (!existsSync(endSource)) {
+  let end: Record<string, unknown> | null = null;
+  let endGap: string | null = null;
+  if (existsSync(endSource)) {
+    end = readJsonFile(endSource, "end document");
+    if (end.type !== "end") {
+      throw new BrowserAdapterError(
+        "trace-malformed",
+        `the end document at ${endSource} has type ${JSON.stringify(end.type)}, not "end"`,
+      );
+    }
+    if (end.callId !== callId) {
+      throw new BrowserAdapterError(
+        "call-id-mismatch",
+        `the end document at ${endSource} names call ${JSON.stringify(end.callId)}, not "${callId}"`,
+      );
+    }
+  } else if (deniedCall) {
+    endGap =
+      `no end document at ${endSource}; a denied microphone never reached the service, so ` +
+      "the end document is genuinely absent and is not invented";
+    gaps.push(endGap);
+  } else {
     throw new BrowserAdapterError(
       "end-missing",
       `no end document at ${endSource}; the browser adapter certifies from the persisted ` +
         "end message, never from a trace row alone",
     );
   }
-  const end = readJsonFile(endSource, "end document");
-  if (end.type !== "end") {
-    throw new BrowserAdapterError(
-      "trace-malformed",
-      `the end document at ${endSource} has type ${JSON.stringify(end.type)}, not "end"`,
-    );
-  }
-  if (end.callId !== callId) {
-    throw new BrowserAdapterError(
-      "call-id-mismatch",
-      `the end document at ${endSource} names call ${JSON.stringify(end.callId)}, not "${callId}"`,
-    );
-  }
 
-  const captureName = basename(captureSource);
-  if (!captureName.includes(callId)) {
-    throw new BrowserAdapterError(
-      "call-id-mismatch",
-      `the delivered capture "${captureName}" does not name call "${callId}"; the WAV, ` +
-        "marks, trace and end document must cite one call id",
+  let wav: WavFacts | null = null;
+  let captureName: string | null = null;
+  if (captureSource === null) {
+    gaps.push(
+      "the browser harness recorded no delivered capture for this call; a denied microphone " +
+        "never delivered agent audio, and the adapter never invents a WAV",
     );
-  }
-  if (!existsSync(captureSource)) {
-    throw new BrowserAdapterError(
-      "capture-missing",
-      `no delivered capture at ${captureSource}; the browser adapter certifies what the ` +
-        "worklet rendered and a missing WAV is not a short capture",
-    );
-  }
-  const wav = readWavFacts(captureSource);
-  const capture = captureMark(marks);
-  if (capture === null) {
-    throw new BrowserAdapterError(
-      "capture-incomplete",
-      `the marks at ${marksSource} carry no delivered_capture mark; the capture's ` +
-        "outcome is unrecorded, so the WAV cannot be trusted as complete",
-    );
-  }
-  if (capture.detail?.complete !== true) {
-    throw new BrowserAdapterError(
-      "capture-incomplete",
-      `the delivered_capture mark reports complete=${String(capture.detail?.complete)}` +
-        `${typeof capture.detail?.reason === "string" ? ` (${capture.detail.reason})` : ""}; ` +
-        "a truncated capture is not evidence",
-    );
-  }
-  if (capture.detail?.name !== captureName) {
-    throw new BrowserAdapterError(
-      "call-id-mismatch",
-      `the delivered_capture mark names "${String(capture.detail?.name)}" but the WAV on ` +
-        `disk is "${captureName}"`,
-    );
+  } else {
+    captureName = basename(captureSource);
+    if (!captureName.includes(callId)) {
+      throw new BrowserAdapterError(
+        "call-id-mismatch",
+        `the delivered capture "${captureName}" does not name call "${callId}"; the WAV, ` +
+          "marks, trace and end document must cite one call id",
+      );
+    }
+    if (!existsSync(captureSource)) {
+      throw new BrowserAdapterError(
+        "capture-missing",
+        `no delivered capture at ${captureSource}; the browser adapter certifies what the ` +
+          "worklet rendered and a missing WAV is not a short capture",
+      );
+    }
+    wav = readWavFacts(captureSource);
+    if (marks === null) {
+      throw new BrowserAdapterError(
+        "marks-missing",
+        `the delivered capture at ${captureSource} has no marks artifact to record its ` +
+          `completion; call "${callId}" cannot be certified from an unpaired WAV`,
+      );
+    }
+    const capture = captureMark(marks);
+    if (capture === null) {
+      throw new BrowserAdapterError(
+        "capture-incomplete",
+        `the marks at ${String(marksSource)} carry no delivered_capture mark; the capture's ` +
+          "outcome is unrecorded, so the WAV cannot be trusted as complete",
+      );
+    }
+    if (capture.detail?.complete !== true) {
+      throw new BrowserAdapterError(
+        "capture-incomplete",
+        `the delivered_capture mark reports complete=${String(capture.detail?.complete)}` +
+          `${typeof capture.detail?.reason === "string" ? ` (${capture.detail.reason})` : ""}; ` +
+          "a truncated capture is not evidence",
+      );
+    }
+    if (capture.detail?.name !== captureName) {
+      throw new BrowserAdapterError(
+        "call-id-mismatch",
+        `the delivered_capture mark names "${String(capture.detail?.name)}" but the WAV on ` +
+          `disk is "${captureName}"`,
+      );
+    }
   }
 
   await mkdir(input.callDir, { recursive: true });
-  const traceFile = join(input.callDir, "trace.jsonl");
-  const endFile = join(input.callDir, "end.json");
-  const wavFile = join(input.callDir, "delivered.wav");
-  const marksFile = join(input.callDir, "call-marks.json");
-  await copyFile(traceSource, traceFile);
-  await copyFile(endSource, endFile);
-  await copyFile(captureSource, wavFile);
-  await copyFile(marksSource, marksFile);
+  const traceFile = traceText === null ? null : join(input.callDir, "trace.jsonl");
+  const endFile = end === null ? null : join(input.callDir, "end.json");
+  const wavFile = wav === null ? null : join(input.callDir, "delivered.wav");
+  const marksFile = marksSource === null ? null : join(input.callDir, "call-marks.json");
+  if (traceFile !== null) await copyFile(traceSource, traceFile);
+  if (endFile !== null) await copyFile(endSource, endFile);
+  if (wavFile !== null && captureSource !== null) await copyFile(captureSource, wavFile);
+  if (marksFile !== null && marksSource !== null) await copyFile(marksSource, marksFile);
 
-  const gaps: string[] = [];
-  const priced = pricedRow(rows, gaps);
+  const priced = rows.length === 0 ? null : pricedRow(rows, gaps);
+  if (rows.length === 0) {
+    gaps.push(
+      "the call carries no cost.priced row; a denied call with no trace has no priced cost " +
+        "and the runner never computes one",
+    );
+  }
   const turns = turnRows(rows);
   const speech = browserTranscript(input.call.captions, marks);
   if (speech.gap !== null) gaps.push(speech.gap);
@@ -442,11 +537,14 @@ export async function assembleBrowserEvidence(input: {
     ledger: {
       file: endFile,
       end,
-      endGap: null,
+      endGap,
       turns,
       turnIds: turnIds(turns),
       marks,
-      marksGap: "",
+      marksGap:
+        marksSource === null
+          ? "the browser harness recorded no marks artifact for this call"
+          : "",
     },
     trace: {
       file: traceFile,
@@ -455,28 +553,34 @@ export async function assembleBrowserEvidence(input: {
       transcript: speech.transcript,
       transcriptGap: speech.gap,
     },
-    wav: {
-      file: wavFile,
-      sampleRate: wav.sampleRate,
-      channels: 1,
-      bitsPerSample: 16,
-      frames: wav.frames,
-      durationMs: wav.durationMs,
-      bytes: wav.bytes,
-    },
+    wav:
+      wav === null
+        ? null
+        : {
+            file: wavFile as string,
+            sampleRate: wav.sampleRate,
+            channels: 1,
+            bitsPerSample: 16,
+            frames: wav.frames,
+            durationMs: wav.durationMs,
+            bytes: wav.bytes,
+          },
     tool: tools,
     ...(priced === null ? {} : { cost: priced }),
     browser: {
       file: marksFile,
       marks,
       ...(input.call.captions === undefined ? {} : { captions: input.call.captions }),
-      capture: {
-        file: wavFile,
-        name: captureName,
-        bytes: wav.bytes,
-        sampleRate: wav.sampleRate,
-        seconds: wav.durationMs / 1000,
-      },
+      capture:
+        wav === null || captureName === null
+          ? null
+          : {
+              file: wavFile as string,
+              name: captureName,
+              bytes: wav.bytes,
+              sampleRate: wav.sampleRate,
+              seconds: wav.durationMs / 1000,
+            },
       syntheticMic: input.call.syntheticMic,
       faultsApplied: input.call.faultsApplied,
       edge: input.call.edge ?? null,
@@ -559,6 +663,23 @@ export function cardInputs(input: {
 } {
   const gaps: BrowserCardGap[] = [];
   const wav = input.bundle.wav;
+  if (wav === null) {
+    // A denied microphone has no delivered audio to cite. A failed property
+    // still gets a named gap, never a card with an invented excerpt.
+    return {
+      call: null,
+      attributions: [],
+      gaps: input.verdict.properties
+        .filter((property) => property.status === "FAIL")
+        .map((property) => ({
+          propertyId: property.propertyId,
+          code: "missing-audio",
+          detail:
+            `${property.propertyId} failed on a call with no delivered audio (a denied ` +
+            "microphone); the card needs an excerpt the evidence does not carry",
+        })),
+    };
+  }
   const turnEvidence: TurnEvidence[] = input.bundle.ledger.turnIds.map((turn) => {
     const row = input.bundle.ledger.turns.find((entry) => entry.turn === turn) ?? {};
     const atMs = typeof row.atMs === "number" && Number.isFinite(row.atMs) ? row.atMs : 0;
@@ -571,7 +692,9 @@ export function cardInputs(input: {
         endMs <= startMs
           ? []
           : [{ media: "delivered-wav", file: wav.file, startMs, endMs }],
-      evidenceFiles: [input.bundle.trace.file, input.bundle.ledger.file],
+      evidenceFiles: [input.bundle.trace.file, input.bundle.ledger.file].filter(
+        (file): file is string => file !== null,
+      ),
     };
   });
 
@@ -592,7 +715,9 @@ export function cardInputs(input: {
     turns: turnEvidence,
     deliveredWav: wav.file,
     excerpts: callLevelExcerpts,
-    evidenceFiles: [input.bundle.trace.file, input.bundle.ledger.file, wav.file],
+    evidenceFiles: [input.bundle.trace.file, input.bundle.ledger.file, wav.file].filter(
+      (file): file is string => file !== null,
+    ),
   };
 
   const attributions: {

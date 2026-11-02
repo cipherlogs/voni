@@ -23,6 +23,7 @@ import {
   FAKE_KEYS,
   fakeBrowserCall,
   fakeStackProbe,
+  marksArtifact,
   probeContract,
   probeEvaluators,
   probeRunInput,
@@ -30,7 +31,10 @@ import {
   writeCorpus,
   type ScenarioSpec,
 } from "./fixtures";
-import type { RunVerdict } from "@/lib/demo/verification/verdict";
+import type { BrowserCallResult } from "./types";
+import type { Contract } from "@/lib/demo/verification/contract";
+import resilienceModule from "@/lib/demo/verification/verdict/evaluators/resilience.evaluators";
+import type { PropertyEvaluator, RunVerdict } from "@/lib/demo/verification/verdict";
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "dv17-runner-"));
@@ -367,6 +371,138 @@ test("a missing delivered capture refuses to certify, by name", async () => {
     const refusal = runJson(result).refusal as { code: string; message: string };
     assert.equal(refusal.code, "capture-missing");
     assert.match(refusal.message, /delivered capture/);
+  } finally {
+    removeTree(root);
+  }
+});
+
+const R5_CONTRACT: Contract = {
+  families: [{ id: "resilience", title: "Resilience", propertyCount: 1 }],
+  properties: [
+    {
+      id: "R5",
+      family: "resilience",
+      statement: "Mic denied yields a named error state, no zombie call",
+      bar: { text: "pass", numeric: false },
+      evidence: "browser",
+      kind: "behaviour",
+      repetitions: 1,
+      thresholds: [],
+    },
+  ],
+};
+
+const R5_EVALUATORS: readonly PropertyEvaluator[] = [
+  ...resilienceModule.evaluators.filter((evaluator) => evaluator.propertyId === "R5"),
+];
+
+const NAMED_DENIAL: NonNullable<BrowserCallResult["edge"]> = {
+  conditions: [
+    {
+      kind: "mic-denied",
+      atMs: 0,
+      applied: true,
+      observed: "the denial named the microphone state (ended)",
+    },
+  ],
+  hold: null,
+  micDenied: {
+    namedState: "Call didn't connect",
+    errorText: "Voni needs your microphone for the call.",
+    socketOpenAfterMs: 8_000,
+    openSockets: 0,
+    teardownObserved: true,
+  },
+  deviceSwitch: null,
+  drain: null,
+};
+
+test("a mic-denied call certifies R5 from the named refusal, with no delivered capture", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), [
+      {
+        name: "resilience-mic-denied",
+        expectedProperties: ["R5"],
+        edge: [{ kind: "mic-denied", atMs: 0 }],
+      },
+    ]);
+    const result = await runBrowserCertification({
+      ...input(root, {
+        scenarioName: "resilience-mic-denied",
+        call: async (callInput) =>
+          fakeBrowserCall({
+            scenario: callInput.scenario,
+            eventsDir: join(root, "events"),
+            capturesDir: join(root, "captures"),
+            runDir: callInput.runDir,
+            omitCapture: true,
+            edge: NAMED_DENIAL,
+            marksOverride: {
+              marks: marksArtifact(BROWSER_CALL_ID, "").marks.filter(
+                (mark) => mark.name !== "delivered_capture",
+              ),
+            },
+          }),
+      }),
+      contract: R5_CONTRACT,
+      evaluators: R5_EVALUATORS,
+    });
+
+    assert.equal(result.refusal, null, "a denied mic is not a refused call");
+    assert.equal(result.verdict?.properties[0]?.propertyId, "R5");
+    assert.equal(
+      result.verdict?.properties[0]?.status,
+      "PASS",
+      "R5 is judged from the harness's named refusal",
+    );
+    assert.equal(result.call?.files.deliveredWav, null);
+    assert.equal(
+      existsSync(join(result.runDir, "calls", BROWSER_CALL_ID, "delivered.wav")),
+      false,
+      "no capture was invented",
+    );
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a mic-denied call with no named refusal stays a named refusal, never a pass", async () => {
+  const root = tempRoot();
+  try {
+    writeCorpus(corpus(root), [
+      {
+        name: "resilience-mic-denied",
+        expectedProperties: ["R5"],
+        edge: [{ kind: "mic-denied", atMs: 0 }],
+      },
+    ]);
+    const result = await runBrowserCertification({
+      ...input(root, {
+        scenarioName: "resilience-mic-denied",
+        call: async (callInput) =>
+          fakeBrowserCall({
+            scenario: callInput.scenario,
+            eventsDir: join(root, "events"),
+            capturesDir: join(root, "captures"),
+            runDir: callInput.runDir,
+            omitCapture: true,
+            edge: {
+              ...NAMED_DENIAL,
+              micDenied: {
+                ...NAMED_DENIAL.micDenied!,
+                namedState: "",
+                errorText: "NotAllowedError",
+              },
+            },
+          }),
+      }),
+      contract: R5_CONTRACT,
+      evaluators: R5_EVALUATORS,
+    });
+
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.refusal?.code, "mic-refusal-missing");
   } finally {
     removeTree(root);
   }
