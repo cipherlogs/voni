@@ -112,7 +112,7 @@ test("demo notes reach the context frame and never become a caption", async () =
   const notes = [
     MUTE_CHECK_IN_INSTRUCTIONS,
     TIME_UP_INSTRUCTIONS,
-    rungInstructions("nudge", "the live email test"),
+    rungInstructions("nudge"),
   ];
   const socket = makeSocket();
   const captions: string[] = [];

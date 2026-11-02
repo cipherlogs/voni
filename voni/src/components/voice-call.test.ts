@@ -241,7 +241,7 @@ test("every demo note is hidden context on the cascade, never a spoken managed l
     "checkEmailInstructions(result)",
     "emailArrivedInstructions(result, { fromLastCall: !test.invited })",
     "body.data.instructions",
-    "rungInstructions(rung, goal)",
+    "rungInstructions(rung)",
     "inviteNowInstructions(tag)",
   ]) {
     assert.ok(
@@ -268,10 +268,11 @@ test("the cascade demo restores the off-track ladder and invite fallback as note
   assert.match(call, /beatGoal\(emailTestRef\.current\)/);
   assert.match(
     call,
-    /ladderRef\.current\?\.onVerdict\(\s*verdict\.decision === "off-track",?\s*\)/,
+    /ladderRef\.current\?\.onVerdict\(\{\s*offTrack: verdict\.decision === "off-track",\s*upset: verdict\.upset,?\s*\}\)/,
+    "an upset turn never climbs the ladder",
   );
-  assert.match(call, /if \(rung === "end"\) closeCall\(rungInstructions\(rung, goal\)\)/);
-  assert.match(call, /else speak\(rungInstructions\(rung, goal\)\)/);
+  assert.match(call, /if \(rung === "end"\) closeCall\(rungInstructions\(rung\)\)/);
+  assert.match(call, /else speak\(rungInstructions\(rung\)\)/);
 
   // Voni mentioned the screen without the invite: the fallback note is hidden
   // context. The chip itself is ticket 15's job.

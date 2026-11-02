@@ -51,7 +51,6 @@ import { verifyCallToken } from "../src/lib/voice/cascade-token";
 import { envelopeBodyHash } from "../src/lib/voice/envelope";
 import {
   DEMO_VOICE_IDS,
-  OPEN_BEAT_GOAL,
   rungInstructions,
 } from "../src/lib/demo/voni-agent";
 
@@ -1086,7 +1085,7 @@ test("the call's flow passes every assertion against a fake service", async () =
     assert.equal(service.config()?.agentId, "demo:jorg");
     assert.deepEqual(
       service.contexts(),
-      [rungInstructions("nudge", OPEN_BEAT_GOAL)],
+      [rungInstructions("nudge")],
       "the note reached the service before the caller turn that spent it",
     );
     assert.match(

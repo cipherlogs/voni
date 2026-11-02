@@ -587,16 +587,26 @@ test("the browser never receives the write-only LLM key", () => {
 });
 
 test("ladder and time-up instructions describe hanging up without naming the tool", async () => {
-  const { rungInstructions, TIME_UP_INSTRUCTIONS, OPEN_BEAT_GOAL } = await import("./voni-agent");
+  const { rungInstructions, TIME_UP_INSTRUCTIONS } = await import("./voni-agent");
   for (const text of [
-    rungInstructions("nudge", OPEN_BEAT_GOAL),
-    rungInstructions("warning", OPEN_BEAT_GOAL),
-    rungInstructions("end", OPEN_BEAT_GOAL),
+    rungInstructions("nudge"),
+    rungInstructions("warning"),
+    rungInstructions("end"),
     TIME_UP_INSTRUCTIONS,
   ]) {
     assert.doesNotMatch(text, /end_call/);
   }
-  assert.match(rungInstructions("end", OPEN_BEAT_GOAL), /hang up/);
+  assert.match(rungInstructions("end"), /hang up/);
+});
+
+test("a nudge or warning can never pitch the test or ask about the business", async () => {
+  const { rungInstructions } = await import("./voni-agent");
+  for (const rung of ["nudge", "warning"] as const) {
+    const text = rungInstructions(rung);
+    assert.doesNotMatch(text, /live test|email test/i, `${rung}: no test offer`);
+    assert.doesNotMatch(text, /\?/, `${rung}: no question, so no business question`);
+    assert.doesNotMatch(text, /steers? back to the goal/i, `${rung}: never steer to a pitch`);
+  }
 });
 
 test("the email-test lines never name a tool", async () => {
