@@ -544,6 +544,15 @@ export function buildCertificate(input: CertificateBuildInput): Certificate {
     corpus: {
       version: input.corpus.version,
       sha256: input.corpus.fingerprint,
+      // The exact set the claim covers. The reader demands one coverage row per
+      // scenario here, so a dropped row and a lowered count cannot re-derive a
+      // clean verdict.
+      scenarios: input.corpus.scenarios.map((scenario) => ({
+        name: scenario.name,
+        locale: scenario.locale,
+        heldOut: scenario.heldOut,
+        class: scenario.class,
+      })),
     },
     vendorBuilds,
     plan: { mode: input.plan.mode, repetitions: input.plan.repetitions },

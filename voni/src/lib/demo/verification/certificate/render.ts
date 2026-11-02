@@ -110,7 +110,10 @@ export function renderCertificate(certificate: Certificate): string {
       ...failed.map(
         (property) =>
           `FAIL ${property.propertyId} ${property.reason} n=${n(property.sampleCount)} — ` +
-          `${property.citations[0] ?? "no citation"}`,
+          `${property.citations[0] ?? "no citation"}` +
+          // The named reason a failure is unmeasured belongs on the compact
+          // view too: H2's 40-judgment floor is not a footnote in the JSON.
+          (property.gaps[0] === undefined ? "" : ` (${property.gaps[0]})`),
       ),
     );
   }

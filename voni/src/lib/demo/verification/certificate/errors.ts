@@ -23,6 +23,7 @@ export type CertificateErrorCode =
   | "missing-scope"
   | "invalid-scope"
   | "scope-violation"
+  | "scope-mismatch"
   | "invalid-plan"
   | "invalid-code-fingerprint"
   | "invalid-build"

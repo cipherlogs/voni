@@ -240,7 +240,11 @@ test("a complete run builds one certificate with code, target, corpus, vendors, 
   assert.deepEqual(certificate.code.fingerprint, FINGERPRINT);
   assert.equal(certificate.code.appBuild, "app-build-1");
   assert.equal(certificate.code.pipelineImage, `sha256:${"d".repeat(64)}`);
-  assert.deepEqual(certificate.corpus, { version: 1, sha256: CORPUS_HASH });
+  assert.deepEqual(certificate.corpus, {
+    version: 1,
+    sha256: CORPUS_HASH,
+    scenarios: SCENARIOS,
+  });
   assert.deepEqual(certificate.vendorBuilds, VENDOR_BUILDS);
   assert.deepEqual(certificate.plan, { mode: "full", repetitions: 3 });
   assert.equal(certificate.coverage.expectedScenarios, 5);
@@ -426,15 +430,17 @@ test("a v1 or v2 certificate stays readable; a v3 certificate must carry scope a
   v1.schemaVersion = 1;
   delete v1.resume;
   delete v1.scope;
+  delete (v1.corpus as Mutable).scenarios;
   for (const row of (v1.coverage as Mutable).rows as Mutable[]) delete row.class;
   const parsedV1 = validateCertificate(v1);
   assert.equal(parsedV1.resume, null, "a v1 certificate predates the resume record");
   assert.equal(parsedV1.scope, null, "a v1 certificate predates the declared scope");
-  assert.equal(parsedV1.schemaVersion, 3, "a v1 document is read as the current schema");
+  assert.equal(parsedV1.schemaVersion, 1, "a v1 document is read and kept as v1");
 
   const v2 = mutable(certified());
   v2.schemaVersion = 2;
   delete v2.scope;
+  delete (v2.corpus as Mutable).scenarios;
   for (const row of (v2.coverage as Mutable).rows as Mutable[]) delete row.class;
   const parsedV2 = validateCertificate(v2);
   assert.equal(parsedV2.scope, null, "a v2 certificate declared no scope; every Locale is required");
@@ -568,6 +574,117 @@ test("a declared Locale with no scenario and no calls is a gap, not out of scope
   assert.equal(spanish?.status, "gap");
   assert.match(spanish?.gap ?? "", /no scenario for this Locale/);
   assert.equal(certificate.verdict, "not-demo-ready", "an in-scope Locale is never neutral");
+});
+
+const MULTI_ENGLISH = [
+  { name: "hello-en", locale: "en" as const, heldOut: false, class: "golden-flow" as const },
+  { name: "barge-en", locale: "en" as const, heldOut: false, class: "turn-taking" as const },
+  { name: "goodbye-en", locale: "en" as const, heldOut: false, class: "ending" as const },
+];
+
+function multiEnglishInput(overrides: Partial<CertificateBuildInput> = {}): CertificateBuildInput {
+  return buildInput({
+    run: runWith({ scenarios: MULTI_ENGLISH }),
+    scope: ENGLISH_ONLY_SCOPE,
+    corpus: { version: 1, fingerprint: CORPUS_HASH, scenarios: MULTI_ENGLISH },
+    attempts: attempts(() => true, MULTI_ENGLISH),
+    ...overrides,
+  });
+}
+
+test("a dropped coverage row and a lowered expectedScenarios cannot hide a failure", () => {
+  const forged = mutable(buildCertificate(multiEnglishInput()));
+  const rows = (forged.coverage as Mutable).rows as Mutable[];
+  rows.splice(
+    rows.findIndex((row) => row.scenario === "barge-en"),
+    1,
+  );
+  (forged.coverage as Mutable).expectedScenarios = rows.length;
+  const english = ((forged.coverage as Mutable).byLocale as Mutable[]).find(
+    (row) => row.locale === "en",
+  )!;
+  english.expectedScenarios = rows.length;
+  english.measuredScenarios = rows.length;
+  english.gapRows = 0;
+  english.status = "measured";
+
+  assertRefusal(
+    () => validateCertificate(forged),
+    "coverage-row-missing",
+    /declared corpus|declared scenario|barge-en/,
+  );
+});
+
+test("a scope narrowed after the fact cannot turn the other Locales' rows out of scope", () => {
+  const forged = mutable(certified());
+  forged.scope = ENGLISH_ONLY_SCOPE;
+  const rows = (forged.coverage as Mutable).rows as Mutable[];
+  (forged.coverage as Mutable).rows = rows.filter((row) => row.locale === "en");
+  (forged.coverage as Mutable).expectedScenarios = 1;
+
+  const decision = {
+    decidedBy: ENGLISH_ONLY_SCOPE.decidedBy,
+    decidedOn: ENGLISH_ONLY_SCOPE.decidedOn,
+    reason: ENGLISH_ONLY_SCOPE.reason,
+  };
+  (forged.coverage as Mutable).byLocale = (
+    (forged.coverage as Mutable).byLocale as Mutable[]
+  ).map((row) =>
+    row.locale === "en"
+      ? row
+      : {
+          locale: row.locale,
+          expectedScenarios: 0,
+          measuredScenarios: 0,
+          gapRows: 0,
+          status: "out-of-scope",
+          gap: null,
+          decision,
+        },
+  );
+
+  assertRefusal(
+    () => validateCertificate(forged),
+    "scope-violation",
+    /declared corpus|declared scope|hello-es/,
+  );
+});
+
+test("a forged scenario class cannot make the one-per-class sample vacuous", () => {
+  const forged = mutable(buildCertificate(multiEnglishInput()));
+  for (const row of (forged.coverage as Mutable).rows as Mutable[]) {
+    row.class = "golden-flow";
+  }
+  assertRefusal(
+    () => validateCertificate(forged),
+    "invalid-coverage",
+    /class|barge-en/,
+  );
+});
+
+test("a reader that expects a Locale set refuses a certificate claiming another", () => {
+  const certificate = certified();
+  assertRefusal(
+    () => validateCertificate(certificate, { scope: ["en"] }),
+    "scope-mismatch",
+    /scope|Locale/,
+  );
+});
+
+test("a v1 or v2 certificate re-serializes as what it is, never as an invalid v3", () => {
+  const legacy = mutable(certified());
+  legacy.schemaVersion = 2;
+  legacy.resume = null;
+  delete legacy.scope;
+  delete (legacy.corpus as Mutable).scenarios;
+  for (const row of (legacy.coverage as Mutable).rows as Mutable[]) delete row.class;
+
+  const parsed = validateCertificate(legacy);
+  assert.equal(parsed.schemaVersion, 2);
+  assert.equal(parsed.scope, null);
+  const document = serializeCertificate(parsed);
+  assert.match(document, /"schemaVersion": 2/);
+  assert.deepEqual(parseCertificate(document), parsed);
 });
 
 test("every v3 coverage row names its scenario class", () => {

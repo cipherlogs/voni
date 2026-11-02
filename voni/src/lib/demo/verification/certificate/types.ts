@@ -3,12 +3,13 @@
  *
  * A certificate is the claim, not the account of it. It pins the code
  * fingerprint (with the dirty flag), the target it is true for, the declared
- * certification scope and the owner decision behind it, the corpus version and
- * hash, the vendor builds, every property verdict with its sample count and
- * citations, explicit coverage rows (gaps included, out-of-scope Locales named
- * rather than dropped), the measured cost and call count, the residual-risk
- * ids, and — when the owner has signed — the panel session and reviewer. Its
- * verdict is one of four, and only `certified` may be called a pass.
+ * certification scope and the owner decision behind it, the corpus version,
+ * hash and exact scenario set, the vendor builds, every property verdict with
+ * its sample count and citations, explicit coverage rows (gaps included,
+ * out-of-scope Locales named rather than dropped), the measured cost and call
+ * count, the residual-risk ids, and — when the owner has signed — the panel
+ * session and reviewer. Its verdict is one of four, and only `certified` may be
+ * called a pass.
  *
  * The schema never carries audio or event bytes: those are gitignored working
  * files, recorded here by path/hash elsewhere. A certificate is committed.
@@ -34,6 +35,9 @@ import type { PropertyStatus, PropertyVerdictReason, RunVerdict } from "../verdi
  * versions are read as an undeclared scope, which means every demo Locale.
  */
 export const CERTIFICATE_SCHEMA_VERSION = 3 as const;
+
+/** The versions a reader understands. Older documents keep their own version. */
+export type CertificateSchemaVersion = 1 | 2 | 3;
 
 /** The targets a certificate may be true for. A green never inherits. */
 export const CERTIFICATE_TARGETS = ["local", "staging", "production"] as const;
@@ -173,6 +177,17 @@ export type CertificateCorpus = {
   readonly scenarios: readonly CertificateCorpusScenario[];
 };
 
+/**
+ * The corpus facts the committed certificate pins. Version 3 records the exact
+ * scenario set the claim covers, so a reader can demand one coverage row per
+ * declared scenario; v1/v2 predate it and carry only the version and hash.
+ */
+export type CertificateCorpusRecord = {
+  readonly version: number;
+  readonly sha256: string;
+  readonly scenarios?: readonly CertificateCorpusScenario[];
+};
+
 /** One call the run executed, by scenario, Locale and repetition. */
 export type CertificationAttempt = {
   readonly scenario: string;
@@ -282,7 +297,12 @@ export type CertificateCost = {
 
 /** The committed certificate. */
 export type Certificate = {
-  readonly schemaVersion: typeof CERTIFICATE_SCHEMA_VERSION;
+  /**
+   * The document's own version, preserved on read. A v1/v2 certificate is
+   * re-serialized as itself; only a v3 document carries a declared scope and
+   * the corpus scenario set.
+   */
+  readonly schemaVersion: CertificateSchemaVersion;
   readonly runId: string;
   /** The one target this certificate is true for. */
   readonly target: CertificateTarget;
@@ -299,7 +319,7 @@ export type Certificate = {
     /** The pipeline image digest the run served. */
     readonly pipelineImage: string;
   };
-  readonly corpus: CorpusReference;
+  readonly corpus: CertificateCorpusRecord;
   readonly vendorBuilds: readonly VendorBuild[];
   readonly plan: CertificatePlan;
   readonly coverage: CertificateCoverage;
@@ -351,6 +371,8 @@ export type CertificateExpectation = {
   readonly runId?: string;
   readonly codeFingerprint?: CodeFingerprint;
   readonly corpus?: CorpusReference;
+  /** The Locale set the consumer demands; a different claim is refused. */
+  readonly scope?: readonly Locale[];
 };
 
 /** A named refusal; every certificate error is exit 2 (bad input/evidence). */

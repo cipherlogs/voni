@@ -35,6 +35,7 @@ import {
   SCOPE_DECIDERS,
   VENDOR_LEGS,
   type Certificate,
+  type CertificateCorpusScenario,
   type CertificateCoverage,
   type CertificateEligibility,
   type CertificateExpectation,
@@ -152,9 +153,9 @@ function validateCode(raw: unknown): Certificate["code"] {
   };
 }
 
-function validateCorpus(raw: unknown): Certificate["corpus"] {
+function validateCorpus(raw: unknown, version: number): Certificate["corpus"] {
   const corpus = record(raw, "corpus");
-  const version = integer(corpus.version, "corpus.version", "invalid-corpus-reference", 1);
+  const corpusVersion = integer(corpus.version, "corpus.version", "invalid-corpus-reference", 1);
   const sha256 = text(corpus.sha256, "corpus.sha256", "invalid-corpus-reference");
   if (!/^[0-9a-f]{64}$/.test(sha256)) {
     refuse(
@@ -162,7 +163,36 @@ function validateCorpus(raw: unknown): Certificate["corpus"] {
       `corpus.sha256 is not 64 lowercase hex characters (${sha256}); a certificate pins exact bytes`,
     );
   }
-  return { version, sha256 };
+  if (corpus.scenarios === undefined) {
+    if (version >= 3) {
+      refuse(
+        "invalid-corpus-reference",
+        "a version 3 certificate must record the corpus scenarios it covers; without them a " +
+          "reader cannot demand one coverage row per declared scenario",
+      );
+    }
+    return { version: corpusVersion, sha256 };
+  }
+  if (!Array.isArray(corpus.scenarios) || corpus.scenarios.length === 0) {
+    refuse("invalid-corpus-reference", "corpus.scenarios is not a non-empty array");
+  }
+  const seen = new Set<string>();
+  const scenarios: CertificateCorpusScenario[] = corpus.scenarios.map((entry, index) => {
+    const field = `corpus.scenarios[${index}]`;
+    const scenario = record(entry, field);
+    const name = text(scenario.name, `${field}.name`, "invalid-corpus-reference");
+    if (seen.has(name)) {
+      refuse("duplicate-corpus-scenario", `corpus scenario "${name}" appears twice`);
+    }
+    seen.add(name);
+    return {
+      name,
+      locale: oneOf(scenario.locale, LOCALES, `${field}.locale`, "invalid-corpus-reference"),
+      heldOut: boolean(scenario.heldOut, `${field}.heldOut`, "invalid-corpus-reference"),
+      class: oneOf(scenario.class, SCENARIO_CLASSES, `${field}.class`, "invalid-corpus-reference"),
+    };
+  });
+  return { version: corpusVersion, sha256, scenarios };
 }
 
 function validateVendorBuilds(raw: unknown): VendorBuild[] {
@@ -408,6 +438,7 @@ function validateCoverage(
   planRepetitions: number,
   scope: CertificationScope | null,
   requireClass: boolean,
+  declared?: readonly CertificateCorpusScenario[],
 ): CertificateCoverage {
   const coverage = record(raw, "coverage");
   const expectedScenarios = integer(
@@ -423,6 +454,57 @@ function validateCoverage(
       `coverage carries ${rows.length} rows but the corpus expects ${expectedScenarios}; ` +
         "a missing scenario is a gap row, never an omission",
     );
+  }
+  if (declared !== undefined) {
+    const byKey = new Map(rows.map((row) => [`${row.locale}:${row.scenario}`, row]));
+    for (const scenario of declared) {
+      if (scope !== null && !scope.locales.includes(scenario.locale)) {
+        refuse(
+          "scope-violation",
+          `the corpus declares scenario "${scenario.name}" in Locale "${scenario.locale}", which ` +
+            `the declared scope (${scope.locales.join(", ")}) excludes; a scope narrowed after the ` +
+            "run cannot delete a scenario it covered",
+        );
+      }
+      const key = `${scenario.locale}:${scenario.name}`;
+      const row = byKey.get(key);
+      if (row === undefined) {
+        refuse(
+          "coverage-row-missing",
+          `the corpus declares scenario "${scenario.name}" (${scenario.locale}) but the coverage ` +
+            "carries no row for it; a missing row is a failure, never an omission",
+        );
+      }
+      if (row.class !== scenario.class) {
+        refuse(
+          "invalid-coverage",
+          `coverage row "${key}" records class "${String(row.class)}" but the corpus declares ` +
+            `"${scenario.class}"`,
+        );
+      }
+      if (row.heldOut !== scenario.heldOut) {
+        refuse(
+          "invalid-coverage",
+          `coverage row "${key}" records heldOut ${String(row.heldOut)} but the corpus declares ` +
+            `${String(scenario.heldOut)}`,
+        );
+      }
+      byKey.delete(key);
+    }
+    if (byKey.size > 0) {
+      refuse(
+        "invalid-coverage",
+        `coverage carries ${byKey.size} row(s) that are not in the declared corpus: ` +
+          `${[...byKey.keys()].join(", ")}`,
+      );
+    }
+    if (expectedScenarios !== declared.length) {
+      refuse(
+        "invalid-coverage",
+        `coverage.expectedScenarios is ${expectedScenarios} but the certificate records ` +
+          `${declared.length} corpus scenarios; the declared set is the denominator`,
+      );
+    }
   }
   const recomputedGapRows = rows.filter((row) => row.status === "gap").length;
   const gapRows = integer(coverage.gapRows, "coverage.gapRows", "invalid-coverage");
@@ -829,7 +911,7 @@ export function validateCertificate(
   const target = oneOf(root.target, CERTIFICATE_TARGETS, "target", "unknown-target");
   const scope = validateScope(root.scope, root.schemaVersion);
   const code = validateCode(root.code);
-  const corpus = validateCorpus(root.corpus);
+  const corpus = validateCorpus(root.corpus, root.schemaVersion);
   const vendorBuilds = validateVendorBuilds(root.vendorBuilds);
 
   const plan = record(root.plan, "plan");
@@ -844,6 +926,7 @@ export function validateCertificate(
     repetitions,
     scope,
     root.schemaVersion >= 3,
+    corpus.scenarios,
   );
   const properties = validateProperties(root.properties);
   const eligibility = validateEligibility(root.eligibility);
@@ -896,6 +979,21 @@ export function validateCertificate(
         `${expectation.codeFingerprint.dirty ? "+dirty" : ""}; the green does not carry over`,
     );
   }
+  if (expectation.scope !== undefined) {
+    const actual = scope?.locales ?? LOCALES;
+    const expected = LOCALES.filter((locale) => expectation.scope!.includes(locale));
+    if (
+      actual.length !== expected.length ||
+      !expected.every((locale) => actual.includes(locale)) ||
+      expected.length !== expectation.scope.length
+    ) {
+      refuse(
+        "scope-mismatch",
+        `certificate declares scope ${actual.join(", ")}, not the expected ` +
+          `${expectation.scope.join(", ")}; a claim about another Locale set is not this run's`,
+      );
+    }
+  }
   if (
     expectation.corpus !== undefined &&
     (expectation.corpus.version !== corpus.version ||
@@ -909,7 +1007,7 @@ export function validateCertificate(
   }
 
   return {
-    schemaVersion: CERTIFICATE_SCHEMA_VERSION,
+    schemaVersion: root.schemaVersion as Certificate["schemaVersion"],
     runId,
     target,
     scope,
