@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import dynamic from "next/dynamic";
 import { DemoCallSkeleton } from "@/components/page-skeletons";
 import { ReviewOverlay } from "@/components/review-overlay";
@@ -38,12 +38,17 @@ export function LandingDemo() {
   // transcript, split and acknowledgement line used.
   // Ticket 08: the gate section marks the fix under review (`?fix=`).
   // A not-fixed mark stays open and blocks the next fix.
-  const [review, setReview] = useState(false);
-  const [fixId, setFixId] = useState<string | null>(null);
-  useEffect(() => {
-    setReview(reviewOverlayRequested(window.location.search));
-    setFixId(fixUnderReview(window.location.search));
-  }, []);
+  // Derived on mount from the client URL (lazy initializer, not an
+  // effect): the overlay flags are owner-only (`?review=1`, `?fix=`) and
+  // never present for public visitors, so no hydration impact there.
+  const [review] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      reviewOverlayRequested(window.location.search),
+  );
+  const [fixId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : fixUnderReview(window.location.search),
+  );
   return (
     <>
       <VoiceCall mode={{ kind: "demo" }} />
