@@ -241,8 +241,8 @@ class IdentityDriftTests(unittest.TestCase):
         )
 
     def test_a_changed_voice_fails_by_name(self):
-        problems = self.problems(plan=clip_plan_for("malvina"))
-        self.assertTrue(any("binding" in problem and "malvina" in problem for problem in problems), problems)
+        problems = self.problems(plan=clip_plan_for("audrey"))
+        self.assertTrue(any("binding" in problem and "audrey" in problem for problem in problems), problems)
 
     def test_a_changed_locale_fails_by_name(self):
         problems = self.problems(fixture=replace(self.fixture, locale="es"))

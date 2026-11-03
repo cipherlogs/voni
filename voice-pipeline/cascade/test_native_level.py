@@ -175,7 +175,7 @@ class ClipRecordStageTests(unittest.TestCase):
     """A clip's record declares its stage; anything but native fails by name."""
 
     def test_the_plan_is_native_and_a_gain_stage_fails_the_gate(self):
-        plan = clip_plan_for("malvina")
+        plan = clip_plan_for("audrey")
         self.assertTrue(plan.bound)
 
         # The gate reads a full record; the fields that matter here are the
@@ -193,7 +193,7 @@ class ClipRecordStageTests(unittest.TestCase):
         )
 
     def test_a_native_clip_record_has_no_stage_problem(self):
-        plan = clip_plan_for("malvina")
+        plan = clip_plan_for("audrey")
         record = make_record(plan, gain_stage=NATIVE_GAIN_STAGE)
 
         self.assertEqual(

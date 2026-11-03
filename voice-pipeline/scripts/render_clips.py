@@ -18,9 +18,11 @@ by name and writes nothing at all — no manifest, no placeholder, no stale file
 `--check` is the credentialless gate: it audits the committed manifest against
 the committed bytes.
 
-`jorg`/de is the chosen German voice (ticket 130): its clip renders like every
-other bound voice. The retired `juergen` is refused by the binding table and is
-not a clip subject; its old asset is retired, never kept as a silent fallback.
+The demo offers English only (`audrey`/en): the other catalogue voices stay
+bound but are not clip subjects, so `--voice` names them the same way it names
+any voice outside the roster. The retired `juergen` is refused by the binding
+table and is not a clip subject; its old asset is retired, never kept as a
+silent fallback.
 """
 
 from __future__ import annotations

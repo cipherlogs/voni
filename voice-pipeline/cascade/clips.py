@@ -19,9 +19,9 @@ The pieces are the call's own, not copies:
 
 An open Locale is a named row, never a clip: the pre-re-cast German id
 (``juergen``) is refused by the binding table, so if it were ever named the plan
-would record that refusal and no asset would be planned, written or kept. German
-itself is bound to ``jorg`` (ticket 130), so every demo Locale now renders; the
-Italian renderings stay in the code, unused (demo-cascade ticket 04).
+would record that refusal and no asset would be planned, written or kept. The
+demo offers English only (``audrey``/en): the other catalogue voices stay bound
+in :mod:`cascade.voice_binding` but are not demo subjects, so they plan no clip.
 
 The manifest pins what a clip is, so ``--check`` can prove it later without a
 key: endpoint, model, voice, vendor language, Locale, the exact line and its
@@ -198,7 +198,7 @@ def clip_plan_for(voice_id: str) -> ClipPlan:
     """One demo voice's plan, or a usage error for a voice outside the demo."""
     if voice_id not in DEMO_VOICE_IDS:
         raise ClipError(
-            f'"{voice_id}" is not a demo subject: clips are the five demo voices '
+            f'"{voice_id}" is not a demo subject: clips are the demo voices '
             f"({', '.join(DEMO_VOICE_IDS)})"
         )
     # The Locale is the catalogue's, not the caller's: the binding table owns it.
@@ -846,7 +846,7 @@ def audit_manifest(
         entry = plan.get(record.voice)
         if entry is None:
             problems.append(
-                f'clip for voice "{record.voice}", which is not one of the five demo voices'
+                f'clip for voice "{record.voice}", which is not one of the demo voices'
             )
             continue
         if not entry.bound:
