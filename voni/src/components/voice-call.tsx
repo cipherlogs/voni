@@ -139,7 +139,8 @@ import {
  *    thing inside it. Nothing outside the card can move now.
  *
  * 2. **Demo mode is its own layout.** The demo call (DESIGN.md §10c): the
- *    orb with a ‹ › voice/language switcher and Start call at rest, opening
+ *    orb with a disabled ‹ › voice switcher (English-only, one voice) and
+ *    Start call at rest, opening
  *    into the call card with live state, hang-up and a flat live transcript.
  *    Voni always talks as itself; the switcher locks during a call because
  *    the voice genuinely is immutable once a session starts.
@@ -1880,8 +1881,11 @@ export function VoiceCall({
     const open = demoOpen;
     const reveal = "duration-(--motion-reveal) ease-(--ease-out-soft)";
     const voiceIndex = Math.max(0, DEMO_VOICE_IDS.indexOf(voiceId as (typeof DEMO_VOICE_IDS)[number]));
+    // English-only (demo-cascade ticket 01): the roster holds one voice, so
+    // the ‹ › voice-cycle control is disabled — there is nothing to switch to.
     const cycle = (step: number) => {
-      setVoiceId(DEMO_VOICE_IDS[(voiceIndex + step + DEMO_VOICE_IDS.length) % DEMO_VOICE_IDS.length]);
+      void step;
+      setVoiceId(DEMO_VOICE_IDS[voiceIndex]);
     };
     const demoStatus = getDemoCallStatus({
       hasError: error !== null,
@@ -1900,7 +1904,8 @@ export function VoiceCall({
       <button
         type="button"
         aria-label={step < 0 ? "Previous voice" : "Next voice"}
-        disabled={open}
+        aria-disabled="true"
+        disabled
         onClick={() => cycle(step)}
         className={cn(
           "text-foreground/70 hover:bg-muted hover:text-foreground flex size-11 cursor-pointer items-center justify-center rounded-full outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",

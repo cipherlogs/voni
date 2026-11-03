@@ -74,17 +74,27 @@ function artifactFor(
   });
 }
 
-test("a non-default demo voice is a subject with its own Locale and transport", () => {
-  const subject = resolveSubject({ voice: "malvina", explicit: true });
+test("a withdrawn demo voice is refused by name, never measured as a subject", () => {
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    assert.throws(
+      () => resolveSubject({ voice, explicit: true }),
+      (error: unknown) =>
+        error instanceof SubjectError &&
+        error.field === "agent" &&
+        new RegExp(`unknown gate voice "${voice}"`).test(error.message),
+      `${voice} is no longer offered: English only`,
+    );
+  }
+  const subject = resolveSubject({ voice: "audrey", explicit: true });
   assert.deepEqual(subject, {
-    agent: { kind: "demo", voice: "malvina", agentId: null },
-    locale: "es",
+    agent: { kind: "demo", voice: "audrey", agentId: null },
+    locale: "en",
     transport: "browser",
     source: "flag",
   });
   assert.equal(
     formatSubject(subject),
-    "demo malvina (es, browser)",
+    "demo audrey (en, browser)",
     "the subject prints as agent, Locale and transport",
   );
 });
@@ -120,8 +130,11 @@ test("a prior diff is scoped to the subject, never to a shared voice id", () => 
     "a tenant agent and a demo voice with the same id are different subjects",
   );
   assert.ok(
-    !sameSubject(resolveSubject({ voice: "malvina", explicit: true }), featured),
-    "another voice is another subject",
+    !sameSubject(
+      resolveSubject({ agent: "agent_other", voice: "audrey", locale: "en", explicit: true }),
+      featured,
+    ),
+    "another agent is another subject",
   );
   assert.ok(
     !sameSubject(
@@ -203,7 +216,7 @@ test("an unknown voice, agent or Locale fails by name", () => {
     "a demo voice cannot be smuggled in as a tenant agent",
   );
   assert.throws(
-    () => resolveSubject({ voice: "malvina", locale: "xx" }),
+    () => resolveSubject({ voice: "audrey", locale: "xx" }),
     (error: unknown) =>
       error instanceof SubjectError &&
       error.field === "locale" &&
@@ -219,7 +232,7 @@ test("an unknown voice, agent or Locale fails by name", () => {
     "a tenant subject with no Locale cannot silently borrow English",
   );
   assert.throws(
-    () => resolveSubject({ voice: "malvina", transport: "wire" }),
+    () => resolveSubject({ voice: "audrey", transport: "wire" }),
     (error: unknown) =>
       error instanceof SubjectError &&
       error.field === "transport" &&
@@ -229,14 +242,14 @@ test("an unknown voice, agent or Locale fails by name", () => {
 });
 
 test("a voice speaks exactly one Locale: a mismatched Locale fails naming both", () => {
-  assert.equal(resolveSubject({ voice: "malvina", locale: "es" }).locale, "es");
+  assert.equal(resolveSubject({ voice: "audrey", locale: "en" }).locale, "en");
   assert.throws(
-    () => resolveSubject({ voice: "malvina", locale: "en" }),
+    () => resolveSubject({ voice: "audrey", locale: "fr" }),
     (error: unknown) =>
       error instanceof SubjectError &&
       error.field === "locale" &&
-      /voice "malvina" speaks es/.test(error.message) &&
-      /not "en"/.test(error.message),
+      /voice "audrey" speaks en/.test(error.message) &&
+      /not "fr"/.test(error.message),
     "the refusal names the voice's Locale and the requested one",
   );
   // A tenant agent's voice binding is checked too: a Locale the bound voice
@@ -248,22 +261,22 @@ test("a voice speaks exactly one Locale: a mismatched Locale fails naming both",
 });
 
 test("an artifact carries the subject it measured and derives its own gates", () => {
-  const malvina = resolveSubject({ voice: "malvina", explicit: true });
-  const losa = artifactFor(malvina, "malvina", 900);
-  const late = artifactFor(malvina, "malvina", REPLY_GAP_P95_BUDGET_MS + 5000);
+  const audrey = resolveSubject({ voice: "audrey", explicit: true });
+  const fasta = artifactFor(audrey, "audrey", 900);
+  const late = artifactFor(audrey, "audrey", REPLY_GAP_P95_BUDGET_MS + 5000);
 
-  assert.deepEqual(losa.subject, malvina, "the artifact carries the non-default subject");
-  assert.equal(losa.voice, "malvina");
-  assert.equal(late.subject?.locale, "es");
+  assert.deepEqual(fasta.subject, audrey, "the artifact carries the measured subject");
+  assert.equal(fasta.voice, "audrey");
+  assert.equal(late.subject?.locale, "en");
 
-  const pass = losa.gates.find((gate) => gate.name === "reply-gap")!;
+  const pass = fasta.gates.find((gate) => gate.name === "reply-gap")!;
   const fail = late.gates.find((gate) => gate.name === "reply-gap")!;
   assert.equal(pass.status, "PASS", pass.detail);
   assert.equal(fail.status, "FAIL", fail.detail);
   // The failing detail cites this run's own number, and the artifact names the
   // voice it belongs to: a verdict cannot be read without its subject.
   assert.match(fail.detail, /7500ms/);
-  assert.equal(losa.subject?.agent.kind === "demo" && losa.subject.agent.voice, "malvina");
+  assert.equal(fasta.subject?.agent.kind === "demo" && fasta.subject.agent.voice, "audrey");
 });
 
 test("a tenant artifact carries the agent and the phone transport", () => {
@@ -340,13 +353,13 @@ test("a tenant subject's evidence cannot come from another agent's served body",
 });
 
 test("an artifact refuses a subject whose voice it did not measure", () => {
-  const malvina = resolveSubject({ voice: "malvina", explicit: true });
+  const audrey = resolveSubject({ voice: "audrey", explicit: true });
   assert.throws(
-    () => artifactFor(malvina, DEFAULT_GATE_VOICE, 900),
+    () => artifactFor(audrey, "lola", 900),
     (error: unknown) =>
       error instanceof SubjectError &&
       error.field === "agent" &&
-      /not the demo subject's voice "malvina"/.test(error.message),
+      /not the demo subject's voice "audrey"/.test(error.message),
   );
 });
 
@@ -384,7 +397,7 @@ test("a pre-axis artifact derives its subject from the voice it measured", () =>
   assert.deepEqual(subjectOfArtifact(legacy as ScoreboardArtifact), derived);
 });
 
-test("score-demo records an explicit non-default subject in the artifact", () => {
+test("score-demo records the explicit demo subject in the artifact", () => {
   const dir = mkdtempSync(join(tmpdir(), "subject-"));
   const out = join(dir, "score.json");
   const result = spawnSync(
@@ -395,9 +408,9 @@ test("score-demo records an explicit non-default subject in the artifact", () =>
       SCRIPT,
       "--dry-run",
       "--voice",
-      "malvina",
+      "audrey",
       "--subject-locale",
-      "es",
+      "en",
       "--subject-transport",
       "phone",
       "--out",
@@ -408,11 +421,24 @@ test("score-demo records an explicit non-default subject in the artifact", () =>
   assert.equal(result.status, 0, result.stderr + result.stdout);
   const artifact = JSON.parse(readFileSync(out, "utf8")) as ScoreboardArtifact;
   assert.deepEqual(artifact.subject, {
-    agent: { kind: "demo", voice: "malvina", agentId: null },
-    locale: "es",
+    agent: { kind: "demo", voice: "audrey", agentId: null },
+    locale: "en",
     transport: "phone",
     source: "flag",
   });
+});
+
+test("score-demo refuses a withdrawn voice before writing an artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "subject-"));
+  const out = join(dir, "score.json");
+  const result = spawnSync(
+    "node",
+    ["--import", "tsx", SCRIPT, "--dry-run", "--voice", "malvina", "--out", out],
+    { encoding: "utf8", cwd: new URL("../../../", import.meta.url).pathname },
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(out), "no artifact for a withdrawn voice");
+  assert.match(result.stderr + result.stdout, /unknown gate voice "malvina"/);
 });
 
 test("score-demo runs a tenant subject through the same command", () => {
@@ -455,7 +481,7 @@ test("score-demo refuses to diff one subject against another's artifact", () => 
     { encoding: "utf8", cwd },
   );
   assert.equal(firstRun.status, 0, firstRun.stderr + firstRun.stdout);
-  const out = join(dir, "malvina.json");
+  const out = join(dir, "tenant.json");
   const crossed = spawnSync(
     "node",
     [
@@ -463,8 +489,12 @@ test("score-demo refuses to diff one subject against another's artifact", () => 
       "tsx",
       SCRIPT,
       "--dry-run",
+      "--agent",
+      "agent_other",
       "--voice",
-      "malvina",
+      "audrey",
+      "--subject-locale",
+      "en",
       "--out",
       out,
       "--prior",
@@ -486,7 +516,7 @@ test("score-demo fails by name before writing an artifact for a bad subject", ()
   const out = join(dir, "score.json");
   const badLocale = spawnSync(
     "node",
-    ["--import", "tsx", SCRIPT, "--dry-run", "--voice", "malvina", "--subject-locale", "xx", "--out", out],
+    ["--import", "tsx", SCRIPT, "--dry-run", "--voice", "audrey", "--subject-locale", "xx", "--out", out],
     { encoding: "utf8", cwd: new URL("../../../", import.meta.url).pathname },
   );
   assert.notEqual(badLocale.status, 0);
@@ -544,12 +574,12 @@ test("the historical German id cannot be bound, and the product voice can", () =
   );
 });
 
-test("the German Locale is bound to jorg, not left open and not re-cast", () => {
+test("a withdrawn Locale stays open while its voice binding is preserved", () => {
   const german = localeSubjectStatus("de");
   assert.equal(german.locale, "de");
-  assert.equal(german.status, "bound");
-  assert.deepEqual(german.voices, ["jorg"], "the product voice is the only German subject");
-  assert.equal(german.openReason, null);
+  assert.equal(german.status, "open", "no demo voice is offered for German: English only");
+  assert.deepEqual(german.voices, []);
+  assert.match(german.openReason ?? "", /no demo voice/);
 
   assert.deepEqual(
     LOCALE_SUBJECT_STATUSES,
@@ -557,11 +587,19 @@ test("the German Locale is bound to jorg, not left open and not re-cast", () => 
     "the vocabulary has no beta, dropped or cut-over state to hide behind",
   );
 
+  // The voice binding is preserved: English-only is a roster choice, not a
+  // language switch inside a voice. German stays bound to the catalogue voice.
+  assert.deepEqual(bindCascadeVoice("jorg"), {
+    voiceId: "jorg",
+    locale: "de",
+    language: "German",
+  });
+
   // The historical id is a routing fact, not a mutation: naming it is refused
-  // and German stays bound to the chosen voice.
+  // and the list never quietly changes.
   const before = cascadeSubjectList();
   assert.throws(() => resolveCascadeSubject({ voice: "juergen" }), SubjectError);
-  assert.deepEqual(cascadeSubjectList(), before, "a refused voice never quietly drops its Locale");
+  assert.deepEqual(cascadeSubjectList(), before, "a refused voice never quietly changes a row");
 
   // The historical id is no longer a catalogue voice, so it cannot be offered
   // as a managed subject either.
@@ -588,17 +626,20 @@ test("the subject list names each Locale's status explicitly", () => {
   const bound = Object.fromEntries(rows.filter((row) => row.status === "bound").map((row) => [row.locale, row.voices]));
   assert.deepEqual(bound, {
     en: ["audrey"],
-    es: ["malvina"],
-    fr: ["donatien"],
-    de: ["jorg"],
-    pt: ["benicio"],
   });
+  for (const locale of ["es", "fr", "de", "pt"]) {
+    const row = rows.find((row) => row.locale === locale);
+    assert.ok(row, `${locale} is listed, not omitted`);
+    assert.equal(row.status, "open", `the demo offers English only and ${locale} is not one`);
+    assert.deepEqual(row.voices, []);
+    assert.match(row.openReason ?? "", /no demo voice/);
+  }
   const italian = rows.find((row) => row.locale === "it");
   assert.ok(italian, "Italian is listed, not omitted");
-  assert.equal(italian.status, "open", "the demo offers five Locales and Italian is not one");
+  assert.equal(italian.status, "open", "the demo offers English only and Italian is not one");
   assert.deepEqual(italian.voices, []);
   assert.match(italian.openReason ?? "", /no demo voice/);
-  assert.equal(localeSubjectStatus("de").status, "bound", "German is bound to jorg, and says so");
+  assert.equal(localeSubjectStatus("en").status, "bound", "English is bound to audrey, and says so");
 });
 
 test("the unbound table names historical ids, and the unmeasured gaps are named", () => {
@@ -616,17 +657,17 @@ test("the unbound table names historical ids, and the unmeasured gaps are named"
 });
 
 test("a cascade subject carries its pipeline axis, so the A/B cannot merge", () => {
-  const cascade = resolveCascadeSubject({ voice: "malvina", explicit: true });
+  const cascade = resolveCascadeSubject({ voice: "audrey", explicit: true });
   assert.equal(cascade.pipeline, "cascade");
-  assert.equal(formatSubject(cascade), "demo malvina (es, browser, cascade)");
+  assert.equal(formatSubject(cascade), "demo audrey (en, browser, cascade)");
 
-  const managed = resolveSubject({ voice: "malvina", explicit: true });
+  const managed = resolveSubject({ voice: "audrey", explicit: true });
   assert.equal(managed.pipeline, undefined, "a managed subject written before the axis stays managed");
-  assert.equal(formatSubject(managed), "demo malvina (es, browser)");
+  assert.equal(formatSubject(managed), "demo audrey (en, browser)");
 
   assert.ok(!sameSubject(cascade, managed), "the same voice on two engines is two subjects");
   assert.ok(
-    sameSubject(cascade, resolveCascadeSubject({ voice: "malvina", explicit: true })),
+    sameSubject(cascade, resolveCascadeSubject({ voice: "audrey", explicit: true })),
     "two cascade runs of one voice are one subject",
   );
 });

@@ -45,13 +45,9 @@ delete process.env.META_REASONING_EFFORT;
 delete process.env.DEMO_LLM_MODEL_OVERRIDE;
 const NOW = 1_761_771_100_000;
 
-/** The Locale each demo voice pins (spec: five voices, one per Locale). */
+/** The Locale the demo voice pins (spec: English only, one voice). */
 const LOCALE_BY_VOICE: Record<string, string> = {
   audrey: "en",
-  malvina: "es",
-  donatien: "fr",
-  jorg: "de",
-  benicio: "pt",
 };
 
 /** The demo tool surface, in the builder's order. */
@@ -138,7 +134,7 @@ test("a hold return carries bounded recent history and omits the greeting", asyn
     { role: "assistant" as const, content: "Nice, what is your busiest hour?" },
   ];
   const call = await buildDemoCascadeBody(
-    { voice: "benicio", callId: "call-resume-history", resume: true, history },
+    { voice: "audrey", callId: "call-resume-history", resume: true, history },
     { now: NOW },
   );
 
@@ -146,13 +142,13 @@ test("a hold return carries bounded recent history and omits the greeting", asyn
   assert.deepEqual((call.body as { history?: unknown }).history, history);
   assert.deepEqual(
     call.body.input.language_codes,
-    [LOCALE_BY_VOICE.benicio],
+    [LOCALE_BY_VOICE.audrey],
     "the resumed body keeps the call's Locale",
   );
   // The history is inside the signed body, so a tampered turn changes the hash.
   assert.equal(call.signedBody.envelope.body_hash, call.bodyHash);
   const withoutHistory = await buildDemoCascadeBody(
-    { voice: "benicio", callId: "call-resume-history", resume: true },
+    { voice: "audrey", callId: "call-resume-history", resume: true },
     { now: NOW },
   );
   assert.notEqual(withoutHistory.bodyHash, call.bodyHash);
@@ -234,7 +230,7 @@ test("the demo body carries no tenant fields and one explicit model override", a
 
 test("the module signs a v2 demo envelope and mints the cascade call token", async () => {
   const call = await buildDemoCascadeBody(
-    { voice: "malvina", callId: "call-signed" },
+    { voice: "audrey", callId: "call-signed" },
     { now: NOW },
   );
 
@@ -254,7 +250,7 @@ test("the module signs a v2 demo envelope and mints the cascade call token", asy
       version: 2,
       kind: "demo",
       call_id: "call-signed",
-      agent_id: "demo:malvina",
+      agent_id: "demo:audrey",
       issued_at_ms: NOW,
       expires_at_ms: NOW + BOUNDS.envelopeTtlMs,
     },
@@ -313,6 +309,14 @@ test("an unknown voice is refused by name before anything is signed", async () =
       return true;
     },
   );
+  // Withdrawn demo voices are unknown too: English-only offers no other locale.
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    await assert.rejects(
+      buildDemoCascadeBody({ voice, callId: "call-withdrawn" }, { now: NOW }),
+      UnknownDemoVoice,
+      `${voice} is no longer offered`,
+    );
+  }
 });
 
 test("a missing envelope secret is refused, never defaulted", async () => {
@@ -344,11 +348,11 @@ function hmac(claims: Record<string, unknown>, secret: string): string {
 
 test("the same call id yields a stable body and a fresh envelope", async () => {
   const first = await buildDemoCascadeBody(
-    { voice: "donatien", callId: "call-hold-return" },
+    { voice: "audrey", callId: "call-hold-return" },
     { now: NOW },
   );
   const second = await buildDemoCascadeBody(
-    { voice: "donatien", callId: "call-hold-return" },
+    { voice: "audrey", callId: "call-hold-return" },
     { now: NOW + 1_000 },
   );
 
@@ -369,11 +373,11 @@ test("the same call id yields a stable body and a fresh envelope", async () => {
 
 test("a different call id cannot verify with the first call's claims", async () => {
   const first = await buildDemoCascadeBody(
-    { voice: "jorg", callId: "call-a" },
+    { voice: "audrey", callId: "call-a" },
     { now: NOW },
   );
   const second = await buildDemoCascadeBody(
-    { voice: "jorg", callId: "call-b" },
+    { voice: "audrey", callId: "call-b" },
     { now: NOW },
   );
 

@@ -53,6 +53,7 @@ import {
   DEMO_VOICE_IDS,
   rungInstructions,
 } from "../src/lib/demo/voni-agent";
+import { resolveSubject } from "../src/lib/demo/subject";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VONI_ROOT = resolve(HERE, "..");
@@ -110,10 +111,15 @@ test("both keys present lets the check run", () => {
 // Flags
 // --------------------------------------------------------------------------
 
-test("no flags means the committed German caller clip and its voice", () => {
+test("no flags still names the committed caller clip; the demo roster is English-only", () => {
   const options = parseRealLegsArgs([]);
-  assert.equal(options.voice, "jorg");
+  // The default voice reads the roster: English-only means audrey, and the
+  // no-flags run names a demo subject. The only committed clip is still the
+  // German line (caller audio, replayed against the English agent until an
+  // English clip is committed); an explicit --voice audrey is the same path.
+  assert.equal(options.voice, "audrey");
   assert.ok((DEMO_VOICE_IDS as readonly string[]).includes(options.voice));
+  assert.equal(resolveSubject({ voice: options.voice }).locale, "en");
   assert.equal(options.audioPath, undefined);
   assert.equal(options.baseUrl, undefined);
   assert.equal(options.wsUrl, undefined);
@@ -1022,7 +1028,7 @@ async function runAgainstFake(
   delete process.env.DEMO_LLM_MODEL_OVERRIDE;
   try {
     const options: RealLegsOptions = {
-      voice: "jorg",
+      voice: "audrey",
       timeoutMs: 15_000,
       withResume: true,
       withHangup: false,
@@ -1098,7 +1104,7 @@ test("the call's flow passes every assertion against a fake service", async () =
       "protocolVersion",
       "type",
     ]);
-    assert.equal(service.config()?.agentId, "demo:jorg");
+    assert.equal(service.config()?.agentId, "demo:audrey");
     assert.deepEqual(
       service.contexts(),
       [rungInstructions("nudge")],
