@@ -323,12 +323,21 @@ test("the monthly production job refuses by name rather than inventing a green",
 test("the key gate reports presence by name and never reads a value", () => {
   const script = resolve(REPO, "scripts/demo-fast-keys.sh");
 
+  const KEYS = [
+    "META_API_KEY",
+    "ASSEMBLYAI_API_KEY",
+    "VOICE_PIPELINE_ENVELOPE_SECRET",
+  ] as const;
+
   const run = (keys: Record<string, string>) => {
     const dir = mkdtempSync(join(tmpdir(), "demo-fast-keys-"));
     const output = join(dir, "github-output");
+    const env: NodeJS.ProcessEnv = { ...process.env, GITHUB_OUTPUT: output };
+    for (const name of KEYS) delete env[name];
+    Object.assign(env, keys);
     const stdout = execFileSync("bash", [script], {
       encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "", GITHUB_OUTPUT: output, ...keys },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     return { stdout, outputs: readFileSync(output, "utf8") };

@@ -121,6 +121,7 @@ jobs:
       present: ${{ steps.keys.outputs.present }}
       missing: ${{ steps.keys.outputs.missing }}
     steps:
+      - uses: actions/checkout@v4
       - name: Vendor keys present?
         id: keys
         env:
