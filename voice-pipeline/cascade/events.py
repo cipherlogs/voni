@@ -1474,6 +1474,7 @@ class OperationalEvents:
 TURN_USER_FINAL_EVENT_TYPE = "turn.user_final"
 TURN_REPLY_START_EVENT_TYPE = "turn.reply_start"
 TURN_FIRST_AUDIO_EVENT_TYPE = "turn.first_audio"
+TURN_ACK_EVENT_TYPE = "turn.ack"
 TURN_CUT_EVENT_TYPE = "turn.cut"
 TURN_TOOL_CALL_EVENT_TYPE = "turn.tool_call"
 TURN_TOOL_RESULT_EVENT_TYPE = "turn.tool_result"
@@ -1483,6 +1484,10 @@ TURN_HANGUP_EVENT_TYPE = "turn.hangup"
 #: Why a sounding reply was cut. Closed, so a reason cannot become a channel
 #: for caller text.
 CUT_REASONS = ("barge_in",)
+
+#: The longest cover line the ledger accepts. An ack is one short sound, not a
+#: sentence, so an over-long value is caller text dressed as a cover.
+ACK_LINE_MAX_CHARS = 40
 
 #: Why the turn closed and the call drained. Closed for the same reason.
 DRAIN_REASONS = ("end_call", "caller_end")
@@ -1655,6 +1660,38 @@ class TurnLedger:
                 turn=turn,
                 phase="turn",
                 fields={"seq": _count_field("seq", seq)},
+                at_ms=at_ms,
+            ),
+        )
+
+    def ack(
+        self,
+        turn: str,
+        *,
+        line: str,
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """The exact cover line the caller heard, and the turn it covered.
+
+        The ack is never captioned, so the transcript cannot prove which sound
+        was spoken; this row is that proof. ``line`` is the agent's own cover
+        text from the closed palette, never the caller's words — the one
+        sanitizer forbids the key ``text`` outright, which is why the field is
+        named ``line``.
+        """
+        line = _text_field("line", line)
+        if len(line) > ACK_LINE_MAX_CHARS:
+            raise EventEnvelopeError(
+                "line",
+                f"the cover line is longer than {ACK_LINE_MAX_CHARS} characters",
+            )
+        return self._once(
+            (TURN_ACK_EVENT_TYPE, turn, line),
+            lambda: self._call(
+                TURN_ACK_EVENT_TYPE,
+                turn=turn,
+                phase="turn",
+                fields={"line": line},
                 at_ms=at_ms,
             ),
         )

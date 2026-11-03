@@ -69,6 +69,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from cascade.ack import ack_line
 from cascade.assemblyai_tts import split_sentences
 from cascade.end_intent import wants_to_end
 from cascade.event_rules import EventKind, EventRules
@@ -458,7 +459,9 @@ class CascadeTurnStream:
         )
         #: One ack watcher per reply; never spoken as the reply or captioned.
         self._ack_task: asyncio.Task | None = None
-        self._ack_index = 0
+        #: The last line the caller actually heard, so two consecutive turns
+        #: never repeat the same sound even when they read the same tone.
+        self._last_ack: str | None = None
         #: Serialises the ack and the reply on the one synthesis session.
         self._voice_lock = asyncio.Lock()
 
@@ -773,11 +776,20 @@ class CascadeTurnStream:
             return
         self._carried_final = f"{self._carried_final} {fragment}".strip()
 
-    def _caller_text(self, state: TurnState) -> str:
-        """The caller's words for this turn, with any carried fragment merged."""
+    def _peek_caller_text(self, state: TurnState) -> str:
+        """The caller's words for this turn, without consuming the fragment.
+
+        The ack is chosen from the final before ``_reply`` merges the carried
+        fragment into it, so the peek must read the same words without clearing
+        what the reply still needs.
+        """
         if not self._carried_final:
             return state.final_text
-        merged = f"{self._carried_final} {state.final_text}".strip()
+        return f"{self._carried_final} {state.final_text}".strip()
+
+    def _caller_text(self, state: TurnState) -> str:
+        """The caller's words for this turn, with any carried fragment merged."""
+        merged = self._peek_caller_text(state)
         self._carried_final = ""
         return merged
 
@@ -800,7 +812,9 @@ class CascadeTurnStream:
         if self._ledger is not None:
             self._ledger.mark("floor_take")
         if self._ack_lines:
-            self._ack_task = asyncio.ensure_future(self._ack_if_slow())
+            self._ack_task = asyncio.ensure_future(
+                self._ack_if_slow(state.id.event_id, self._peek_caller_text(state))
+            )
         await self._reply(state)
 
     async def _merge_fragment(self, state: TurnState) -> None:
@@ -1486,12 +1500,18 @@ class CascadeTurnStream:
         if self._on_interrupted is not None:
             await self._on_interrupted()
 
-    async def _ack_if_slow(self) -> None:
+    async def _ack_if_slow(self, turn: str, caller_text: str) -> None:
         """Speak one short line if the reply has not started by the bound.
 
         The ack is not a turn: it writes no reply text, sends no caption and
         makes no model or tool request. It holds the voice lock only while its
         own short line plays, so the reply follows it instead of overlapping.
+
+        The line is chosen from the caller's final: the same sound does not fit
+        a complaint and a question, so the tone picks the group and the previous
+        line is excluded. Because the ack is never captioned, the exact line is
+        written to the turn ledger when its first frame reaches the wire: that
+        row is the only proof of what the caller heard.
         """
         if not self._ack_lines:
             return
@@ -1501,15 +1521,26 @@ class CascadeTurnStream:
             return
         if self._ending or self._speaking or self._reply_text.strip():
             return
-        line = self._ack_lines[self._ack_index % len(self._ack_lines)]
-        self._ack_index += 1
+        line = ack_line(
+            self._locale_code,
+            caller_text,
+            previous=self._last_ack,
+            lines=self._ack_lines,
+        )
+        if line is None:
+            return
         if self._may_request is not None and not self._may_request("tts"):
             return
         async with self._voice_lock:
             if self._ending or self._speaking or self._reply_text.strip():
                 return
             try:
+                recorded = False
                 async for audio in self._tts.speak(line):
+                    if not recorded:
+                        recorded = True
+                        self._last_ack = line
+                        self._write_turn_row("ack", turn, line=line)
                     await self._emit_audio(
                         audio, kind="ack", flush_id=getattr(self._tts, "flush_id", None)
                     )
