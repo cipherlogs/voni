@@ -127,26 +127,9 @@ jobs:
           META_API_KEY: ${{ secrets.META_API_KEY }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           VOICE_PIPELINE_ENVELOPE_SECRET: ${{ secrets.VOICE_PIPELINE_ENVELOPE_SECRET }}
-        run: |
-          missing=""
-          if [ -z "$META_API_KEY" ]; then missing="META_API_KEY"; fi
-          if [ -z "$ASSEMBLYAI_API_KEY" ]; then
-            if [ -n "$missing" ]; then missing="$missing, "; fi
-            missing="${missing}ASSEMBLYAI_API_KEY"
-          fi
-          if [ -z "$VOICE_PIPELINE_ENVELOPE_SECRET" ]; then
-            if [ -n "$missing" ]; then missing="$missing, "; fi
-            missing="${missing}VOICE_PIPELINE_ENVELOPE_SECRET"
-          fi
-          if [ -n "$missing" ]; then
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "missing=$missing" >> "$GITHUB_OUTPUT"
-            echo "SKIPPED: the demo fast contract made no call — missing vendor keys: $missing."
-          else
-            echo "present=true" >> "$GITHUB_OUTPUT"
-            echo "missing=" >> "$GITHUB_OUTPUT"
-            echo "vendor keys present: the demo fast contract will run."
-          fi
+        # The key names live in the script: a vendor key may appear in this
+        # workflow only as an expression (test_nightly_smoke enforces it).
+        run: bash scripts/demo-fast-keys.sh
 
   # Keys alone are not sufficient for a real run: VONI_APP_URL and
   # VOICE_PIPELINE_URL must also point at a loopback app (with the dev capture

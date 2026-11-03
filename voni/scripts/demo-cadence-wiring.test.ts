@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -316,4 +318,38 @@ test("the monthly production job refuses by name rather than inventing a green",
   assert.match(monthly, /demo:verify -- --full --target production/);
   assert.match(monthly, /demo-gate-report\.mjs full/);
   assert.match(monthly, /demo:cutover -- --monthly/);
+});
+
+test("the key gate reports presence by name and never reads a value", () => {
+  const script = resolve(REPO, "scripts/demo-fast-keys.sh");
+
+  const run = (keys: Record<string, string>) => {
+    const dir = mkdtempSync(join(tmpdir(), "demo-fast-keys-"));
+    const output = join(dir, "github-output");
+    const stdout = execFileSync("bash", [script], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "", GITHUB_OUTPUT: output, ...keys },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { stdout, outputs: readFileSync(output, "utf8") };
+  };
+
+  const absent = run({});
+  assert.match(absent.stdout, /^SKIPPED: the demo fast contract made no call/);
+  assert.match(absent.outputs, /^present=false$/m);
+  assert.match(
+    absent.outputs,
+    /^missing=META_API_KEY, ASSEMBLYAI_API_KEY, VOICE_PIPELINE_ENVELOPE_SECRET$/m,
+  );
+  // The message names what is missing; it must never echo a value.
+  assert.doesNotMatch(absent.stdout, /present=true/);
+
+  const present = run({
+    META_API_KEY: "value-a",
+    ASSEMBLYAI_API_KEY: "value-b",
+    VOICE_PIPELINE_ENVELOPE_SECRET: "value-c",
+  });
+  assert.match(present.stdout, /vendor keys present/);
+  assert.match(present.outputs, /^present=true$/m);
+  assert.doesNotMatch(present.stdout, /value-[abc]/);
 });
