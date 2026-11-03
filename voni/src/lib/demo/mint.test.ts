@@ -20,6 +20,11 @@ import { VONI_GREETINGS } from "./voni-agent";
  */
 
 process.env.VOICE_PIPELINE_ENVELOPE_SECRET = "test-only-envelope-secret";
+// The demo body always names its model, so the builder reads the Meta key the
+// override carries. This is a fake; nothing here reaches a vendor.
+process.env.META_API_KEY = "test-meta-key";
+delete process.env.META_REASONING_EFFORT;
+delete process.env.DEMO_LLM_MODEL_OVERRIDE;
 
 const KEY = "test-only-demo-call-key";
 const ENVELOPE_SECRET = "test-only-envelope-secret";

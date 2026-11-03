@@ -74,7 +74,11 @@ from cascade import llm_override
 from cascade.body_map import LlmOverride
 from cascade.failures import FailureClass, FailureVerdict, classify
 from cascade.ladders import CallRungs, ProviderAttribution
-from cascade.model_guard import resolve_model
+from cascade.model_guard import (
+    ModelGuardError,
+    assert_override_model,
+    resolve_model,
+)
 from cascade.reconnect import (
     RECONNECTS_PER_LEG,
     ReconnectAction,
@@ -210,6 +214,16 @@ def byo_provider(base_url: str, model: str) -> str:
     """
     host = urlsplit(base_url).netloc
     return f"{host}/{model}"
+
+
+def _is_meta_base_url(base_url: str) -> bool:
+    """Whether an override points at Meta's own API rather than a tenant host.
+
+    Only that path is a Meta model choice; a tenant's own OpenAI-compatible
+    host may name any model it serves, and the Standard-only guard has never
+    applied to it.
+    """
+    return urlsplit(base_url).hostname == urlsplit(META_BASE_URL).hostname
 
 
 def _byo_reasoning_effort(value: str | None) -> str | None:
@@ -1768,6 +1782,14 @@ class MetaLLM(LLMStream):
                     f"{error.reason}"
                 ) from None
             base_url = override.base_url
+            # A stored-body entry may name a Meta model the default rung
+            # refuses (muse-wonder-1.0). Only this explicit path reaches the
+            # override allowlist; the Standard rung still calls resolve_model.
+            if _is_meta_base_url(base_url):
+                try:
+                    assert_override_model(override.model)
+                except ModelGuardError as error:
+                    raise ByoLlmError(str(error)) from None
             self._model = override.model
             self._reasoning_effort = override.reasoning_effort
             # A tenant's key comes from the signed body only; the Meta key is

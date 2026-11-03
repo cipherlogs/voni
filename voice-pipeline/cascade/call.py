@@ -113,7 +113,13 @@ from typing import Any, Protocol
 
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
 from cascade.breaker import LEGS
-from cascade.cost import CallCost, LegCost as PricedLeg, RateTable, cost_call
+from cascade.cost import (
+    CallCost,
+    LegCost as PricedLeg,
+    RateTable,
+    cost_call,
+    cost_table_for_llm_model,
+)
 from cascade.counter import limit_amount
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
@@ -1108,10 +1114,12 @@ class CallCeiling:
         limit: Any,
         *,
         table: RateTable | None = None,
+        llm_model: str | None = None,
         bound: str = CEILING_BOUND,
     ) -> None:
         self.ceiling = _ceiling_limit(limit)
         self.table = table
+        self.llm_model = llm_model
         self.bound = bound
         self._stopped = False
 
@@ -1123,7 +1131,9 @@ class CallCeiling:
         """``None`` while the call is inside the ceiling; a stop once it is not."""
         if self._stopped:
             return None
-        priced = cost_call(meter.usage(), table=self.table)
+        priced = cost_call(
+            meter.usage(), table=self.table, llm_model=self.llm_model
+        )
         measured = [
             leg.amount for leg in priced.legs if leg.amount is not None
         ]
@@ -1235,6 +1245,15 @@ class CallLifecycle:
         # units; without one the call still meters, so a real call cannot end
         # with a fabricated zero.
         self.usage_meter = usage_meter if usage_meter is not None else UsageMeter()
+        # The model this call's stream serves selects its priced table: a demo
+        # override may cite a newer version, and both the live ceiling and the
+        # end-of-call row must read the same one. An unpriced model keeps the
+        # default table and is recorded unmeasured, never at Spark's rate.
+        model = getattr(self._stream, "model", None)
+        self._llm_model = model if isinstance(model, str) and model else None
+        required = cost_table_for_llm_model(self._llm_model)
+        if cost_table is None or cost_table.version < required.version:
+            cost_table = required
         self._cost_table = cost_table
         #: Turns whose vendor usage this call has already recorded, so a live
         #: ceiling check and the end-of-call meter cannot count one turn twice.
@@ -2515,7 +2534,11 @@ class CallLifecycle:
             # A routing-only budget line cannot be charged; it is not an error.
             return
         try:
-            priced = cost_call(self.usage_meter.usage(), table=self._cost_table)
+            priced = cost_call(
+                self.usage_meter.usage(),
+                table=self._cost_table,
+                llm_model=self._llm_model,
+            )
         except Exception:
             _log.exception("the day's cost could not be priced; the call continues")
             return
@@ -2560,7 +2583,9 @@ class CallLifecycle:
                 if self._ceiling_usd is not None
                 else require_bound(CEILING_BOUND)
             )
-            self._ceiling = CallCeiling(limit, table=self._cost_table)
+            self._ceiling = CallCeiling(
+                limit, table=self._cost_table, llm_model=self._llm_model
+            )
             self._ceiling_loaded = True
         assert self._ceiling is not None
         return self._ceiling
@@ -2678,7 +2703,11 @@ class CallLifecycle:
                 )
         try:
             call_usage = self.usage_meter.usage()
-            priced = cost_call(call_usage, table=self._cost_table)
+            priced = cost_call(
+                call_usage,
+                table=self._cost_table,
+                llm_model=self._llm_model,
+            )
         except Exception as error:
             return CostSummary.unmeasured(
                 f"the cost cannot be priced: {type(error).__name__}: {error}"

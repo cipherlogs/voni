@@ -153,5 +153,63 @@ class CallerNamedErrorsTests(unittest.TestCase):
         self.assertIn("http(s)", str(caught.exception))
 
 
+class DemoTicketModelABTests(unittest.TestCase):
+    """The explicit override is the only door to muse-wonder-1.0."""
+
+    def test_a_meta_override_may_name_wonder(self):
+        override = llm_override.LlmOverride(
+            base_url="https://api.meta.ai/v1",
+            model="muse-wonder-1.0",
+            api_key=API_KEY,
+            reasoning_effort="minimal",
+        )
+
+        client = build_byo_client(override)
+
+        self.assertEqual(client.model, "muse-wonder-1.0")
+
+    def test_a_meta_override_may_not_name_an_unlisted_model(self):
+        override = llm_override.LlmOverride(
+            base_url="https://api.meta.ai/v1",
+            model="muse-spark-2.0",
+            api_key=API_KEY,
+        )
+
+        with self.assertRaises(ByoLlmError) as caught:
+            build_byo_client(override)
+
+        self.assertIn("muse-spark-2.0", str(caught.exception))
+        self.assertIn("not an allowed Meta override", str(caught.exception))
+
+    def test_a_meta_override_may_not_name_a_contributor_id(self):
+        override = llm_override.LlmOverride(
+            base_url="https://api.meta.ai/v1",
+            model="muse-wonder-1.0-contributor",
+            api_key=API_KEY,
+        )
+
+        with self.assertRaises(ByoLlmError) as caught:
+            build_byo_client(override)
+
+        self.assertIn("Contributor", str(caught.exception))
+
+    def test_a_tenant_host_is_not_subject_to_the_meta_override_allowlist(self):
+        # The tenant's own OpenAI-compatible host serves its own catalogue; the
+        # Meta gate must not narrow ticket 159's tenant path.
+        override = llm_override.LlmOverride(
+            base_url="https://models.example/v1",
+            model="openai/gpt-4.1-nano",
+            api_key=API_KEY,
+        )
+
+        self.assertEqual(build_byo_client(override).model, "openai/gpt-4.1-nano")
+
+    def test_the_standard_constructor_still_refuses_wonder(self):
+        with self.assertRaises(ValueError) as caught:
+            MetaLLM(api_key=API_KEY, model="muse-wonder-1.0")
+
+        self.assertIn("muse-wonder-1.0", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

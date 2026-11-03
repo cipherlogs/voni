@@ -1008,6 +1008,13 @@ async function runAgainstFake(
   const target = resolveTargets({ baseUrl: service.httpBase });
   const previous = process.env.VOICE_PIPELINE_ENVELOPE_SECRET;
   process.env.VOICE_PIPELINE_ENVELOPE_SECRET = TEST_SECRET;
+  // The demo body always names its model (ADR-0014), and the app's builder reads
+  // the Meta key from `process.env`; the options' own `env` map is the fake
+  // service's, not the builder's. These are fakes and no vendor is reached.
+  const previousMeta = process.env.META_API_KEY;
+  const previousModel = process.env.DEMO_LLM_MODEL_OVERRIDE;
+  process.env.META_API_KEY = "meta-test";
+  delete process.env.DEMO_LLM_MODEL_OVERRIDE;
   try {
     const options: RealLegsOptions = {
       voice: "jorg",
@@ -1031,6 +1038,10 @@ async function runAgainstFake(
   } finally {
     if (previous === undefined) delete process.env.VOICE_PIPELINE_ENVELOPE_SECRET;
     else process.env.VOICE_PIPELINE_ENVELOPE_SECRET = previous;
+    if (previousMeta === undefined) delete process.env.META_API_KEY;
+    else process.env.META_API_KEY = previousMeta;
+    if (previousModel === undefined) delete process.env.DEMO_LLM_MODEL_OVERRIDE;
+    else process.env.DEMO_LLM_MODEL_OVERRIDE = previousModel;
   }
 }
 

@@ -17,6 +17,12 @@ import { loadCorpus } from "@/lib/demo/verification/scenarios";
 import { runProtocolCall } from "./transport";
 import { removeTree, writeCorpus } from "./fixtures";
 
+// The demo body always names its model (owner decision 2026-11-03), so the
+// builder reads the Meta key the override carries. This is a fake; the
+// scripted socket never reaches a vendor.
+process.env.META_API_KEY = "test-meta-key";
+delete process.env.DEMO_LLM_MODEL_OVERRIDE;
+
 function audioMessage(samples = 128): string {
   const pcm = Buffer.alloc(samples * 2);
   for (let index = 0; index < samples; index += 1) {

@@ -206,6 +206,33 @@ class CeilingTests(unittest.TestCase):
             json.loads(json.dumps(document))["budget"]["mark"],
         )
 
+    def test_the_ceiling_prices_a_wonder_call_on_its_own_rates(self):
+        # The demo's model is muse-wonder-1.0 (owner decision 2026-11-03). Its
+        # 100,000 prompt tokens cost USD 0.40 at the v2 input rate, over the
+        # USD 0.25 ceiling; the default model's rate would be USD 0.125 and would
+        # not stop the call. A ceiling that borrowed Spark's rate is too loose.
+        stream = DeliverThenReport(
+            {
+                "t1": TurnUsage(
+                    prompt_tokens=100_000,
+                    completion_tokens=0,
+                    cached_tokens=0,
+                    reasoning_tokens=0,
+                    measured=True,
+                )
+            }
+        )
+        stream.model = "muse-wonder-1.0"
+        lifecycle = self.make(
+            transport=LiveTransport(), stream=stream, ceiling_usd=0.25
+        )
+
+        end = self.run_call(lifecycle)
+
+        self.assertEqual("budget", end.ended_by)
+        self.assertEqual(Decimal("0.4"), end.budget.spend_usd)
+        self.assertEqual("cascade-vendor-rates v2", end.cost.rate_table_version)
+
     def test_an_unmeasured_cost_takes_no_false_stop_and_is_never_zero(self):
         stream = DeliverThenReport({"t1": TurnUsage.unmeasured()})
         lifecycle = self.make(

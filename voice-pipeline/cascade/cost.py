@@ -69,8 +69,15 @@ DETAIL_UNITS: dict[str, str] = {
 
 _DATE_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RATE_FIELDS = frozenset(
-    {"leg", "unit", "usd_per_unit", "source", "url", "date", "note"}
+    {"leg", "unit", "usd_per_unit", "source", "url", "date", "note", "model"}
 )
+
+#: The model whose rates are the table's unscoped ``llm.<unit>`` keys.
+DEFAULT_LLM_MODEL = "muse-spark-1.3"
+
+#: Models whose llm rates are declared by this table version, scoped by model.
+#: A model absent here is unmeasured, never priced at the default model's rates.
+MODEL_RATE_VERSIONS: dict[str, int] = {"muse-wonder-1.0": 2}
 _TABLE_FIELDS = frozenset(
     {"schema", "name", "version", "currency", "date", "note", "rates"}
 )
@@ -117,6 +124,8 @@ class Rate:
     url: str
     date: str
     note: str = ""
+    #: Set only on a model-scoped llm rate; absent means the default model.
+    model: str | None = None
 
     @property
     def open(self) -> bool:
@@ -242,9 +251,20 @@ def _parse_rate(key: str, raw: Any) -> Rate:
         )
     leg = _text(raw, key, "leg")
     unit = _text(raw, key, "unit")
-    if key != f"{leg}.{unit}":
+    model = raw.get("model")
+    if model is not None:
+        if not isinstance(model, str) or not model.strip():
+            raise RateTableError(
+                f"rate {key!r} has a non-string or blank model"
+            )
+        model = model.strip()
+    expected_key = f"{leg}.{unit}" if model is None else f"{leg}.{model}.{unit}"
+    if key != expected_key:
         raise RateTableError(
             f"rate {key!r} must be keyed as '<leg>.<unit>', got {leg!r}.{unit!r}"
+            if model is None
+            else f"rate {key!r} must be keyed as '<leg>.<model>.<unit>', got "
+            f"{leg!r}.{model!r}.{unit!r}"
         )
     note = raw.get("note", "")
     if not isinstance(note, str):
@@ -271,6 +291,7 @@ def _parse_rate(key: str, raw: Any) -> Rate:
             url="",
             date="",
             note=note,
+            model=model,
         )
 
     source = _text(raw, key, "source")
@@ -289,6 +310,7 @@ def _parse_rate(key: str, raw: Any) -> Rate:
         url=url,
         date=date,
         note=note,
+        model=model,
     )
 
 
@@ -513,7 +535,24 @@ def _billed_quantities(
     return billed, ""
 
 
-def _price_leg(leg: str, units: Units, table: RateTable) -> LegCost:
+def _model_scope(leg: str, table: RateTable, model: str | None) -> str | None:
+    """The model whose scoped llm rates this leg must use, or ``None``.
+
+    The default model's rates are the table's unscoped ``llm.<unit>`` keys. A
+    non-default model is priced only from its own scoped keys; if the table
+    declares none, the leg is unmeasured rather than priced at Spark's rate.
+    """
+    if leg != "llm" or model is None or model == DEFAULT_LLM_MODEL:
+        return None
+    prefix = f"llm.{model}."
+    if any(rate.key.startswith(prefix) for rate in table.rates()):
+        return model
+    return ""
+
+
+def _price_leg(
+    leg: str, units: Units, table: RateTable, model: str | None = None
+) -> LegCost:
     if not units.units:
         return LegCost(
             leg,
@@ -521,10 +560,22 @@ def _price_leg(leg: str, units: Units, table: RateTable) -> LegCost:
             reasons=(f"the meter recorded no units for the {leg} leg",),
         )
 
+    scope = _model_scope(leg, table, model)
+    if scope == "":
+        return LegCost(
+            leg,
+            None,
+            reasons=(
+                f"{table.name} v{table.version} declares no rate for model "
+                f"{model!r}; an unpriced model is unmeasured, never priced at "
+                f"{DEFAULT_LLM_MODEL}'s rate",
+            ),
+        )
+
     reasons: list[str] = []
     rates: dict[str, Rate] = {}
     for unit in units.units:
-        key = f"{leg}.{unit.name}"
+        key = f"{leg}.{scope}.{unit.name}" if scope else f"{leg}.{unit.name}"
         rate = table.get(key)
         if rate is None:
             reasons.append(f"{table.name} v{table.version} declares no rate for {key}")
@@ -559,16 +610,42 @@ def _price_leg(leg: str, units: Units, table: RateTable) -> LegCost:
     return LegCost(leg, sum((line.amount for line in lines), Decimal(0)), lines)
 
 
-def cost_call(call_usage: CallUsage, *, table: RateTable | None = None) -> CallCost:
+def cost_table_for_llm_model(model: str | None) -> RateTable:
+    """The rate-table version that declares this model's llm prices.
+
+    Spark is the default table's model. A model with scoped rates cites the
+    version that declares them; an unpriced model keeps the default table and
+    ``cost_call`` records its llm leg unmeasured.
+    """
+    version = MODEL_RATE_VERSIONS.get(model or "")
+    return RATE_TABLE if version is None else load_rate_table(version=version)
+
+
+def cost_call(
+    call_usage: CallUsage,
+    *,
+    table: RateTable | None = None,
+    llm_model: str | None = None,
+) -> CallCost:
     """Price every recorded unit of one call against one rate-table version.
 
     Pricing never reads a vendor frame and never estimates a quantity: it
     multiplies ticket 100's recorded units by this table's rates. An unmeasured
     unit, a missing rate or an OPEN rate makes that leg unmeasured and names the
-    reason; no leg is ever defaulted to zero.
+    reason; no leg is ever defaulted to zero. ``llm_model`` selects that
+    model's scoped llm rates; a model the table does not price leaves the llm
+    leg unmeasured instead of borrowing the default model's rate.
     """
     selected = RATE_TABLE if table is None else table
     return CallCost(
         selected,
-        tuple(_price_leg(leg, units, selected) for leg, units in call_usage.legs),
+        tuple(
+            _price_leg(
+                leg,
+                units,
+                selected,
+                llm_model if leg == "llm" else None,
+            )
+            for leg, units in call_usage.legs
+        ),
     )
