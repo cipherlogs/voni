@@ -1,3 +1,5 @@
+import type { ReviewTurnRating } from "./review-ratings";
+
 /**
  * Ticket 08 fix gate: the owner marks each fix fixed or not-fixed with the
  * still-broken feeling named, so a retry changes behaviour instead of
@@ -37,10 +39,12 @@ export type FixGateInput = {
   callId?: string;
 };
 
-/** The repro the next fix reads: the named feeling plus the reviewed call. */
+/** The repro the next fix replays: the named feeling plus the bad turns. */
 export type FixGateRepro = {
   stillBroken: string;
   callId: string;
+  /** The reviewed call's unaddressed bad turns, read live from the ratings. */
+  badTurns: ReviewTurnRating[];
 };
 
 /** The artifact written beside marks + delivered capture for the fix. */
@@ -72,12 +76,22 @@ function cleanVerdict(value: unknown): FixVerdict {
 export type FixGateStore = {
   recordFix: (input: FixGateInput) => FixGateRecord;
   getFix: (fixId: string) => FixGateRecord | null;
-  /** True only when the fix is marked fixed; unrated never advances. */
+  /**
+   * True only when the fix is marked fixed against a reviewed call; an
+   * unrated fix (no call id) never advances, so the next fix cannot start
+   * on an unheard feeling.
+   */
   canAdvance: (fixId: string) => boolean;
   /** True when the fix is marked not-fixed: it stays open, gating its successor. */
   blocksNext: (fixId: string) => boolean;
-  /** The named feeling plus the reviewed call the next fix replays as its repro. */
-  reproForNextFix: (fixId: string) => FixGateRepro | null;
+  /**
+   * The named feeling plus the reviewed call's unaddressed bad turns, the
+   * repro the next fix replays. Null unless the fix is not-fixed on a call.
+   */
+  reproForNextFix: (
+    fixId: string,
+    ratings: { unaddressedBadTurns(callId: string): ReviewTurnRating[] },
+  ) => FixGateRepro | null;
   toArtifact: (fixId: string) => FixGateArtifact;
 };
 
@@ -117,18 +131,23 @@ export function createFixGate(now: () => Date = () => new Date()): FixGateStore 
     },
 
     canAdvance(fixId) {
-      return records.get(fixId.trim())?.verdict === "fixed";
+      const record = records.get(fixId.trim());
+      return record?.verdict === "fixed" && record.callId !== null;
     },
 
     blocksNext(fixId) {
       return records.get(fixId.trim())?.verdict === "not-fixed";
     },
 
-    reproForNextFix(fixId) {
+    reproForNextFix(fixId, ratings) {
       const record = records.get(fixId.trim());
       if (!record || record.verdict !== "not-fixed") return null;
       if (record.callId === null) return null;
-      return { stillBroken: record.stillBroken, callId: record.callId };
+      return {
+        stillBroken: record.stillBroken,
+        callId: record.callId,
+        badTurns: ratings.unaddressedBadTurns(record.callId),
+      };
     },
 
     toArtifact(fixId) {
@@ -141,11 +160,6 @@ export function createFixGate(now: () => Date = () => new Date()): FixGateStore 
       };
     },
   };
-}
-
-/** Append-only fix record without holding a store (overlay sink seam). */
-export function recordFixGate(store: FixGateStore, input: FixGateInput): FixGateRecord {
-  return store.recordFix(input);
 }
 
 /**

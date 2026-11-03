@@ -4,12 +4,17 @@ import { useMemo, useState } from "react";
 import {
   canSaveFixGate,
   createFixGate,
+  type FixGateArtifact,
+  type FixGateStore,
   type FixVerdict,
 } from "@/lib/demo/fix-gate";
 import {
   REVIEW_TAGS,
   createReviewRatings,
+  saveReviewRatings,
   type LatencySplitSummary,
+  type ReviewRatingsSink,
+  type ReviewRatingsStore,
   type ReviewTag,
   type ReviewVerdict,
 } from "@/lib/demo/review-ratings";
@@ -108,12 +113,28 @@ function VerdictButtons({
  * advance. The retry reads the named feeling plus the reviewed call's
  * unaddressed bad records as its repro.
  */
-export function FixGateSection({ fixId, callId }: { fixId: string; callId: string }) {
-  const gate = useMemo(() => createFixGate(), []);
+export function FixGateSection({
+  fixId,
+  callId,
+  gate,
+  onSave,
+}: {
+  fixId: string;
+  callId: string;
+  /**
+   * The gate store lifted by the host; a per-mount store is owned here only
+   * when the host passes none, so a remount never silently drops the marks.
+   */
+  gate?: FixGateStore;
+  /** Receives the gate artifact so the host can serialize it beside the marks. */
+  onSave?: (artifact: FixGateArtifact) => void;
+}) {
+  const owned = useMemo(() => createFixGate(), []);
+  const gateStore = gate ?? owned;
   const [verdict, setVerdict] = useState<FixVerdict | null>(null);
   const [stillBroken, setStillBroken] = useState("");
   const [saved, setSaved] = useState(false);
-  const savedRecord = saved ? gate.getFix(fixId) : null;
+  const savedRecord = saved ? gateStore.getFix(fixId) : null;
 
   return (
     <div>
@@ -144,8 +165,9 @@ export function FixGateSection({ fixId, callId }: { fixId: string; callId: strin
         disabled={!canSaveFixGate(verdict, stillBroken) || saved}
         onClick={() => {
           if (verdict === null || saved) return;
-          gate.recordFix({ fixId, verdict, stillBroken, callId });
+          gateStore.recordFix({ fixId, verdict, stillBroken, callId });
           setSaved(true);
+          onSave?.(gateStore.toArtifact(fixId));
         }}
       >
         Save fix mark
@@ -162,13 +184,30 @@ export function ReviewOverlay({
   callId,
   turns,
   fixId,
+  store,
+  gate,
+  onRatingsSave,
+  onGateSave,
 }: {
   callId: string;
   turns: ReviewOverlayTurn[];
   /** The fix under review; when null the gate section stays hidden. */
   fixId?: string | null;
+  /**
+   * The ratings store lifted by the host; a per-mount store is owned here
+   * only when the host passes none. Every save also flows through
+   * `onRatingsSave` so the artifact lands beside the marks.
+   */
+  store?: ReviewRatingsStore;
+  /** Lifted gate store for the fix section; owned per-mount when absent. */
+  gate?: FixGateStore;
+  /** Beside-marks sink for the ratings artifact, after every save. */
+  onRatingsSave?: ReviewRatingsSink;
+  /** Beside-marks sink for the gate artifact. */
+  onGateSave?: (artifact: FixGateArtifact) => void;
 }) {
-  const store = useMemo(() => createReviewRatings(), []);
+  const owned = useMemo(() => createReviewRatings(), []);
+  const storeRef = store ?? owned;
   const [startVerdict, setStartVerdict] = useState<ReviewVerdict | null>(null);
   const [startNote, setStartNote] = useState("");
   const [startSaved, setStartSaved] = useState(false);
@@ -188,7 +227,7 @@ export function ReviewOverlay({
     <section aria-label="Review overlay">
       <h2>Review: {callId}</h2>
 
-      {fixId ? <FixGateSection fixId={fixId} callId={callId} /> : null}
+      {fixId ? <FixGateSection fixId={fixId} callId={callId} gate={gate} onSave={onGateSave} /> : null}
 
       <div>
         <h3>Start rating</h3>
@@ -207,8 +246,9 @@ export function ReviewOverlay({
           disabled={startVerdict === null || startSaved}
           onClick={() => {
             if (startVerdict === null) return;
-            store.recordStart({ callId, verdict: startVerdict, note: startNote });
+            storeRef.recordStart({ callId, verdict: startVerdict, note: startNote });
             setStartSaved(true);
+            if (onRatingsSave) saveReviewRatings(storeRef, callId, onRatingsSave);
           }}
         >
           Save start rating
@@ -254,7 +294,7 @@ export function ReviewOverlay({
                   disabled={!canSave}
                   onClick={() => {
                     if (draft.verdict === null || draft.tag === null) return;
-                    store.recordTurn({
+                    storeRef.recordTurn({
                       callId,
                       turnId: turn.turnId,
                       verdict: draft.verdict,
@@ -264,6 +304,7 @@ export function ReviewOverlay({
                       split: turn.split,
                     });
                     setDraft(turn.turnId, { saved: true });
+                    if (onRatingsSave) saveReviewRatings(storeRef, callId, onRatingsSave);
                   }}
                 >
                   Save rating

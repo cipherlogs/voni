@@ -238,28 +238,6 @@ def cover_line(
     return candidates[_stable_offset(caller_text) % len(candidates)]
 
 
-def ack_line(
-    locale: str | None,
-    caller_text: str = "",
-    *,
-    previous: str | None = None,
-    lines: Sequence[str] | None = None,
-) -> str | None:
-    """Choose one line for this final, never repeating ``previous``.
-
-    ``lines`` lets the turn layer pass the palette it was configured with (a
-    test or a tenant may inject its own); the Locale's tone groups still decide
-    which of those lines may answer, and if none of them belongs to the allowed
-    groups (an injected palette outside the standard one) the whole palette is
-    used. The choice is deterministic for one final: the same words and the same
-    previous line always yield the same next line, and a second consecutive turn
-    with the same words moves to a different line.
-    """
-    return cover_line(
-        locale, caller_text, previous=previous, lines=lines, tone=...
-    )
-
-
 def judge_timeout_s(default: float = _JUDGE_TIMEOUT_FALLBACK_S) -> float:
     """The fast-judge time cap in seconds, from the bounds registry when present."""
     try:
@@ -268,6 +246,28 @@ def judge_timeout_s(default: float = _JUDGE_TIMEOUT_FALLBACK_S) -> float:
         return float(require_bound(JUDGE_TIMEOUT_BOUND)) / 1000.0
     except Exception:
         return default
+
+
+def resolve_tone_result(
+    caller_text: str,
+    judge_result: Any,
+    *,
+    timed_out: bool = False,
+    failed: bool = False,
+) -> str | None:
+    """The single tone resolver both judge seams share.
+
+    ``judge_result`` is what the judge returned (tone-or-None). Timeouts and
+    failures fail open to the hash; a judge ``None`` is obeyed silence, never
+    a fallback; an unknown tone name fails open to the hash.
+    """
+    if timed_out or failed:
+        return ack_tone(caller_text)
+    if judge_result is None:
+        return None
+    if judge_result not in _JUDGE_TONES:
+        return ack_tone(caller_text)
+    return judge_result
 
 
 async def resolve_cover_tone(
@@ -290,11 +290,7 @@ async def resolve_cover_tone(
         return ack_tone(caller_text)
     except Exception:
         return ack_tone(caller_text)
-    if picked is None:
-        return None
-    if picked not in _JUDGE_TONES:
-        return ack_tone(caller_text)
-    return picked
+    return resolve_tone_result(caller_text, picked)
 
 
 def resolve_cover_tone_sync(
@@ -309,10 +305,6 @@ def resolve_cover_tone_sync(
     ``judge_result`` is what the judge returned (tone-or-None). Timeouts and
     failures fail open to the hash; ``None`` is obeyed silence.
     """
-    if timed_out or failed:
-        return ack_tone(caller_text)
-    if judge_result is None:
-        return None
-    if judge_result not in _JUDGE_TONES:
-        return ack_tone(caller_text)
-    return judge_result
+    return resolve_tone_result(
+        caller_text, judge_result, timed_out=timed_out, failed=failed
+    )

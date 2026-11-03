@@ -10,8 +10,7 @@ import {
   REVIEW_RATING_SCHEMA_VERSION,
   REVIEW_TAGS,
   createReviewRatings,
-  recordStartRating,
-  recordTurnRating,
+  saveReviewRatings,
   type LatencySplitSummary,
 } from "./review-ratings";
 
@@ -24,7 +23,7 @@ const SPLIT: LatencySplitSummary = {
 
 test("turn ratings are append-only and keyed by call and turn", () => {
   const store = createReviewRatings();
-  recordTurnRating(store, {
+  store.recordTurn({
     callId: "call-1",
     turnId: "turn-1",
     verdict: "bad",
@@ -33,7 +32,7 @@ test("turn ratings are append-only and keyed by call and turn", () => {
     fillerLine: "Mm.",
     split: SPLIT,
   });
-  recordTurnRating(store, {
+  store.recordTurn({
     callId: "call-1",
     turnId: "turn-2",
     verdict: "good",
@@ -53,7 +52,7 @@ test("turn ratings are append-only and keyed by call and turn", () => {
 
 test("a turn rating is write-once: a second rating for the same turn is refused", () => {
   const store = createReviewRatings();
-  recordTurnRating(store, {
+  store.recordTurn({
     callId: "call-1",
     turnId: "turn-1",
     verdict: "good",
@@ -63,7 +62,7 @@ test("a turn rating is write-once: a second rating for the same turn is refused"
   });
   assert.throws(
     () =>
-      recordTurnRating(store, {
+      store.recordTurn({
         callId: "call-1",
         turnId: "turn-1",
         verdict: "bad",
@@ -89,7 +88,7 @@ test("the filler tag vocabulary names the failure", () => {
   const store = createReviewRatings();
   assert.throws(
     () =>
-      recordTurnRating(store, {
+      store.recordTurn({
         callId: "call-1",
         turnId: "turn-9",
         verdict: "bad",
@@ -104,18 +103,18 @@ test("the filler tag vocabulary names the failure", () => {
 
 test("one start rating per call covers the wait and the chime", () => {
   const store = createReviewRatings();
-  recordStartRating(store, { callId: "call-1", verdict: "good", note: "chime on first audio" });
+  store.recordStart({ callId: "call-1", verdict: "good", note: "chime on first audio" });
   assert.equal(store.getStartRating("call-1")?.verdict, "good");
   assert.throws(
-    () => recordStartRating(store, { callId: "call-1", verdict: "bad", note: "late" }),
+    () => store.recordStart({ callId: "call-1", verdict: "bad", note: "late" }),
     /write-once/,
   );
 });
 
 test("ratings serialize beside marks and delivered capture for replay", () => {
   const store = createReviewRatings();
-  recordStartRating(store, { callId: "call-1", verdict: "bad", note: "silent start" });
-  recordTurnRating(store, {
+  store.recordStart({ callId: "call-1", verdict: "bad", note: "silent start" });
+  store.recordTurn({
     callId: "call-1",
     turnId: "turn-1",
     verdict: "bad",
@@ -140,7 +139,7 @@ test("empty call or turn ids are refused by name", () => {
   const store = createReviewRatings();
   assert.throws(
     () =>
-      recordTurnRating(store, {
+      store.recordTurn({
         callId: "  ",
         turnId: "turn-1",
         verdict: "good",
@@ -151,7 +150,29 @@ test("empty call or turn ids are refused by name", () => {
     /callId/,
   );
   assert.throws(
-    () => recordStartRating(store, { callId: "", verdict: "good" }),
+    () => store.recordStart({ callId: "", verdict: "good" }),
     /callId/,
   );
+});
+
+test("the beside-marks sink receives the serialized artifact on save", () => {
+  const store = createReviewRatings();
+  store.recordStart({ callId: "call-1", verdict: "good", note: "chime on first audio" });
+  store.recordTurn({
+    callId: "call-1",
+    turnId: "turn-1",
+    verdict: "bad",
+    tag: "late",
+    fillerLine: null,
+    split: SPLIT,
+  });
+  const saved: { callId: string; schemaVersion: number; turns: number }[] = [];
+  const artifact = saveReviewRatings(store, "call-1", (callId, next) => {
+    saved.push({ callId, schemaVersion: next.schemaVersion, turns: next.turns.length });
+  });
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0]?.callId, "call-1");
+  assert.equal(saved[0]?.schemaVersion, REVIEW_RATING_SCHEMA_VERSION);
+  assert.equal(saved[0]?.turns, 1);
+  assert.equal(artifact.turns.length, 1);
 });

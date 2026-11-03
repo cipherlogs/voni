@@ -871,16 +871,19 @@ export type RealLegsDeps = {
   callId?: string;
 };
 
-/** The interaction band a measured turn belongs to (see `latencySplit`). */
-export type ReplyGapTurnBand = "ordinary" | "post-cut";
-
-/** One reviewed reply: its endpointing plus reply split and its band. */
+/** One reviewed reply: its endpointing plus reply split, marked partial. */
 export type ReplyGapTurn = {
   /** Caller end of speech → final caller transcript receipt, or null unmeasured. */
   endpointingMs: number | null;
   /** Final transcript receipt → first agent audio receipt (the reply gap). */
   replyGapMs: number;
-  band: ReplyGapTurnBand;
+  /**
+   * The gap is undivided: no `reply.started` frame exists on this wire, so
+   * generation and delivery are not split. The trace-based split in
+   * `latency-split.ts` is the full seam; this client-side measure stays
+   * marked partial rather than guessing the division.
+   */
+  partial: true;
 };
 
 /**
@@ -901,7 +904,7 @@ export function assessReplyGaps(turns: ReplyGapTurn[]): RealLegsCheck[] {
   const rows = turns.map((turn, index) => {
     const endpointing =
       turn.endpointingMs === null ? "endpointing n/a" : `endpointing ${turn.endpointingMs}ms`;
-    return `turn ${index + 1}: ${endpointing} + reply ${turn.replyGapMs}ms [${turn.band}]`;
+    return `turn ${index + 1}: ${endpointing} + reply ${turn.replyGapMs}ms [partial]`;
   });
   const over = turns
     .map((turn, index) => ({ turn, index }))
@@ -927,18 +930,6 @@ export function assessReplyGaps(turns: ReplyGapTurn[]): RealLegsCheck[] {
   ];
 }
 
-export function classifyBand(
-  speechStartedAt: number | null,
-  audioEndBefore: number | null,
-): ReplyGapTurnBand {
-  // `ordinary` when the caller's speech began after the previous reply's audio
-  // ended (or there was no previous audio); `post-cut` when it began while
-  // that audio was still sounding. A missing timestamp classifies nothing, so
-  // the turn keeps `ordinary` rather than a guessed band.
-  if (speechStartedAt === null || audioEndBefore === null) return "ordinary";
-  return speechStartedAt < audioEndBefore ? "post-cut" : "ordinary";
-}
-
 type CallState = {
   captions: { role: "user" | "agent"; text: string; final: boolean }[];
   audioFrames: number;
@@ -949,16 +940,11 @@ type CallState = {
   configKeys: string[] | null;
   turnLatencies: number[];
   endpointingMs: number[];
-  turnBands: ReplyGapTurnBand[];
   pendingFinalAt: number | null;
   pendingAudioSeen: boolean;
   speechEndedAt: number | null;
   /** Last received agent audio frame; the previous reply's end once quiet. */
   lastAudioAt: number | null;
-  /** When the current caller turn's speech started (`beginCallerTurn`). */
-  speechStartedAt: number | null;
-  /** `lastAudioAt` when the current caller turn started. */
-  audioEndBefore: number | null;
 };
 
 function defaultConnect(url: string): RealLegsSocket {
@@ -1299,16 +1285,6 @@ export function carriedHistory(
 }
 
 /**
- * Mark the start of one caller turn: the band of the reply it earns is decided
- * from these two readings (speech began while previous audio still sounding →
- * `post-cut`, else `ordinary`). Called before every `ingress.say`.
- */
-function beginCallerTurn(state: CallState, at: number): void {
-  state.speechStartedAt = at;
-  state.audioEndBefore = state.lastAudioAt;
-}
-
-/**
  * Run the real-legs call and return every assertion in report order.
  *
  * One fatal step (the signed body, the delivery, the caller audio, the socket)
@@ -1362,13 +1338,10 @@ export async function runRealLegs(
       configKeys: null,
       turnLatencies: [],
       endpointingMs: [],
-      turnBands: [],
       pendingFinalAt: null,
       pendingAudioSeen: false,
       speechEndedAt: null,
       lastAudioAt: null,
-      speechStartedAt: null,
-      audioEndBefore: null,
     };
     let socket: RealLegsSocket;
     try {
@@ -1400,7 +1373,6 @@ export async function runRealLegs(
         if (state.pendingFinalAt !== null && !state.pendingAudioSeen) {
           state.pendingAudioSeen = true;
           state.turnLatencies.push(now() - state.pendingFinalAt);
-          state.turnBands.push(classifyBand(state.speechStartedAt, state.audioEndBefore));
         }
         return;
       }
@@ -1587,7 +1559,6 @@ export async function runRealLegs(
     const beforeTurnOneAudio = state.audioFrames;
     // `say` paces the clip at the pump's cadence and resolves after the
     // trailing silence, so the vendor has heard a whole caller turn.
-    beginCallerTurn(state, now());
     await ingress.say(audio.pcm);
     await waitFor(
       state,
@@ -1610,7 +1581,6 @@ export async function runRealLegs(
     const userFinalsAfterTurnOne = countUserFinals(state);
     const audioFramesAfterTurnOne = state.audioFrames;
 
-    beginCallerTurn(state, now());
     await ingress.say(audio.pcm);
     await waitFor(
       state,
@@ -1641,7 +1611,6 @@ export async function runRealLegs(
     const userFinalsBeforeContext = countUserFinals(state);
     const audioFramesBeforeContext = state.audioFrames;
     socket.send(encodeContextMessage(contextNote));
-    beginCallerTurn(state, now());
     await ingress.say(audio.pcm);
     await waitFor(
       state,
@@ -1797,7 +1766,7 @@ export async function runRealLegs(
   const gapTurns: ReplyGapTurn[] = state.turnLatencies.map((replyGapMs, index) => ({
     endpointingMs: state.endpointingMs[index] ?? null,
     replyGapMs,
-    band: state.turnBands[index] ?? "ordinary",
+    partial: true,
   }));
   checks.push(...assessReplyGaps(gapTurns));
 
