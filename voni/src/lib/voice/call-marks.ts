@@ -51,6 +51,8 @@ export const CALL_MARK_NAMES = [
   "socket_open",
   "admitted",
   "refused",
+  /** The admitted call never sounded inside the first-audio bound (ticket 06). */
+  "first_audio_timeout",
   "connected_painted",
   /**
    * The delivered capture's real origin: the first sample the playout worklet

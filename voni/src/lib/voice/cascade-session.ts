@@ -70,6 +70,15 @@ export const MIC_GATE_FALLBACK_MS = 8_000;
 export const RECONNECT_HANDSHAKE_MS = BOUNDS.reconnectHandshakeMs;
 
 /**
+ * How long a started call may wait for its first audible sample before it is
+ * an unavailable start, not a slow one (demo-cascade ticket 06: no second
+ * silent start). A healthy greeting speaks within seconds of admission, so
+ * the bound only ever fires on a wedged pipeline. It is a failure bound,
+ * never quoted as speed; live marks stay the authority.
+ */
+export const FIRST_AUDIO_BOUND_MS = BOUNDS.firstAudioMs;
+
+/**
  * How long a caller's hang-up keeps the socket open for the service's `end`.
  * The service writes its end after the stop and then closes; the measured
  * caller-hangup latency is ~250-300 ms, so 500 ms leaves margin without
@@ -125,7 +134,8 @@ export type CascadeConnectFailure = "draining" | "managed" | "unavailable" | "pr
  * draining instance accepts no new call); `managed` is the service's routing
  * verdict that this call belongs on the managed engine (routing defaults to
  * `off`, so it is the common refusal); `unavailable` is the socket failing or
- * closing before the service accepted the call; `protocol` is the service
+ * closing before the service accepted the call, or the call staying silent
+ * past the first-audio bound after it did; `protocol` is the service
  * refusing an unknown or missing protocol version before any call exists.
  *
  * There is no retry verdict: the demo is the cascade's only client and has no
@@ -176,7 +186,8 @@ export type CascadeHandlers = {
   onFirstAudible?: () => void;
   /**
    * The call never opened: the service refused it as draining or as a routed-
-   * managed call, or the socket failed/closed first. Fires once with the bare
+   * managed call, the socket failed/closed first, or the admitted call never
+   * sounded inside the first-audio bound. Fires once with the bare
    * cause; the demo has no managed retry. The session is already torn down
    * (socket closed, microphone released).
    */
@@ -392,6 +403,15 @@ export class CascadeSession {
    */
   private micLive = false;
   private micGateTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The silent-start backstop (demo-cascade ticket 06): a started call that
+   * never sounds ends unavailable instead of waiting in silence. Armed at
+   * start and per reconnect attempt while the call never sounded; cleared by
+   * the first audible sample and on every end path.
+   */
+  private firstAudioTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The playout sounded once: the silent-start backstop has nothing to do. */
+  private firstAudibleSeen = false;
   /** The service accepted the call: any valid server frame arrived. */
   private accepted = false;
   /** The connect failure was already reported (one report per connect). */
@@ -496,6 +516,8 @@ export class CascadeSession {
     this.reconnecting = false;
     this.reconnectFailedReported = false;
     this.clearReconnectTimer();
+    this.clearFirstAudioTimer();
+    this.firstAudibleSeen = false;
     this.openSocket(config);
     const startMic = this.deps.startMic ?? defaultStartMic;
     const handle = await startMic(micOwner, (data) => {
@@ -553,6 +575,8 @@ export class CascadeSession {
     // Chime trigger: the worklet's first audible sample, not the queued frame.
     if (this.playout) {
       this.playout.onFirstAudible = () => {
+        this.firstAudibleSeen = true;
+        this.clearFirstAudioTimer();
         this.marks?.mark("first_audible");
         this.handlers.onFirstAudible?.();
       };
@@ -571,6 +595,11 @@ export class CascadeSession {
     // gate opens without an audible sample; the bound still covers a resumed
     // call or a dropped `listening`, so the caller is never silent forever.
     this.micGateTimer = setTimeout(() => this.openMicGate(), MIC_GATE_FALLBACK_MS);
+    // No second silent start (demo-cascade ticket 06): a started call that
+    // never sounds ends unavailable at this bound instead of waiting in
+    // silence. The first audible sample clears it; the reconnect re-arms it
+    // while the call never sounded.
+    this.firstAudioTimer = setTimeout(() => this.failSilentStart(), FIRST_AUDIO_BOUND_MS);
     // Socket may already be open (fake sockets, fast localhost): flush config now.
     if (this.ws !== null && this.ws.readyState === this.ws.OPEN) this.sendConfig(config);
   }
@@ -671,6 +700,14 @@ export class CascadeSession {
       () => this.failReconnect("timeout", attempt),
       RECONNECT_HANDSHAKE_MS,
     );
+    // The replacement attempt gets its own first-audio window while the call
+    // never sounded; a call that already spoke is live and owned by the
+    // reconnect path, and the one-shot playout would never clear a re-armed
+    // timer for it.
+    if (!this.firstAudibleSeen) {
+      this.clearFirstAudioTimer();
+      this.firstAudioTimer = setTimeout(() => this.failSilentStart(), FIRST_AUDIO_BOUND_MS);
+    }
     let config: CascadeCallConfig;
     try {
       config = await reconnect({ reason, attempt });
@@ -698,6 +735,31 @@ export class CascadeSession {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+
+  private clearFirstAudioTimer(): void {
+    if (this.firstAudioTimer !== null) {
+      clearTimeout(this.firstAudioTimer);
+      this.firstAudioTimer = null;
+    }
+  }
+
+  /**
+   * The silent-start backstop fired (demo-cascade ticket 06): the call was
+   * admitted but never sounded inside the bound. It never opened from the
+   * visitor's perspective, so it ends as an unavailable connect failure —
+   * every started call either produces voice or reaches the unavailable
+   * explanation. A late first sample is already impossible: the timer is
+   * cleared by the sample, and the teardown closes the socket.
+   */
+  private failSilentStart(): void {
+    this.firstAudioTimer = null;
+    if (this.firstAudibleSeen || this.connectFailureReported || this.ended) return;
+    this.marks?.mark("first_audio_timeout", { boundMs: FIRST_AUDIO_BOUND_MS });
+    this.failConnect(
+      "unavailable",
+      "The voice service admitted the call but never sounded.",
+    );
   }
 
   /**
@@ -1052,6 +1114,7 @@ export class CascadeSession {
   private teardown(): Promise<void> {
     if (this.teardownPromise) return this.teardownPromise;
     this.clearReconnectTimer();
+    this.clearFirstAudioTimer();
     if (this.micGateTimer !== null) {
       clearTimeout(this.micGateTimer);
       this.micGateTimer = null;
