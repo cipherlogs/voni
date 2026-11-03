@@ -331,9 +331,15 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
   expect(mintRequests, "the demo minted exactly once").toHaveLength(1);
   expect(mintRequests[0]!.body).toEqual({ voiceId: "audrey" });
 
-  // The mint above landed and the demo painted its connected state before the
-  // service speaks, exactly as a live call would.
-  await expect(page.locator('[data-voice-state="listening"]')).toBeVisible({ timeout: 15_000 });
+  // Honest start (ticket 02): the mint landed but nothing has sounded yet,
+  // so the demo is still waiting — `connecting`, never a live paint. The
+  // timeout stays under the 15 s silent-start backstop so a silent service
+  // fails here instead of racing it.
+  await expect(page.locator('[data-voice-state="connecting"]')).toBeVisible({ timeout: 10_000 });
+  expect(
+    await page.locator('[data-voice-state="listening"]').count(),
+    "no live paint before the first audible sample",
+  ).toBe(0);
 
   // ── The greeting is a caption the caller can read ────────────────────────
   const greeting = script.find(
@@ -359,6 +365,14 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
   await expect
     .poll(() => fake.audioFrames(), { message: "the real mic path sent audio" })
     .toBeGreaterThan(0);
+
+  // The first live paint lands with the first audible sample (honest start):
+  // speaking — the frames arrived before they sounded — or listening. Either
+  // proves the greeting sounded; the audio above plays promptly, so this
+  // never races the silent-start backstop.
+  await expect(
+    page.locator('[data-voice-state="speaking"], [data-voice-state="listening"]'),
+  ).toBeVisible({ timeout: 15_000 });
 
   await expect(page.getByText(greetingText).first()).toBeVisible();
   const chip = page.getByTestId("demo-address-chip");
@@ -966,6 +980,8 @@ test("a turn ends when its audio drains, not when its message ends", async ({ pa
   await fake.play(tail);
 
   // Wait for the drain's transition, then let the take register and hang up.
+  // Honest start paints nothing before the first audible sample, so the only
+  // `listening` is the drain-driven turn end — never a pre-audio paint.
   await expect
     .poll(
       () =>
@@ -978,7 +994,7 @@ test("a turn ends when its audio drains, not when its message ends", async ({ pa
         ),
       { timeout: 10_000 },
     )
-    .toBeGreaterThanOrEqual(2);
+    .toBe(1);
   const transitions = await page.evaluate(
     () =>
       (
@@ -988,8 +1004,8 @@ test("a turn ends when its audio drains, not when its message ends", async ({ pa
       ).__turnTest.transitions,
   );
   const speakingAt = transitions.find((entry) => entry.state === "speaking")!;
-  // The first listening after speaking is the turn end; the earlier paint is
-  // the connected state before any audio.
+  // The first listening after speaking is the turn end; the only paint before
+  // it was the connecting wait, never a live state.
   const turnEnd = transitions.find(
     (entry) => entry.state === "listening" && entry.atMs > speakingAt.atMs,
   )!;
