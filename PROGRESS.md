@@ -4,6 +4,8 @@ Current frontier for this repo. Read this at the start of a session; keep `Now` 
 
 ## Now
 
+**Demo verification merged to `main` at `61b8d56e` (2026-11-03).** The owner accepted the voice and explicitly skipped the full English run, certificate, panel and signature, so nothing is certified. Handoff and named residuals: `docs/handoff-demo-verification.md`. The review gate is red (no line review of the merge); X4 (tagged inbox email), H2, A5 and spectral balance remain unmeasured.
+
 **Goal:** the public demo call runs only on the cascade, with no managed fallback; tenant agent calls and test calls stay managed, in English. One build ships both surfaces.
 
 **Demo cascade — complete on `demo-cascade` (25/25 tickets resolved):**
