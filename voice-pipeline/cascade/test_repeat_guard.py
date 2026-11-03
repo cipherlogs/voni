@@ -370,7 +370,7 @@ class RepeatGuardTests(unittest.TestCase):
     def test_a_second_invite_three_replies_later_is_withheld(self):
         stream = self.make(
             replies=[
-                {"deltas": ["Nope — I'm Voni, live on the demo. " + INVITE]},
+                {"deltas": ["Sure — I'm Voni, live on the demo. " + INVITE]},
                 {"deltas": ["Fair point, can't argue much there."]},
                 {"deltas": ["Nope, I'm Voni running this live demo."]},
                 {"deltas": ["I handle calls, bookings and follow-ups. " + INVITE]},
@@ -381,7 +381,7 @@ class RepeatGuardTests(unittest.TestCase):
             stream,
             4,
             [
-                "Are you a real person?",
+                "Yes, let's do it.",
                 "That is what a bot would say.",
                 "Prove it.",
                 "Fine. Then tell me what you can actually do.",

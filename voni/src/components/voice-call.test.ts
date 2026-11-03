@@ -506,8 +506,13 @@ test("the pipeline's tools leave the demo UI working without a browser tool rela
   );
   assert.match(
     cascade,
-    /if \(action === "show-and-speak" && tag\) \{?\s*speak\(inviteNowInstructions\(tag\), \{ key: "invite" \}\)/,
-    "only a line without the tag gets the spoken fallback",
+    /if \(shouldSpeakInvite\(action, tag, callerFinalRef\.current\)\) \{?\s*speak\(inviteNowInstructions\(tag\), \{ key: "invite" \}\)/,
+    "only a willing turn without the tag gets the spoken fallback",
+  );
+  assert.match(
+    cascade,
+    /if \(caption\.role === "user"\) callerFinalRef\.current = caption\.text/,
+    "the invite gate reads the caller's final, not the agent's line",
   );
   assert.doesNotMatch(cascade, /onToolResult/, "the cascade never waits for a browser tool result");
   assert.doesNotMatch(cascade, /putTestUp|SHOW_TEST_ADDRESS_TOOL|CHECK_CODE_TOOL|SEND_CODE_REPLY_TOOL/);
