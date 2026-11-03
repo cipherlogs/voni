@@ -2,6 +2,11 @@
 
 import { useMemo, useState } from "react";
 import {
+  canSaveFixGate,
+  createFixGate,
+  type FixVerdict,
+} from "@/lib/demo/fix-gate";
+import {
   REVIEW_TAGS,
   createReviewRatings,
   type LatencySplitSummary,
@@ -96,12 +101,72 @@ function VerdictButtons({
   );
 }
 
+/**
+ * Ticket 08 per-fix gate: the owner marks the fix under review fixed or
+ * not-fixed. A not-fixed mark requires the still-broken feeling to be named;
+ * it stays open and blocks the next fix, while an unrated fix does not
+ * advance. The retry reads the named feeling plus the reviewed call's
+ * unaddressed bad records as its repro.
+ */
+export function FixGateSection({ fixId, callId }: { fixId: string; callId: string }) {
+  const gate = useMemo(() => createFixGate(), []);
+  const [verdict, setVerdict] = useState<FixVerdict | null>(null);
+  const [stillBroken, setStillBroken] = useState("");
+  const [saved, setSaved] = useState(false);
+  const savedRecord = saved ? gate.getFix(fixId) : null;
+
+  return (
+    <div>
+      <h3>Fix gate: {fixId}</h3>
+      <p>One fixed-or-not-fixed mark per fix. Not-fixed names what is still broken and blocks the next fix.</p>
+      <span role="group" aria-label={`Fix gate for ${fixId}`}>
+        {(["fixed", "not-fixed"] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={verdict === option}
+            onClick={() => setVerdict(option)}
+          >
+            {option}
+          </button>
+        ))}
+      </span>
+      <label>
+        Still broken (required when not-fixed){" "}
+        <input
+          aria-label={`Still broken for ${fixId}`}
+          value={stillBroken}
+          onChange={(event) => setStillBroken(event.target.value)}
+        />
+      </label>
+      <button
+        type="button"
+        disabled={!canSaveFixGate(verdict, stillBroken) || saved}
+        onClick={() => {
+          if (verdict === null || saved) return;
+          gate.recordFix({ fixId, verdict, stillBroken, callId });
+          setSaved(true);
+        }}
+      >
+        Save fix mark
+      </button>
+      {savedRecord?.verdict === "not-fixed" ? (
+        <p>Not-fixed stays open and blocks the next fix: {savedRecord.stillBroken}</p>
+      ) : null}
+      {savedRecord?.verdict === "fixed" ? <p>Fixed: the next fix may proceed.</p> : null}
+    </div>
+  );
+}
+
 export function ReviewOverlay({
   callId,
   turns,
+  fixId,
 }: {
   callId: string;
   turns: ReviewOverlayTurn[];
+  /** The fix under review; when null the gate section stays hidden. */
+  fixId?: string | null;
 }) {
   const store = useMemo(() => createReviewRatings(), []);
   const [startVerdict, setStartVerdict] = useState<ReviewVerdict | null>(null);
@@ -122,6 +187,8 @@ export function ReviewOverlay({
   return (
     <section aria-label="Review overlay">
       <h2>Review: {callId}</h2>
+
+      {fixId ? <FixGateSection fixId={fixId} callId={callId} /> : null}
 
       <div>
         <h3>Start rating</h3>
