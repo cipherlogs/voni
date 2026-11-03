@@ -114,12 +114,17 @@ const PRE_67_BYTES = {
 // `hang_up` (Spark ignores an identically shaped `end_call`) and the signed
 // body carries the gateway LLM override the provisioning path already used.
 // Tenant bodies did not move.
+//
+// Re-pinned again for the natural-style reply rules (2026-11-03): the
+// acknowledgement-opener ban and the complaint reply shape are prompt text, so
+// every demo body moved. The pin was already stale before that change; this
+// re-pin covers both. Tenant bodies still did not move.
 const PUBLISHED_BYTES = {
-  demoAnna: "83391991b5192fa56ac06b83e7fa32b95dd142bdcf5df0adac9c8d59ec3e7f73",
-  demoResume: "b0b0b42d0c1e7d0ca30300731552eba38a6bfe1268cb13b5d38fb5e1e95fbc20",
-  demoModel: "f50f4017f55f7163ded809cd397917c4147777fc6f5fa6abd2f8ec706b5b1fce",
-  demoExperiment: "25283ee710de0e1784f7e9c29ded5aaa945daa5ecc9aa91a60a342f88d308551",
-  demoLola: "765812117397e69379c335f63e0c1239662cc5b786c4085f6edbea840d7bc825",
+  demoAnna: "d5f72206f0859cc23b7787f095a70bc1c576f4ac7ee09bd9ed90229bd18ed9a2",
+  demoResume: "a4946d9589114cf4f9f58a1884a02955595099a456525021e7d2f164a5596976",
+  demoModel: "9f1f16a7bd93073499d19297f1ac4cfaea755ffe2938e861692638886ded90b8",
+  demoExperiment: "ee597a86dea7d3dc1a06d274038bd6ecb4865692dc9f2213448ddb953fa2bc6e",
+  demoLola: "51cb075f67c167915f68e3b3a9979700fc86d8bdcf283b9d4790a62fc3d455bb",
   tenant: "2aa59ba5ab270412f7ecde7c0a68545eb1c13e90883a71c3e61ef7fd007ebeb0",
   tenantLanguages:
     "61c8e9154d0755ce5b8266958bbed487551f050b0c56b006ba64c95910d1aff6",
@@ -173,7 +178,7 @@ test("the unified builder leaves every published body byte-identical", () => {
 test("the demo refresh fingerprint is unchanged by the unification", () => {
   assert.equal(
     demoAgentFingerprint(buildDemoAgentBody("anna"), "key"),
-    "7880fdfe7d201a103a9071bc1f95c2a282cbaa1cdcf9964d80cbba974aacafc3",
+    "2aff5d5c334d3b2867b9ae532f9af1d683e5e7265d2f91a851e0b8a1febbdc33",
   );
   assert.notEqual(
     demoAgentFingerprint(buildDemoAgentBody("anna"), "key"),

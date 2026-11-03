@@ -206,9 +206,9 @@ test("Voni's demo rules are principles, not a phrase ban-list", async () => {
   );
   assert.ok(
     rules.includes(
-      "If they complain or show frustration, don't echo the complaint, don't ask them to explain it, and don't promise a remedy this demo cannot deliver; stay on their side, answer in a few ordinary words, and stop: no pitch and no question.",
+      "When they complain or push back, don't label, narrate or diagnose their feelings",
     ),
-    "a complaint is answered and stopped, never echoed or steered",
+    "a complaint is answered as content, never diagnosed or echoed",
   );
   assert.ok(
     rules.includes(
@@ -255,6 +255,56 @@ test("Voni's demo rules are principles, not a phrase ban-list", async () => {
   assert.ok(
     rules.includes("Never promise to fix, change, or look into something this demo cannot actually do."),
     "the honesty rule survives",
+  );
+});
+
+test("a complaint gets content, never a feelings formula or an offer", async () => {
+  const { COMPLAINT_REPLY_RULE, voniConfig } = await import("./voni-agent");
+  const rules = voniConfig("any").knowledge;
+
+  for (const formula of [
+    "that's fair",
+    "that sounds frustrating",
+    "sounds frustrating",
+    "i understand",
+    "i hear you",
+    "i'm here for you",
+    "i'm here if you want",
+  ]) {
+    assert.ok(
+      !rules.toLowerCase().includes(formula),
+      `no therapy formula in the prompt: ${formula}`,
+    );
+  }
+
+  assert.ok(rules.includes(COMPLAINT_REPLY_RULE), "the complaint shape reaches the body");
+  assert.match(
+    COMPLAINT_REPLY_RULE,
+    /don't label, narrate or diagnose their feelings/,
+    "feelings are never labelled or narrated",
+  );
+  assert.match(
+    COMPLAINT_REPLY_RULE,
+    /Never announce that you're available or there for them, and never add an offer, a pitch or an invite after a complaint/,
+    "no availability line and no offer after a complaint",
+  );
+  assert.match(
+    COMPLAINT_REPLY_RULE,
+    /one flowing sentence, not two clipped ones/,
+    "one flowing sentence, not two clipped fragments",
+  );
+  assert.match(COMPLAINT_REPLY_RULE, /Vary the shape every time, never the same twice/);
+  for (const shape of [
+    "ask what actually happened",
+    "say what you can do about it",
+    "ask for the one thing you need to act",
+  ]) {
+    assert.ok(COMPLAINT_REPLY_RULE.includes(shape), `shape offered: ${shape}`);
+  }
+  assert.doesNotMatch(
+    COMPLAINT_REPLY_RULE,
+    /like:|"/,
+    "shapes only: no fixed reply line to copy",
   );
 });
 
