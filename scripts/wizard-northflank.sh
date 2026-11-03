@@ -203,9 +203,31 @@ run_wizard() {
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$REPO_ROOT/voni/.env.local"
 
-TOTAL_STAGES=7
+TOTAL_STAGES=8
 
 banner "Northflank: cascade service"
+
+# set_worker_secret NAME VALUE writes one Cloudflare Worker secret, from voni/.
+# The Worker keeps secrets across deploys; this never touches a value in git.
+set_worker_secret() {
+  local name="$1" value="$2"
+  if ! command -v npx >/dev/null 2>&1; then
+    SKIPPED+=("Worker secret $name (run: cd voni && npx wrangler secret put $name --name voni)")
+    warn "skipped Worker secret $name: npx not found"
+    return
+  fi
+  if printf '%s' "$value" | (cd "$REPO_ROOT/voni" && npx wrangler secret put "$name" --name voni >/dev/null); then
+    printf '  %s✓ set%s Worker secret %s\n' "$GREEN" "$RESET" "$name"
+  else
+    SKIPPED+=("Worker secret $name (run: cd voni && npx wrangler secret put $name --name voni)")
+    warn "skipped Worker secret $name: wrangler failed"
+  fi
+}
+
+# The one routing-switch CLI, run locally against the Northflank store.
+ROUTING_PY="$REPO_ROOT/telephony-bot/.venv/bin/python"
+[[ -x "$ROUTING_PY" ]] || ROUTING_PY="python3"
+ROUTING_CLI="$REPO_ROOT/voice-pipeline/scripts/routing_switch.py"
 
 # ── 1 ──────────────────────────────────────────────────────────────────────
 stage "Northflank account"
@@ -217,7 +239,7 @@ pause "Press Enter once you are signed in."
 # ── 2 ──────────────────────────────────────────────────────────────────────
 stage "Project and GitHub"
 open_url "https://app.northflank.com"
-step "Create a project named 'voni' and pick a US region."
+step "Create a project named 'voni' and pick a US region (us-east-1)."
 step "Link GitHub under the project's integrations and grant 'cipherlogs/voni'."
 pause "Press Enter when the project exists and the repo is linked."
 
@@ -225,8 +247,9 @@ pause "Press Enter when the project exists and the repo is linked."
 stage "Postgres for the durable store"
 say "server.py fails /readyz closed without DATABASE_URL, so the store is not optional."
 step "In the project: Add addon -> PostgreSQL, name 'voni-store', smallest plan, same region."
-step "Open the addon, then copy its connection string (postgres://...)."
-ask_secret DATABASE_URL "Paste the Postgres connection string:"
+step "Open the addon and copy its connection string (postgres://... or postgresql://...)."
+warn "This is the cascade store, not the app's Neon DATABASE_URL."
+ask_secret CASCADE_DATABASE_URL "Paste the cascade Postgres connection string:"
 
 # ── 4 ──────────────────────────────────────────────────────────────────────
 stage "Create the service"
@@ -234,41 +257,41 @@ step "Add service -> Combined service, name 'voice-pipeline'."
 step "Source: GitHub 'cipherlogs/voni', branch 'main'."
 step "Build: Dockerfile, path '/voice-pipeline/Dockerfile', context '/'."
 step "Plan: nf-compute-50 (0.5 vCPU / 1 GB); instances 1."
-step "Port: 8766, protocol HTTP/2, public."
+step "Port: 8766, protocol HTTP (HTTP/1.1), public. Not HTTP/2: uvicorn is h11 and an HTTP/2 port 502s every request."
 step "Health check: liveness, GET /healthz, port 8766, delay 20, period 15, timeout 3, failures 3."
 step "Grace period: 30 seconds."
 step "Volume: name 'voice-events', 1 GB, single read/write, mount '/var/lib/voni'."
+step "Attach the 'voni-store' addon so Northflank injects DATABASE_URL."
 warn "Do not deploy yet: the next stage sets the environment."
 pause "Press Enter when the service is configured."
 
 # ── 5 ──────────────────────────────────────────────────────────────────────
 stage "Environment and secrets"
-say "Service environment (non-secret). Paste this block:"
+say "Non-secret service environment. Paste this block:"
 printf '%s\n' \
   "VOICE_PIPELINE_PORT=8766" \
-  "VOICE_PIPELINE_STT_PROVIDER=assemblyai" \
-  "VOICE_PIPELINE_STT_MODE=balanced" \
-  "VOICE_PIPELINE_LLM_MODEL=muse-spark-1.3" \
-  "VOICE_PIPELINE_TTS_MODEL=assemblyai-tts-1" \
-  "VOICE_PIPELINE_EVENTS_DIR=/var/lib/voni/events"
-step "The app origin the tool route calls, e.g. https://your-app.workers.dev"
-ask VOICE_PIPELINE_TOOL_BASE_URL "Paste the app origin:"
-printf '  %s\n' "VOICE_PIPELINE_TOOL_BASE_URL='$VOICE_PIPELINE_TOOL_BASE_URL'"
-step "The measured reasoning effort (M03); Spark has no default."
-ask META_REASONING_EFFORT "Paste META_REASONING_EFFORT:"
-printf '  %s\n' "META_REASONING_EFFORT='$META_REASONING_EFFORT'"
-say "Secret group. Create it in the project and link it to the service."
-say "Values are in voni/.env.local; names are:"
+  "VOICE_PIPELINE_EVENTS_DIR=/var/lib/voni/events" \
+  "VOICE_PIPELINE_TOOL_BASE_URL=https://app.voni.cc" \
+  "META_REASONING_EFFORT=minimal"
+note "META_REASONING_EFFORT=minimal is the measured M03 value; Spark has no default."
+say "Secret group. Create it in the project and link it to the service. Names:"
 printf '%s\n' \
   "  META_API_KEY" \
   "  META_IDENTIFIER_SALT" \
-  "  META_REASONING_EFFORT" \
   "  ASSEMBLYAI_API_KEY" \
   "  AI_GATEWAY_API_KEY" \
   "  VONI_TOOL_SECRET" \
   "  VOICE_PIPELINE_ENVELOPE_SECRET" \
   "  DATABASE_URL"
-note "DATABASE_URL was captured above; the rest are already local."
+note "All values except VONI_TOOL_SECRET are in voni/.env.local. DATABASE_URL was captured above."
+warn "VONI_TOOL_SECRET must equal the app's existing Worker value (it cannot be read back)."
+ask_secret VONI_TOOL_SECRET "Paste the existing VONI_TOOL_SECRET (or leave blank to fix later):"
+if [[ -n "${VONI_TOOL_SECRET:-}" ]]; then
+  write_env VONI_TOOL_SECRET "$VONI_TOOL_SECRET"
+else
+  warn "VONI_TOOL_SECRET left unset: tool calls will be dropped until it matches on both sides."
+fi
+note "Use the same VOICE_PIPELINE_ENVELOPE_SECRET on both sides; stage 8 sets it on the Worker."
 pause "Press Enter once the secret group is linked to the service."
 
 # ── 6 ──────────────────────────────────────────────────────────────────────
@@ -288,14 +311,62 @@ curl -fsS --max-time 15 "$VOICE_PIPELINE_PUBLIC_URL/readyz" || warn "readiness n
 printf '\n'
 
 # ── 7 ──────────────────────────────────────────────────────────────────────
+stage "Flip routing to demo"
+say "A never-written switch is off (fail-safe), so a fresh store refuses every demo call."
+say "Read it first; the audit trail names every past change."
+DEFAULT_OPERATOR="$(git config user.email 2>/dev/null || true)"
+printf '  %s\n' "Default operator: ${DEFAULT_OPERATOR:-(none)}"
+ask OPERATOR "Operator id for the audit (Enter keeps the default):"
+[[ -n "$OPERATOR" ]] || OPERATOR="$DEFAULT_OPERATOR"
+while [[ -z "$OPERATOR" ]]; do
+  ask OPERATOR "Operator id for the audit (required):"
+  [[ -n "$OPERATOR" ]] || warn "the flip records who made it; an empty operator is refused"
+done
+if [[ -z "${CASCADE_DATABASE_URL:-}" ]]; then
+  warn "no cascade DSN captured; skipping the flip. Re-run stage 3, then:"
+  printf '  %s\n' "python voice-pipeline/scripts/routing_switch.py set --mode demo --operator '$OPERATOR' --reason 'demo cutover' --database-url '<cascade DSN>'"
+else
+  "$ROUTING_PY" "$ROUTING_CLI" show --json --database-url "$CASCADE_DATABASE_URL" \
+    || warn "could not read the switch locally; run the same command from the Northflank console"
+  if confirm "Flip future demo calls to routing=demo?"; then
+    "$ROUTING_PY" "$ROUTING_CLI" set --mode demo \
+      --operator "$OPERATOR" \
+      --reason "demo cutover: routing=demo is production (ADR-0012)" \
+      --database-url "$CASCADE_DATABASE_URL" \
+      || warn "the flip did not land; re-read the switch before retrying"
+    "$ROUTING_PY" "$ROUTING_CLI" show --database-url "$CASCADE_DATABASE_URL" \
+      || warn "the flip could not be re-read; verify the audit entry before claiming the cutover"
+  else
+    warn "switch left as-is; the demo will refuse calls until it is demo"
+  fi
+fi
+
+# ── 8 ──────────────────────────────────────────────────────────────────────
 stage "Point the app at the service"
-HOST="${VOICE_PIPELINE_PUBLIC_URL#https://}"
-HOST="${HOST#http://}"
-PIPELINE_WS="wss://$HOST/v1/browser-call"
-write_env NEXT_PUBLIC_VOICE_PIPELINE_URL "$PIPELINE_WS"
-step "Set the same variable in the Workers environment and redeploy the app:"
-printf '  %s\n' "NEXT_PUBLIC_VOICE_PIPELINE_URL='$PIPELINE_WS'"
+if [[ -z "${VOICE_PIPELINE_PUBLIC_URL:-}" ]]; then
+  warn "no public URL captured; skipping the app side. Re-run stage 6 and:"
+  printf '  %s\n' "cd voni && npx wrangler secret put VOICE_PIPELINE_URL --name voni"
+else
+  HOST="${VOICE_PIPELINE_PUBLIC_URL#https://}"
+  HOST="${HOST#http://}"
+  PIPELINE_URL="https://$HOST"
+  write_env VOICE_PIPELINE_URL "$PIPELINE_URL"
+  ENVELOPE_SECRET="$(_existing VOICE_PIPELINE_ENVELOPE_SECRET || true)"
+  while [[ -z "$ENVELOPE_SECRET" ]]; do
+    ask_secret ENVELOPE_SECRET "Paste VOICE_PIPELINE_ENVELOPE_SECRET (required):"
+    [[ -n "$ENVELOPE_SECRET" ]] || warn "the app cannot sign a call body without it"
+  done
+  step "The app reads the pipeline at runtime; no build-time public variable is involved."
+  if confirm "Set VOICE_PIPELINE_URL and VOICE_PIPELINE_ENVELOPE_SECRET on the Worker now?"; then
+    set_worker_secret VOICE_PIPELINE_URL "$PIPELINE_URL"
+    set_worker_secret VOICE_PIPELINE_ENVELOPE_SECRET "$ENVELOPE_SECRET"
+  else
+    SKIPPED+=("Worker secrets VOICE_PIPELINE_URL and VOICE_PIPELINE_ENVELOPE_SECRET")
+    warn "set them before the demo: cd voni && npx wrangler secret put VOICE_PIPELINE_URL --name voni"
+  fi
+fi
 step "Make one real call; the artifact lands under /var/lib/voni/events on the volume."
+step "Post-deploy checks: docs/deploy/cutover-runbook.md (parity:check, check:real-legs)."
 
 finish
 }

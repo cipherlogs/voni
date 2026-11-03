@@ -21,7 +21,7 @@
     {
       "name": "http",
       "internalPort": 8766,
-      "protocol": "HTTP2",
+      "protocol": "HTTP",
       "public": true
     }
   ],
@@ -53,6 +53,7 @@
   "env": {
     "VOICE_PIPELINE_PORT": "8766",
     "VOICE_PIPELINE_EVENTS_DIR": "/var/lib/voni/events",
-    "VOICE_PIPELINE_TOOL_BASE_URL": "https://app.voni.cc"
+    "VOICE_PIPELINE_TOOL_BASE_URL": "https://app.voni.cc",
+    "META_REASONING_EFFORT": "minimal"
   }
 }

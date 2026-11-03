@@ -74,7 +74,7 @@ local save and shows a retryable deployment warning on the agent page.
 
 ## Cascade pipeline (demo)
 
-One runtime value, read only on the server:
+Two runtime values, read only on the server:
 
 - `VOICE_PIPELINE_URL` — the pipeline's `https` base
   (`https://<host>[:port][/prefix]`). Required. The app derives the browser
@@ -83,6 +83,10 @@ One runtime value, read only on the server:
   value makes the demo unavailable — there is no localhost default — and a
   non-`https` value is refused when the app reads the configuration. Nothing
   is baked into the build and the browser never reads a pipeline variable.
+- `VOICE_PIPELINE_ENVELOPE_SECRET` — the one HMAC secret the app signs the
+  stored call body and call token with; the service verifies with the same
+  value. Required in production: without it the mint throws and the demo is
+  unavailable. It is never a public/build-time variable and never committed.
 
 The Test dialog has no engine control: a test call always runs the managed
 session. The public demo is the only cascade surface (demo-cascade ticket 04).

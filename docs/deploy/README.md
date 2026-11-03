@@ -12,7 +12,7 @@ instance.
 ## Host: Northflank, not Cloudflare Workers
 
 The cascade service runs on **Northflank** as **one combined service** with
-**one instance**. Northflank's public HTTP/2 port carries the long-lived
+**one instance**. Northflank's public HTTP/1.1 port carries the long-lived
 WebSocket for the length of a call, a normal container keeps the Python
 process, the socket loop and the durable-store adapter unchanged, and one
 Postgres addon supplies the shared store.
@@ -39,7 +39,7 @@ Vercel is the AI Gateway URL for the managed path, never a cascade host.
   use and hold return. One instance is a correctness property, not only a
   hosting choice.
 - **No sticky sessions.** One call per socket means there is nothing to pin.
-  The public HTTP/2 port forwards to `ports[0].internalPort = 8766`.
+  The public HTTP/1.1 port forwards to `ports[0].internalPort = 8766`.
 - **One container for the Python service.** `voice-pipeline/Dockerfile` copies
   `voice-pipeline/` and the one bridge module it imports
   (`telephony-bot/voice_judge.py`), installs `voice-pipeline/requirements.txt`,
@@ -160,6 +160,13 @@ The service reads `META_API_KEY`, `META_IDENTIFIER_SALT`, `ASSEMBLYAI_API_KEY`,
 envelope secret**, `VOICE_PIPELINE_ENVELOPE_SECRET`: the app signs with it and
 the service verifies with it, one value on both sides, never committed. The app
 has its own secret set on its own deploy; the two are never shared.
+
+The **app** side needs two of those values on its Cloudflare Worker:
+`VOICE_PIPELINE_URL` (the service's `https` base) and the same
+`VOICE_PIPELINE_ENVELOPE_SECRET`. The `Deploy` workflow never touches secret
+values, so they are set once with `wrangler secret put` and persist across
+deploys. A Worker without both returns the visitor's unavailable state at the
+demo mint.
 
 The deployment also carries two **required non-secret host settings**, recorded
 in `deploy/voice-pipeline.env.example` and this record: `META_REASONING_EFFORT`

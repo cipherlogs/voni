@@ -110,8 +110,13 @@ production flip has not been executed here**, and no command below was run
 against production by this checkout.
 
 ```sh
+# 0. The app must already carry both cascade secrets on its Worker, or the mint
+#    refuses before the switch is ever read.
+cd voni
+npx wrangler secret list --name voni | grep -E 'VOICE_PIPELINE_(URL|ENVELOPE_SECRET)'
+
 # 1. Read first. The audit trail names every past change.
-cd voice-pipeline
+cd ../voice-pipeline
 python scripts/routing_switch.py show --json --database-url "$DATABASE_URL"
 
 # 2. Set the demo's production value. Non-empty operator and reason are required.
@@ -170,6 +175,7 @@ audited restore. Without it, `--prove-off` restores the mode it found itself.
 
 - [ ] `parity:check` green pre-demo and post-deploy.
 - [ ] `check:real-legs` green (not skipped) post-deploy.
+- [ ] App Worker carries `VOICE_PIPELINE_URL` and `VOICE_PIPELINE_ENVELOPE_SECRET`.
 - [ ] Deploy outside demo hours; the drain bound is 30 s and new calls are refused meanwhile.
 - [ ] Operator sets `routing=demo` on the Northflank Postgres and verifies the audit entry.
 - [ ] Rollback is `routing=off`, one command, no deploy.

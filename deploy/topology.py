@@ -285,10 +285,13 @@ def validate_service(
                 f"{label}: ports[0].internalPort is {entry.get('internalPort')!r}; "
                 f"expected {SERVICE_PORT}"
             )
-        if entry.get("protocol") != "HTTP2":
+        if entry.get("protocol") != "HTTP":
             errors.append(
                 f"{label}: ports[0].protocol is {entry.get('protocol')!r}; the "
-                "browser WebSocket needs HTTP/2"
+                "public port must be HTTP/1.1. The service is uvicorn (h11), so an "
+                "HTTP/2 ingress port answers every request with a 502 protocol "
+                "error; Northflank's HTTP/1.1 ports carry WebSockets (measured "
+                "2026-11-03 on the voice-pipeline deployment)"
             )
         if entry.get("public") is not True:
             errors.append(

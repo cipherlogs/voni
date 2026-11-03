@@ -2,7 +2,7 @@
 
 > **Superseded 2026-10-30 (owner): Northflank Sandbox.** The cascade service
 > deploys as one combined service from `voice-pipeline/Dockerfile` on
-> Northflank's free Sandbox: always-on, no card, WebSockets on its HTTP/2
+> Northflank's free Sandbox: always-on, no card, WebSockets on its HTTP/1.1
 > public port, one Postgres addon for the durable store. The Fly.io decision
 > below is kept as history, not as the current host. Setup steps live in
 > [`deploy/northflank/README.md`](../../deploy/northflank/README.md).
