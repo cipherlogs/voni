@@ -92,20 +92,20 @@ function withFeatured(entries: RegressionSubjectInput[]): RegressionSubjectInput
 }
 
 test("a managed and a cascade run of one voice are two subjects with their own verdicts", () => {
-  const managed = resolveSubject({ voice: "malvina" });
-  const cascade = resolveCascadeSubject({ voice: "malvina" });
+  const managed = resolveSubject({ voice: DEFAULT_GATE_VOICE });
+  const cascade = resolveCascadeSubject({ voice: DEFAULT_GATE_VOICE });
   assert.equal(managed.pipeline, undefined);
   assert.equal(cascade.pipeline, "cascade");
 
   const matrix = buildRegressionMatrix({
-    entries: withFeatured([
+    entries: [
       { subject: managed, artifact: runFor(managed, { pipeline: "managed", runId: "run-managed" }) },
       { subject: cascade, artifact: runFor(cascade, { pipeline: "cascade", runId: "run-cascade" }) },
-    ]),
+    ],
   });
 
   const managedRow = matrix.results.find(
-    (row) => row.subject.agent.kind === "demo" && row.subject.agent.voice === "malvina" && row.subject.pipeline === undefined,
+    (row) => row.subject.agent.kind === "demo" && row.subject.agent.voice === DEFAULT_GATE_VOICE && row.subject.pipeline === undefined,
   );
   const cascadeRow = matrix.results.find((row) => row.subject.pipeline === "cascade");
   assert.ok(managedRow, "the managed subject keeps its own row");
@@ -116,7 +116,7 @@ test("a managed and a cascade run of one voice are two subjects with their own v
   assert.equal(managedRow.verdict?.runId, "run-managed");
   assert.equal(cascadeRow.verdict?.runId, "run-cascade");
   assert.match(formatSubject(cascadeRow.subject), /cascade/);
-  assert.equal(matrix.results.length, 3);
+  assert.equal(matrix.results.length, 2);
 });
 
 test("an ineligible run cannot be green even when every gate PASSes", () => {
@@ -191,9 +191,9 @@ test("an artifact from older code is historical only and blocked for the current
 
 test("a subject with no artifact is unresolved with a named reason, never a pass", () => {
   const audrey = resolveSubject({ voice: DEFAULT_GATE_VOICE });
-  const malvina = resolveSubject({ voice: "malvina" });
+  const tenantEs = resolveSubject({ agent: "agent_es_1", voice: "malvina", locale: "es", explicit: true });
   const missingFeatured = buildRegressionMatrix({
-    entries: [{ subject: audrey }, { subject: malvina, artifact: runFor(malvina) }],
+    entries: [{ subject: audrey }, { subject: tenantEs, artifact: runFor(tenantEs) }],
     expectedCode: CLEAN_CODE,
   });
   const annaRow = missingFeatured.results.find((row) => row.subject.locale === "en");
@@ -207,7 +207,7 @@ test("a subject with no artifact is unresolved with a named reason, never a pass
   const missing = buildRegressionMatrix({
     entries: [
       { subject: audrey, artifact: runFor(audrey) },
-      { subject: malvina },
+      { subject: tenantEs },
     ],
     expectedCode: CLEAN_CODE,
   });
@@ -218,18 +218,27 @@ test("a subject with no artifact is unresolved with a named reason, never a pass
   assert.notEqual(missingRow?.status, "PASS");
 });
 
-test("the featured subject is fixed to audrey/en, not a flag: malvina cannot be judged first", () => {
+test("the featured subject is fixed to audrey/en: withdrawn demo voices are refused by name", () => {
   const audrey = resolveSubject({ voice: DEFAULT_GATE_VOICE });
-  const malvina = resolveSubject({ voice: "malvina" });
+  const tenantEs = resolveSubject({ agent: "agent_es_1", voice: "malvina", locale: "es", explicit: true });
 
-  // Re-ordering the matrix by naming `malvina` as the featured subject is the
+  // Withdrawn demo voices never reach the matrix: the subject gate refuses them by name.
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    assert.throws(
+      () => resolveSubject({ voice, explicit: true }),
+      /unknown gate voice/,
+      `${voice} is refused by name`,
+    );
+  }
+
+  // Re-ordering the matrix by naming a tenant as the featured subject is the
   // exact bug W5 is about; it is refused by name, not silently accepted.
   assert.throws(
     () =>
       buildRegressionMatrix({
-        featuredSubject: malvina,
+        featuredSubject: tenantEs,
         entries: [
-          { subject: malvina, artifact: runFor(malvina) },
+          { subject: tenantEs, artifact: runFor(tenantEs) },
           { subject: audrey, artifact: runFor(audrey) },
         ],
       }),
@@ -238,8 +247,8 @@ test("the featured subject is fixed to audrey/en, not a flag: malvina cannot be 
   assert.throws(
     () =>
       buildRegressionMatrix({
-        featuredSubject: malvina,
-        entries: [{ subject: malvina, artifact: runFor(malvina) }],
+        featuredSubject: tenantEs,
+        entries: [{ subject: tenantEs, artifact: runFor(tenantEs) }],
       }),
     /demo audrey \(en, browser\)/,
     "the refusal names the subject that must lead",
@@ -248,32 +257,32 @@ test("the featured subject is fixed to audrey/en, not a flag: malvina cannot be 
 
 test("one ordering function puts the featured subject first and keeps the rest in order", () => {
   const audrey = resolveSubject({ voice: DEFAULT_GATE_VOICE });
-  const malvina = resolveSubject({ voice: "malvina" });
+  const tenantEs = resolveSubject({ agent: "agent_es_1", voice: "malvina", locale: "es", explicit: true });
   const tenant = resolveSubject({ agent: "agent_en_1", voice: "alba", locale: "en" });
 
   assert.deepEqual(
-    orderFeaturedFirst([malvina, tenant, audrey], audrey, (subject) => subject).map(subjectRowKey),
-    [subjectRowKey(audrey), subjectRowKey(malvina), subjectRowKey(tenant)],
+    orderFeaturedFirst([tenantEs, tenant, audrey], audrey, (subject) => subject).map(subjectRowKey),
+    [subjectRowKey(audrey), subjectRowKey(tenantEs), subjectRowKey(tenant)],
     "the featured subject leads; the rest keep their order",
   );
   assert.deepEqual(
-    orderFeaturedFirst([audrey, malvina], audrey, (subject) => subject).map(subjectRowKey),
-    [subjectRowKey(audrey), subjectRowKey(malvina)],
+    orderFeaturedFirst([audrey, tenantEs], audrey, (subject) => subject).map(subjectRowKey),
+    [subjectRowKey(audrey), subjectRowKey(tenantEs)],
     "a list that already leads with the featured subject is unchanged",
   );
-  // The same function guards the measure order: naming malvina cannot re-point it.
+  // The same function guards the measure order: naming a tenant cannot re-point it.
   assert.throws(
-    () => orderFeaturedFirst([audrey, malvina], malvina, (subject) => subject),
+    () => orderFeaturedFirst([audrey, tenantEs], tenantEs, (subject) => subject),
     /featured subject/,
   );
 });
 
-test("a reordering that judged malvina first fails: the featured row leads the results", () => {
+test("a reordering that judged a tenant first fails: the featured row leads the results", () => {
   const audrey = resolveSubject({ voice: DEFAULT_GATE_VOICE });
-  const malvina = resolveSubject({ voice: "malvina" });
+  const tenantEs = resolveSubject({ agent: "agent_es_1", voice: "malvina", locale: "es", explicit: true });
   const matrix = buildRegressionMatrix({
     entries: [
-      { subject: malvina, artifact: runFor(malvina, { runId: "run-malvina" }) },
+      { subject: tenantEs, artifact: runFor(tenantEs, { runId: "run-tenant-es" }) },
       {
         subject: audrey,
         artifact: runFor(audrey, {
@@ -286,22 +295,22 @@ test("a reordering that judged malvina first fails: the featured row leads the r
 
   assert.deepEqual(
     matrix.subjects.map(subjectRowKey),
-    [subjectRowKey(audrey), subjectRowKey(malvina)],
+    [subjectRowKey(audrey), subjectRowKey(tenantEs)],
     "the featured subject leads even when the caller listed it last",
   );
   assert.equal(matrix.results[0]?.isFeatured, true);
-  assert.equal(matrix.results[1]?.status, "BLOCKED", "malvina carries no verdict behind a failing audrey");
+  assert.equal(matrix.results[1]?.status, "BLOCKED", "the tenant carries no verdict behind a failing audrey");
   assert.equal(matrix.results[1]?.verdict, null);
-  assert.deepEqual(matrix.ordering.blocked, [subjectRowKey(malvina)]);
+  assert.deepEqual(matrix.ordering.blocked, [subjectRowKey(tenantEs)]);
 
   const dataRows = formatMatrixTable(matrix).split("\n").slice(2);
   assert.match(dataRows[0] ?? "", /demo audrey \(en, browser\)/);
-  assert.match(dataRows[1] ?? "", /BLOCK\s+demo malvina \(es, browser\).*featured subject demo audrey/);
+  assert.match(dataRows[1] ?? "", /BLOCK\s+tenant agent_es_1 \(es, browser\).*featured subject demo audrey/);
 });
 
 test("blocked rows are recorded while the featured subject has not passed, whatever blocked them", () => {
   const audrey = resolveSubject({ voice: DEFAULT_GATE_VOICE });
-  const malvina = resolveSubject({ voice: "malvina" });
+  const tenantEs = resolveSubject({ agent: "agent_es_1", voice: "malvina", locale: "es", explicit: true });
   const matrix = buildRegressionMatrix({
     entries: [
       {
@@ -311,8 +320,8 @@ test("blocked rows are recorded while the featured subject has not passed, whate
         }),
       },
       {
-        subject: malvina,
-        artifact: runFor(malvina, {
+        subject: tenantEs,
+        artifact: runFor(tenantEs, {
           eligibility: { eligible: false, reasons: ["a provider fallback at connect"] },
         }),
       },
@@ -322,20 +331,21 @@ test("blocked rows are recorded while the featured subject has not passed, whate
   assert.equal(matrix.ordering.featuredStatus, "FAIL");
   assert.deepEqual(
     matrix.ordering.blocked,
-    [subjectRowKey(malvina)],
+    [subjectRowKey(tenantEs)],
     "the artifact records every row the shut gate left unjudged, not only the ones it re-labelled",
   );
   assert.match(matrix.ordering.detail, /1 subject not judged/);
-  assert.match(formatMatrixTable(matrix), /BLOCK\s+demo malvina \(es, browser\).*fallback/);
+  assert.match(formatMatrixTable(matrix), /BLOCK\s+tenant agent_es_1 \(es, browser\).*fallback/);
 });
 
 test("once the featured subject passes, each row is judged from its own artifact", () => {
   const audrey = resolveSubject({ voice: DEFAULT_GATE_VOICE });
-  const malvina = resolveSubject({ voice: "malvina" });
+  const tenantEs = resolveSubject({ agent: "agent_es_1", voice: "malvina", locale: "es", explicit: true });
   const tenant = resolveSubject({ agent: "agent_en_1", voice: "alba", locale: "en" });
+  const tenantFr = resolveSubject({ agent: "agent_fr_1", voice: "estelle", locale: "fr", explicit: true });
   const matrix = buildRegressionMatrix({
     entries: [
-      { subject: malvina, artifact: runFor(malvina, { runId: "run-malvina" }) },
+      { subject: tenantEs, artifact: runFor(tenantEs, { runId: "run-tenant-es" }) },
       { subject: audrey, artifact: runFor(audrey, { runId: "run-audrey" }) },
       {
         subject: tenant,
@@ -344,20 +354,23 @@ test("once the featured subject passes, each row is judged from its own artifact
           gates: [{ name: "barge-in-cut", status: "FAIL", detail: "cut 1841ms exceeds 1500ms" }],
         }),
       },
-      { subject: resolveSubject({ voice: "donatien" }) },
+      { subject: tenantFr },
     ],
   });
 
   assert.equal(matrix.ordering.featuredStatus, "PASS");
   assert.deepEqual(matrix.ordering.blocked, []);
-  const byVoice = new Map(
-    matrix.results.map((row) => [row.subject.agent.kind === "demo" ? row.subject.agent.voice : "tenant", row]),
+  const byKey = new Map(
+    matrix.results.map((row) => [subjectRowKey(row.subject), row]),
   );
-  assert.equal(byVoice.get("malvina")?.status, "PASS");
-  assert.equal(byVoice.get("malvina")?.verdict?.runId, "run-malvina");
-  assert.equal(byVoice.get("tenant")?.status, "FAIL", "a later row keeps its own failing gate");
-  assert.equal(byVoice.get("tenant")?.verdict?.runId, "run-tenant");
-  assert.equal(byVoice.get("donatien")?.status, "MISSING", "a missing run stays missing, not judged");
+  const tenantEsRow = byKey.get(subjectRowKey(tenantEs))!;
+  const tenantRow = byKey.get(subjectRowKey(tenant))!;
+  const tenantFrRow = byKey.get(subjectRowKey(tenantFr))!;
+  assert.equal(tenantEsRow.status, "PASS");
+  assert.equal(tenantEsRow.verdict?.runId, "run-tenant-es");
+  assert.equal(tenantRow.status, "FAIL", "a later row keeps its own failing gate");
+  assert.equal(tenantRow.verdict?.runId, "run-tenant");
+  assert.equal(tenantFrRow.status, "MISSING", "a missing run stays missing, not judged");
   assert.match(
     matrix.ordering.detail,
     /featured subject demo audrey \(en, browser\) passed; 2 other subjects judged after it/,
@@ -367,9 +380,9 @@ test("once the featured subject passes, each row is judged from its own artifact
 
 test("a carried verdict is constructed and observed to fail", () => {
   const audrey = resolveSubject({ voice: DEFAULT_GATE_VOICE });
-  const malvina = resolveSubject({ voice: "malvina" });
+  const tenantEs = resolveSubject({ agent: "agent_es_1", voice: "malvina", locale: "es", explicit: true });
   const annaRun = runFor(audrey, { runId: "run-audrey" });
-  const lolaRun = runFor(malvina, { runId: "run-malvina" });
+  const tenantRun = runFor(tenantEs, { runId: "run-tenant-es" });
 
   // A copied verdict attached to the entry (a pasted matrix row) is refused.
   assert.throws(
@@ -377,8 +390,8 @@ test("a carried verdict is constructed and observed to fail", () => {
       buildRegressionMatrix({
         entries: [
           {
-            subject: malvina,
-            artifact: lolaRun,
+            subject: tenantEs,
+            artifact: tenantRun,
             verdict: subjectGateVerdict(annaRun),
           } as unknown as RegressionSubjectInput,
         ],
@@ -393,8 +406,8 @@ test("a carried verdict is constructed and observed to fail", () => {
       buildRegressionMatrix({
         entries: [
           {
-            subject: malvina,
-            artifact: { ...lolaRun, verdict: subjectGateVerdict(annaRun) } as ScoreboardArtifact,
+            subject: tenantEs,
+            artifact: { ...tenantRun, verdict: subjectGateVerdict(annaRun) } as ScoreboardArtifact,
           },
         ],
       }),
@@ -404,13 +417,13 @@ test("a carried verdict is constructed and observed to fail", () => {
 
   // And the artifact of another subject is never accepted as this row's run.
   assert.throws(
-    () => buildRegressionMatrix({ entries: [{ subject: malvina, artifact: annaRun }] }),
+    () => buildRegressionMatrix({ entries: [{ subject: tenantEs, artifact: annaRun }] }),
     /only reads its own subject's run/,
   );
 });
 
 test("an artifact whose pipeline disagrees with its subject is blocked by name", () => {
-  const managed = resolveSubject({ voice: "malvina" });
+  const managed = resolveSubject({ voice: DEFAULT_GATE_VOICE });
   const explicitManaged = { ...managed, pipeline: "managed" as const };
   const mismatched = runFor(explicitManaged, { pipeline: "cascade", runId: "run-mismatch" });
   const verdict = subjectGateVerdict(mismatched);

@@ -73,6 +73,9 @@ line states that its claims come from the cascade.
 | `voni/src/lib/demo/scoreboard-report.ts` | compact inspect/report formatters |
 | `voni/src/lib/demo/turn-marks.ts` | client receipt marks (`turn.user_final`, `turn.reply_start`, first-audio anchor) for the split |
 | `voni/src/lib/demo/latency-split.ts` | per-turn endpointing/generation/delivery arithmetic, ordinary vs post-cut |
+| `voni/src/lib/demo/review-ratings.ts` | owner review store: append-only per-turn + start ratings, artifact beside marks + delivered capture |
+| `voni/src/lib/demo/fix-gate.ts` | per-fix fixed-or-not-fixed gate record: blocks the next fix, names the repro for the retry |
+| `voni/src/components/review-overlay.tsx` | review overlay on the landing demo: ratings + fix-gate controls beside replay, split and cover line |
 | `voni/src/lib/demo/playout-preroll.ts` | the fixed playback pre-roll constant (report-only `perceived`, never a gate input) |
 | `voni/src/lib/demo/turn-windows.ts` | one formatter for turn-window evidence (gate detail + inspect report) |
 | `voni/src/lib/voice/silent-greeting.ts` | one silent-greeting session: the line as the greeting, native level (caller clips + reference capture) |

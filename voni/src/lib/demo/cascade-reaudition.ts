@@ -740,10 +740,10 @@ export function assembleCascadeReauditionPack(
 }
 
 /**
- * The six-subject roster. German is the bound `jorg`, listed like every other
- * subject, never hidden and never replaced by a fabricated clip. A subject with
- * no pack is `missing`, not omitted; one failed subject keeps the roster from
- * ready.
+ * The English-only roster (demo-cascade ticket 01): the single demo subject
+ * `audrey`, listed like every other subject, never hidden and never replaced
+ * by a fabricated clip. A subject with no pack is `missing`, not omitted; one
+ * failed subject keeps the roster from ready.
  */
 export function cascadeReauditionRoster(
   packs: readonly CascadeReauditionPack[],

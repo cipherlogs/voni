@@ -31,7 +31,9 @@ const CLEAN_CODE: CodeFingerprint = {
 };
 
 const AUDREY = resolveCascadeSubject({ voice: DEFAULT_GATE_VOICE });
-const MALVINA = resolveCascadeSubject({ voice: "malvina" });
+// English-only: the second measured subject is a tenant (the catalogue voice
+// via the --agent path), never a withdrawn demo voice.
+const TENANT = resolveCascadeSubject({ agent: "agent_tenant_1", voice: "audrey", locale: "en" });
 
 const PASS_GATES: ScoreboardGate[] = STREAK_REQUIRED_GATES.map((name) => ({
   name,
@@ -104,7 +106,7 @@ function run(args: string[]) {
 function writeRound(
   root: string,
   label: string,
-  gaps: { audrey: [number, number]; malvina: [number, number] },
+  gaps: { audrey: [number, number]; tenant: [number, number] },
   options: { failGate?: string; roundIndex?: number } = {},
 ): void {
   const dir = join(root, label);
@@ -112,9 +114,9 @@ function writeRound(
   const roundIndex = options.roundIndex ?? 0;
   const runs: Array<[SubjectRecord, string, number, number]> = [
     [AUDREY, "audrey-1", gaps.audrey[0], 0],
-    [MALVINA, "malvina-1", gaps.malvina[0], 1],
+    [TENANT, "tenant-1", gaps.tenant[0], 1],
     [AUDREY, "audrey-2", gaps.audrey[1], 2],
-    [MALVINA, "malvina-2", gaps.malvina[1], 3],
+    [TENANT, "tenant-2", gaps.tenant[1], 3],
   ];
   for (const [subject, name, gapMs, slot] of runs) {
     const artifact = cascadeRun(subject, gapMs, {
@@ -141,8 +143,8 @@ function writeAcceptance(path: string, overrides: Record<string, unknown> = {}):
   );
 }
 
-const FAILING = { audrey: [1800, 1800] as [number, number], malvina: [1800, 1800] as [number, number] };
-const PASSING = { audrey: [900, 950] as [number, number], malvina: [1000, 1050] as [number, number] };
+const FAILING = { audrey: [1800, 1800] as [number, number], tenant: [1800, 1800] as [number, number] };
+const PASSING = { audrey: [900, 950] as [number, number], tenant: [1000, 1050] as [number, number] };
 
 test("three measured rounds failing the reply gap print KILLED and exit non-zero", () => {
   const dir = mkdtempSync(join(tmpdir(), "kill-"));

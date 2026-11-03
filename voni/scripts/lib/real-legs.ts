@@ -41,7 +41,9 @@ import {
 import { buildDemoCascadeBody } from "../../src/lib/demo/cascade-body";
 import { deliverCallBody } from "../../src/lib/demo/pipeline-delivery";
 import { getVoice } from "../../src/lib/agents/voices";
+import { SCOREBOARD_BUDGETS } from "../../src/lib/demo/scoreboard-budgets";
 import {
+  DEMO_VOICE_IDS,
   VONI_GREETINGS,
   rungInstructions,
 } from "../../src/lib/demo/voni-agent";
@@ -67,8 +69,14 @@ export function defaultCallerClip(): string {
   );
 }
 
-/** The demo voice whose locale matches the committed caller clip. */
-export const DEFAULT_VOICE = "jorg";
+/**
+ * The demo voice a no-flags rehearsal measures: the roster's one English
+ * voice (demo-cascade ticket 01). The harness reads the roster, never its own
+ * literal. Note the pairing is gone: the only committed caller clip is still
+ * the German line, so a no-flags run replays German caller audio against the
+ * English agent until an English clip is committed.
+ */
+export const DEFAULT_VOICE: string = DEMO_VOICE_IDS[0];
 
 /**
  * The one pricing path, named on every `cost.priced` row. Source of truth:
@@ -91,8 +99,9 @@ export const REAL_LEGS_USAGE = `usage: npm run ${REAL_LEGS_COMMAND} -- [options]
   --base-url URL      the pipeline's HTTP(S) base (default: VOICE_PIPELINE_URL,
                       then VOICE_PIPELINE_SERVICE_URL)
   --ws-url URL        the browser-call WebSocket URL (derived from --base-url)
-  --voice ID          the demo voice and subject (default: ${DEFAULT_VOICE}, whose
-                      committed German caller clip ships in the repo)
+  --voice ID          the demo voice and subject (default: ${DEFAULT_VOICE}, the
+                      roster's English voice; the committed caller clip is
+                      still the German line until an English clip ships)
   --audio PATH        a caller clip replayed for each caller turn (default:
                       the committed clip; without it, one short line is
                       synthesized with the key)
@@ -862,6 +871,65 @@ export type RealLegsDeps = {
   callId?: string;
 };
 
+/** One reviewed reply: its endpointing plus reply split, marked partial. */
+export type ReplyGapTurn = {
+  /** Caller end of speech → final caller transcript receipt, or null unmeasured. */
+  endpointingMs: number | null;
+  /** Final transcript receipt → first agent audio receipt (the reply gap). */
+  replyGapMs: number;
+  /**
+   * The gap is undivided: no `reply.started` frame exists on this wire, so
+   * generation and delivery are not split. The trace-based split in
+   * `latency-split.ts` is the full seam; this client-side measure stays
+   * marked partial rather than guessing the division.
+   */
+  partial: true;
+};
+
+/**
+ * Gate every timed reply gap on the frozen reply-gap budget.
+ *
+ * The only gate is `SCOREBOARD_BUDGETS.replyGapP95Ms`, read from the single
+ * frozen table and cited by key: handshake bounds, token lifetimes, cushions,
+ * hold windows, hedge delays and timeouts bound behaviour but are never quoted
+ * as felt speed, so none of them appears here. The budgets table is frozen by
+ * its own guard; this gate follows it, never a restated literal.
+ */
+export function assessReplyGaps(turns: ReplyGapTurn[]): RealLegsCheck[] {
+  if (turns.length === 0) {
+    return [failed("reply gaps", "reply-gap", "no completed caller turn produced a timed reply")];
+  }
+  const budgetKey = "replyGapP95Ms";
+  const budgetMs = SCOREBOARD_BUDGETS.replyGapP95Ms.value;
+  const rows = turns.map((turn, index) => {
+    const endpointing =
+      turn.endpointingMs === null ? "endpointing n/a" : `endpointing ${turn.endpointingMs}ms`;
+    return `turn ${index + 1}: ${endpointing} + reply ${turn.replyGapMs}ms [partial]`;
+  });
+  const over = turns
+    .map((turn, index) => ({ turn, index }))
+    .filter(({ turn }) => turn.replyGapMs > budgetMs);
+  if (over.length > 0) {
+    const named = over
+      .map(({ turn, index }) => `turn ${index + 1} reply ${turn.replyGapMs}ms`)
+      .join(", ");
+    return [
+      failed(
+        "reply gaps",
+        "reply-gap",
+        `${named} past the frozen ${budgetKey} budget of ${budgetMs}ms: ${rows.join("; ")}`,
+      ),
+    ];
+  }
+  return [
+    passed(
+      "reply gaps",
+      "reply-gap",
+      `${rows.join("; ")}; every reply within the frozen ${budgetKey} budget of ${budgetMs}ms`,
+    ),
+  ];
+}
+
 type CallState = {
   captions: { role: "user" | "agent"; text: string; final: boolean }[];
   audioFrames: number;
@@ -875,6 +943,8 @@ type CallState = {
   pendingFinalAt: number | null;
   pendingAudioSeen: boolean;
   speechEndedAt: number | null;
+  /** Last received agent audio frame; the previous reply's end once quiet. */
+  lastAudioAt: number | null;
 };
 
 function defaultConnect(url: string): RealLegsSocket {
@@ -1271,6 +1341,7 @@ export async function runRealLegs(
       pendingFinalAt: null,
       pendingAudioSeen: false,
       speechEndedAt: null,
+      lastAudioAt: null,
     };
     let socket: RealLegsSocket;
     try {
@@ -1298,6 +1369,7 @@ export async function runRealLegs(
       if (audioFrame) {
         state.audioFrames += 1;
         state.audioBytes += audioFrame.pcm.length;
+        state.lastAudioAt = now();
         if (state.pendingFinalAt !== null && !state.pendingAudioSeen) {
           state.pendingAudioSeen = true;
           state.turnLatencies.push(now() - state.pendingFinalAt);
@@ -1691,15 +1763,12 @@ export async function runRealLegs(
         ),
   );
 
-  checks.push(
-    state.turnLatencies.length > 0
-      ? passed(
-          "reply gaps",
-          "reply-gap",
-          `caller-final → first agent audio (ms): ${state.turnLatencies.join(", ")}; speech-end → final (ms): ${state.endpointingMs.join(", ")}`,
-        )
-      : failed("reply gaps", "reply-gap", "no completed caller turn produced a timed reply"),
-  );
+  const gapTurns: ReplyGapTurn[] = state.turnLatencies.map((replyGapMs, index) => ({
+    endpointingMs: state.endpointingMs[index] ?? null,
+    replyGapMs,
+    partial: true,
+  }));
+  checks.push(...assessReplyGaps(gapTurns));
 
   checks.push(
     state.audioFrames > 0 && state.audioBytes > 0

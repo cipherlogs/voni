@@ -442,7 +442,7 @@ test("a refused cascade connect is unavailable, never a managed retry", () => {
   assert.match(call, /demoUnavailableMessage/);
   assert.match(
     handler,
-    /cascadeEnded = true;[\s\S]*?setError\(\{ message: demoUnavailableMessage\(failure\.code\) \}\)[\s\S]*?setCallState\("ended"\)/,
+    /setError\(\{ message: demoUnavailableMessage\(failure\.code\) \}\)[\s\S]*?setCallState\("ended"\)/,
     "the refusal maps the cause and ends the call",
   );
   assert.doesNotMatch(call, /decideCascadeFallback|FALLBACK_REASONS/);
@@ -728,4 +728,45 @@ test("the transcript label reader maps both visitor labels to the caller", () =>
   assert.equal(transcriptRole("You · overheard"), "caller", "an overheard visitor line is still the caller");
   assert.equal(transcriptRole("Voni"), "agent");
   assert.equal(transcriptRole(""), "agent", "an unknown label is never credited to the caller");
+});
+
+test("the demo stays waiting until the first audible sample, then paints live with the chime", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const demo = call.slice(
+    call.indexOf('if (modeKind === "demo") {'),
+    call.indexOf("const session = new VoiceSession({"),
+  );
+
+  // Waiting persists through mint, socket open, config, admission and
+  // greeting synthesis: the post-mint block never paints live and never
+  // marks the paint. The paint waits for the playout's first audible sample.
+  const minted = demo.slice(
+    demo.indexOf("await startDemoCall("),
+    demo.indexOf("} catch (e) {"),
+  );
+  assert.ok(minted.includes("await startDemoCall("), "the post-mint block is where live was painted early");
+  assert.ok(!minted.includes('setCallState("listening")'), "no live paint before the first audible sample");
+  assert.ok(!minted.includes("connected_painted"), "no paint mark before the first audible sample");
+
+  // Frames arrive before they sound (pre-roll cushion), so the frame arrival
+  // must not paint speaking: the wait ends at first audible, not first frame.
+  const audio = demo.slice(demo.indexOf("onAudio: () => {"), demo.indexOf("onFirstAudible:"));
+  assert.ok(audio.includes("replyStarted()"), "frame arrival still opens the floor");
+  assert.ok(
+    audio.includes("audibleRef"),
+    "the speaking paint is gated on the first audible sample",
+  );
+
+  // The first audible sample paints live and fires the chime, once per call:
+  // ringback stops, the chime mark follows first_audible, then the paint mark.
+  const firstAudible = demo.slice(
+    demo.indexOf("onFirstAudible:"),
+    demo.indexOf("onSpeechEnd: () => {"),
+  );
+  assert.ok(firstAudible.includes("playConnectedChime()"), "the chime fires at first audible");
+  assert.ok(firstAudible.includes("connected_painted"), "the paint is marked at first audible");
+  assert.ok(
+    firstAudible.includes("setCallState(") && firstAudible.includes('"speaking"') && firstAudible.includes('"listening"'),
+    "live paints at first audible (speaking when the reply started, else listening), never on a silent start",
+  );
 });

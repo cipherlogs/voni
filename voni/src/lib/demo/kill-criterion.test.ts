@@ -48,7 +48,9 @@ const CLEAN_CODE: CodeFingerprint = {
 };
 
 const AUDREY = resolveCascadeSubject({ voice: DEFAULT_GATE_VOICE });
-const MALVINA = resolveCascadeSubject({ voice: "malvina" });
+// English-only: the second measured subject is a tenant (the catalogue voice
+// via the --agent path), never a withdrawn demo voice.
+const TENANT = resolveCascadeSubject({ agent: "agent_tenant_1", voice: "audrey", locale: "en" });
 
 const PASS_GATES: ScoreboardGate[] = STREAK_REQUIRED_GATES.map((name) => ({
   name,
@@ -126,9 +128,9 @@ function measuredRound(
 ): RoundInput {
   const attempts = [
     { subject: AUDREY, gap: gaps[0], slot: 0 as const },
-    { subject: MALVINA, gap: gaps[1], slot: 1 as const },
+    { subject: TENANT, gap: gaps[1], slot: 1 as const },
     { subject: AUDREY, gap: gaps[2], slot: 2 as const },
-    { subject: MALVINA, gap: gaps[3], slot: 3 as const },
+    { subject: TENANT, gap: gaps[3], slot: 3 as const },
   ];
   return {
     label,

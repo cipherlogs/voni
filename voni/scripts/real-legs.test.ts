@@ -33,6 +33,7 @@ import {
   KEY_SKIP_REASON,
   TURN_TAIL_MS,
   UsageError,
+  assessReplyGaps,
   assessTrace,
   carriedHistory,
   createIngressPump,
@@ -49,10 +50,12 @@ import {
 } from "./lib/real-legs";
 import { verifyCallToken } from "../src/lib/voice/cascade-token";
 import { envelopeBodyHash } from "../src/lib/voice/envelope";
+import { SCOREBOARD_BUDGETS } from "../src/lib/demo/scoreboard-budgets";
 import {
   DEMO_VOICE_IDS,
   rungInstructions,
 } from "../src/lib/demo/voni-agent";
+import { resolveSubject } from "../src/lib/demo/subject";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VONI_ROOT = resolve(HERE, "..");
@@ -110,10 +113,15 @@ test("both keys present lets the check run", () => {
 // Flags
 // --------------------------------------------------------------------------
 
-test("no flags means the committed German caller clip and its voice", () => {
+test("no flags still names the committed caller clip; the demo roster is English-only", () => {
   const options = parseRealLegsArgs([]);
-  assert.equal(options.voice, "jorg");
+  // The default voice reads the roster: English-only means audrey, and the
+  // no-flags run names a demo subject. The only committed clip is still the
+  // German line (caller audio, replayed against the English agent until an
+  // English clip is committed); an explicit --voice audrey is the same path.
+  assert.equal(options.voice, "audrey");
   assert.ok((DEMO_VOICE_IDS as readonly string[]).includes(options.voice));
+  assert.equal(resolveSubject({ voice: options.voice }).locale, "en");
   assert.equal(options.audioPath, undefined);
   assert.equal(options.baseUrl, undefined);
   assert.equal(options.wsUrl, undefined);
@@ -1022,7 +1030,7 @@ async function runAgainstFake(
   delete process.env.DEMO_LLM_MODEL_OVERRIDE;
   try {
     const options: RealLegsOptions = {
-      voice: "jorg",
+      voice: "audrey",
       timeoutMs: 15_000,
       withResume: true,
       withHangup: false,
@@ -1049,6 +1057,45 @@ async function runAgainstFake(
     else process.env.DEMO_LLM_MODEL_OVERRIDE = previousModel;
   }
 }
+
+test("reply gaps with no timed reply fail by name", () => {
+  const [check] = assessReplyGaps([]);
+  assert.equal(check?.status, "fail");
+  assert.equal(check?.code, "reply-gap");
+  assert.match(check?.detail ?? "", /no completed caller turn produced a timed reply/);
+});
+
+test("timed reply gaps pass against the frozen reply-gap budget", () => {
+  const budget = SCOREBOARD_BUDGETS.replyGapP95Ms.value;
+  const [check] = assessReplyGaps([
+    { endpointingMs: 120, replyGapMs: 800, partial: true },
+    { endpointingMs: 200, replyGapMs: budget, partial: true },
+  ]);
+  assert.equal(check?.status, "pass");
+  assert.equal(check?.code, "reply-gap");
+  assert.match(check?.detail ?? "", /replyGapP95Ms/);
+  assert.ok(
+    (check?.detail ?? "").includes(String(budget)),
+    "the gate cites the frozen table value, never a restated literal",
+  );
+  assert.match(
+    check?.detail ?? "",
+    /turn 1: endpointing 120ms \+ reply 800ms \[partial\]/,
+    "every reviewed reply carries its endpointing plus reply split, marked partial",
+  );
+});
+
+test("a reply gap past the frozen budget fails and names the turn", () => {
+  const budget = SCOREBOARD_BUDGETS.replyGapP95Ms.value;
+  const [check] = assessReplyGaps([
+    { endpointingMs: 120, replyGapMs: 800, partial: true },
+    { endpointingMs: null, replyGapMs: budget + 1, partial: true },
+  ]);
+  assert.equal(check?.status, "fail");
+  assert.equal(check?.code, "reply-gap");
+  assert.match(check?.detail ?? "", /turn 2/);
+  assert.match(check?.detail ?? "", /replyGapP95Ms/);
+});
 
 test("the call's flow passes every assertion against a fake service", async () => {
   const { checks, dir, service } = await runAgainstFake(true);
@@ -1098,7 +1145,7 @@ test("the call's flow passes every assertion against a fake service", async () =
       "protocolVersion",
       "type",
     ]);
-    assert.equal(service.config()?.agentId, "demo:jorg");
+    assert.equal(service.config()?.agentId, "demo:audrey");
     assert.deepEqual(
       service.contexts(),
       [rungInstructions("nudge")],
@@ -1117,6 +1164,7 @@ test("the call's flow passes every assertion against a fake service", async () =
       /greeting is not a turn/,
     );
     assert.match(checks.find((entry) => entry.code === "trace")?.detail ?? "", /call-real-legs-test/);
+    assert.match(checks.find((entry) => entry.code === "reply-gap")?.detail ?? "", /replyGapP95Ms/);
     assert.match(checks.find((entry) => entry.code === "cost")?.detail ?? "", /\$0\.000123/);
     assert.match(formatRealLegsReport(checks), /17 checks, all passed/);
   } finally {

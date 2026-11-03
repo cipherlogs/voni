@@ -13,6 +13,7 @@ import {
   encodeAudioFrame,
   encodeContextMessage,
   parseServerMessage,
+  FIRST_AUDIO_BOUND_MS,
   MIC_GATE_FALLBACK_MS,
   RECONNECT_HANDSHAKE_MS,
   type CascadeCallConfig,
@@ -1252,6 +1253,76 @@ test("a socket that fails or closes before acceptance is unavailable, reported o
   assert.equal(failures[0].code, "unavailable");
   assert.equal(ended, 0);
   assert.equal(socket.closed, true);
+});
+
+test("an admitted call that never sounds ends as an unavailable connect failure", async () => {
+  // Demo-cascade 06: no second silent start. The service admitted the call but
+  // no audible sample ever arrived: the wait must end in the visitor-facing
+  // unavailable state instead of waiting in silence forever.
+  const socket = makeSocket();
+  const failures: DrainingError[] = [];
+  let ended = 0;
+  const session = new CascadeSession(
+    { onConnectFailure: (error) => failures.push(error), onEnd: () => (ended += 1) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  const clock = mock.timers;
+  clock.enable({ apis: ["setTimeout"] });
+  try {
+    await session.start(CONFIG, "test-owner");
+    socket.readyState = socket.OPEN;
+    socket.emit(JSON.stringify({ type: "caption", role: "agent", text: "Hi.", final: true }));
+    assert.equal(failures.length, 0, "admission alone is not a failure");
+    clock.tick(FIRST_AUDIO_BOUND_MS);
+    assert.equal(failures.length, 1, "a silent start ends instead of waiting forever");
+    assert.equal(failures[0].code, "unavailable");
+    assert.equal(socket.closed, true, "the silent attempt is closed");
+    assert.equal(ended, 0, "a refused connect is not a completed call");
+    clock.tick(FIRST_AUDIO_BOUND_MS);
+    assert.equal(failures.length, 1, "the refusal is reported once");
+  } finally {
+    clock.reset();
+  }
+});
+
+test("first audible inside the bound keeps the admitted call alive", async () => {
+  // The bound is a backstop, not a tripwire: a greeting that sounds in time
+  // must never end the call.
+  const socket = makeSocket();
+  const failures: DrainingError[] = [];
+  const playout = {
+    play() {},
+    flush() {},
+    onFirstAudible: undefined as (() => void) | undefined,
+  };
+  const session = new CascadeSession(
+    { onConnectFailure: (error) => failures.push(error) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => playout,
+    },
+  );
+  const clock = mock.timers;
+  clock.enable({ apis: ["setTimeout"] });
+  try {
+    await session.start(CONFIG, "test-owner");
+    socket.readyState = socket.OPEN;
+    socket.emit(JSON.stringify({ type: "caption", role: "agent", text: "Hi.", final: true }));
+    playout.onFirstAudible?.();
+    clock.tick(FIRST_AUDIO_BOUND_MS);
+    assert.deepEqual(failures, [], "an audible start never trips the silent-start bound");
+    assert.equal(socket.closed, false, "the live call keeps its socket");
+    const stopping = session.stop();
+    clock.tick(CALLER_END_WAIT_MS);
+    await stopping;
+  } finally {
+    clock.reset();
+  }
 });
 
 test("a socket that closes after the service accepted the call stays an ordinary end", async () => {

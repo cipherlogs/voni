@@ -24,6 +24,7 @@ import {
   latestEnglishLeakPromotion,
   type EnglishLeakPromotion,
 } from "./english-leak";
+import { SubjectError } from "./subject";
 
 /** A Spanish call: the greeting and two clean replies. */
 const ES_CLEAN = [
@@ -46,6 +47,15 @@ const EN_BASELINE = [
   "sess_en_base  agent=agent_anna  21.0s  end=client_end",
   ' 1.10s  VONI    "Hi, this is Anna from Voni. How can I help?"  (reply_create gap 700ms)',
   ' 4.20s  VONI    "Sure, I will send that to your inbox right now."  (reply_create gap 800ms)',
+  ' 7.30s  VONI    "Voni, WhatsApp, Lime 42."  (reply_create gap 900ms)',
+  ' 9.00s  VONI    "Thanks for calling, goodbye."  (reply_create gap 500ms)',
+];
+
+/** A second English call: same shape as the baseline, different words. */
+const EN_ALT = [
+  "sess_en_alt  agent=agent_audrey  21.0s  end=client_end",
+  ' 1.10s  VONI    "Hello, this is Audrey from Voni. How can I help?"  (reply_create gap 700ms)',
+  ' 4.20s  VONI    "Of course, I will send that to your inbox right now."  (reply_create gap 800ms)',
   ' 7.30s  VONI    "Voni, WhatsApp, Lime 42."  (reply_create gap 900ms)',
   ' 9.00s  VONI    "Thanks for calling, goodbye."  (reply_create gap 500ms)',
 ];
@@ -201,56 +211,60 @@ test("an unknown or undetermined Locale is never scanned, so no silent English d
   assert.equal(count.count, 0);
 });
 
-test("the artifact records the count and the promotion decision", () => {
-  const leaked = artifactFor("malvina", ES_LEAK, "run-es-leak");
+test("the artifact records the English baseline and the promotion decision", () => {
+  const english = artifactFor("audrey", EN_BASELINE, "run-en-base");
 
-  assert.ok(leaked.englishLeak, "the artifact carries the counter");
-  assert.equal(leaked.englishLeak.count, 1);
-  assert.equal(leaked.englishLeak.turns, 3);
-  assert.equal(leaked.englishLeak.locale, "es");
-  assert.equal(leaked.englishLeak.reportOnly, true);
-  assert.deepEqual(leaked.englishLeak.promotion, ENGLISH_LEAK_PROMOTION);
-  assert.equal(leaked.englishLeak.promotion.gating, false);
+  assert.ok(english.englishLeak, "the artifact carries the counter");
+  assert.equal(english.englishLeak.status, "not-applicable");
+  assert.equal(english.englishLeak.applicable, false);
+  assert.equal(english.englishLeak.count, 0);
+  assert.equal(english.englishLeak.turns, 4);
+  assert.equal(english.englishLeak.rate, null);
+  assert.equal(english.englishLeak.locale, "en");
+  assert.equal(english.englishLeak.reportOnly, true);
+  assert.deepEqual(english.englishLeak.promotion, ENGLISH_LEAK_PROMOTION);
+  assert.equal(english.englishLeak.promotion.gating, false);
+  assert.equal(english.englishLeak.englishBaseline?.turns, 4);
+  assert.equal(english.englishLeak.englishBaseline?.scopedFlagged, 0);
 
-  const clean = artifactFor("malvina", ES_CLEAN, "run-es-clean");
-  assert.equal(clean.englishLeak?.count, 0);
-
-  // A stored artifact read back from disk re-derives the same counter.
+  // A stored artifact read back from disk re-derives the same baseline.
   const fromArtifact = englishLeakForArtifact(
-    JSON.parse(JSON.stringify(leaked)),
+    JSON.parse(JSON.stringify(english)),
   );
-  assert.equal(fromArtifact.count, 1);
-  assert.equal(fromArtifact.turns, 3);
+  assert.equal(fromArtifact.status, "not-applicable");
+  assert.equal(fromArtifact.englishBaseline?.turns, 4);
 });
 
-test("the counter is report-only: a leaking turn and a clean one have identical gates", () => {
-  const leaked = artifactFor("malvina", ES_LEAK, "run-es-leak");
-  const clean = artifactFor("malvina", ES_CLEAN, "run-es-clean");
+test("a withdrawn voice is refused by name, never measured as a demo subject", () => {
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    assert.throws(
+      () => artifactFor(voice, ES_LEAK, `run-${voice}-refused`),
+      (error: unknown) =>
+        error instanceof SubjectError &&
+        error.field === "agent" &&
+        new RegExp(`unknown gate voice "${voice}"`).test(error.message),
+      `${voice} is withdrawn from the English-only roster`,
+    );
+  }
+});
 
-  assert.deepEqual(leaked.gates, clean.gates);
-  assert.deepEqual(leaked.subScores, clean.subScores);
-  assert.deepEqual(leaked.beats, clean.beats);
-  assert.deepEqual(leaked.replyGap, clean.replyGap);
+test("the counter is report-only: two English runs have identical gates", () => {
+  const base = artifactFor("audrey", EN_BASELINE, "run-en-base");
+  const alt = artifactFor("audrey", EN_ALT, "run-en-alt");
+
+  assert.deepEqual(base.gates, alt.gates);
+  assert.deepEqual(base.subScores, alt.subScores);
+  assert.deepEqual(base.beats, alt.beats);
+  assert.deepEqual(base.replyGap, alt.replyGap);
 
   const names = [
-    ...leaked.gates.map((gate) => gate.name),
-    ...leaked.subScores.map((sub) => sub.name),
+    ...base.gates.map((gate) => gate.name),
+    ...base.subScores.map((sub) => sub.name),
   ];
   assert.ok(!names.some((name) => /leak|english/i.test(name)));
 });
 
-test("the compact report exposes the counter, its rate and the English baseline", () => {
-  const spanish = buildInspectReport(
-    artifactFor("malvina", ES_LEAK, "run-es-leak"),
-  );
-  assert.equal(spanish.englishLeak.count, 1);
-  assert.equal(spanish.englishLeak.rate, 1 / 3);
-  const spanishText = formatInspectReport(spanish);
-  assert.match(spanishText, /english-leak \(report-only, never gated\)/);
-  assert.match(spanishText, /1 of 3 agent turns leak \(0\.33\)/);
-  assert.match(spanishText, /turn 2: i, can, you, the/);
-  assert.match(spanishText, /promotion\s+report-only/);
-
+test("the compact report exposes the English baseline, never a leak rate", () => {
   const english = buildInspectReport(
     artifactFor("audrey", EN_BASELINE, "run-en-base"),
   );

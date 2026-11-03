@@ -234,6 +234,15 @@
       "source": "spec: Meta STT first-frame ack within 10 s; owner decision 2026-10-30 (ticket 04) for reuse on reconnect",
       "date": "2026-10-30"
     },
+    "start.first_audio_ms": {
+      "unit": "ms",
+      "gate": "start.first-audio",
+      "ticket": "demo-cascade-06",
+      "note": "A started demo call that never sounds is not a slow call: past this bound it ends in the visitor-facing unavailable state instead of waiting in silence. A healthy greeting speaks within seconds of admission (TTS first audio plus the 250 ms demo cushion), so this is a failure bound in seconds, never a speed claim. It stays above the 10 s reconnect handshake and the 8 s mic-gate fallback so a slow-but-healthy admission is never failed first.",
+      "value": 15000,
+      "source": "demo-cascade ticket 06 (2026-11-03), halved by the review-fixes pass (2026-11-03): the worst silent wait drops from half a minute to seconds while keeping the timer ordering",
+      "date": "2026-11-03"
+    },
     "envelope.ttl_ms": {
       "unit": "ms",
       "gate": "envelope.expiry",
@@ -287,6 +296,15 @@
       "source": "owner decision 2026-10-31: a short spoken acknowledgement at 300 ms covers the vendor's first-token wait; it is not the reply and is never captioned",
       "date": "2026-10-31",
       "note": "Demo-only. One short line through the same voice, skipped when the reply starts speaking first."
+    },
+    "reply.judge_timeout_ms": {
+      "unit": "ms",
+      "gate": "reply.ack",
+      "ticket": "demo-cascade-fixes/04",
+      "value": 120,
+      "source": "owner decision 2026-11-03: the fast cover judge picks tone-or-none well inside the 300 ms ack delay; a timeout fails open to the deterministic tone hash or silence",
+      "date": "2026-11-03",
+      "note": "Demo-only. The judge cap is never reported as speed; live round-trips size blocking versus pre-select behaviour."
     },
     "turn.hold_silence_ms": {
       "unit": "ms",

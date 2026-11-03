@@ -5,11 +5,13 @@
   "callTokenTtlMs": 60000,
   "resumeHistoryTurns": 12,
   "reconnectHandshakeMs": 10000,
-  "source": "voice-pipeline/cascade/thresholds.json#bounds.envelope.ttl_ms, bounds.call_token.ttl_ms, bounds.resume.history_turns, bounds.reconnect.handshake_ms",
+  "firstAudioMs": 15000,
+  "source": "voice-pipeline/cascade/thresholds.json#bounds.envelope.ttl_ms, bounds.call_token.ttl_ms, bounds.resume.history_turns, bounds.reconnect.handshake_ms, bounds.start.first_audio_ms",
   "dates": {
     "envelopeTtlMs": "2026-10-30",
     "callTokenTtlMs": "2026-10-30",
     "resumeHistoryTurns": "2026-10-31",
-    "reconnectHandshakeMs": "2026-10-30"
+    "reconnectHandshakeMs": "2026-10-30",
+    "firstAudioMs": "2026-11-03"
   }
 }

@@ -1,7 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { DemoCallSkeleton } from "@/components/page-skeletons";
+import { ReviewOverlay } from "@/components/review-overlay";
+import { fixUnderReview } from "@/lib/demo/fix-gate";
+import { reviewOverlayRequested } from "@/lib/demo/review-ratings";
 
 /**
  * The public live-demo widget (plan Section E).
@@ -28,5 +32,22 @@ const VoiceCall = dynamic(
 );
 
 export function LandingDemo() {
-  return <VoiceCall mode={{ kind: "demo" }} />;
+  // Ticket 07: the same landing demo hosts the review overlay behind
+  // `?review=1`. The overlay starts with no rows: the owner replays the
+  // call's marks + delivered capture and rates each agent reply beside the
+  // transcript, split and acknowledgement line used.
+  // Ticket 08: the gate section marks the fix under review (`?fix=`).
+  // A not-fixed mark stays open and blocks the next fix.
+  const [review, setReview] = useState(false);
+  const [fixId, setFixId] = useState<string | null>(null);
+  useEffect(() => {
+    setReview(reviewOverlayRequested(window.location.search));
+    setFixId(fixUnderReview(window.location.search));
+  }, []);
+  return (
+    <>
+      <VoiceCall mode={{ kind: "demo" }} />
+      {review ? <ReviewOverlay callId="review-call" turns={[]} fixId={fixId} /> : null}
+    </>
+  );
 }

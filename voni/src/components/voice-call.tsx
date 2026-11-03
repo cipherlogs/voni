@@ -139,7 +139,8 @@ import {
  *    thing inside it. Nothing outside the card can move now.
  *
  * 2. **Demo mode is its own layout.** The demo call (DESIGN.md §10c): the
- *    orb with a ‹ › voice/language switcher and Start call at rest, opening
+ *    orb with a disabled ‹ › voice switcher (English-only, one voice) and
+ *    Start call at rest, opening
  *    into the call card with live state, hang-up and a flat live transcript.
  *    Voni always talks as itself; the switcher locks during a call because
  *    the voice genuinely is immutable once a session starts.
@@ -453,6 +454,14 @@ export function VoiceCall({
   /** True while the connecting loop is sounding, so one stretch is one mark. */
   const ringbackActiveRef = useRef(false);
   /**
+   * Audible-first live (demo-cascade 02): the demo stays in `connecting`
+   * (waiting state + waiting sound) until the playout's first audible
+   * sample; only then it paints live and fires the connected chime. Both
+   * reset on a fresh dial, never on a hold rejoin (that call was already live).
+   */
+  const audibleRef = useRef(false);
+  const livePaintedRef = useRef(false);
+  /**
    * The connected chime marks the agent actually sounding, so it hangs off the
    * playout's first audible sample — not the moment a greeting is queued (the
    * worklet holds that for its whole pre-roll) and not `session.ready`. A
@@ -462,6 +471,13 @@ export function VoiceCall({
   const playConnectedChime = useCallback(() => {
     if (connectedChimeRef.current) return;
     connectedChimeRef.current = true;
+    // The wait ends at sound: stop the waiting loop here so the mark order is
+    // first_audible, ringback_stop, chime. The state effect below would stop
+    // the loop on the live paint, but the chime must never run into ringback.
+    if (ringbackActiveRef.current) {
+      ringbackActiveRef.current = false;
+      marksRef.current?.mark("ringback_stop");
+    }
     // One mark per chime: a second bell (a regression) must be visible as a
     // second mark, so the recorder never deduplicates.
     marksRef.current?.mark("chime");
@@ -1257,7 +1273,6 @@ export function VoiceCall({
       // Cascade slice: Python pipeline service over WebSocket. Same UI
       // states as managed (connecting/listening/speaking/ended) so every
       // indicator, timer, caption, and the countdown below works unchanged.
-      let cascadeEnded = false;
       // Browser call evidence: the same flag as the delivered WAV, so the two
       // artifacts of one call share a call id. `null` means no marks exist.
       const marks = createCallMarks(
@@ -1266,6 +1281,10 @@ export function VoiceCall({
       );
       marksRef.current = marks;
       marks?.mark("start_requested");
+      // Every start waits for its own first audible sample, hold rejoin or
+      // fresh dial: the wait ends only when delivered audio is audible.
+      audibleRef.current = false;
+      livePaintedRef.current = false;
       // The demo's guardrail words follow the picked voice's Locale (the same
       // per-Locale recognition layer the managed path uses); hidden notes stay
       // model-directed English, while the service speaks its Locale's hold and
@@ -1386,33 +1405,54 @@ export function VoiceCall({
         onAudio: () => {
           speakingRef.current = true;
           cascadeFloorRef.current?.replyStarted();
-          setCallState("speaking");
+          // Frames arrive before they sound (pre-roll cushion), so painting
+          // speaking here would end the wait early. Live paints at the first
+          // audible sample.
+          if (audibleRef.current) setCallState("speaking");
         },
         // The connected chime waits for the first audible sample, not this
-        // frame's arrival (the playout holds it for the pre-roll).
-        onFirstAudible: playConnectedChime,
+        // frame's arrival (the playout holds it for the pre-roll). The live
+        // paint waits with it: waiting state and waiting sound persist
+        // through socket open, config send, admission and greeting synthesis,
+        // and a silent start never paints and never chimes.
+        onFirstAudible: () => {
+          audibleRef.current = true;
+          playConnectedChime();
+          if (livePaintedRef.current || stateRef.current === "ended") return;
+          livePaintedRef.current = true;
+          // The frames arrived before they sounded: paint speaking when the
+          // reply already started, else listening. Either is the first live
+          // paint, ordered strictly after first_audible with the chime.
+          setCallState(speakingRef.current ? "speaking" : "listening");
+          if (marks) {
+            const markPainted = () => marks.mark("connected_painted");
+            if (typeof requestAnimationFrame === "function") requestAnimationFrame(markPainted);
+            else markPainted();
+          }
+        },
         // The turn ends when its audio has played out, not when its caption
         // finished streaming. The old caption-driven flip ended the greeting
         // at 460 ms over 1.76 s of speech; this is the worklet's drain event.
+        // A drain before the first audible sample (a greeting that never
+        // sounded) must not end a wait that never became live.
         onSpeechEnd: () => {
           speakingRef.current = false;
           overheardRef.current = false;
           cascadeFloorRef.current?.replyDone(false);
           setFiller(null);
-          setCallState("listening");
+          if (audibleRef.current) setCallState("listening");
         },
         onInterrupted: () => {
           speakingRef.current = false;
           overheardRef.current = false;
           cascadeFloorRef.current?.replyDone(true);
           setFiller(null);
-          setCallState("listening");
+          if (audibleRef.current) setCallState("listening");
         },
         onMetrics: (metrics, turns) => {
           console.debug("[voice-call] cascade metrics", { turns, metrics });
         },
         onError: (message) => {
-          cascadeEnded = true;
           setError({ message });
         },
         onConnectFailure: (failure) => {
@@ -1421,18 +1461,15 @@ export function VoiceCall({
           // protocol mismatch — ends in the visitor-facing unavailable state.
           // The copy is vendor-free and distinct per cause; no managed token
           // request and no managed socket follows.
-          cascadeEnded = true;
           setError({ message: demoUnavailableMessage(failure.code) });
           setCallState("ended");
         },
         onReconnectFailed: (cause) => {
           // The call was live, so this is not a start refusal: say the line
           // dropped and that it could not be resumed, by name in the marks.
-          cascadeEnded = true;
           setError({ message: demoReconnectFailedMessage(cause) });
         },
         onEnd: () => {
-          cascadeEnded = true;
           speakingRef.current = false;
           overheardRef.current = false;
           setCallState("ended");
@@ -1494,18 +1531,12 @@ export function VoiceCall({
         if (minted.tagToken) saveTagToken(minted.tagToken);
         setTestTag(minted.testTag ?? null);
         if (!preserving) setTagCarried(minted.tagCarried === true);
-        // A refusal may have landed before the mic resolved: never paint
-        // "listening" over a call that already ended.
-        if (!cascadeEnded) {
-          setCallState("listening");
-          // The mark names the paint, not the state change: schedule it for
-          // the frame that actually shows the connected card.
-          if (marks) {
-            const markPainted = () => marks.mark("connected_painted");
-            if (typeof requestAnimationFrame === "function") requestAnimationFrame(markPainted);
-            else markPainted();
-          }
-        }
+        // Honest start (demo-cascade 02): a resolved mint never paints live.
+        // The call stays waiting (connecting + waiting sound) through socket
+        // open, config send, admission and greeting synthesis; the first
+        // audible sample paints live with the chime (onFirstAudible above).
+        // A refusal that landed before the mic resolved already ended the
+        // call on its own path, so there is nothing to paint either way.
       } catch (e) {
         // The demo mint's 429 is the countdown; every other refusal keeps its
         // own line. Either way no managed session is opened.
@@ -1879,10 +1910,8 @@ export function VoiceCall({
   if (isDemo) {
     const open = demoOpen;
     const reveal = "duration-(--motion-reveal) ease-(--ease-out-soft)";
-    const voiceIndex = Math.max(0, DEMO_VOICE_IDS.indexOf(voiceId as (typeof DEMO_VOICE_IDS)[number]));
-    const cycle = (step: number) => {
-      setVoiceId(DEMO_VOICE_IDS[(voiceIndex + step + DEMO_VOICE_IDS.length) % DEMO_VOICE_IDS.length]);
-    };
+    // English-only (demo-cascade ticket 01): the roster holds one voice, so
+    // the ‹ › voice-cycle control is disabled — there is nothing to switch to.
     const demoStatus = getDemoCallStatus({
       hasError: error !== null,
       returning,
@@ -1900,8 +1929,7 @@ export function VoiceCall({
       <button
         type="button"
         aria-label={step < 0 ? "Previous voice" : "Next voice"}
-        disabled={open}
-        onClick={() => cycle(step)}
+        disabled
         className={cn(
           "text-foreground/70 hover:bg-muted hover:text-foreground flex size-11 cursor-pointer items-center justify-center rounded-full outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
           open && "invisible opacity-0",

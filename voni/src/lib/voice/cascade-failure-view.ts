@@ -3,8 +3,10 @@ import type { CascadeConnectFailure } from "./cascade-session";
 /**
  * THE DEMO'S UNAVAILABLE COPY (demo-cascade ticket 11).
  *
- * The demo has no managed fallback: a refused cascade connect is the end of
- * the call, not a handover. The visitor is owed the same courtesy in every
+ * The demo has no managed fallback: a refused cascade connect — or an
+ * admitted call that never sounds (demo-cascade ticket 06: no second silent
+ * start) — is the end of the call, not a handover. The visitor is owed the
+ * same courtesy in every
  * refusal cause — one clear, human line that says the demo is unavailable and
  * what to do next. These strings name no engine, no route and no vendor: the
  * experience reads as one product.

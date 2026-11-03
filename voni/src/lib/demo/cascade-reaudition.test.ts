@@ -24,7 +24,7 @@ import {
   type CascadeReauditionRequest,
 } from "./cascade-reaudition";
 import { VONI_GREETINGS } from "./voni-agent";
-import type { SubjectRecord } from "./subject";
+import { resolveSubject, type SubjectRecord } from "./subject";
 import type { ContentTurn } from "../voice/content-judge";
 
 const SAMPLE_RATE = 24_000;
@@ -66,22 +66,22 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-const MALVINA: SubjectRecord = {
-  agent: { kind: "demo", voice: "malvina", agentId: null },
-  locale: "es",
+const AUDREY: SubjectRecord = {
+  agent: { kind: "demo", voice: "audrey", agentId: null },
+  locale: "en",
   transport: "browser",
   source: "flag",
   pipeline: "cascade",
 };
 
 const TRANSCRIPT: ContentTurn[] = [
-  { speaker: "agent", text: VONI_GREETINGS.es! },
-  { speaker: "caller", text: "Sí, claro." },
+  { speaker: "agent", text: VONI_GREETINGS.en! },
+  { speaker: "caller", text: "Yes, of course." },
 ];
 
 function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "cascade-reaudition-"));
-  const referencePath = join(dir, "malvina-reference.wav");
+  const referencePath = join(dir, "audrey-reference.wav");
   const deliveredPath = join(dir, "delivered-20261029.wav");
   const referenceBytes = wavFrom(tone(1, 1_000, 0.4));
   const deliveredBytes = wavFrom(tone(1, 1_000, 0.4));
@@ -95,7 +95,7 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
       reviewedOn: "2026-10-29",
       recordingSha256: deliveredSha,
       scores: { timbre: 5, accent: 5, languageNaturalness: 5 },
-      reason: "Clear, natural Spanish; nothing to fix in this line.",
+      reason: "Clear, natural English; nothing to fix in this line.",
     },
     {
       reviewer: "marta",
@@ -106,9 +106,9 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
     },
   ];
 
-  const runId = "run-malvina-1";
+  const runId = "run-audrey-1";
   const artifact = buildSkeletonArtifact({
-    voice: "malvina",
+    voice: "audrey",
     scenario: "stop-over",
     runnerStdout: "",
     exitCode: 0,
@@ -116,12 +116,12 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
     runs: 1,
     dryRun: true,
     runId,
-    subject: MALVINA,
+    subject: AUDREY,
     engine: {
       pipeline: "cascade",
       run: {
         runId,
-        variant: "cascade-malvina-1",
+        variant: "cascade-audrey-1",
         startedAt: "2026-10-29T10:00:00.000Z",
         finishedAt: "2026-10-29T10:00:03.000Z",
       },
@@ -135,13 +135,13 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
   });
 
   const request: CascadeReauditionRequest = {
-    subject: MALVINA,
+    subject: AUDREY,
     artifact,
     artifactPath: join(dir, "scoreboard.json"),
     reference: referencePath,
     delivered: deliveredPath,
     transcript: TRANSCRIPT,
-    line: { kind: "greeting", text: VONI_GREETINGS.es! },
+    line: { kind: "greeting", text: VONI_GREETINGS.en! },
     ballots,
     now: () => new Date("2026-10-29T12:00:00.000Z"),
     ...overrides,
@@ -155,8 +155,8 @@ test("a clean cascade call assembles a complete two-capture pack", () => {
 
   assert.equal(pack.status, "complete", pack.blockers.join("; "));
   assert.equal(pack.kind, "cascade-reaudition-pack");
-  assert.equal(pack.subject.voice, "malvina");
-  assert.equal(pack.subject.locale, "es");
+  assert.equal(pack.subject.voice, "audrey");
+  assert.equal(pack.subject.locale, "en");
   assert.equal(pack.subject.pipeline, "cascade");
 
   // There is no platform leg: the pack has two captures and a named N/A.
@@ -291,10 +291,10 @@ test("a managed artifact or another subject's artifact does not carry over", () 
     ...request,
     artifact: {
       ...artifact,
-      voice: "benicio",
+      voice: "agent_tenant_1",
       subject: {
-        agent: { kind: "demo", voice: "benicio", agentId: null },
-        locale: "pt",
+        agent: { kind: "tenant", agentId: "agent_tenant_1" },
+        locale: "es",
         transport: "browser",
         source: "flag",
         pipeline: "cascade",
@@ -303,7 +303,7 @@ test("a managed artifact or another subject's artifact does not carry over", () 
   });
   assert.equal(otherSubject.status, "incomplete");
   assert.match(otherSubject.blockers.join(" "), /subject/i);
-  assert.match(otherSubject.blockers.join(" "), /benicio|pt/);
+  assert.match(otherSubject.blockers.join(" "), /agent_tenant_1|es/);
 });
 
 test("a missing artifact or a misdescribed capture blocks the pack", () => {
@@ -332,8 +332,8 @@ test("a missing artifact or a misdescribed capture blocks the pack", () => {
 test("a transcript line different from the reference is unresolved", () => {
   const { request } = fixture({
     transcript: [
-      { speaker: "agent", text: "Hola, soy otra frase completamente distinta." },
-      { speaker: "caller", text: "Vale." },
+      { speaker: "agent", text: "Hi, I'm a completely different sentence." },
+      { speaker: "caller", text: "Okay." },
     ],
   });
   const pack = assembleCascadeReauditionPack(request);
@@ -342,32 +342,33 @@ test("a transcript line different from the reference is unresolved", () => {
   assert.equal(pack.verdictInputs.inputs.comparisonMeasured, false);
 });
 
-test("the roster lists the five demo subjects, German bound to jorg, never fabricated", () => {
+test("the roster is English-only: audrey bound, withdrawn voices refused by name", () => {
   const { request } = fixture();
   const pack = assembleCascadeReauditionPack(request);
   const roster = cascadeReauditionRoster([pack]);
 
   assert.deepEqual(
     roster.subjects.map((row) => row.voice),
-    ["audrey", "malvina", "donatien", "jorg", "benicio"],
-    "one row per demo voice, in the demo's order",
+    ["audrey"],
+    "one row for the single English demo voice",
   );
-  const german = roster.subjects.find((row) => row.voice === "jorg")!;
-  assert.equal(german.locale, "de");
-  assert.equal(german.status, "missing", "no W2 pack is recorded for the re-cast voice yet");
-  assert.match(german.openReason ?? "", /no pack supplied/);
-  assert.equal(german.packStatus, null);
-  assert.equal(german.ballots, 0);
-
-  const malvina = roster.subjects.find((row) => row.voice === "malvina")!;
-  assert.equal(malvina.status, "complete");
-  assert.equal(malvina.ballots, 2);
-
   const audrey = roster.subjects.find((row) => row.voice === "audrey")!;
-  assert.equal(audrey.status, "missing");
-  assert.match(audrey.openReason ?? "", /no pack supplied/);
+  assert.equal(audrey.locale, "en");
+  assert.equal(audrey.status, "complete");
+  assert.equal(audrey.packStatus, "complete");
+  assert.equal(audrey.ballots, 2);
+  assert.equal(audrey.openReason, null);
 
-  assert.equal(roster.ready, false);
-  assert.match(roster.blockers.join(" "), /audrey/);
-  assert.match(roster.blockers.join(" "), /jorg|de/);
+  assert.equal(roster.ready, true);
+  assert.deepEqual(roster.blockers, []);
+  assert.deepEqual(roster.openLocales, []);
+
+  // Withdrawn demo voices are not roster rows: the subject gate refuses them by name.
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    assert.throws(
+      () => resolveSubject({ voice, explicit: true }),
+      /unknown gate voice/,
+      `${voice} is refused by name`,
+    );
+  }
 });

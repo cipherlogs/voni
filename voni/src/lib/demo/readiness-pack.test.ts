@@ -73,10 +73,6 @@ type SubjectSpec = {
 
 const BOUND_SUBJECTS: SubjectSpec[] = [
   { subject: "audrey", kind: "demo", locale: "en", greeting: "Hi, this is Audrey." },
-  { subject: "malvina", kind: "demo", locale: "es", greeting: "Hola, soy Malvina." },
-  { subject: "donatien", kind: "demo", locale: "fr", greeting: "Bonjour, je suis Donatien." },
-  { subject: "jorg", kind: "demo", locale: "de", greeting: "Hallo, hier ist Jorg." },
-  { subject: "benicio", kind: "demo", locale: "pt", greeting: "Olá, sou o Benicio." },
   { subject: "agent_tenant_1", kind: "tenant", locale: "es", greeting: "Hola, soy el agente." },
 ];
 
@@ -274,7 +270,7 @@ function completeManifest(): { manifest: ReadinessManifest; dir: string } {
   };
 }
 
-test("a complete manifest of the bound demo voices and one eligible tenant is ready", () => {
+test("a complete manifest of the bound English demo voice and one eligible tenant is ready", () => {
   const { manifest } = completeManifest();
   const pack = assembleReadinessPack({
     manifest,
@@ -302,14 +298,20 @@ test("a complete manifest of the bound demo voices and one eligible tenant is re
     assert.equal(row.ballots.complete, true);
   }
 
-  const german = bySubject.get("jorg")!;
-  assert.equal(german.status, "complete", german.blockers.join("; "));
-  assert.equal(german.locale, "de");
-  assert.equal(german.deferral, null, "German is bound: it needs evidence, not a deferral");
+  const english = bySubject.get("audrey")!;
+  assert.equal(english.status, "complete", english.blockers.join("; "));
+  assert.equal(english.locale, "en");
+  assert.equal(english.deferral, null, "English is bound: it needs evidence, not a deferral");
+
+  // Withdrawn demo voices are not required: the roster is English-only.
+  assert.deepEqual(pack.required.demoVoices, ["audrey"]);
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    assert.equal(bySubject.has(voice), false, `${voice} is withdrawn, not a readiness row`);
+  }
 
   const markdown = formatReadinessPack(pack);
   assert.match(markdown, /READY/);
-  assert.match(markdown, /jorg/);
+  assert.match(markdown, /audrey/);
   assert.match(markdown, /agent_tenant_1/);
   assert.match(markdown, /aaaaaaaaaaaa/);
 });
@@ -353,7 +355,7 @@ test("one failed or missing subject blocks the whole pack", () => {
   assert.match(failed.blockers.join(" "), /audrey:.*exactly two consecutive clean cascade artifact paths/i);
   assert.equal(failed.subjects.find((row) => row.subject === "audrey")!.status, "incomplete");
   // One failure does not hide the subjects that are complete.
-  assert.equal(failed.subjects.find((row) => row.subject === "malvina")!.status, "complete");
+  assert.equal(failed.subjects.find((row) => row.subject === "agent_tenant_1")!.status, "complete");
 
   const missing = assembleReadinessPack({
     manifest: { ...manifest, subjects: manifest.subjects.filter((entry) => entry.subject !== "audrey") },
@@ -388,7 +390,7 @@ test("a fallback or a budget stop makes a run ineligible", () => {
     events: [{ type: "provider_fallback", leg: "llm", phase: "turn", turn: "turn-3" }],
     eligibility: { eligible: false, reasons: ["provider_fallback: llm at turn-3"] },
   }));
-  rewriteArtifact(entryOf(manifest, "malvina").artifacts[1]!, (artifact) => ({
+  rewriteArtifact(entryOf(manifest, "agent_tenant_1").artifacts[1]!, (artifact) => ({
     ...artifact,
     events: [{ type: "budget.stopped", phase: "drain" }],
     eligibility: { eligible: false, reasons: ["budget.stopped: daily cap"] },
@@ -399,46 +401,53 @@ test("a fallback or a budget stop makes a run ineligible", () => {
   const audrey = pack.subjects.find((row) => row.subject === "audrey")!;
   assert.match(audrey.blockers.join(" "), /fallback/);
   assert.match(audrey.blockers.join(" "), /not a clean run/);
-  const malvina = pack.subjects.find((row) => row.subject === "malvina")!;
-  assert.match(malvina.blockers.join(" "), /budget stop|budget\.stopped|ineligible/i);
-  assert.equal(malvina.artifacts[1]!.eligible, false);
+  const tenant = pack.subjects.find((row) => row.subject === "agent_tenant_1")!;
+  assert.match(tenant.blockers.join(" "), /budget stop|budget\.stopped|ineligible/i);
+  assert.equal(tenant.artifacts[1]!.eligible, false);
 });
 
 test("missing and duplicate ballots, an unresolved verdict and a missing fingerprint each block", () => {
   const { manifest } = completeManifest();
-  const jorg = entryOf(manifest, "jorg");
-  rewriteArtifact(jorg.artifacts[1]!, (artifact) => ({ ...artifact, codeFingerprint: null }));
+  const blockersFor = (pack: ReturnType<typeof assembleReadinessPack>) => (subject: string) =>
+    pack.subjects.find((row) => row.subject === subject)!.blockers.join(" ");
 
-  const pack = assembleReadinessPack({
+  // Ballot failures: one ballot on audrey, duplicate reviewer on the tenant.
+  const ballots = assembleReadinessPack({
     manifest: withEntry(
-      withEntry(
-        withEntry(manifest, "malvina", (entry) => ({ ...entry, ballots: entry.ballots.slice(0, 1) })),
-        "donatien",
-        (entry) => ({
-          ...entry,
-          ballots: [
-            entry.ballots[0]!,
-            { ...entry.ballots[1]!, reviewer: entry.ballots[0]!.reviewer },
-          ],
-        }),
-      ),
-      "benicio",
+      withEntry(manifest, "audrey", (entry) => ({ ...entry, ballots: entry.ballots.slice(0, 1) })),
+      "agent_tenant_1",
       (entry) => ({
         ...entry,
-        verdict: { ...entry.verdict, decision: "unresolved" },
+        ballots: [
+          entry.ballots[0]!,
+          { ...entry.ballots[1]!, reviewer: entry.ballots[0]!.reviewer },
+        ],
       }),
     ),
     tenants: TENANTS,
   });
+  assert.equal(ballots.status, "blocked");
+  assert.match(blockersFor(ballots)("audrey"), /two independent ballots/i);
+  assert.match(blockersFor(ballots)("agent_tenant_1"), /independent|one per rater/i);
 
-  assert.equal(pack.status, "blocked");
-  const blockersFor = (subject: string) =>
-    pack.subjects.find((row) => row.subject === subject)!.blockers.join(" ");
-  assert.match(blockersFor("malvina"), /two independent ballots/i);
-  assert.match(blockersFor("donatien"), /independent|one per rater/i);
-  assert.match(blockersFor("benicio"), /unresolved/);
-  assert.match(blockersFor("jorg"), /code fingerprint/i);
-  assert.equal(pack.subjects.find((row) => row.subject === "jorg")!.artifacts[1]!.codeFingerprint, null);
+  // Verdict and fingerprint failures: unresolved verdict on audrey, missing
+  // fingerprint on the tenant's second run.
+  const tenantSecond = entryOf(manifest, "agent_tenant_1").artifacts[1]!;
+  rewriteArtifact(tenantSecond, (artifact) => ({ ...artifact, codeFingerprint: null }));
+  const verdict = assembleReadinessPack({
+    manifest: withEntry(manifest, "audrey", (entry) => ({
+      ...entry,
+      verdict: { ...entry.verdict, decision: "unresolved" },
+    })),
+    tenants: TENANTS,
+  });
+  assert.equal(verdict.status, "blocked");
+  assert.match(blockersFor(verdict)("audrey"), /unresolved/);
+  assert.match(blockersFor(verdict)("agent_tenant_1"), /code fingerprint/i);
+  assert.equal(
+    verdict.subjects.find((row) => row.subject === "agent_tenant_1")!.artifacts[1]!.codeFingerprint,
+    null,
+  );
 });
 
 test("a tenant omission blocks unless it has a dated deferral", () => {
@@ -541,38 +550,27 @@ test("a managed artifact, another subject's artifact or a non-consecutive pair i
     referencePath: audrey.reference,
     deliveredPath: audrey.delivered,
   });
-  rewriteArtifact(entryOf(manifest, "malvina").artifacts[0]!, (artifact) => ({
+
+  // Pipeline mismatch on audrey, subject mismatch on the tenant.
+  rewriteArtifact(entryOf(manifest, "agent_tenant_1").artifacts[0]!, (artifact) => ({
     ...artifact,
-    voice: "benicio",
+    voice: "audrey",
     subject: {
-      agent: { kind: "demo", voice: "benicio", agentId: null },
-      locale: "it",
+      agent: { kind: "demo", voice: "audrey", agentId: null },
+      locale: "en",
       transport: "browser",
       source: "flag",
       pipeline: "cascade",
     },
   }));
-  rewriteArtifact(entryOf(manifest, "benicio").artifacts[1]!, (artifact) => ({
-    ...artifact,
-    recordedAt: artifact.recordedAt === "2026-10-29T10:00:00.000Z"
-      ? "2026-10-28T10:00:00.000Z"
-      : artifact.recordedAt,
-  }));
 
   const pack = assembleReadinessPack({
     manifest: withEntry(
-      withEntry(
-        withEntry(manifest, "audrey", (entry) => ({
-          ...entry,
-          artifacts: [annaManaged, entry.artifacts[1]!],
-        })),
-        "donatien",
-        (entry) => ({
-          ...entry,
-          artifacts: [entry.artifacts[0]!, entry.artifacts[0]!],
-        }),
-      ),
-      "jorg",
+      withEntry(manifest, "audrey", (entry) => ({
+        ...entry,
+        artifacts: [annaManaged, entry.artifacts[1]!],
+      })),
+      "agent_tenant_1",
       (entry) => ({ ...entry, reference: join(dir, "missing-reference.wav") }),
     ),
     tenants: TENANTS,
@@ -582,10 +580,33 @@ test("a managed artifact, another subject's artifact or a non-consecutive pair i
   const blockersFor = (subject: string) =>
     pack.subjects.find((row) => row.subject === subject)!.blockers.join(" ");
   assert.match(blockersFor("audrey"), /managed, not cascade|managed artifact/i);
-  assert.match(blockersFor("malvina"), /subject does not match/);
-  assert.match(blockersFor("donatien"), /two run paths are the same file/i);
-  assert.match(blockersFor("benicio"), /not ordered by recordedAt|consecutive runs need distinct/i);
-  assert.match(blockersFor("jorg"), /reference capture missing/);
+  assert.match(blockersFor("agent_tenant_1"), /subject does not match/);
+  assert.match(blockersFor("agent_tenant_1"), /reference capture missing/);
+
+  // Non-consecutive pairs: same file twice on audrey, unordered timestamps on the tenant.
+  const { manifest: secondManifest } = completeManifest();
+  rewriteArtifact(entryOf(secondManifest, "agent_tenant_1").artifacts[1]!, (artifact) => ({
+    ...artifact,
+    recordedAt: artifact.recordedAt === "2026-10-29T10:00:00.000Z"
+      ? "2026-10-28T10:00:00.000Z"
+      : artifact.recordedAt,
+  }));
+  const consecutive = assembleReadinessPack({
+    manifest: withEntry(
+      withEntry(secondManifest, "audrey", (entry) => ({
+        ...entry,
+        artifacts: [entry.artifacts[0]!, entry.artifacts[0]!],
+      })),
+      "agent_tenant_1",
+      (entry) => entry,
+    ),
+    tenants: TENANTS,
+  });
+  assert.equal(consecutive.status, "blocked");
+  const consecutiveFor = (subject: string) =>
+    consecutive.subjects.find((row) => row.subject === subject)!.blockers.join(" ");
+  assert.match(consecutiveFor("audrey"), /two run paths are the same file/i);
+  assert.match(consecutiveFor("agent_tenant_1"), /not ordered by recordedAt|consecutive runs need distinct/i);
 });
 
 test("a malformed ballot is a named blocker, not a crash", () => {
@@ -625,14 +646,14 @@ test("a missing or malformed line marker blocks the comparison", () => {
   );
 
   const badLine = assembleReadinessPack({
-    manifest: withEntry(manifest, "malvina", (entry) => ({
+    manifest: withEntry(manifest, "agent_tenant_1", (entry) => ({
       ...entry,
       line: { kind: "greeting" } as unknown as ReadinessManifestSubject["line"],
     })),
     tenants: TENANTS,
   });
   assert.match(
-    badLine.subjects.find((row) => row.subject === "malvina")!.blockers.join(" "),
+    badLine.subjects.find((row) => row.subject === "agent_tenant_1")!.blockers.join(" "),
     /line marker must be/,
   );
 });
