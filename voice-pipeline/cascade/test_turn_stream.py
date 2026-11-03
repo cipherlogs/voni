@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from cascade.ack import ACK_LINES, ACK_TONE_GROUPS
 from cascade.call import OutboundAudio
 from cascade.meta_llm import MetaLLMTurn, TurnUsage
 from cascade.meta_stt import SpeechComplete, SpeechEnd, SpeechStart
@@ -609,6 +610,52 @@ class AckTest(unittest.TestCase):
         self.assertEqual(["Mhm.", "I can do that."], stream._tts.spoken)
         self.assertNotIn("Mhm.", [text for _, text, _ in captions], "the ack is not a caption")
         self.assertIn(("agent", "I can do that.", True), captions, "the reply is the final caption")
+
+    def test_the_ack_is_chosen_from_the_callers_tone(self):
+        groups = ACK_TONE_GROUPS["en"]
+
+        def speak_ack(final: str) -> str:
+            gate = asyncio.Event()
+
+            class SlowLLM:
+                async def complete(self, *, messages, tools=None, turn=None):
+                    await gate.wait()
+                    record = turn if turn is not None else MetaLLMTurn()
+                    record.content_text += "I can do that."
+                    yield TokenDelta(text="I can do that.")
+                    record.finished = True
+
+            tts = FakeTTS()
+            stream = CascadeTurnStream(
+                llm=SlowLLM(),
+                tts=tts,
+                emit_audio=RecordingAudio(),
+                ledger=RecordingLedger(),
+                clock=FakeClock(),
+                ack_lines=ACK_LINES["en"],
+                ack_delay_ms=5,
+            )
+
+            async def run():
+                await stream.start()
+                await stream.event(SpeechStart("t1"))
+                await stream.event(SpeechComplete(final, turn_id="t1"))
+                for _ in range(200):
+                    if tts.spoken:
+                        break
+                    await asyncio.sleep(0.001)
+                gate.set()
+                await stream.drain()
+
+            asyncio.run(run())
+            return tts.spoken[0]
+
+        angry = speak_ack("This is ridiculous.")
+        self.assertNotIn(angry, ("Okay.", "Yeah."), "a complaint got a bright ack")
+        self.assertIn(angry, set(groups["sympathetic"]) | set(groups["thinking"]))
+
+        question = speak_ack("What does it cost?")
+        self.assertIn(question, set(groups["thinking"]))
 
     def test_a_fast_reply_never_speaks_an_ack(self):
         class FastLLM:

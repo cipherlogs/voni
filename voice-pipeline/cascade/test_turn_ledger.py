@@ -106,6 +106,7 @@ class TurnRowTests(unittest.TestCase):
         self.ledger.user_final("0:t1", chars=3)
         self.ledger.reply_start("0:t1")
         self.ledger.first_audio("0:t1", seq=7)
+        self.ledger.ack("0:t1", line="Mm.")
         self.ledger.cut("0:t1", reason="barge_in")
         self.ledger.tool_call("0:t1", name="check_email", call_id="c1", index=0)
         self.ledger.tool_result(
@@ -120,6 +121,7 @@ class TurnRowTests(unittest.TestCase):
                 "turn.user_final",
                 "turn.reply_start",
                 "turn.first_audio",
+                "turn.ack",
                 "turn.cut",
                 "turn.tool_call",
                 "turn.tool_result",
@@ -317,7 +319,16 @@ class StreamLedgerTests(unittest.TestCase):
         self.ledger = ledger_for(self.directory, now=self.clock)
         self.audio = RecordingAudio()
 
-    def make(self, *, replies, tts=None, executor=None, on_end_call=None):
+    def make(
+        self,
+        *,
+        replies,
+        tts=None,
+        executor=None,
+        on_end_call=None,
+        ack_lines=(),
+        ack_delay_ms=None,
+    ):
         self.llm = replies if not isinstance(replies, list) else ScriptedLLM(replies)
         self.tts = tts if tts is not None else LedgerTTS()
         return CascadeTurnStream(
@@ -330,6 +341,8 @@ class StreamLedgerTests(unittest.TestCase):
             clock=self.clock,
             turn_events=self.ledger,
             on_end_call=on_end_call,
+            ack_lines=ack_lines,
+            ack_delay_ms=ack_delay_ms,
         )
 
     async def settle(self, stream, turns: int) -> None:
@@ -416,6 +429,65 @@ class StreamLedgerTests(unittest.TestCase):
         self.assertEqual(1, len(cuts))
         self.assertEqual("0:t1", cuts[0]["turn"])
         self.assertEqual("barge_in", cuts[0]["reason"])
+
+    def test_a_spoken_ack_is_recorded_with_its_exact_line_and_turn(self):
+        gate = asyncio.Event()
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "I can help with that."
+                yield TokenDelta(text="I can help with that.")
+                record.finished = True
+
+        stream = self.make(
+            replies=SlowLLM(),
+            ack_lines=("Mm.", "Hmm."),
+            ack_delay_ms=5,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("this is ridiculous", turn_id="t1"))
+            for _ in range(200):
+                if any(frame.kind == "ack" for frame in self.audio.frames):
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        acks = [row for row in rows_in(self.directory) if row["type"] == "turn.ack"]
+        self.assertEqual(1, len(acks), "the cover the caller heard left no row")
+        self.assertEqual("0:t1", acks[0]["turn"])
+        self.assertEqual(
+            self.tts.spoken[0],
+            acks[0]["line"],
+            "the row does not name the exact line spoken",
+        )
+        self.assertIn(acks[0]["line"], ("Mm.", "Hmm."))
+
+    def test_an_ack_that_never_speaks_records_nothing(self):
+        stream = self.make(
+            replies=[{"deltas": ["I can help with that."]}],
+            ack_lines=("Mm.", "Hmm."),
+            ack_delay_ms=50,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("hello", turn_id="t1"))
+            await self.settle(stream, 1)
+            await stream.drain()
+
+        asyncio.run(run())
+
+        acks = [row for row in rows_in(self.directory) if row["type"] == "turn.ack"]
+        self.assertEqual([], acks, "a skipped ack left a row claiming it was heard")
 
     def test_tool_rows_name_the_call_and_never_carry_arguments_or_payload(self):
         from cascade.meta_llm import MetaToolCall
