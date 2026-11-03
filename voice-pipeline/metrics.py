@@ -67,6 +67,8 @@ OPTIONAL_COUNTERS = (
     "question_withheld",
     "filler_stripped",
     "offer_withheld",
+    "reply_held",
+    "reply_merged",
 )
 
 COUNTERS = (

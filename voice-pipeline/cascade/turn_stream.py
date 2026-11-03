@@ -21,6 +21,17 @@ Barge-in is the caller winning the floor: a real ``speechStart`` while audio is
 sounding sends the synthesis session's ``Cancel`` and stops the reply task. The
 cancelled turn is settled so a later final is not held behind it.
 
+A final is answered only once the caller's audio has been quiet for
+``turn.hold_silence_ms``, bounded by ``turn.hold_max_ms``. The recogniser can
+finalise the first half of a sentence ("Fine." before a 340 ms pause) while the
+caller keeps talking; answering that fragment takes the floor from a caller who
+still owns it. The pump reports every caller frame through
+:meth:`CascadeTurnStream.caller_audio`, so a final that arrives while speech is
+still arriving waits, new speech extends the wait, and a final that already
+arrived after the quiet window is answered at once with no added latency. When
+the caller resumes, the held fragment is dropped and carried into the next
+final, so one reply answers the whole turn and nothing is said twice.
+
 An acknowledgement opener ("Right,", "Got it —") is stripped before synthesis,
 so the caller hears the substance and never the padding. A reply that was only
 an opener is withheld; one bounded repair is asked, and a repair that is still
@@ -109,6 +120,15 @@ KEEPALIVE_BOUND = "tts.keepalive_interval_ms"
 
 #: How long a reply may stay silent before one short spoken ack covers it.
 ACK_DELAY_BOUND = "reply.ack_delay_ms"
+
+#: How quiet the caller's audio must be before a finalised turn is answered.
+#: The owner's direction (2026-11-03): never take the floor while the caller is
+#: still speaking. The value lives in the registry; this module names it.
+HOLD_SILENCE_BOUND = "turn.hold_silence_ms"
+
+#: The most a final may wait for that quiet, so a stream that never goes quiet
+#: still gets its answer.
+HOLD_MAX_BOUND = "turn.hold_max_ms"
 
 #: How many replies the hidden no-reuse note lists. The exact-match guard
 #: remembers every reply this call spoke, so a line repeated many turns later
@@ -442,6 +462,25 @@ class CascadeTurnStream:
         #: Serialises the ack and the reply on the one synthesis session.
         self._voice_lock = asyncio.Lock()
 
+        #: The quiet-window hold (the owner's direction, 2026-11-03). The pump
+        #: stamps every caller speech frame here; a final waits for the quiet
+        #: window before the model request starts, bounded by the max wait.
+        self._hold_silence_s: float | None = None
+        self._hold_max_s: float | None = None
+        self._caller_speech_at: float | None = None
+        self._hold_wake = asyncio.Event()
+        #: Set by ``drain``: the call is ending, so a held final is released
+        #: instead of waiting out its window.
+        self._draining = False
+        #: The fragment of a turn the caller kept talking through. It is
+        #: carried into the next final so one reply answers the whole turn.
+        self._carried_final = ""
+        #: Evidence counters: how many finals waited, how many were merged
+        #: into the next final, and how long the last wait added.
+        self.holds = 0
+        self.hold_dropped = 0
+        self.hold_waited_ms = 0.0
+
         self._turns = TurnStateStore(clock=self._clock, source="meta")
         self._rules = EventRules(
             turns=self._turns,
@@ -556,6 +595,10 @@ class CascadeTurnStream:
             await self._caption("user", event.text, False)
         elif isinstance(event, SpeechComplete):
             await self._caption("user", event.text, True)
+        if isinstance(event, (SpeechStart, PartialTranscript, SpeechComplete)):
+            # A held final re-checks its quiet window when the provider's turn
+            # boundary moves: a later open turn is the caller still talking.
+            self._hold_wake.set()
         # A new held final (or a settled one) moves the ticker's next deadline;
         # the wake interrupts a keepalive wait so the guard is never late.
         self._wake.set()
@@ -570,6 +613,10 @@ class CascadeTurnStream:
         if ticker is not None:
             ticker.cancel()
             await asyncio.gather(ticker, return_exceptions=True)
+        # A held final is not left waiting out its quiet window while the call
+        # is ending: the window is released and the scheduled reply finishes.
+        self._draining = True
+        self._hold_wake.set()
         task = self._reply_task
         if task is not None:
             try:
@@ -614,14 +661,10 @@ class CascadeTurnStream:
         if self._may_request is not None and not self._may_request("llm"):
             return
         self._active = state
-        if self._ledger is not None:
-            self._ledger.mark("floor_take")
-        self._reply_task = asyncio.ensure_future(self._reply(state))
+        self._reply_task = asyncio.ensure_future(self._answer_after_quiet(state))
         self._reply_task.add_done_callback(
             lambda task, state=state: self._reply_done(task, state)
         )
-        if self._ack_lines:
-            self._ack_task = asyncio.ensure_future(self._ack_if_slow())
 
     def _reply_done(self, task: asyncio.Task, state: TurnState) -> None:
         if task.cancelled():
@@ -630,6 +673,137 @@ class CascadeTurnStream:
         if error is not None:
             self._turn_failed(state, error)
             self._failure = error
+
+    # -- the quiet window -------------------------------------------------
+
+    def caller_audio(self, *, speech: bool) -> None:
+        """One caller audio frame, from the call's pump.
+
+        ``speech`` is the frame's own loudness verdict, not the provider's
+        event: the browser streams room tone continuously, so only speech
+        frames are the caller holding the floor. A new speech frame extends a
+        held final's quiet window and wakes its wait.
+        """
+        if not speech:
+            return
+        self._caller_speech_at = self._clock()
+        self._hold_wake.set()
+
+    def _hold_silence(self) -> float:
+        """The quiet window's value, read once from the named bound."""
+        if self._hold_silence_s is None:
+            self._hold_silence_s = float(require_bound(HOLD_SILENCE_BOUND)) / 1000.0
+        return self._hold_silence_s
+
+    def _hold_max(self) -> float:
+        """The bounded wait's value, read once from the named bound."""
+        if self._hold_max_s is None:
+            self._hold_max_s = float(require_bound(HOLD_MAX_BOUND)) / 1000.0
+        return self._hold_max_s
+
+    def _later_turn_open(self, state: TurnState) -> bool:
+        """Whether the caller has already begun a turn after this final.
+
+        A final can be emitted for the first half of a sentence while the
+        caller keeps talking; the provider then opens the next turn before the
+        held reply was answered. That is the caller still owning the floor, so
+        the fragment is merged rather than answered.
+        """
+        return any(other.seq > state.seq for other in self._turns.open_turns())
+
+    async def _hold_for_quiet(self, state: TurnState) -> float | None:
+        """Wait for caller quiet; ``None`` means this final was a fragment.
+
+        The common case adds nothing: a final that arrived after the quiet
+        window is answered immediately. A final that arrives while the caller's
+        audio is still arriving waits for the window, and a caller who resumes
+        (new speech, or a later turn already open) drops the held fragment.
+        The wait is bounded by ``turn.hold_max_ms`` so a stalled stream never
+        blocks the reply.
+        """
+        speech_at = self._caller_speech_at
+        started = self._clock()
+        if speech_at is None or started - speech_at >= self._hold_silence():
+            return 0.0
+        silence_s = self._hold_silence()
+        max_s = self._hold_max()
+        while True:
+            if self._draining:
+                now = self._clock()
+                return round(max(0.0, (now - started) * 1000.0), 3)
+            if self._later_turn_open(state):
+                return None
+            now = self._clock()
+            quiet_for = now - self._caller_speech_at
+            if quiet_for >= silence_s or now - started >= max_s:
+                return round(max(0.0, (now - started) * 1000.0), 3)
+            await self._wait_for_hold(
+                min(silence_s - quiet_for, max_s - (now - started))
+            )
+
+    async def _wait_for_hold(self, delay: float) -> None:
+        """Wait ``delay`` on the injected clock, woken early by new caller audio."""
+        sleeper = asyncio.ensure_future(self._sleep(max(0.0, delay)))
+        waker = asyncio.ensure_future(self._hold_wake.wait())
+        try:
+            await asyncio.wait(
+                {sleeper, waker}, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for task in (sleeper, waker):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(sleeper, waker, return_exceptions=True)
+            self._hold_wake.clear()
+
+    def _carry_fragment(self, text: str) -> None:
+        """Keep a dropped fragment for the next final that answers this turn."""
+        fragment, _ = _strip_filler_openers(text.strip())
+        if not fragment:
+            return
+        self._carried_final = f"{self._carried_final} {fragment}".strip()
+
+    def _caller_text(self, state: TurnState) -> str:
+        """The caller's words for this turn, with any carried fragment merged."""
+        if not self._carried_final:
+            return state.final_text
+        merged = f"{self._carried_final} {state.final_text}".strip()
+        self._carried_final = ""
+        return merged
+
+    async def _answer_after_quiet(self, state: TurnState) -> None:
+        """Take the floor only once the caller's audio has been quiet.
+
+        The floor-take mark, the spoken ack and the model request all sit after
+        the hold: the reply gap measures the agent's own wait, not the caller's.
+        """
+        held_ms = await self._hold_for_quiet(state)
+        if held_ms is None:
+            await self._merge_fragment(state)
+            return
+        self.hold_waited_ms = held_ms
+        if held_ms > 0.0:
+            self.holds += 1
+            self._count_metric("reply_held")
+        if self._ending:
+            return
+        if self._ledger is not None:
+            self._ledger.mark("floor_take")
+        if self._ack_lines:
+            self._ack_task = asyncio.ensure_future(self._ack_if_slow())
+        await self._reply(state)
+
+    async def _merge_fragment(self, state: TurnState) -> None:
+        """Drop the held reply and carry its words into the next final.
+
+        The turn is settled so reply ordering cannot wait on a reply that will
+        never come, and the fragment is not counted as a turn with a reply.
+        """
+        self.hold_dropped += 1
+        self._count_metric("reply_merged")
+        self._carry_fragment(state.final_text)
+        self._active = None
+        await self._rules.settle(state, reason="merged")
 
     async def _reply(self, state: TurnState) -> None:
         # The model request starts here, after the caller-final row landed: the
@@ -641,6 +815,9 @@ class CascadeTurnStream:
         # contexts, and the caller's context is for the next reply.
         await asyncio.sleep(0)
         key = state.id.event_id
+        # The caller's words this reply answers: a fragment the caller talked
+        # through is merged into the final that completed the turn.
+        caller_text = self._caller_text(state)
         self._buffer = ""
         self._reply_new_sentences = 0
         self._reply_dropped = []
@@ -653,17 +830,17 @@ class CascadeTurnStream:
         # The willingness rule is decided from the caller's final, once per
         # turn: a complaint, a neutral turn, small talk or a challenge is not
         # willing, so no offer sentence may be spoken.
-        self._willing_turn = _caller_is_willing(state.final_text)
+        self._willing_turn = _caller_is_willing(caller_text)
         # The unanswered-question rule is decided from the caller's final, once
         # per turn: it consumes the last question so it cannot fire twice.
-        self._must_not_ask = self._question_was_unanswered(state.final_text)
+        self._must_not_ask = self._question_was_unanswered(caller_text)
         # The caller's words end the call, not the model's tool choice: Spark
         # does not call the hang-up tool on a caller request (measured 0/20).
-        self._caller_wants_end = wants_to_end(state.final_text, self._locale_code)
+        self._caller_wants_end = wants_to_end(caller_text, self._locale_code)
         record = MetaLLMTurn()
         cancelled = False
         try:
-            self._history.append_user(state.final_text)
+            self._history.append_user(caller_text)
             self._add_repeat_note()
             record = await self._run_turn(state, record)
             if (

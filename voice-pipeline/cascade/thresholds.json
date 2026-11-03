@@ -287,6 +287,24 @@
       "source": "owner decision 2026-10-31: a short spoken acknowledgement at 300 ms covers the vendor's first-token wait; it is not the reply and is never captioned",
       "date": "2026-10-31",
       "note": "Demo-only. One short line through the same voice, skipped when the reply starts speaking first."
+    },
+    "turn.hold_silence_ms": {
+      "unit": "ms",
+      "gate": "turn.hold",
+      "ticket": "turn-hold",
+      "value": 350,
+      "source": "owner direction 2026-11-03: don't take the floor while the caller is still speaking; a 350 ms quiet window, bounded at 900 ms",
+      "date": "2026-11-03",
+      "note": "A finalised turn is answered only after this much quiet caller audio. The committed \"soften\" take ends its first sentence with a 340 ms internal pause, so a shorter window would answer the fragment; the recogniser's own endpointing usually exceeds it, which is why the common turn is answered with no added wait."
+    },
+    "turn.hold_max_ms": {
+      "unit": "ms",
+      "gate": "turn.hold",
+      "ticket": "turn-hold",
+      "value": 900,
+      "source": "owner direction 2026-11-03: don't take the floor while the caller is still speaking; a 350 ms quiet window, bounded at 900 ms",
+      "date": "2026-11-03",
+      "note": "The most a final waits for quiet. A stream that never goes quiet (noise, a stalled pump) still gets its reply at this bound, so the hold can never become a hang."
     }
   }
 }
