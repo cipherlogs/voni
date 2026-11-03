@@ -33,8 +33,10 @@ import {
   KEY_SKIP_REASON,
   TURN_TAIL_MS,
   UsageError,
+  assessReplyGaps,
   assessTrace,
   carriedHistory,
+  classifyBand,
   createIngressPump,
   defaultCallerClip,
   formatRealLegsReport,
@@ -49,6 +51,7 @@ import {
 } from "./lib/real-legs";
 import { verifyCallToken } from "../src/lib/voice/cascade-token";
 import { envelopeBodyHash } from "../src/lib/voice/envelope";
+import { SCOREBOARD_BUDGETS } from "../src/lib/demo/scoreboard-budgets";
 import {
   DEMO_VOICE_IDS,
   rungInstructions,
@@ -1056,6 +1059,53 @@ async function runAgainstFake(
   }
 }
 
+test("reply gaps with no timed reply fail by name", () => {
+  const [check] = assessReplyGaps([]);
+  assert.equal(check?.status, "fail");
+  assert.equal(check?.code, "reply-gap");
+  assert.match(check?.detail ?? "", /no completed caller turn produced a timed reply/);
+});
+
+test("timed reply gaps pass against the frozen reply-gap budget", () => {
+  const budget = SCOREBOARD_BUDGETS.replyGapP95Ms.value;
+  const [check] = assessReplyGaps([
+    { endpointingMs: 120, replyGapMs: 800, band: "ordinary" },
+    { endpointingMs: 200, replyGapMs: budget, band: "ordinary" },
+  ]);
+  assert.equal(check?.status, "pass");
+  assert.equal(check?.code, "reply-gap");
+  assert.match(check?.detail ?? "", /replyGapP95Ms/);
+  assert.ok(
+    (check?.detail ?? "").includes(String(budget)),
+    "the gate cites the frozen table value, never a restated literal",
+  );
+  assert.match(
+    check?.detail ?? "",
+    /turn 1: endpointing 120ms \+ reply 800ms \[ordinary\]/,
+    "every reviewed reply carries its endpointing plus reply split and band",
+  );
+});
+
+test("a reply gap past the frozen budget fails and names the turn", () => {
+  const budget = SCOREBOARD_BUDGETS.replyGapP95Ms.value;
+  const [check] = assessReplyGaps([
+    { endpointingMs: 120, replyGapMs: 800, band: "ordinary" },
+    { endpointingMs: null, replyGapMs: budget + 1, band: "post-cut" },
+  ]);
+  assert.equal(check?.status, "fail");
+  assert.equal(check?.code, "reply-gap");
+  assert.match(check?.detail ?? "", /turn 2/);
+  assert.match(check?.detail ?? "", /replyGapP95Ms/);
+});
+
+test("the band is post-cut only when speech began while audio still sounded", () => {
+  assert.equal(classifyBand(1000, 900), "ordinary");
+  assert.equal(classifyBand(900, 900), "ordinary");
+  assert.equal(classifyBand(800, 900), "post-cut");
+  assert.equal(classifyBand(null, 900), "ordinary");
+  assert.equal(classifyBand(800, null), "ordinary");
+});
+
 test("the call's flow passes every assertion against a fake service", async () => {
   const { checks, dir, service } = await runAgainstFake(true);
   try {
@@ -1123,6 +1173,7 @@ test("the call's flow passes every assertion against a fake service", async () =
       /greeting is not a turn/,
     );
     assert.match(checks.find((entry) => entry.code === "trace")?.detail ?? "", /call-real-legs-test/);
+    assert.match(checks.find((entry) => entry.code === "reply-gap")?.detail ?? "", /replyGapP95Ms/);
     assert.match(checks.find((entry) => entry.code === "cost")?.detail ?? "", /\$0\.000123/);
     assert.match(formatRealLegsReport(checks), /17 checks, all passed/);
   } finally {

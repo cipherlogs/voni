@@ -41,6 +41,7 @@ import {
 import { buildDemoCascadeBody } from "../../src/lib/demo/cascade-body";
 import { deliverCallBody } from "../../src/lib/demo/pipeline-delivery";
 import { getVoice } from "../../src/lib/agents/voices";
+import { SCOREBOARD_BUDGETS } from "../../src/lib/demo/scoreboard-budgets";
 import {
   DEMO_VOICE_IDS,
   VONI_GREETINGS,
@@ -870,6 +871,74 @@ export type RealLegsDeps = {
   callId?: string;
 };
 
+/** The interaction band a measured turn belongs to (see `latencySplit`). */
+export type ReplyGapTurnBand = "ordinary" | "post-cut";
+
+/** One reviewed reply: its endpointing plus reply split and its band. */
+export type ReplyGapTurn = {
+  /** Caller end of speech → final caller transcript receipt, or null unmeasured. */
+  endpointingMs: number | null;
+  /** Final transcript receipt → first agent audio receipt (the reply gap). */
+  replyGapMs: number;
+  band: ReplyGapTurnBand;
+};
+
+/**
+ * Gate every timed reply gap on the frozen reply-gap budget.
+ *
+ * The only gate is `SCOREBOARD_BUDGETS.replyGapP95Ms`, read from the single
+ * frozen table and cited by key: handshake bounds, token lifetimes, cushions,
+ * hold windows, hedge delays and timeouts bound behaviour but are never quoted
+ * as felt speed, so none of them appears here. The budgets table is frozen by
+ * its own guard; this gate follows it, never a restated literal.
+ */
+export function assessReplyGaps(turns: ReplyGapTurn[]): RealLegsCheck[] {
+  if (turns.length === 0) {
+    return [failed("reply gaps", "reply-gap", "no completed caller turn produced a timed reply")];
+  }
+  const budgetKey = "replyGapP95Ms";
+  const budgetMs = SCOREBOARD_BUDGETS.replyGapP95Ms.value;
+  const rows = turns.map((turn, index) => {
+    const endpointing =
+      turn.endpointingMs === null ? "endpointing n/a" : `endpointing ${turn.endpointingMs}ms`;
+    return `turn ${index + 1}: ${endpointing} + reply ${turn.replyGapMs}ms [${turn.band}]`;
+  });
+  const over = turns
+    .map((turn, index) => ({ turn, index }))
+    .filter(({ turn }) => turn.replyGapMs > budgetMs);
+  if (over.length > 0) {
+    const named = over
+      .map(({ turn, index }) => `turn ${index + 1} reply ${turn.replyGapMs}ms`)
+      .join(", ");
+    return [
+      failed(
+        "reply gaps",
+        "reply-gap",
+        `${named} past the frozen ${budgetKey} budget of ${budgetMs}ms: ${rows.join("; ")}`,
+      ),
+    ];
+  }
+  return [
+    passed(
+      "reply gaps",
+      "reply-gap",
+      `${rows.join("; ")}; every reply within the frozen ${budgetKey} budget of ${budgetMs}ms`,
+    ),
+  ];
+}
+
+export function classifyBand(
+  speechStartedAt: number | null,
+  audioEndBefore: number | null,
+): ReplyGapTurnBand {
+  // `ordinary` when the caller's speech began after the previous reply's audio
+  // ended (or there was no previous audio); `post-cut` when it began while
+  // that audio was still sounding. A missing timestamp classifies nothing, so
+  // the turn keeps `ordinary` rather than a guessed band.
+  if (speechStartedAt === null || audioEndBefore === null) return "ordinary";
+  return speechStartedAt < audioEndBefore ? "post-cut" : "ordinary";
+}
+
 type CallState = {
   captions: { role: "user" | "agent"; text: string; final: boolean }[];
   audioFrames: number;
@@ -880,9 +949,16 @@ type CallState = {
   configKeys: string[] | null;
   turnLatencies: number[];
   endpointingMs: number[];
+  turnBands: ReplyGapTurnBand[];
   pendingFinalAt: number | null;
   pendingAudioSeen: boolean;
   speechEndedAt: number | null;
+  /** Last received agent audio frame; the previous reply's end once quiet. */
+  lastAudioAt: number | null;
+  /** When the current caller turn's speech started (`beginCallerTurn`). */
+  speechStartedAt: number | null;
+  /** `lastAudioAt` when the current caller turn started. */
+  audioEndBefore: number | null;
 };
 
 function defaultConnect(url: string): RealLegsSocket {
@@ -1223,6 +1299,16 @@ export function carriedHistory(
 }
 
 /**
+ * Mark the start of one caller turn: the band of the reply it earns is decided
+ * from these two readings (speech began while previous audio still sounding →
+ * `post-cut`, else `ordinary`). Called before every `ingress.say`.
+ */
+function beginCallerTurn(state: CallState, at: number): void {
+  state.speechStartedAt = at;
+  state.audioEndBefore = state.lastAudioAt;
+}
+
+/**
  * Run the real-legs call and return every assertion in report order.
  *
  * One fatal step (the signed body, the delivery, the caller audio, the socket)
@@ -1276,9 +1362,13 @@ export async function runRealLegs(
       configKeys: null,
       turnLatencies: [],
       endpointingMs: [],
+      turnBands: [],
       pendingFinalAt: null,
       pendingAudioSeen: false,
       speechEndedAt: null,
+      lastAudioAt: null,
+      speechStartedAt: null,
+      audioEndBefore: null,
     };
     let socket: RealLegsSocket;
     try {
@@ -1306,9 +1396,11 @@ export async function runRealLegs(
       if (audioFrame) {
         state.audioFrames += 1;
         state.audioBytes += audioFrame.pcm.length;
+        state.lastAudioAt = now();
         if (state.pendingFinalAt !== null && !state.pendingAudioSeen) {
           state.pendingAudioSeen = true;
           state.turnLatencies.push(now() - state.pendingFinalAt);
+          state.turnBands.push(classifyBand(state.speechStartedAt, state.audioEndBefore));
         }
         return;
       }
@@ -1495,6 +1587,7 @@ export async function runRealLegs(
     const beforeTurnOneAudio = state.audioFrames;
     // `say` paces the clip at the pump's cadence and resolves after the
     // trailing silence, so the vendor has heard a whole caller turn.
+    beginCallerTurn(state, now());
     await ingress.say(audio.pcm);
     await waitFor(
       state,
@@ -1517,6 +1610,7 @@ export async function runRealLegs(
     const userFinalsAfterTurnOne = countUserFinals(state);
     const audioFramesAfterTurnOne = state.audioFrames;
 
+    beginCallerTurn(state, now());
     await ingress.say(audio.pcm);
     await waitFor(
       state,
@@ -1547,6 +1641,7 @@ export async function runRealLegs(
     const userFinalsBeforeContext = countUserFinals(state);
     const audioFramesBeforeContext = state.audioFrames;
     socket.send(encodeContextMessage(contextNote));
+    beginCallerTurn(state, now());
     await ingress.say(audio.pcm);
     await waitFor(
       state,
@@ -1699,15 +1794,12 @@ export async function runRealLegs(
         ),
   );
 
-  checks.push(
-    state.turnLatencies.length > 0
-      ? passed(
-          "reply gaps",
-          "reply-gap",
-          `caller-final → first agent audio (ms): ${state.turnLatencies.join(", ")}; speech-end → final (ms): ${state.endpointingMs.join(", ")}`,
-        )
-      : failed("reply gaps", "reply-gap", "no completed caller turn produced a timed reply"),
-  );
+  const gapTurns: ReplyGapTurn[] = state.turnLatencies.map((replyGapMs, index) => ({
+    endpointingMs: state.endpointingMs[index] ?? null,
+    replyGapMs,
+    band: state.turnBands[index] ?? "ordinary",
+  }));
+  checks.push(...assessReplyGaps(gapTurns));
 
   checks.push(
     state.audioFrames > 0 && state.audioBytes > 0
