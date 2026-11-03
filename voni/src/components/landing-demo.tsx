@@ -1,7 +1,10 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { DemoCallSkeleton } from "@/components/page-skeletons";
+import { ReviewOverlay } from "@/components/review-overlay";
+import { reviewOverlayRequested } from "@/lib/demo/review-ratings";
 
 /**
  * The public live-demo widget (plan Section E).
@@ -28,5 +31,18 @@ const VoiceCall = dynamic(
 );
 
 export function LandingDemo() {
-  return <VoiceCall mode={{ kind: "demo" }} />;
+  // Ticket 07: the same landing demo hosts the review overlay behind
+  // `?review=1`. The overlay starts with no rows: the owner replays the
+  // call's marks + delivered capture and rates each agent reply beside the
+  // transcript, split and acknowledgement line used.
+  const [review, setReview] = useState(false);
+  useEffect(() => {
+    setReview(reviewOverlayRequested(window.location.search));
+  }, []);
+  return (
+    <>
+      <VoiceCall mode={{ kind: "demo" }} />
+      {review ? <ReviewOverlay callId="review-call" turns={[]} /> : null}
+    </>
+  );
 }
