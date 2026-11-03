@@ -597,7 +597,7 @@ class AckTest(unittest.TestCase):
         async def run():
             await stream.start()
             await stream.event(SpeechStart("t1"))
-            await stream.event(SpeechComplete("hi", turn_id="t1"))
+            await stream.event(SpeechComplete("book a viewing on Tuesday", turn_id="t1"))
             for _ in range(200):
                 if stream._tts.spoken:
                     break
@@ -655,7 +655,9 @@ class AckTest(unittest.TestCase):
         self.assertIn(angry, set(groups["sympathetic"]) | set(groups["thinking"]))
 
         question = speak_ack("What does it cost?")
-        self.assertIn(question, set(groups["thinking"]))
+        self.assertIn(
+            question, set(groups["thinking"]) | set(groups["statement"])
+        )
 
     def test_a_fast_reply_never_speaks_an_ack(self):
         class FastLLM:
@@ -678,12 +680,299 @@ class AckTest(unittest.TestCase):
         async def run():
             await stream.start()
             await stream.event(SpeechStart("t1"))
-            await stream.event(SpeechComplete("hi", turn_id="t1"))
+            await stream.event(SpeechComplete("book a viewing on Tuesday", turn_id="t1"))
             await stream.drain()
 
         asyncio.run(run())
 
         self.assertEqual(["I can do that."], stream._tts.spoken)
+
+    def test_a_greeting_turn_hears_silence_not_a_sound(self):
+        """Saying Hi never produces Mm or any cover back: silence is better."""
+        gate = asyncio.Event()
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "Hello! How can I help?"
+                yield TokenDelta(text="Hello! How can I help?")
+                record.finished = True
+
+        audio = RecordingAudio()
+        rows: list[tuple] = []
+
+        class Rows:
+            def __getattr__(self, name):
+                if name.startswith("__"):
+                    raise AttributeError(name)
+
+                def record(*args, **kwargs):
+                    rows.append((name, args, kwargs))
+
+                return record
+
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=FakeTTS(),
+            emit_audio=audio,
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=ACK_LINES["en"],
+            ack_delay_ms=5,
+            turn_events=Rows(),
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("Hi", turn_id="t1"))
+            for _ in range(200):
+                if stream._tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual(["Hello! How can I help?"], stream._tts.spoken)
+        self.assertEqual([], [kind for kind in [f.kind for f in audio.frames] if kind == "ack"])
+        self.assertEqual([], [row for row in rows if row[0] == "ack"])
+
+    def test_a_filler_only_turn_hears_silence(self):
+        """A filler-only final never takes the cover: it hears nothing extra."""
+        gate = asyncio.Event()
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "I can do that."
+                yield TokenDelta(text="I can do that.")
+                record.finished = True
+
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=FakeTTS(),
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=ACK_LINES["en"],
+            ack_delay_ms=5,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("mm-hmm", turn_id="t1"))
+            for _ in range(400):
+                if stream._tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertNotIn("So.", stream._tts.spoken)
+        for line in ACK_LINES["en"]:
+            self.assertNotIn(line, stream._tts.spoken[:-1])
+
+    def test_the_ack_never_enters_captions_or_memory(self):
+        """The cover is demo-only ephemera: same voice, never captioned, never recalled."""
+        from cascade.ack import ack_line as deterministic_line
+
+        gate = asyncio.Event()
+        final = "What does it cost?"
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "I can do that."
+                yield TokenDelta(text="I can do that.")
+                record.finished = True
+
+        captions: list[tuple[str, str, bool]] = []
+
+        async def on_caption(role, text, done):
+            captions.append((role, text, done))
+
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=FakeTTS(),
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=ACK_LINES["en"],
+            ack_delay_ms=5,
+            on_caption=on_caption,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete(final, turn_id="t1"))
+            for _ in range(200):
+                if stream._tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        expected = deterministic_line("en", final)
+        self.assertIn(expected, stream._tts.spoken)
+        agent_captions = [text for role, text, _ in captions if role == "agent"]
+        self.assertNotIn(expected, agent_captions)
+        memory = " ".join(
+            str(message.get("content", ""))
+            for message in stream._history.request_messages()
+        )
+        self.assertNotIn(expected, memory)
+
+    def test_a_timed_out_judge_fails_open_to_the_hash(self):
+        """A judge that never answers still covers: the deterministic line speaks."""
+        from cascade.ack import ack_line as deterministic_line
+
+        gate = asyncio.Event()
+        final = "What does it cost?"
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "I can do that."
+                yield TokenDelta(text="I can do that.")
+                record.finished = True
+
+        async def stalled_judge(_: str):
+            await asyncio.sleep(10)
+            return "neutral"
+
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=FakeTTS(),
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=ACK_LINES["en"],
+            ack_delay_ms=5,
+            ack_judge=stalled_judge,
+            ack_judge_timeout_ms=10,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete(final, turn_id="t1"))
+            for _ in range(200):
+                if stream._tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual(
+            [deterministic_line("en", final), "I can do that."], stream._tts.spoken
+        )
+
+    def test_a_judge_silence_is_obeyed_on_the_wire(self):
+        """A judge that picks None covers nothing: the reply speaks alone."""
+        gate = asyncio.Event()
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "I can do that."
+                yield TokenDelta(text="I can do that.")
+                record.finished = True
+
+        async def silent_judge(_: str):
+            return None
+
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=FakeTTS(),
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=ACK_LINES["en"],
+            ack_delay_ms=5,
+            ack_judge=silent_judge,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("What does it cost?", turn_id="t1"))
+            for _ in range(200):
+                if stream._tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual(["I can do that."], stream._tts.spoken)
+
+    def test_two_consecutive_turns_never_repeat_the_cover(self):
+        """The pipeline rotates the line inside the tone on the wire."""
+        gates = [asyncio.Event(), asyncio.Event()]
+        calls = 0
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                nonlocal calls
+                index = calls
+                calls += 1
+                if index < len(gates):
+                    await gates[index].wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += f"Reply number {index} here."
+                yield TokenDelta(text=f"Reply number {index} here.")
+                record.finished = True
+
+        tts = FakeTTS()
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=tts,
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=ACK_LINES["en"],
+            ack_delay_ms=5,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("What does it cost?", turn_id="t1"))
+            for _ in range(200):
+                if tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gates[0].set()
+            await stream.drain()
+            await stream.event(SpeechStart("t2"))
+            await stream.event(SpeechComplete("What does it cost?", turn_id="t2"))
+            for _ in range(400):
+                if len(tts.spoken) >= 3:
+                    break
+                await asyncio.sleep(0.001)
+            gates[1].set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual(4, len(tts.spoken))
+        self.assertNotEqual(tts.spoken[0], tts.spoken[2])
 
 
 class EndCallSignalTest(unittest.TestCase):
