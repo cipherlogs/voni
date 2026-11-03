@@ -221,6 +221,18 @@ class ReplyFillerOnly(RuntimeError):
     """
 
 
+class ReplyOfferOnly(RuntimeError):
+    """The reply was only a test/invite offer the caller did not invite.
+
+    The offer guard withheld every sentence that carried the product's offer
+    vocabulary, because the caller's final was not willing. Nothing new
+    remained to speak. An offer-only reply is never repaired: a repair would
+    ask for the same offer again. Naming the failure is deliberate: the caller
+    hears nothing further and the trace records the turn as failed rather than
+    looping the offer.
+    """
+
+
 def _normal_form(text: str) -> str:
     """The duplicate rule's normal form: case-folded, punctuation to space."""
     return " ".join(_NON_WORD.sub(" ", text.casefold()).split())
@@ -265,6 +277,44 @@ def _reply_sentences(text: str) -> list[str]:
     sentence splitter instead of re-deriving boundaries here.
     """
     return [piece.strip() for piece in split_sentences(text) if piece.strip()]
+
+
+#: The product's own offer vocabulary: the live test and the invite. This is
+#: deliberately the vocabulary of the thing being gated, not a corpus of
+#: complaint words. A sentence that carries any of these is an offer sentence.
+_OFFER_VOCABULARY = re.compile(
+    r"\b(?:live test|test|email|send me|your screen|give it a shot|try it)\b",
+    re.IGNORECASE,
+)
+
+#: Two small intent sets. A caller's final is willing only when it accepts the
+#: test or asks what Voni can do. An acceptance is the caller's answer, so it
+#: opens the final; a product question may appear anywhere in it. A complaint,
+#: a neutral turn, small talk or a challenge is in neither set, so no offer
+#: sentence may be spoken on that turn.
+_WILLING_ACCEPTANCE = re.compile(
+    r"^\s*(?:yes|yeah|yep|sure|okay|ok|go ahead|let'?s do it|try it|do it|"
+    r"i'?m ready|i am ready)\b",
+    re.IGNORECASE,
+)
+_WILLING_PRODUCT_QUESTION = re.compile(
+    r"\b(?:what can you do|what do you do|how does it work|how do you work|"
+    r"tell me what you (?:can )?(?:actually )?do|show me|check (?:my|your) email)\b",
+    re.IGNORECASE,
+)
+
+
+def _caller_is_willing(text: str) -> bool:
+    """Whether the caller's final accepts the test or asks what Voni does."""
+    return bool(
+        _WILLING_ACCEPTANCE.match(text)
+        or _WILLING_PRODUCT_QUESTION.search(text)
+    )
+
+
+def _is_offer(sentence: str) -> bool:
+    """Whether a spoken sentence carries the product's offer vocabulary."""
+    return bool(_OFFER_VOCABULARY.search(sentence))
 
 
 def _repeat_note(replies: Sequence[str]) -> str:
@@ -416,6 +466,13 @@ class CascadeTurnStream:
         self._filler_repaired = False
         #: Metric counter: one per acknowledgement opener removed before speech.
         self.filler_stripped = 0
+        #: Whether the caller's final this turn is willing: an acceptance or a
+        #: question about what Voni does. Decided once per turn from the final.
+        self._willing_turn = False
+        #: This reply's withheld offer sentences, and the metric counter. An
+        #: offer-only reply fails by name; it is never repaired.
+        self._reply_offer_withheld: list[str] = []
+        self.offer_withheld = 0
         #: Whether the caller's final asked to end (call control, not a tool).
         self._caller_wants_end = False
         self._buffer = ""
@@ -564,6 +621,11 @@ class CascadeTurnStream:
         self._question_repaired = False
         self._reply_filler_withheld = []
         self._filler_repaired = False
+        self._reply_offer_withheld = []
+        # The willingness rule is decided from the caller's final, once per
+        # turn: a complaint, a neutral turn, small talk or a challenge is not
+        # willing, so no offer sentence may be spoken.
+        self._willing_turn = _caller_is_willing(state.final_text)
         # The unanswered-question rule is decided from the caller's final, once
         # per turn: it consumes the last question so it cannot fire twice.
         self._must_not_ask = self._question_was_unanswered(state.final_text)
@@ -576,6 +638,17 @@ class CascadeTurnStream:
             self._history.append_user(state.final_text)
             self._add_repeat_note()
             record = await self._run_turn(state, record)
+            if (
+                not self._ending
+                and self._reply_new_sentences == 0
+                and self._reply_offer_withheld
+            ):
+                # Withhold, never repair: a repair would ask for the same
+                # offer again. The caller hears nothing further and the turn
+                # fails by name instead of looping.
+                raise ReplyOfferOnly(
+                    "the reply was only a test offer the caller did not invite"
+                )
             if self._should_repair_unanswered_question():
                 await self._repair_unanswered_question(record)
             elif self._should_repair_repeated_reply():
@@ -1053,6 +1126,12 @@ class CascadeTurnStream:
         """Withhold an acknowledgement-only sentence before its audio exists."""
         self._reply_filler_withheld.append(sentence)
 
+    def _drop_offer(self, sentence: str) -> None:
+        """Withhold a test/invite offer sentence the caller did not invite."""
+        self._reply_offer_withheld.append(sentence)
+        self.offer_withheld += 1
+        self._count_metric("offer_withheld")
+
     def _count_metric(self, name: str) -> None:
         """Count one guard metric; an unreadable sink never ends the call."""
         counter = getattr(self._ledger, "count", None)
@@ -1095,6 +1174,19 @@ class CascadeTurnStream:
                 self._count_metric("filler_stripped")
             if not text:
                 self._drop_filler(original)
+                return
+        # The offer guard: on a turn the caller did not invite, no sentence
+        # that carries the product's offer vocabulary may be spoken. Withhold
+        # only the offer sentences; the rest of the reply still speaks. A
+        # batched chunk is split so a statement beside an offer survives.
+        if not force and not self._willing_turn:
+            pieces = _reply_sentences(text) or [text]
+            if len(pieces) > 1 and any(_is_offer(piece) for piece in pieces):
+                for piece in pieces:
+                    await self._speak(piece)
+                return
+            if _is_offer(text):
+                self._drop_offer(text)
                 return
         # The exact-repeat guard keeps precedence: a line already spoken is a
         # repeat first, and its own repair runs before this rule. One _speak
@@ -1322,6 +1414,8 @@ class CascadeTurnStream:
             reason = "the reply only repeated a line already spoken"
         elif isinstance(error, ReplyFillerOnly):
             reason = "the reply was nothing but an acknowledgement"
+        elif isinstance(error, ReplyOfferOnly):
+            reason = "the reply was only a test offer the caller did not invite"
         else:
             reason = "the reply failed"
         self._write_turn_row(
@@ -1347,6 +1441,7 @@ def _call_name(outcome: Any) -> str:
 __all__ = [
     "CascadeTurnStream",
     "ReplyFillerOnly",
+    "ReplyOfferOnly",
     "ReplyQuestionOnly",
     "ReplyRepeatedOnly",
 ]

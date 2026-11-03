@@ -61,6 +61,7 @@ import { callIdFromDemoToken, createCallMarks, type CallMarks } from "@/lib/voic
 import { boundedResumeHistory } from "@/lib/voice/resume-history";
 import { FILLER_POOL, isEndCallRequest, requestVoiceJudge } from "@/lib/voice/jev-judges";
 import { callRecognition } from "@/lib/voice/recognition";
+import { shouldSpeakInvite } from "@/lib/voice/offer-intent";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
@@ -479,6 +480,11 @@ export function VoiceCall({
   const ladderRef = useRef<StakesLadder | null>(null);
   const callTokenRef = useRef<string | null>(null);
   const lastAgentLineRef = useRef("");
+  /**
+   * The caller's last final, read by the hard-invite gate: the same willingness
+   * rule the pipeline applies to its own offer sentence.
+   */
+  const callerFinalRef = useRef("");
   /**
    * Demo email test (ticket 03): invited → claimed → found. The state
    * renders the address chip and the talk limit; the ref is read in socket
@@ -1299,6 +1305,8 @@ export function VoiceCall({
             turnsRef.current = [...turnsRef.current, settledTurn];
             setTurns((prev) => [...prev, settledTurn]);
             setLiveCaption(null);
+            // The caller's final is the turn the invite is gated on.
+            if (caption.role === "user") callerFinalRef.current = caption.text;
             // Ticket 12: the browser's live notes are hidden context on the
             // cascade, not captions. A final visitor turn is still scored by
             // the demo's stakes ladder; a final agent turn can announce the
@@ -1323,7 +1331,11 @@ export function VoiceCall({
                   // opens a second invite.
                   setEmailTest({ ...test, invited: true });
                   const tag = testTagRef.current;
-                  if (action === "show-and-speak" && tag) {
+                  // The hard invite obeys the turn's willingness gate: no
+                  // spoken offer on a complaint, a challenge, a neutral turn
+                  // or small talk, even when the model's line mentioned the
+                  // screen on its own.
+                  if (shouldSpeakInvite(action, tag, callerFinalRef.current)) {
                     speak(inviteNowInstructions(tag), { key: "invite" });
                   }
                 }

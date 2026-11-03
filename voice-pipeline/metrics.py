@@ -57,15 +57,16 @@ CASCADE_GAPS = (
 )
 
 #: Counters that exist only once a reply guard fires (repeat, unanswered
-#: question or acknowledgement opener). They are omitted from a summary while
-#: zero, so a ledger that predates the guards (and the frozen managed artifact)
-#: keeps its exact shape.
+#: question, acknowledgement opener or an uninvited test offer). They are
+#: omitted from a summary while zero, so a ledger that predates the guards
+#: (and the frozen managed artifact) keeps its exact shape.
 OPTIONAL_COUNTERS = (
     "repeat_repair",
     "repeat_dropped",
     "question_repair",
     "question_withheld",
     "filler_stripped",
+    "offer_withheld",
 )
 
 COUNTERS = (
