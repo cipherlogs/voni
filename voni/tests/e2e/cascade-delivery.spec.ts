@@ -12,9 +12,15 @@ import {
   replyAudioSeconds,
   replyToneHz,
   uniqueAudioSeconds,
+  type ScriptedFrame,
 } from "./cascade-fake-server";
+import {
+  installSyntheticMic,
+  readSyntheticMicReport,
+} from "../../scripts/lib/browser-adapter/synthetic-mic";
 import { SCOREBOARD_BUDGETS } from "../../src/lib/demo/scoreboard-budgets";
 import { DEMO_UNAVAILABLE_MESSAGES } from "../../src/lib/voice/cascade-failure-view";
+import type { CallMarksArtifact } from "../../src/lib/voice/call-marks";
 
 /**
  * Seam 2 (demo-cascade ticket 16): the landing demo, against a fake pipeline.
@@ -231,6 +237,7 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
   page,
 }, testInfo) => {
   const captures: { name: string; bytes: Buffer }[] = [];
+  const markPostings: CallMarksArtifact[] = [];
   const vendorRequests: string[] = [];
   const managedSockets: string[] = [];
   const voiceTokenRequests: string[] = [];
@@ -251,6 +258,11 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
       const name = new URL(route.request().url()).searchParams.get("name") ?? "delivered.wav";
       captures.push({ name, bytes });
     }
+    await route.fulfill({ json: { path: "captured-by-the-e2e-harness" } });
+  });
+  await page.route("**/api/dev/call-marks**", async (route) => {
+    const artifact = route.request().postDataJSON() as CallMarksArtifact;
+    markPostings.push(artifact);
     await route.fulfill({ json: { path: "captured-by-the-e2e-harness" } });
   });
   const mintRequests = await mockDemoMint(page);
@@ -457,6 +469,86 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
     "the chime is not delayed to the end of the reply",
   ).toBeLessThan(3000);
 
+  // ── Browser call evidence: one marks artifact beside the WAV ────────────
+  // The real landing page posts what the visitor experienced; the harness
+  // saves it, so the call's marks and WAV can be compared without guessing.
+  await expect
+    .poll(() => markPostings.length, { message: "the call marks were written", timeout: 10_000 })
+    .toBe(1);
+  const marks = markPostings[0]!;
+  const markNames = marks.marks.map((mark) => mark.name);
+  for (const required of [
+    "start_requested",
+    "mint_done",
+    "microphone_acquired",
+    "config_sent",
+    "socket_open",
+    "admitted",
+    "connected_painted",
+    "capture_started",
+    "first_audible",
+    "chime",
+    "turn",
+    "end_call_received",
+    "teardown",
+    "delivered_capture",
+  ]) {
+    expect(markNames, `the marks name ${required}`).toContain(required);
+  }
+  const at = (name: string) => markNames.findIndex((mark) => mark === name);
+  expect(markNames[0]).toBe("start_requested");
+  expect(at("mint_done")).toBeGreaterThan(at("start_requested"));
+  expect(at("microphone_acquired")).toBeGreaterThan(at("mint_done"));
+  expect(at("config_sent")).toBeGreaterThan(at("socket_open"));
+  expect(at("admitted")).toBeGreaterThan(at("config_sent"));
+  // Ticket 05 records the comparison; it does not fix the demo. The reported
+  // bug is that "connected" can paint before the pipeline admits the call, so
+  // this run records which side of admission the paint landed on instead of
+  // asserting either order. An L2 evaluator (ticket 18) judges it.
+  const connectedBeforeAdmission = at("connected_painted") < at("admitted");
+  expect(at("connected_painted")).toBeGreaterThanOrEqual(0);
+  expect(at("capture_started")).toBeGreaterThan(at("microphone_acquired"));
+  expect(at("first_audible")).toBeGreaterThan(at("admitted"));
+  expect(at("chime")).toBeGreaterThan(at("first_audible"));
+
+  // The capture's real origin is a page-clock reading, never a wall-clock
+  // approximation; the preview mix places caller takes against it.
+  const captureStarted = marks.marks.find((mark) => mark.name === "capture_started");
+  expect(captureStarted!.detail?.atMs, "capture_started carries a page-clock atMs").toEqual(
+    expect.any(Number),
+  );
+  expect(Number.isFinite(captureStarted!.detail?.atMs as number)).toBe(true);
+  expect(captureStarted!.detail?.atMs as number).toBeGreaterThanOrEqual(0);
+  expect(at("end_call_received")).toBeGreaterThan(at("chime"));
+  expect(at("teardown")).toBeGreaterThan(at("end_call_received"));
+
+  // L3: one chime mark for the one real chime request.
+  expect(markNames.filter((name) => name === "chime")).toHaveLength(1);
+  expect(sounds, "the chime was actually requested once").toHaveLength(1);
+
+  // Every final turn is marked, and a mark is never a silent internal.
+  const finalTurns = script.filter(
+    (entry) => entry.frame.type === "caption" && entry.frame.final === true,
+  ).length;
+  expect(markNames.filter((name) => name === "turn")).toHaveLength(finalTurns);
+
+  // Wall clock and call-relative time on every mark, monotonic.
+  for (const mark of marks.marks) {
+    expect(Number.isNaN(Date.parse(mark.at)), `${mark.name} has a wall clock`).toBe(false);
+    expect(mark.epochMs).toBe(Date.parse(mark.at));
+    expect(mark.tMs).toBeGreaterThanOrEqual(0);
+  }
+  const relative = marks.marks.map((mark) => mark.tMs);
+  expect(relative).toEqual([...relative].sort((a, b) => a - b));
+
+  // The marks and the WAV share one call id, and the capture mark names it.
+  expect(marks.callId.length).toBeGreaterThan(0);
+  expect(capture.name, "the WAV name carries the marks call id").toContain(marks.callId);
+  const captureMark = marks.marks.find((mark) => mark.name === "delivered_capture");
+  expect(captureMark, "the capture outcome is in the marks").toBeTruthy();
+  expect(captureMark!.detail?.name).toBe(capture.name);
+  expect(captureMark!.detail?.complete).toBe(true);
+
   // ── The goodbye drains before hang-up ───────────────────────────────────
   const endCallAt = fake.endCallAt();
   expect(endCallAt, "the service sent end_call").not.toBeNull();
@@ -481,6 +573,10 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
   mkdirSync(dir, { recursive: true });
   const wavPath = resolve(dir, "browser-delivered.wav");
   writeFileSync(wavPath, capture.bytes);
+  writeFileSync(
+    resolve(dir, "browser-call-marks.json"),
+    `${JSON.stringify(marks, null, 2)}\n`,
+  );
   const sidecar = {
     kind: "browser-delivery",
     schemaVersion: 1,
@@ -497,6 +593,9 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
     capture: {
       file: "browser-delivered.wav",
       name: capture.name,
+      /** The same call id the browser marks artifact carries. */
+      callId: marks.callId,
+      marksFile: "browser-call-marks.json",
       bytes: capture.bytes.byteLength,
       samples: wav.samples.length,
       sampleRate: wav.sampleRate,
@@ -519,6 +618,14 @@ test("the landing demo runs a real cascade call, and the pipeline's invite tool 
       peakSampleStep: peakSampleStep(wav.samples),
       connectedChimeMs: sounds[0]!.at - firstAudioAt!,
       goodbyeDrainMs: drainMs,
+      marks: {
+        callId: marks.callId,
+        connectedPaintedMs: marks.marks.find((mark) => mark.name === "connected_painted")?.tMs ?? null,
+        admittedMs: marks.marks.find((mark) => mark.name === "admitted")?.tMs ?? null,
+        /** The reported L2 symptom, measured rather than asserted here. */
+        connectedBeforeAdmission,
+        chimeMarks: markNames.filter((name) => name === "chime").length,
+      },
     },
     /** One leg only: this run never observed a reference or platform capture. */
     legs: ["delivered"],
@@ -690,4 +797,241 @@ test("a refused cascade connect shows the demo unavailable state and opens no ma
       2,
     )}\n`,
   );
+});
+
+/**
+ * The turn-end defect (call 285138f6, 2026-11-02): the app marked
+ * `agent-turn-end` 460 ms into a 1.76 s greeting because a final agent caption
+ * completed the *text*, and the synthetic caller answered on that mark — 1.2 s
+ * of the greeting played under the caller. A turn ends when its audio drains.
+ *
+ * This seam is deterministic: the fake service sends a reply whose transcript
+ * finishes at ~0.3 s and whose audio runs to ~1.2 s, and the real playout
+ * worklet decides when it has finished. The page's own `data-voice-state`
+ * transition is the mark the browser adapter records as `agent-turn-end`; the
+ * delivered capture is the audio that actually played.
+ */
+test("a turn ends when its audio drains, not when its message ends", async ({ page }) => {
+  const captures: { name: string; bytes: Buffer }[] = [];
+  const markPostings: CallMarksArtifact[] = [];
+  const vendorRequests: string[] = [];
+
+  // The same offline edge as the other cascade tests. The sinks must be
+  // registered after the catch-all so they win.
+  await page.route("**/api/**", (route) =>
+    route.fulfill({ status: 503, json: { error: "offline in e2e" } }),
+  );
+  await page.route("**/api/dev/delivered-capture**", async (route) => {
+    const bytes = route.request().postDataBuffer();
+    if (bytes) {
+      const name = new URL(route.request().url()).searchParams.get("name") ?? "delivered.wav";
+      captures.push({ name, bytes });
+    }
+    await route.fulfill({ json: { path: "captured-by-the-e2e-harness" } });
+  });
+  await page.route("**/api/dev/call-marks**", async (route) => {
+    markPostings.push(route.request().postDataJSON() as CallMarksArtifact);
+    await route.fulfill({ json: { path: "captured-by-the-e2e-harness" } });
+  });
+  await mockDemoMint(page);
+  await page.route("**/api/demo/tools/*", (route) =>
+    route.fulfill({ json: { ok: true, data: { status: "not_arrived", instructions: "Not yet." } } }),
+  );
+  await page.route(
+    /(api\.meta\.ai|agents\.assemblyai\.com|api\.assemblyai\.com|tts\.assemblyai\.com|cartesia\.ai)/,
+    (route) => {
+      vendorRequests.push(route.request().url());
+      return route.abort();
+    },
+  );
+
+  /** 0.1 s of a 440 Hz tone as the service stamps it (PCM16, 24 kHz). */
+  const replyFrame = (seq: number): Record<string, unknown> => {
+    const samples = Math.round(0.1 * FAKE_SAMPLE_RATE);
+    const pcm = Buffer.alloc(samples * 2);
+    for (let i = 0; i < samples; i++) {
+      pcm.writeInt16LE(Math.round(0.25 * 32767 * Math.sin((2 * Math.PI * 440 * i) / FAKE_SAMPLE_RATE)), i * 2);
+    }
+    return {
+      type: "audio",
+      seq,
+      sample_rate: FAKE_SAMPLE_RATE,
+      data: pcm.toString("base64"),
+    };
+  };
+  const answerPcm = Buffer.alloc(Math.round(0.2 * 24000) * 2);
+  for (let i = 0; i < answerPcm.length / 2; i++) {
+    answerPcm.writeInt16LE(
+      Math.round(6000 * Math.sin((2 * Math.PI * 600 * i) / 24000)),
+      i * 2,
+    );
+  }
+  // The synthetic caller answers the moment the page says the turn ended.
+  await installSyntheticMic(page, [
+    { id: "answer", pcmBase64: answerPcm.toString("base64"), sampleRate: 24000 },
+  ]);
+
+  const fake = await fakeCascadeServer(page, []);
+  await page.goto("/?delivercapture=1");
+  await expect(page.getByTestId("landing-shell")).toBeVisible();
+
+  // Observe every `data-voice-state` change in page time, before Start. The
+  // browser adapter's timeline records `agent-turn-end` on the first
+  // speaking -> listening transition, so this is the mark under test.
+  await page.evaluate(() => {
+    const transitions: { state: string; atMs: number; epochMs: number }[] = [];
+    let last: string | null = null;
+    let sawSpeaking = false;
+    let answered = false;
+    const read = () => {
+      const state =
+        document.querySelector("[data-voice-state]")?.getAttribute("data-voice-state") ?? null;
+      if (state === null || state === last) return;
+      last = state;
+      transitions.push({ state, atMs: performance.now(), epochMs: Date.now() });
+      if (state === "speaking") sawSpeaking = true;
+      if (state === "listening" && sawSpeaking && !answered) {
+        answered = true;
+        (
+          window as unknown as { __voniSyntheticMic?: { play(id: string, delayMs: number): unknown } }
+        ).__voniSyntheticMic?.play("answer", 0);
+      }
+    };
+    new MutationObserver(read).observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["data-voice-state"],
+    });
+    read();
+    (window as unknown as { __turnTest: { transitions: typeof transitions } }).__turnTest = {
+      transitions,
+    };
+  });
+
+  const start = page.getByRole("button", { name: /^start call$/i }).filter({ visible: true }).first();
+  await expect(async () => {
+    if (!fake.opened()) await start.click({ timeout: 1000 }).catch(() => undefined);
+    await expect.poll(fake.opened, { timeout: 3000 }).toBe(true);
+  }).toPass({ timeout: 20_000 });
+  await expect.poll(() => fake.config() !== null).toBe(true);
+  await page.waitForFunction(
+    () =>
+      (window as unknown as { __voniSyntheticMic?: { acquired?: () => boolean } }).__voniSyntheticMic
+        ?.acquired?.() === true,
+    undefined,
+    { timeout: 20_000 },
+  );
+
+  // The line opens; then the reply's text completes at ~0.3 s while its audio
+  // runs to ~1.2 s. The caption is the old turn-end trigger.
+  fake.say({ type: "listening" });
+  const head: ScriptedFrame[] = [0, 1, 2, 3].map((seq) => ({
+    afterMs: seq === 0 ? 0 : 100,
+    reply: "greeting",
+    hz: 440,
+    frame: replyFrame(seq + 1),
+  }));
+  head.push({
+    afterMs: 0,
+    frame: { type: "caption", role: "agent", text: "Hi, I'm Voni.", final: true },
+  });
+  await fake.play(head);
+
+  // The message is over; the audio is not. The old wiring flipped to
+  // `listening` here and the caller answered on it.
+  const stateAfterCaption = await page.evaluate(
+    () => document.querySelector("[data-voice-state]")?.getAttribute("data-voice-state"),
+  );
+  expect(stateAfterCaption, "a final caption must not end a turn whose audio is still playing").toBe(
+    "speaking",
+  );
+
+  const tail: ScriptedFrame[] = [4, 5, 6, 7, 8, 9, 10, 11].map((seq) => ({
+    afterMs: 100,
+    reply: "greeting",
+    hz: 440,
+    frame: replyFrame(seq + 1),
+  }));
+  await fake.play(tail);
+
+  // Wait for the drain's transition, then let the take register and hang up.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() =>
+          (
+            window as unknown as {
+              __turnTest: { transitions: { state: string }[] };
+            }
+          ).__turnTest.transitions.filter((entry) => entry.state === "listening").length,
+        ),
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThanOrEqual(2);
+  const transitions = await page.evaluate(
+    () =>
+      (
+        window as unknown as {
+          __turnTest: { transitions: { state: string; atMs: number; epochMs: number }[] };
+        }
+      ).__turnTest.transitions,
+  );
+  const speakingAt = transitions.find((entry) => entry.state === "speaking")!;
+  // The first listening after speaking is the turn end; the earlier paint is
+  // the connected state before any audio.
+  const turnEnd = transitions.find(
+    (entry) => entry.state === "listening" && entry.atMs > speakingAt.atMs,
+  )!;
+  expect(turnEnd, "the drained turn returned the line to listening").toBeTruthy();
+
+  await expect.poll(() => readSyntheticMicReport(page).then((mic) => mic.played.length), {
+    timeout: 5_000,
+  }).toBe(1);
+  const mic = await readSyntheticMicReport(page);
+  await page.waitForTimeout(300);
+  const hangUp = page.getByRole("button", { name: "Hang up" }).filter({ visible: true }).first();
+  if (await hangUp.isVisible().catch(() => false)) await hangUp.click();
+
+  await expect.poll(() => captures.length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(() => markPostings.length, { timeout: 15_000 }).toBe(1);
+  const wav = parseWav(captures[0]!.bytes);
+  expect(wav.sampleRate).toBeGreaterThan(0);
+
+  // The audio that played: first and last non-silent sample of the turn.
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < wav.samples.length; i++) {
+    if (Math.abs(wav.samples[i]!) > 200) {
+      if (first < 0) first = i;
+      last = i;
+    }
+  }
+  expect(first, "the greeting's audio reached the capture").toBeGreaterThanOrEqual(0);
+  const heardSeconds = (last - first) / wav.sampleRate;
+  expect(heardSeconds, "the capture holds the whole reply, not the caption's length").toBeGreaterThan(
+    0.9,
+  );
+
+  const marks = markPostings[0]!;
+  const firstAudible = marks.marks.find((mark) => mark.name === "first_audible");
+  expect(firstAudible, "the first audible sample is marked").toBeTruthy();
+  // `first_audible` is posted on the worklet's level report, which runs every
+  // eight quanta (its own cadence, not a test threshold). It can therefore
+  // lag the first played sample by up to one report; the estimate is the
+  // upper bound of the last played sample, and the bound below accounts for it.
+  const LEVEL_REPORT_MS = (8 * 128 * 1000) / wav.sampleRate;
+  const lastSampleEpoch = firstAudible!.epochMs + heardSeconds * 1000;
+
+  // The bar: `agent-turn-end` is never earlier than the last played sample.
+  expect(
+    turnEnd.epochMs + LEVEL_REPORT_MS,
+    `turn end ${turnEnd.epochMs} ms, last played sample ${Math.round(lastSampleEpoch)} ms`,
+  ).toBeGreaterThanOrEqual(lastSampleEpoch);
+
+  // And the take triggered on that mark starts after the turn ended, never
+  // during the reply's tail.
+  expect(mic.played[0]!.epochMs).toBeGreaterThanOrEqual(turnEnd.epochMs);
+  expect(mic.played[0]!.epochMs + LEVEL_REPORT_MS).toBeGreaterThanOrEqual(lastSampleEpoch);
+  expect(vendorRequests, "no vendor host was reached").toEqual([]);
 });

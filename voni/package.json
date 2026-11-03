@@ -53,9 +53,21 @@
     "typecheck": "next typegen && tsc --noEmit",
     "scoreboard:inspect": "node --import tsx scripts/scoreboard-inspect.mts",
     "readiness:pack": "node --import tsx scripts/readiness-pack.mts",
+    "contract:bars": "node --import tsx scripts/contract-bars.mts",
     "parity:check": "node --env-file-if-exists=.env.local --import tsx scripts/parity-check.mts",
     "cutover:check": "node --env-file-if-exists=.env.local --import tsx scripts/cutover-check.mts",
-    "check:real-legs": "node --env-file-if-exists=.env.local --import tsx scripts/real-legs.mts"
+    "check:real-legs": "node --env-file-if-exists=.env.local --import tsx scripts/real-legs.mts",
+    "demo:verify": "node --env-file-if-exists=.env.local --import tsx scripts/demo-verify.mts",
+    "demo:usage": "node --env-file-if-exists=.env.local --import tsx scripts/demo-usage.mts",
+    "demo:preview-mix": "node scripts/demo-preview-mix.mjs",
+    "demo:studio": "node --import tsx scripts/studio/server.mts",
+    "demo:certificate": "node --import tsx scripts/demo-certificate.mts",
+    "demo:cutover": "node --import tsx scripts/demo-cutover.mts",
+    "demo:baseline:verify": "node --import tsx scripts/studio/verify-baseline.mts",
+    "demo:certify:browser": "node --env-file-if-exists=.env.local --import tsx scripts/browser-verify.mts",
+    "demo:diagnose:protocol": "node --env-file-if-exists=.env.local --import tsx scripts/protocol-diagnose.mts",
+    "corpus:takes": "node --env-file-if-exists=.env.local --import tsx scripts/generate-caller-takes.mts",
+    "demo:inbox:probe": "node --env-file-if-exists=.env.local --import tsx scripts/demo-inbox-probe.mts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",

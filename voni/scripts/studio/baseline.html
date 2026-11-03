@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voni Studio — Baseline</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0d0f12; --panel: #16191f; --panel-2: #1d222a; --ink: #e8ebf0;
+        --muted: #9aa3b2; --line: #2b323d; --accent: #8ab4ff; --good: #6ee7a8; --bad: #ff8b8b;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+      header { display: flex; align-items: baseline; gap: 14px; padding: 18px 22px; border-bottom: 1px solid var(--line); }
+      header h1 { font-size: 18px; margin: 0; }
+      header .local { color: var(--muted); font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+      nav { display: flex; gap: 12px; margin-left: auto; }
+      nav a { color: var(--muted); text-decoration: none; font-size: 13px; }
+      nav a[aria-current="page"] { color: var(--ink); border-bottom: 1px solid var(--accent); }
+      main { max-width: 860px; margin: 0 auto; padding: 24px 22px 80px; }
+      section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+      h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; }
+      h3 { font-size: 22px; margin: 0 0 6px; }
+      p { margin: 0 0 10px; }
+      .muted { color: var(--muted); font-size: 13px; }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      .stack { display: grid; gap: 14px; }
+      button { font: inherit; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; cursor: pointer; }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      button.tap[aria-pressed="true"] { background: var(--accent); color: #0b1020; border-color: transparent; font-weight: 600; }
+      button.primary { background: var(--accent); color: #0b1020; border-color: transparent; font-weight: 600; }
+      .card { margin: 10px 0 0; padding-left: 22px; line-height: 1.55; }
+      .card li { margin: 3px 0; }
+      button.record { background: #3a1f24; border-color: #6b2c35; font-size: 18px; padding: 16px 26px; }
+      button.record.live { background: #7a2130; border-color: #ff5a6e; }
+      .count { display: flex; gap: 10px; flex-wrap: wrap; }
+      .count button { min-width: 120px; }
+      .participants { display: grid; gap: 12px; }
+      .participant { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
+      .participant .who { font-weight: 600; }
+      .accents { display: flex; gap: 6px; flex-wrap: wrap; }
+      .accents button { padding: 5px 9px; font-size: 12px; border-radius: 999px; }
+      label.attest { display: flex; gap: 10px; align-items: center; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+      label.attest input { width: 20px; height: 20px; }
+      .timer { font-variant-numeric: tabular-nums; font-size: 26px; color: var(--muted); }
+      .timer.in-band { color: var(--good); }
+      .timer.over { color: var(--bad); }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .chip { font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; color: var(--muted); }
+      .chip b { color: var(--ink); font-weight: 500; }
+      .status { min-height: 24px; font-size: 13px; white-space: pre-wrap; }
+      .status.ok { color: var(--good); }
+      .status.bad { color: var(--bad); }
+      .hashlist { display: grid; gap: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Voni Studio</h1>
+      <span class="local">Baseline · local only</span>
+      <nav aria-label="Studio surfaces">
+        <a href="/">Record</a>
+        <a href="/rate">Rate</a>
+        <a href="/corpus">Corpus</a>
+        <a href="/baseline" aria-current="page">Baseline</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="panel" id="setup" aria-labelledby="setup-heading">
+        <h2 id="setup-heading">Baseline session</h2>
+        <div class="stack">
+          <p class="muted">
+            Three to five consenting people, two calls each. Participants are pseudonyms
+            (<code>participant-01</code>, <code>participant-02</code> …); no name, email, phone or path is
+            recorded. Record both calls for each person, then pin the hash list once.
+          </p>
+
+          <div>
+            <p class="muted">How many participants?</p>
+            <div class="count" id="count-options" role="group" aria-label="Participant count"></div>
+          </div>
+
+          <div class="participants" id="participants"></div>
+
+          <label class="attest">
+            <input type="checkbox" id="attested" />
+            <span>Signed consent for every participant is filed outside the repo</span>
+          </label>
+
+          <div class="row">
+            <button class="primary" id="start" type="button" disabled>Start</button>
+            <span class="status" id="setup-status" role="status"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel hidden" id="session" aria-labelledby="session-heading">
+        <h2 id="session-heading">Recording</h2>
+        <div class="stack">
+          <div class="muted" id="step-progress"></div>
+          <div>
+            <h3 id="step-title"></h3>
+            <p class="muted" id="step-instruction"></p>
+            <ol class="card hidden" id="step-card"></ol>
+          </div>
+          <div class="chips" id="step-labels"></div>
+
+          <div class="row" id="record-row">
+            <button class="record" id="record" type="button">Record</button>
+            <span class="timer" id="timer">00:00</span>
+          </div>
+
+          <div class="row hidden" id="break-row">
+            <span class="timer" id="break-timer">05:00</span>
+            <button class="primary" id="next-break" type="button" disabled>Next</button>
+          </div>
+
+          <div class="row">
+            <span class="status" id="status" role="status" aria-live="polite"></span>
+          </div>
+          <div class="muted" id="last-saved"></div>
+        </div>
+      </section>
+
+      <section class="panel hidden" id="finish" aria-labelledby="finish-heading">
+        <h2 id="finish-heading">Finish</h2>
+        <div class="stack">
+          <p class="muted">
+            Pinning writes the hash list once with the existing verifier. A pinned baseline is never
+            re-written; a changed take is a named refusal.
+          </p>
+          <div class="row">
+            <button class="primary" id="pin" type="button">Pin baseline</button>
+            <span class="status" id="pin-status" role="status" aria-live="polite"></span>
+          </div>
+          <div class="hashlist" id="hash-list"></div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      "use strict";
+
+      const state = {
+        setup: null,
+        session: null,
+        plan: [],
+        index: 0,
+        count: null,
+        accents: new Map(),
+        recorder: null,
+        chunks: [],
+        startedAt: 0,
+        timer: null,
+        breakStartedAt: 0,
+        breakTimer: null,
+        landed: [],
+        pinned: false,
+      };
+
+      const $ = (id) => document.getElementById(id);
+
+      function setStatus(text, kind) {
+        const node = $("status");
+        node.textContent = text;
+        node.className = kind ? `status ${kind}` : "status";
+      }
+
+      function setPinStatus(text, kind) {
+        const node = $("pin-status");
+        node.textContent = text;
+        node.className = kind ? `status ${kind}` : "status";
+      }
+
+      function mmss(ms) {
+        const total = Math.max(0, Math.floor(ms / 1000));
+        return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+      }
+
+      async function json(response) {
+        let body = {};
+        try {
+          body = await response.json();
+        } catch (_) {
+          body = {};
+        }
+        return { ok: response.ok, status: response.status, body };
+      }
+
+      function chip(label, value) {
+        const node = document.createElement("span");
+        node.className = "chip";
+        const strong = document.createElement("b");
+        strong.textContent = value;
+        node.append(`${label}: `, strong);
+        return node;
+      }
+
+      function accentFor(participantId) {
+        return state.accents.get(participantId) || state.setup.defaultAccent;
+      }
+
+      function updateStart() {
+        $("start").disabled = state.count === null || !$("attested").checked;
+      }
+
+      function renderParticipants() {
+        const box = $("participants");
+        box.replaceChildren();
+        if (state.count === null) return;
+        for (let index = 1; index <= state.count; index += 1) {
+          const participantId = `participant-${String(index).padStart(2, "0")}`;
+          if (!state.accents.has(participantId)) state.accents.set(participantId, state.setup.defaultAccent);
+
+          const row = document.createElement("div");
+          row.className = "participant";
+          const who = document.createElement("div");
+          who.className = "who";
+          who.textContent = participantId;
+          const label = document.createElement("div");
+          label.className = "muted";
+          label.textContent = "Accent";
+          const accents = document.createElement("div");
+          accents.className = "accents";
+          accents.setAttribute("role", "group");
+          accents.setAttribute("aria-label", `Accent for ${participantId}`);
+          for (const accent of state.setup.accents) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "tap";
+            button.textContent = accent;
+            button.setAttribute("aria-pressed", String(accentFor(participantId) === accent));
+            button.addEventListener("click", () => {
+              state.accents.set(participantId, accent);
+              for (const other of accents.querySelectorAll("button")) {
+                other.setAttribute("aria-pressed", String(other.textContent === accent));
+              }
+            });
+            accents.append(button);
+          }
+          row.append(who, label, accents);
+          box.append(row);
+        }
+      }
+
+      function renderCounts() {
+        const box = $("count-options");
+        box.replaceChildren();
+        for (const count of state.setup.participantCounts) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "tap";
+          button.textContent = `${count} participants`;
+          button.setAttribute("aria-pressed", "false");
+          button.addEventListener("click", () => {
+            state.count = count;
+            for (const other of box.querySelectorAll("button")) {
+              other.setAttribute("aria-pressed", String(other === button));
+            }
+            renderParticipants();
+            updateStart();
+          });
+          box.append(button);
+        }
+      }
+
+      async function loadSetup() {
+        try {
+          const { ok, body } = await json(await fetch("/api/baseline/setup"));
+          if (!ok) throw new Error(body.message || body.error || "setup unavailable");
+          state.setup = body;
+          renderCounts();
+          updateStart();
+        } catch (error) {
+          $("setup-status").textContent = `Cannot load the baseline plan: ${error.message}`;
+          $("setup-status").className = "status bad";
+        }
+      }
+
+      async function startSession() {
+        $("start").disabled = true;
+        const accents = [];
+        for (let index = 1; index <= state.count; index += 1) {
+          accents.push(accentFor(`participant-${String(index).padStart(2, "0")}`));
+        }
+        try {
+          const { ok, body } = await json(await fetch("/api/baseline/session", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ participants: state.count, accents, attested: $("attested").checked }),
+          }));
+          if (!ok) throw new Error(`${body.error}: ${body.message}`);
+          state.session = body;
+          state.plan = body.plan;
+          state.index = 0;
+          $("setup").classList.add("hidden");
+          $("session").classList.remove("hidden");
+          renderStep();
+        } catch (error) {
+          $("setup-status").textContent = `Not started: ${error.message}`;
+          $("setup-status").className = "status bad";
+          updateStart();
+        }
+      }
+
+      function participantFor(participantId) {
+        return state.session.participants.find((participant) => participant.participantId === participantId);
+      }
+
+      function renderStep() {
+        const step = state.plan[state.index];
+        if (!step) {
+          finish();
+          return;
+        }
+        stopBreakTimer();
+        const participant = participantFor(step.participantId);
+        $("step-progress").textContent =
+          `Participant ${state.session.participants.indexOf(participant) + 1} of ${state.session.participants.length} · ` +
+          `step ${(state.index % 3) + 1} of 3`;
+
+        if (step.kind === "break") {
+          $("record-row").classList.add("hidden");
+          $("break-row").classList.remove("hidden");
+          $("step-title").textContent = `Break — ${participant.participantId}`;
+          $("step-instruction").textContent = "Five minutes between the two calls. The next call starts when the timer ends.";
+          $("step-labels").replaceChildren();
+          $("step-card").replaceChildren();
+          $("step-card").classList.add("hidden");
+          startBreakTimer(step.breakMs);
+          return;
+        }
+
+        $("record-row").classList.remove("hidden");
+        $("break-row").classList.add("hidden");
+        const call = state.setup.calls.find((entry) => entry.call === step.call);
+        $("step-title").textContent = `Call ${step.call} — ${call.title}`;
+        $("step-instruction").textContent = call.instruction;
+        const card = $("step-card");
+        card.replaceChildren(...call.card.map((line) => {
+          const item = document.createElement("li");
+          item.textContent = line;
+          return item;
+        }));
+        card.classList.toggle("hidden", call.card.length === 0);
+        const labels = state.setup.labels[String(step.call)];
+        const accent = participant.accent;
+        $("step-labels").replaceChildren(
+          chip("participant", participant.participantId),
+          chip("intent", labels.intent),
+          chip("emotion", labels.emotion),
+          chip("accent", accent),
+        );
+        $("timer").textContent = "00:00";
+        $("timer").className = "timer";
+        setRecordButton(false);
+      }
+
+      function setRecordButton(live) {
+        const button = $("record");
+        button.textContent = live ? "Stop" : "Record";
+        button.classList.toggle("live", live);
+      }
+
+      function startTimer() {
+        state.timer = setInterval(() => {
+          const elapsed = Date.now() - state.startedAt;
+          const timer = $("timer");
+          timer.textContent = mmss(elapsed);
+          timer.className =
+            elapsed > state.setup.maxCallMs ? "timer over" : elapsed >= state.setup.minCallMs ? "timer in-band" : "timer";
+        }, 200);
+      }
+
+      function stopTimer() {
+        if (state.timer) clearInterval(state.timer);
+        state.timer = null;
+      }
+
+      function startBreakTimer(breakMs) {
+        state.breakStartedAt = Date.now();
+        const tick = () => {
+          const remaining = breakMs - (Date.now() - state.breakStartedAt);
+          $("break-timer").textContent = mmss(Math.max(0, remaining));
+          $("next-break").disabled = remaining > 0;
+        };
+        tick();
+        state.breakTimer = setInterval(tick, 250);
+      }
+
+      function stopBreakTimer() {
+        if (state.breakTimer) clearInterval(state.breakTimer);
+        state.breakTimer = null;
+      }
+
+      function base64(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",")[1]);
+          reader.onerror = () => reject(reader.error || new Error("cannot read the recording"));
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      async function toggleRecord() {
+        if (state.recorder) {
+          if (state.recorder.state !== "inactive") state.recorder.stop();
+          return;
+        }
+        if (!navigator.mediaDevices || !window.MediaRecorder) {
+          setStatus("This browser has no MediaRecorder; use a browser that can record the call.", "bad");
+          return;
+        }
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"].find((type) =>
+            MediaRecorder.isTypeSupported(type),
+          );
+          const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+          state.recorder = recorder;
+          state.chunks = [];
+          recorder.ondataavailable = (event) => {
+            if (event.data && event.data.size) state.chunks.push(event.data);
+          };
+          recorder.onstop = () => {
+            stream.getTracks().forEach((track) => track.stop());
+            const blob = new Blob(state.chunks, { type: recorder.mimeType || "audio/webm" });
+            state.recorder = null;
+            stopTimer();
+            setRecordButton(false);
+            void landTake(blob);
+          };
+          recorder.start();
+          state.startedAt = Date.now();
+          setRecordButton(true);
+          setStatus("Recording. Stop after four minutes and before six.", "");
+          startTimer();
+        } catch (error) {
+          setStatus(`Microphone refused: ${error.message}`, "bad");
+        }
+      }
+
+      async function landTake(blob) {
+        const step = state.plan[state.index];
+        const participant = participantFor(step.participantId);
+        const elapsed = Date.now() - state.startedAt;
+        if (blob.size === 0) {
+          setStatus("empty-take: the recording is empty; record the call again.", "bad");
+          return;
+        }
+        if (elapsed < state.setup.minCallMs || elapsed > state.setup.maxCallMs) {
+          setStatus(
+            `wrong-duration-band: the call is ${mmss(elapsed)}; a baseline call is ` +
+              `${mmss(state.setup.minCallMs)}–${mmss(state.setup.maxCallMs)}. Record the call again.`,
+            "bad",
+          );
+          return;
+        }
+
+        const labels = state.setup.labels[String(step.call)];
+        try {
+          setStatus("Landed; hashing the take…", "");
+          const { ok, body } = await json(await fetch("/api/takes", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              mode: "upload",
+              audioBase64: await base64(blob),
+              labels: { intent: labels.intent, emotion: labels.emotion, accent: participant.accent },
+              upload: {
+                filename: `baseline-${participant.participantId}-call-${step.call}.webm`,
+                contentType: blob.type || undefined,
+              },
+              baseline: {
+                participantId: participant.participantId,
+                consentRef: participant.consentRef,
+                consentedAt: participant.consentedAt,
+                call: step.call,
+              },
+            }),
+          }));
+          if (!ok) throw new Error(`${body.error}: ${body.message}`);
+          state.landed.push({ participantId: participant.participantId, call: step.call, take: body.take });
+          $("last-saved").textContent =
+            `Saved ${body.take.takeId} · sha256 ${body.take.audioSha256.slice(0, 16)}… ` +
+            `(${participant.participantId} call ${step.call})`;
+          setStatus("Saved. Next step.", "ok");
+          advance();
+        } catch (error) {
+          setStatus(`Not saved: ${error.message}`, "bad");
+        }
+      }
+
+      function advance() {
+        state.index += 1;
+        if (state.index >= state.plan.length) {
+          finish();
+          return;
+        }
+        renderStep();
+      }
+
+      function finish() {
+        stopBreakTimer();
+        $("session").classList.add("hidden");
+        $("finish").classList.remove("hidden");
+      }
+
+      async function pin() {
+        if (state.pinned) return;
+        $("pin").disabled = true;
+        setPinStatus("Pinning and re-verifying the hash list…", "");
+        try {
+          const { ok, status, body } = await json(await fetch("/api/baseline/pin", { method: "POST" }));
+          if (!ok) {
+            setPinStatus(`exit 2 · ${body.error}: ${body.message}`, "bad");
+            $("pin").disabled = false;
+            return;
+          }
+          state.pinned = true;
+          setPinStatus(
+            `exit 0 · pinned ${body.takes.length} takes for ${body.participants} participants · ${body.manifestPath}`,
+            "ok",
+          );
+          const list = $("hash-list");
+          list.replaceChildren();
+          for (const take of body.takes) {
+            const row = document.createElement("div");
+            row.textContent =
+              `${take.participantId} call ${take.call} · ${take.takeId} · ` +
+              `${mmss(take.durationMs)} · ${take.audioSha256}`;
+            list.append(row);
+          }
+        } catch (error) {
+          setPinStatus(`Not pinned: ${error.message}`, "bad");
+          $("pin").disabled = false;
+        }
+      }
+
+      $("attested").addEventListener("change", updateStart);
+      $("start").addEventListener("click", startSession);
+      $("record").addEventListener("click", toggleRecord);
+      $("next-break").addEventListener("click", advance);
+      $("pin").addEventListener("click", pin);
+
+      loadSetup();
+    </script>
+  </body>
+</html>

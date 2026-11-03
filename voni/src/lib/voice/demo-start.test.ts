@@ -8,7 +8,7 @@ import {
   type CascadeCallConfig,
 } from "./cascade-session";
 import { DEMO_MINT_FIELDS, type DemoMint } from "./demo-mint";
-import { startDemoCall, type DemoCascadeCall } from "./demo-start";
+import { mintDemoCall, startDemoCall, type DemoCascadeCall } from "./demo-start";
 
 /**
  * The demo start (demo-cascade ticket 10) at its injected seams: the mint is a
@@ -149,6 +149,32 @@ test("the real cascade client opens the minted URL and sends identity only", asy
   await session.stop();
 });
 
+test("the mint is named before the socket and microphone events", async () => {
+  const order: string[] = [];
+  const session = {
+    async start() {
+      order.push("start");
+    },
+    async stop() {},
+  };
+  await startDemoCall(
+    session,
+    { voiceId: "audrey", resume: false },
+    {
+      mint: async () => {
+        order.push("mint");
+        return minted(1);
+      },
+      onMinted: () => order.push("minted"),
+    },
+  );
+  assert.deepEqual(
+    order,
+    ["mint", "minted", "start"],
+    "the stream must show the mint before any socket or mic event",
+  );
+});
+
 test("a hold return mints a fresh call token for the same call and carries history", async () => {
   const mints: Array<{ voiceId: string; opts?: unknown }> = [];
   const session = recordingSession();
@@ -179,6 +205,52 @@ test("a hold return mints a fresh call token for the same call and carries histo
     history,
   });
   assert.equal(session.records[0].config.callToken, "ct1.call-2", "the cascade token is fresh");
+});
+
+test("a reconnect mints a resume call for the same saved token and history", async () => {
+  // One bounded client reconnect borrows the hold-return mint: same call id
+  // through the saved demo token, the resume body and its carried turns. It
+  // starts no session of its own; the existing client reconnects its socket.
+  const mints: Array<{ voiceId: string; opts?: unknown }> = [];
+  const history = [
+    { role: "user" as const, content: "We run a bakery." },
+    { role: "assistant" as const, content: "What is your busiest hour?" },
+  ];
+
+  const result = await mintDemoCall(
+    {
+      voiceId: "audrey",
+      resume: true,
+      callToken: "demo-call-1.1761771700.tag-1.mac",
+      tagToken: "browser-tag-token",
+      history,
+    },
+    {
+      mint: async (voiceId, opts) => {
+        mints.push({ voiceId, ...(opts === undefined ? {} : { opts }) });
+        return minted(2);
+      },
+    },
+  );
+
+  assert.deepEqual(mints, [
+    {
+      voiceId: "audrey",
+      opts: {
+        resume: true,
+        callToken: "demo-call-1.1761771700.tag-1.mac",
+        tagToken: "browser-tag-token",
+        history,
+      },
+    },
+  ]);
+  assert.equal(result.minted.callToken, "ct1.call-2", "the cascade token is fresh");
+  assert.deepEqual(result.config, {
+    serviceUrl: WS,
+    callToken: "ct1.call-2",
+    agentId: "demo:audrey",
+    protocolVersion: CASCADE_PROTOCOL_VERSION,
+  });
 });
 
 test("a second start after hang-up is a fresh cascade call", async () => {

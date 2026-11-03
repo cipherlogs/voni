@@ -23,7 +23,7 @@ from cascade.meta_stt import (
     MetaStreamingSTT,
 )
 from cascade.testing.clock import FakeClock
-from cascade.testing.socket_factory import ScriptedSocketFactory
+from cascade.testing.socket_factory import Frame, ScriptedSocketFactory
 
 
 def untyped_ack() -> str:
@@ -154,6 +154,123 @@ class LeadBudgetTest(unittest.TestCase):
         self.assertEqual(
             sum(len(frame) for frame in sent_audio), 5 * BYTES_PER_SECOND + 24000
         )
+
+
+class SlowAckReplayTest(unittest.TestCase):
+    """A slow ack replays the opening backlog at the pace the vendor accepts.
+
+    The ack starts the audio timeline. A six-second handshake must not be
+    back-filled with six seconds of silence, and the frames the caller spoke
+    while it was opening must not be handed over as one burst: either is the
+    "audio backlog too large" (1008) close the live call hit.
+    """
+
+    def open_after_slow_ack(self, delay_ms=6000):
+        clock = FakeClock()
+        factory = ScriptedSocketFactory(
+            [Frame(untyped_ack(), delay_ms=delay_ms)], clock=clock
+        )
+        backend = MetaStreamingSTT(
+            api_key="test-key",
+            call_id="call-123",
+            socket_factory=factory,
+            clock=clock,
+        )
+        asyncio.run(backend.open(language_codes=[], sample_rate=24000))
+        return backend, factory, clock
+
+    def test_a_slow_ack_does_not_backfill_the_handshake_with_silence(self):
+        backend, factory, clock = self.open_after_slow_ack()
+
+        self.assertAlmostEqual(clock(), 6.0)
+        asyncio.run(backend.send_audio(caller_pcm(0.02)))
+
+        self.assertEqual([caller_pcm(0.02)], factory.socket.sent[1:])
+        self.assertEqual(backend.dropped_frames, 0)
+
+    def test_the_opening_backlog_is_replayed_at_real_time(self):
+        backend, factory, clock = self.open_after_slow_ack()
+        started = clock()
+        frames = [caller_pcm(0.02) for _ in range(150)]  # 3 s of caller audio
+
+        async def replay():
+            for frame in frames:
+                await backend.replay_audio(frame)
+
+        asyncio.run(replay())
+
+        # The media timeline tracks the session clock: three seconds of audio
+        # cost three seconds, not one burst.
+        self.assertGreaterEqual(clock() - started, 2.95)
+        self.assertLessEqual(clock() - started, 3.05)
+        self.assertEqual(frames, factory.socket.sent[1:])
+        self.assertEqual(backend.dropped_frames, 0)
+
+    def test_a_backlog_longer_than_the_lead_is_still_replayed_without_drops(self):
+        backend, factory, clock = self.open_after_slow_ack()
+        started = clock()
+        frames = [caller_pcm(0.02) for _ in range(300)]  # 6 s, past the 5 s lead
+
+        async def replay():
+            for frame in frames:
+                await backend.replay_audio(frame)
+
+        asyncio.run(replay())
+
+        self.assertEqual(frames, factory.socket.sent[1:])
+        self.assertEqual(backend.dropped_frames, 0)
+        self.assertGreaterEqual(clock() - started, 5.95)
+        self.assertEqual(MAX_LEAD_S, 5.0)
+
+
+class SentAudioUsageTest(unittest.TestCase):
+    """The usage the pipeline reports is the audio it actually sent."""
+
+    def test_usage_counts_the_audio_seconds_actually_sent(self):
+        backend, factory = open_audio()
+
+        asyncio.run(backend.send_audio(caller_pcm(0.5)))
+        asyncio.run(backend.send_audio(caller_pcm(0.25)))
+
+        sent = sum(len(frame) for frame in factory.socket.sent[1:])
+        self.assertEqual(backend.usage["audio_duration_seconds"], 0.75)
+        self.assertEqual(
+            backend.usage["audio_duration_seconds"], sent / BYTES_PER_SECOND
+        )
+        self.assertIn("frames sent by the pipeline", backend.usage["source"])
+
+    def test_usage_counts_filled_silence_as_sent_audio(self):
+        clock = FakeClock()
+        backend, _ = open_audio(clock)
+        clock.advance(0.5)
+
+        asyncio.run(backend.send_audio(caller_pcm(0.01)))
+
+        # The gap is filled with PCM silence before the caller frame, so both
+        # are frames the vendor received.
+        self.assertAlmostEqual(
+            backend.usage["audio_duration_seconds"], 0.51, places=6
+        )
+
+    def test_a_frame_the_lead_budget_dropped_is_not_counted(self):
+        clock = FakeClock()
+        backend, _ = open_audio(clock)
+        for _ in range(10):
+            asyncio.run(backend.send_audio(caller_pcm(0.5)))
+        asyncio.run(backend.send_audio(caller_pcm(0.5)))
+
+        self.assertEqual(backend.dropped_frames, 1)
+        self.assertEqual(backend.usage["audio_duration_seconds"], 5.0)
+
+    def test_usage_does_not_move_with_the_wall_clock(self):
+        clock = FakeClock()
+        backend, _ = open_audio(clock)
+        asyncio.run(backend.send_audio(caller_pcm(0.2)))
+
+        before = backend.usage["audio_duration_seconds"]
+        clock.advance(10.0)
+
+        self.assertEqual(backend.usage["audio_duration_seconds"], before)
 
 
 class SilenceTest(unittest.TestCase):

@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-nonsense-pt",
+  "class": "emotion",
+  "locale": "pt",
+  "heldOut": false,
+  "expectedProperties": [
+    "C3",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "1802c97d46725cc83444019aa725ef160bfe1d2480fefa3f86e8d6dfa039d095",
+      "text": "Olá, a minha consulta é roxa, você pode consertar a lua?"
+    },
+    {
+      "id": "nonsense",
+      "audio": "takes/nonsense.wav",
+      "sha256": "68e56f2025687644070fe623ee14f4a288c3968ce7fe759876827f433f4347fa",
+      "text": "O glibberflax está embaixo de terça, gire a caixa de correio."
+    },
+    {
+      "id": "pivot",
+      "audio": "takes/pivot.wav",
+      "sha256": "e2f83f75517158a3fd5a7db97543c06b578901a53e6030570dd1adb02988500b",
+      "text": "Tá. Na verdade, só quero saber o horário."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "nonsense",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "pivot",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

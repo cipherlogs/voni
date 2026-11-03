@@ -437,6 +437,10 @@ class MetaStreamingSTT(StreamingSTT):
         )
         self._stale_events = 0
         self._audio_end = 0.0
+        #: Bytes of audio actually written to the vendor, across every session.
+        #: The realtime protocol reports no usage frame, so this count is the
+        #: measured usage: frames the client sent, never a wall-clock estimate.
+        self._audio_bytes_sent = 0
         self._dropped_frames = 0
         self._last_close_code: int | None = None
         self._leg_failures = leg_failures
@@ -464,6 +468,26 @@ class MetaStreamingSTT(StreamingSTT):
     def dropped_frames(self) -> int:
         """Frames the audio path refused to forward (malformed or over lead)."""
         return self._dropped_frames
+
+    @property
+    def usage(self) -> dict[str, Any]:
+        """The audio seconds this call sent, counted from the frames themselves.
+
+        The realtime protocol reports no usage frame, so the pipeline's own
+        record of what it wrote is the measurement: every accepted caller frame
+        and every PCM silence frame, at the session's declared 24 kHz s16le
+        rate. A frame the lead budget dropped never reached the vendor and is
+        not counted, and the clock is never consulted for a duration. ``source``
+        says exactly that, so the meter never labels a sent-frame count as a
+        vendor report.
+        """
+        return {
+            "audio_duration_seconds": self._audio_bytes_sent / BYTES_PER_SECOND,
+            "source": (
+                "meta speech: audio frames sent by the pipeline, "
+                "billed in whole seconds"
+            ),
+        }
 
     @property
     def last_close_code(self) -> int | None:
@@ -646,7 +670,6 @@ class MetaStreamingSTT(StreamingSTT):
         self._turns.new_epoch()
         session = session_id(self._call_id, self._epoch)
         self._session = session
-        self._audio_end = float(self._clock())
         self._last_close_code = None
         url = f"{REALTIME_URL}?{urlencode({'sessionId': session})}"
         frame = {
@@ -671,6 +694,10 @@ class MetaStreamingSTT(StreamingSTT):
         except BaseException:
             await _close_quietly(socket)
             raise
+        # The acknowledgement starts the audio timeline: the vendor hears
+        # nothing before it, so the handshake wait is not caller time and is
+        # never back-filled with a burst of silence when the first frame lands.
+        self._audio_end = float(self._clock())
         self._socket = socket
         self._acked = True
 
@@ -756,10 +783,27 @@ class MetaStreamingSTT(StreamingSTT):
             return
 
         await self._socket.send(payload)
+        self._audio_bytes_sent += len(payload)
         self._audio_end += duration
         self._audio_seq += 1
         for frames in self._turn_audio.values():
             frames.append((self._audio_seq, payload))
+
+    async def replay_audio(self, pcm: bytes) -> None:
+        """Forward caller audio captured before the ack at the session's pace.
+
+        The opening backlog is older than the clock, but the vendor refuses a
+        stream that runs ahead of real time: handing the whole backlog over as
+        one burst is exactly the "audio backlog too large" close (``1008``).
+        A frame therefore waits until the audio timeline has caught up with the
+        clock, so the backlog is played at the pace it was spoken and the lead
+        never grows past what the session itself accepts.
+        """
+        self._require_acked()
+        lead = self._lead()
+        if lead > 0:
+            await self._clock.sleep(lead)
+        await self.send_audio(pcm)
 
     async def send_silence(self, seconds: float | None = None) -> None:
         """Send PCM silence for ``seconds`` (default one 20 ms frame).
@@ -784,6 +828,7 @@ class MetaStreamingSTT(StreamingSTT):
         silence = b"\x00" * SILENCE_FRAME_BYTES
         for _ in range(min(frames, capacity)):
             await self._socket.send(silence)
+            self._audio_bytes_sent += len(silence)
             self._audio_end += SILENCE_FRAME_MS / 1000.0
 
     def _lead(self) -> float:
@@ -1006,6 +1051,9 @@ class MetaStreamingSTT(StreamingSTT):
             return
         for payload in frames:
             await self._socket.send(payload)
+            # A replay is a second session's copy of the same audio, and the
+            # vendor bills both, so it is counted as audio actually sent.
+            self._audio_bytes_sent += len(payload)
         self._replay_targets = targets
         _log.info(
             "meta speech session %s: replayed %s audio frame(s) for turn(s) %s",

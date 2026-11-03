@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "name": "golden-flow-greeting-only",
+  "class": "golden-flow",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "C1",
+    "C2",
+    "L4",
+    "L7",
+    "L10"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "holdOpenMs": 32000,
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "eb5619f3f77102e4aa31319bda19d5407fe5aefcf056628016467a42a6c0cfa8",
+      "text": "Hi, is this Voni?"
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "name": "tools-email-send",
+  "class": "tools",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "X1",
+    "X3",
+    "X4",
+    "C6"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "sent",
+      "audio": "takes/sent.wav",
+      "sha256": "bb774ccb8bd3e93a96984c320e563abf3dceb68c0f814013c32d41fc8b271f40",
+      "text": "Hi, I've just sent the email to your test address."
+    },
+    {
+      "id": "tag",
+      "audio": "takes/tag.wav",
+      "sha256": "922d36c155642261ce8d1297cdb2b138fa35d40cef6f214ab3491976832aa201",
+      "text": "Yes, I used the tag sam-demo."
+    }
+  ],
+  "script": [
+    {
+      "take": "sent",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "tag",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

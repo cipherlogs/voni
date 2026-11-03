@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "emotion-hostile",
+  "class": "emotion",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "C4",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "244c9f4e3602265735fd644c6bf90c70a1ea1e77671fea5a8057efca19c84cbb",
+      "text": "This is ridiculous. Your service is useless."
+    },
+    {
+      "id": "hostile",
+      "audio": "takes/hostile.wav",
+      "sha256": "ff78799991e3fbaa72f513536ed4b035b7be6ad09aeb28ae45f56f57c2104180",
+      "text": "Do not give me that scripted rubbish. Just fix it."
+    },
+    {
+      "id": "soften",
+      "audio": "takes/soften.wav",
+      "sha256": "d3f4884719d42ccdad408cdddb8fbfcd8dfd26fa619d551c26dc4aeb7836f710",
+      "text": "Fine. I just want to know when you open."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "hostile",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "soften",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

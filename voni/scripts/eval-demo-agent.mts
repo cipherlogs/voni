@@ -164,7 +164,6 @@ import {
   SILENCE_CHECK_IN_INSTRUCTIONS,
   SILENCE_CHECK_IN_MS,
   testTagContext,
-  OPEN_BEAT_GOAL,
   rungInstructions,
 } from "../src/lib/demo/voni-agent";
 import { CHECK_EMAIL_TOOL, DEMO_VOICE_TOOLS, executeDemoTool, SHOW_TEST_ADDRESS_TOOL } from "../src/lib/demo/demo-tools";
@@ -2209,7 +2208,7 @@ const EMAIL_SCENARIOS: { name: EvalScenario; run: (voiceId: string) => Promise<[
     run: async (voice) => {
       const o = await runToolSession(voice, demoAnswers(() => NOT_LANDED), async (api) => {
         await api.say("We run a small travel agency in Lisbon.");
-        await api.instruct(rungInstructions("end", OPEN_BEAT_GOAL));
+        await api.instruct(rungInstructions("end"));
         await api.until((o) => o.endCalled, 20000);
       });
       if (!o.endCalled) return ["never hung up", o];
@@ -2380,11 +2379,11 @@ const SCENARIOS: { name: EvalScenario; steps: Step[]; pass: (o: Outcome) => stri
     name: "refusal",
     steps: [
       { say: "What kind of business do I run? I don't want to tell you." },
-      { instructions: rungInstructions("nudge", OPEN_BEAT_GOAL) },
+      { instructions: rungInstructions("nudge") },
       { say: "No. I'm not telling you anything." },
-      { instructions: rungInstructions("warning", OPEN_BEAT_GOAL) },
+      { instructions: rungInstructions("warning") },
       { say: "Nope, still not telling." },
-      { instructions: rungInstructions("end", OPEN_BEAT_GOAL) },
+      { instructions: rungInstructions("end") },
     ],
     pass: (o) => {
       const fake = o.agent.find((t) => FAKE.test(t));

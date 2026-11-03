@@ -1,0 +1,972 @@
+{
+  "version": 1,
+  "note": "The resolved bars for the 82-property demo-verification contract. A threshold edit is a spec change: it must move the frozen record it quotes, this record and the drift test together. Regenerate with `npm run contract:bars -- --write` after a reviewed threshold change; never hand-edit a number.",
+  "sources": {
+    "budget-record": {
+      "path": "voni/src/lib/demo/scoreboard-budgets.json",
+      "sha256": "a46d8fc4048127569275acdae1cfd31e59d0fbfcd7e86ef17dfb2bc46eab9cc6"
+    },
+    "cascade-thresholds": {
+      "path": "voice-pipeline/cascade/thresholds.json",
+      "sha256": "9e831d6c6e9b50c3e6a07a127bf7647cc6d00c59d393c456d5fb6bfbeda0c627"
+    }
+  },
+  "properties": {
+    "L1": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvRingbackAfterAnswerMaxCount",
+          "value": 0,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvRingbackOnHoldReturnMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "L2": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvConnectedBeforeAdmissionMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "L3": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvChimeCountExact",
+          "value": 1,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvChimeWindowMs",
+          "value": 300,
+          "unit": "ms"
+        }
+      ]
+    },
+    "L4": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvGreetingFirstAudioP95Ms",
+          "value": 2000,
+          "unit": "ms"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvGreetingFirstAudioMaxMs",
+          "value": 3000,
+          "unit": "ms"
+        }
+      ]
+    },
+    "L5": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvConfigAfterMicMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "L6": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvTtsOpenMaxMs",
+          "value": 3000,
+          "unit": "ms"
+        }
+      ]
+    },
+    "L7": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvGreetingContinuousMaxMs",
+          "value": 4000,
+          "unit": "ms"
+        }
+      ]
+    },
+    "L8": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvClockStartBeforeAudioMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "L9": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvGoodbyePlayedRatioMin",
+          "value": 1,
+          "unit": "ratio"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvDropAfterLastSampleMaxMs",
+          "value": 300,
+          "unit": "ms"
+        }
+      ]
+    },
+    "L10": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvSilentEndMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "L11": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvEndEndCallDivergenceMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "T1": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvFirstResponseP50Ms",
+          "value": 350,
+          "unit": "ms"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvFirstResponseP95Ms",
+          "value": 700,
+          "unit": "ms"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvFirstResponseMaxMs",
+          "value": 1200,
+          "unit": "ms"
+        }
+      ]
+    },
+    "T2": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvSubstantiveResponseP50Ms",
+          "value": 900,
+          "unit": "ms"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvSubstantiveResponseP95Ms",
+          "value": 1800,
+          "unit": "ms"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvSubstantiveResponseMaxMs",
+          "value": 2500,
+          "unit": "ms"
+        }
+      ]
+    },
+    "T3": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvBargeInStopP95Ms",
+          "value": 300,
+          "unit": "ms"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvBargeInStopMaxMs",
+          "value": 500,
+          "unit": "ms"
+        }
+      ]
+    },
+    "T4": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvFillerTurnMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "T5": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvFillerResumeMaxMs",
+          "value": 400,
+          "unit": "ms"
+        }
+      ]
+    },
+    "T6": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvRestartFromTopMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "T7": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvDoubledFramesMaxCount",
+          "value": 0,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvLostFinalMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "T8": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvDeadAirWithoutBridgeMaxMs",
+          "value": 700,
+          "unit": "ms"
+        }
+      ]
+    },
+    "T9": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvPrematureCutMaxRatio",
+          "value": 0.03,
+          "unit": "ratio"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvMissedEndMaxMs",
+          "value": 500,
+          "unit": "ms"
+        }
+      ]
+    },
+    "T10": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvReplyWhileCallerSpeaksMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "C1": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvUnilateralEndMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "C2": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvGreetingOnlyOpenMinS",
+          "value": 30,
+          "unit": "s"
+        }
+      ]
+    },
+    "C3": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvClarificationLoopMaxCount",
+          "value": 0,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvInventedMeaningMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "C4": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvHostilityHangUpMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "C5": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvVerbatimRepeatMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "C6": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvToolNarrationMaxCount",
+          "value": 0,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvUndoneWorkClaimMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "C7": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvDropAfterLastSampleMaxMs",
+          "value": 300,
+          "unit": "ms"
+        }
+      ]
+    },
+    "C8": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvPostEndAudioMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "C9": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "C10": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "K1": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvSpelledEmailMismatchMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "K2": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvNumberReadbackMismatchMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "K3": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "K4": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvAmbiguityGuessMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "K5": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvEnglishLeakMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "K6": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "K7": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvInventedFactMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "K8": {
+      "unresolved": true,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvTranscriptEntityMismatchMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "X1": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvToolDecisionMaxMs",
+          "value": 300,
+          "unit": "ms"
+        }
+      ]
+    },
+    "X2": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvToolBridgeMaxMs",
+          "value": 700,
+          "unit": "ms"
+        }
+      ]
+    },
+    "X3": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvToolContinuationP95Ms",
+          "value": 2000,
+          "unit": "ms"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvToolSilenceMaxMs",
+          "value": 3000,
+          "unit": "ms"
+        }
+      ]
+    },
+    "X4": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "X5": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvPersonalDomainGateCount",
+          "value": 1,
+          "unit": "count"
+        }
+      ]
+    },
+    "X6": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "X7": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "X8": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "X9": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvToolResultSpokenMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "X10": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "A1": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvDropoutMaxCount",
+          "value": 0,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "floorBreakupSeconds",
+          "value": 0.02,
+          "unit": "s"
+        }
+      ]
+    },
+    "A2": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvAudioFormatMismatchMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "A3": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "timbreLufsToleranceDb",
+          "value": 1.5,
+          "unit": "db"
+        },
+        {
+          "source": "budget-record",
+          "key": "comparisonModulationDepth",
+          "value": 0.05,
+          "unit": "ratio"
+        }
+      ]
+    },
+    "A4": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvEchoAsCallerSpeechMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "A5": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "timbreMeasuredTruePeakDbtp",
+          "value": -1,
+          "unit": "dbtp"
+        },
+        {
+          "source": "budget-record",
+          "key": "timbreMeasuredDistortionDb",
+          "value": -45,
+          "unit": "db"
+        },
+        {
+          "source": "budget-record",
+          "key": "timbreMeasuredCrestMin",
+          "value": 1.2,
+          "unit": "ratio"
+        },
+        {
+          "source": "budget-record",
+          "key": "timbreMeasuredBandDeltaDb",
+          "value": 3,
+          "unit": "db"
+        },
+        {
+          "source": "budget-record",
+          "key": "timbreMeasuredBreakupMax",
+          "value": 0,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "timbreMeasuredBreakupMatchSeconds",
+          "value": 0.05,
+          "unit": "s"
+        }
+      ]
+    },
+    "A6": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvPlayoutUnderrunMaxCount",
+          "value": 0,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvPlayoutOverrunMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "A7": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvBargeInFadeMaxMs",
+          "value": 120,
+          "unit": "ms"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvBargeInPopMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "A8": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvSilentFrameMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "R1": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvJitterLostTurnMaxCount",
+          "value": 0,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvJitterDoubledAudioMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "R2": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "R3": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "R4": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "R5": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "R6": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "R7": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "R8": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "S1": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvPromptLeakMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "S2": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvCrossSubjectToolCallMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "S3": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "cascade-thresholds",
+          "key": "tool.loop_cap",
+          "value": 3,
+          "unit": "count"
+        }
+      ]
+    },
+    "S4": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvPiiBeyondContractMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "S5": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvCredentialLeakMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "S6": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvCrossCallMemoryLeakMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "E1": {
+      "unresolved": false,
+      "thresholds": []
+    },
+    "E2": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvCostPerCallMaxUsd",
+          "value": 0.15,
+          "unit": "usd"
+        }
+      ]
+    },
+    "E3": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvCostFastRunMaxUsd",
+          "value": 2,
+          "unit": "usd"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvCostNightlyRunMaxUsd",
+          "value": 15,
+          "unit": "usd"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvCostFullRunMaxUsd",
+          "value": 45,
+          "unit": "usd"
+        }
+      ]
+    },
+    "E4": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvBudgetStopMaxCount",
+          "value": 0,
+          "unit": "count"
+        }
+      ]
+    },
+    "H1": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvStayOnCallYesMinRatio",
+          "value": 0.8,
+          "unit": "ratio"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvStayOnCallLocaleMinRatio",
+          "value": 0.7,
+          "unit": "ratio"
+        }
+      ]
+    },
+    "H2": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvHumanDetectionMinRatio",
+          "value": 0.4,
+          "unit": "ratio"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvHumanDetectionMaxRatio",
+          "value": 0.6,
+          "unit": "ratio"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvHumanDetectionMinJudgments",
+          "value": 40,
+          "unit": "count"
+        }
+      ]
+    },
+    "H3": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvSoundsHumanMedianMin",
+          "value": 4,
+          "unit": "count"
+        },
+        {
+          "source": "budget-record",
+          "key": "dvSoundsHumanCallMin",
+          "value": 3,
+          "unit": "count"
+        }
+      ]
+    },
+    "H4": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvTurnTakingMedianMin",
+          "value": 4,
+          "unit": "count"
+        }
+      ]
+    },
+    "H5": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvAgentNotPreferredMaxRatio",
+          "value": 0.4,
+          "unit": "ratio"
+        }
+      ]
+    },
+    "H6": {
+      "unresolved": false,
+      "thresholds": [
+        {
+          "source": "budget-record",
+          "key": "dvJudgeKappaMin",
+          "value": 0.65,
+          "unit": "ratio"
+        }
+      ]
+    },
+    "H7": {
+      "unresolved": false,
+      "thresholds": []
+    }
+  }
+}

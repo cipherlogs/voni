@@ -50,13 +50,18 @@ import {
 import { CallTimings } from "@/lib/voice/call-timings";
 import { deliveredCaptureRequested } from "@/lib/voice/delivered-capture";
 import { CascadeSession } from "@/lib/voice/cascade-session";
-import { demoUnavailableMessage } from "@/lib/voice/cascade-failure-view";
+import {
+  demoReconnectFailedMessage,
+  demoUnavailableMessage,
+} from "@/lib/voice/cascade-failure-view";
 import { createDemoFloor, DEMO_FLOOR_TICK_MS } from "@/lib/voice/demo-floor";
 import type { Floor } from "@/lib/voice/floor";
-import { startDemoCall } from "@/lib/voice/demo-start";
+import { mintDemoCall, startDemoCall } from "@/lib/voice/demo-start";
+import { callIdFromDemoToken, createCallMarks, type CallMarks } from "@/lib/voice/call-marks";
 import { boundedResumeHistory } from "@/lib/voice/resume-history";
 import { FILLER_POOL, isEndCallRequest, requestVoiceJudge } from "@/lib/voice/jev-judges";
 import { callRecognition } from "@/lib/voice/recognition";
+import { shouldSpeakInvite } from "@/lib/voice/offer-intent";
 import { compileSystemPrompt } from "@/lib/agents/compile";
 import type { AgentConfig } from "@/lib/agents/config";
 import { DEMO_TRANSCRIPTION_MODE, buildAgentKeyterms, buildAgentTranscriptionPrompt } from "@/lib/voice/transcription";
@@ -437,8 +442,16 @@ export function VoiceCall({
   /** Per-call sound player (lazy: Audio only exists in the browser). */
   const soundsRef = useRef<CallSounds | null>(null);
   const sounds = () => (soundsRef.current ??= new CallSounds());
+  /**
+   * Dev-only call marks for the current demo call (`?delivercapture=1` or the
+   * E2E test build). Null means the stream is off; the recorder is never
+   * constructed, so production traffic cannot write one.
+   */
+  const marksRef = useRef<CallMarks | null>(null);
   /** Connected chime fires once per call; reset every time we dial. */
   const connectedChimeRef = useRef(false);
+  /** True while the connecting loop is sounding, so one stretch is one mark. */
+  const ringbackActiveRef = useRef(false);
   /**
    * The connected chime marks the agent actually sounding, so it hangs off the
    * playout's first audible sample — not the moment a greeting is queued (the
@@ -449,6 +462,9 @@ export function VoiceCall({
   const playConnectedChime = useCallback(() => {
     if (connectedChimeRef.current) return;
     connectedChimeRef.current = true;
+    // One mark per chime: a second bell (a regression) must be visible as a
+    // second mark, so the recorder never deduplicates.
+    marksRef.current?.mark("chime");
     sounds().stopRingback();
     sounds().play("connected");
   }, []);
@@ -464,6 +480,11 @@ export function VoiceCall({
   const ladderRef = useRef<StakesLadder | null>(null);
   const callTokenRef = useRef<string | null>(null);
   const lastAgentLineRef = useRef("");
+  /**
+   * The caller's last final, read by the hard-invite gate: the same willingness
+   * rule the pipeline applies to its own offer sentence.
+   */
+  const callerFinalRef = useRef("");
   /**
    * Demo email test (ticket 03): invited → claimed → found. The state
    * renders the address chip and the talk limit; the ref is read in socket
@@ -782,7 +803,9 @@ export function VoiceCall({
     if (!connected) return;
     if (isDemo) {
       // The demo shows talk time: it freezes while muted or on hold.
+      const created = clockRef.current === null;
       const clock = (clockRef.current ??= new TalkClock(Date.now()));
+      if (created) marksRef.current?.mark("talk_clock_start");
       const id = setInterval(() => {
         const now = Date.now();
         setElapsed(clock.talkSeconds(now));
@@ -1031,10 +1054,22 @@ export function VoiceCall({
     if (state === "connecting") {
       connectedChimeRef.current = false;
       sounds().startRingback();
+      if (!ringbackActiveRef.current) {
+        ringbackActiveRef.current = true;
+        marksRef.current?.mark("ringback_start");
+      }
     } else if (state === "listening" || state === "speaking") {
       sounds().stopRingback();
+      if (ringbackActiveRef.current) {
+        ringbackActiveRef.current = false;
+        marksRef.current?.mark("ringback_stop");
+      }
     } else if (state === "ended") {
       sounds().stopRingback();
+      if (ringbackActiveRef.current) {
+        ringbackActiveRef.current = false;
+        marksRef.current?.mark("ringback_stop");
+      }
       if (!error) sounds().play("hangup");
     }
   }, [state, error]);
@@ -1044,6 +1079,10 @@ export function VoiceCall({
   useEffect(() => {
     if (error) {
       sounds().stopRingback();
+      if (ringbackActiveRef.current) {
+        ringbackActiveRef.current = false;
+        marksRef.current?.mark("ringback_stop");
+      }
       sounds().play("error");
     }
   }, [error]);
@@ -1093,6 +1132,7 @@ export function VoiceCall({
     () => () => {
       void sessionRef.current?.stop();
       sessionRef.current = null;
+      marksRef.current = null;
       soundsRef.current?.stopAll();
       if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     },
@@ -1116,6 +1156,9 @@ export function VoiceCall({
   const start = useCallback(async () => {
     if (startingRef.current) return;
     startingRef.current = true;
+    // A fresh start owns a fresh marks recorder (the demo branch builds one);
+    // an inline call has none, and a stale demo recorder must never mark it.
+    marksRef.current = null;
     // A restart never inherits the old transport: detach and stop it first,
     // so its late socket callbacks (stale error banner, ghost audio) die
     // with explicitStop instead of painting over the fresh session.
@@ -1215,6 +1258,14 @@ export function VoiceCall({
       // states as managed (connecting/listening/speaking/ended) so every
       // indicator, timer, caption, and the countdown below works unchanged.
       let cascadeEnded = false;
+      // Browser call evidence: the same flag as the delivered WAV, so the two
+      // artifacts of one call share a call id. `null` means no marks exist.
+      const marks = createCallMarks(
+        window.location.search,
+        process.env.NODE_ENV === "production",
+      );
+      marksRef.current = marks;
+      marks?.mark("start_requested");
       // The demo's guardrail words follow the picked voice's Locale (the same
       // per-Locale recognition layer the managed path uses); hidden notes stay
       // model-directed English, while the service speaks its Locale's hold and
@@ -1226,11 +1277,12 @@ export function VoiceCall({
             timingsRef.current?.mark(
               caption.role === "user" ? "firstUserTurn" : "firstAgentTurn",
             );
+            marks?.mark("turn", { role: caption.role, index: turnsRef.current.length });
             if (caption.role === "agent") {
-              speakingRef.current = false;
+              // The text is complete; the audio is not. `speaking` stays until
+              // the playout drains (`onSpeechEnd`), or the caller answers over
+              // a turn the caption would have ended 1.3 s early.
               setFiller(null);
-              setCallState("listening");
-              cascadeFloorRef.current?.replyDone(false);
             } else {
               // The caller's final words: they held the floor, and the
               // service's answer window follows before quiet can count.
@@ -1253,6 +1305,8 @@ export function VoiceCall({
             turnsRef.current = [...turnsRef.current, settledTurn];
             setTurns((prev) => [...prev, settledTurn]);
             setLiveCaption(null);
+            // The caller's final is the turn the invite is gated on.
+            if (caption.role === "user") callerFinalRef.current = caption.text;
             // Ticket 12: the browser's live notes are hidden context on the
             // cascade, not captions. A final visitor turn is still scored by
             // the demo's stakes ladder; a final agent turn can announce the
@@ -1277,7 +1331,11 @@ export function VoiceCall({
                   // opens a second invite.
                   setEmailTest({ ...test, invited: true });
                   const tag = testTagRef.current;
-                  if (action === "show-and-speak" && tag) {
+                  // The hard invite obeys the turn's willingness gate: no
+                  // spoken offer on a complaint, a challenge, a neutral turn
+                  // or small talk, even when the model's line mentioned the
+                  // screen on its own.
+                  if (shouldSpeakInvite(action, tag, callerFinalRef.current)) {
                     speak(inviteNowInstructions(tag), { key: "invite" });
                   }
                 }
@@ -1297,15 +1355,15 @@ export function VoiceCall({
                   },
                 ).then((verdict) => {
                   if (sessionRef.current !== cascade || closingRef.current) return;
-                  const rung = ladderRef.current?.onVerdict(
-                    verdict.decision === "off-track",
-                  );
+                  const rung = ladderRef.current?.onVerdict({
+                    offTrack: verdict.decision === "off-track",
+                    upset: verdict.upset,
+                  });
                   if (!rung) return;
                   console.debug("[voice-call] off-track", rung, verdict.source);
-                  const goal = beatGoal(emailTestRef.current);
-                  if (rung === "end") closeCall(rungInstructions(rung, goal));
+                  if (rung === "end") closeCall(rungInstructions(rung));
                   // No key: every rung is said, in order.
-                  else speak(rungInstructions(rung, goal));
+                  else speak(rungInstructions(rung));
                 });
               }
             }
@@ -1333,6 +1391,16 @@ export function VoiceCall({
         // The connected chime waits for the first audible sample, not this
         // frame's arrival (the playout holds it for the pre-roll).
         onFirstAudible: playConnectedChime,
+        // The turn ends when its audio has played out, not when its caption
+        // finished streaming. The old caption-driven flip ended the greeting
+        // at 460 ms over 1.76 s of speech; this is the worklet's drain event.
+        onSpeechEnd: () => {
+          speakingRef.current = false;
+          overheardRef.current = false;
+          cascadeFloorRef.current?.replyDone(false);
+          setFiller(null);
+          setCallState("listening");
+        },
         onInterrupted: () => {
           speakingRef.current = false;
           overheardRef.current = false;
@@ -1357,17 +1425,43 @@ export function VoiceCall({
           setError({ message: demoUnavailableMessage(failure.code) });
           setCallState("ended");
         },
+        onReconnectFailed: (cause) => {
+          // The call was live, so this is not a start refusal: say the line
+          // dropped and that it could not be resumed, by name in the marks.
+          cascadeEnded = true;
+          setError({ message: demoReconnectFailedMessage(cause) });
+        },
         onEnd: () => {
           cascadeEnded = true;
           speakingRef.current = false;
           overheardRef.current = false;
           setCallState("ended");
         },
+      }, {
+        marks,
+        // One bounded reconnect after an unexpected transport drop: re-mint
+        // the resume body for the same call id through the one mint route
+        // (the hold-return path), carrying the settled turns in signed history.
+        // The session keeps the mic, playout and call-level audio sequence and
+        // opens a replacement socket; the resume body omits the greeting, so
+        // nothing is replayed.
+        reconnect: async () => {
+          const resumed = await mintDemoCall({
+            voiceId,
+            resume: true,
+            callToken: callTokenRef.current ?? undefined,
+            tagToken: loadTagToken(),
+            history: boundedResumeHistory(turnsRef.current),
+          });
+          callTokenRef.current = resumed.minted.demoCallToken;
+          if (resumed.minted.tagToken) saveTagToken(resumed.minted.tagToken);
+          return resumed.config;
+        },
       });
       sessionRef.current = cascade;
       // The same dev flag as the managed path: a W0 delivered capture must be
       // written on the cascade path too, or the two captures cannot compare.
-      cascade.setDeliveredCapture(callDebugFlags().deliverCapture);
+      cascade.setDeliveredCapture(callDebugFlags().deliverCapture, marks?.callId);
       setCallState("connecting");
       try {
         // One mint through the one door, then the real cascade client. The
@@ -1382,6 +1476,19 @@ export function VoiceCall({
           // body; a fresh call starts blank. The bound lives in the pipeline
           // registry, not in this component (ticket 13).
           history: preserving ? boundedResumeHistory(turnsRef.current) : undefined,
+        }, {
+          // Name the mint before the socket and mic events, so the stream
+          // shows the real order rather than a post-hoc guess. The mint also
+          // names the call id the pipeline traces: bind the WAV and the marks
+          // to it before the mic attaches the capture, so all four artifacts of
+          // one call cite one id.
+          onMinted: (minted) => {
+            marks?.mark("mint_done");
+            const callId = callIdFromDemoToken(minted.demoCallToken);
+            if (callId !== null && marks?.adoptCallId(callId) === true) {
+              cascade.setDeliveredCapture(callDebugFlags().deliverCapture, callId);
+            }
+          },
         });
         callTokenRef.current = minted.demoCallToken;
         if (minted.tagToken) saveTagToken(minted.tagToken);
@@ -1389,14 +1496,26 @@ export function VoiceCall({
         if (!preserving) setTagCarried(minted.tagCarried === true);
         // A refusal may have landed before the mic resolved: never paint
         // "listening" over a call that already ended.
-        if (!cascadeEnded) setCallState("listening");
+        if (!cascadeEnded) {
+          setCallState("listening");
+          // The mark names the paint, not the state change: schedule it for
+          // the frame that actually shows the connected card.
+          if (marks) {
+            const markPainted = () => marks.mark("connected_painted");
+            if (typeof requestAnimationFrame === "function") requestAnimationFrame(markPainted);
+            else markPainted();
+          }
+        }
       } catch (e) {
         // The demo mint's 429 is the countdown; every other refusal keeps its
         // own line. Either way no managed session is opened.
         const retryAfter = e instanceof RateLimitError ? e.retryAfterSeconds : undefined;
         if (retryAfter !== undefined) setRetryIn(retryAfter);
+        const message = e instanceof Error ? e.message : "Could not start the call.";
+        marks?.mark("start_failed", { message });
+        void marks?.finish();
         setError({
-          message: e instanceof Error ? e.message : "Could not start the call.",
+          message,
           ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
         });
         setCallState("ended");

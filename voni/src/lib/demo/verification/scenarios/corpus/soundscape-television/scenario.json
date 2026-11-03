@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "soundscape-television",
+  "class": "soundscape",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "A4",
+    "A8",
+    "T7"
+  ],
+  "soundscape": {
+    "id": "television"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "58b281dcfde8d0ce21e00deeece3f5967c1f1bd07d5cdd61a257616ada2f0888",
+      "text": "Hi, sorry about the noise, the television is on in the background."
+    },
+    {
+      "id": "still",
+      "audio": "takes/still.wav",
+      "sha256": "54b6340da657df5c6d77e034c7e8f7bd0c92608407e0c477f13ae3aeef394ef9",
+      "text": "Can you still hear me over the TV?"
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "still",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

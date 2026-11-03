@@ -1,13 +1,15 @@
 {
   "version": 1,
-  "note": "The cascade signing windows and the hold-return history bound the demo mint needs, copied once from the pipeline's bound registry. Read at load by voni/src/lib/demo/cascade-body.ts and voni/src/lib/voice/resume-history.ts; never restated as a literal in code. A value edit must be made in voice-pipeline/cascade/thresholds.json first, and cascade-body.test.ts fails on drift.",
+  "note": "The cascade signing windows, the hold-return history bound and the client reconnect handshake the demo needs, copied once from the pipeline's bound registry. Read at load by voni/src/lib/demo/cascade-body.ts, voni/src/lib/voice/resume-history.ts and voni/src/lib/voice/cascade-session.ts; never restated as a literal in code. A value edit must be made in voice-pipeline/cascade/thresholds.json first, and cascade-body.test.ts fails on drift.",
   "envelopeTtlMs": 60000,
   "callTokenTtlMs": 60000,
   "resumeHistoryTurns": 12,
-  "source": "voice-pipeline/cascade/thresholds.json#bounds.envelope.ttl_ms, bounds.call_token.ttl_ms, bounds.resume.history_turns",
+  "reconnectHandshakeMs": 10000,
+  "source": "voice-pipeline/cascade/thresholds.json#bounds.envelope.ttl_ms, bounds.call_token.ttl_ms, bounds.resume.history_turns, bounds.reconnect.handshake_ms",
   "dates": {
     "envelopeTtlMs": "2026-10-30",
     "callTokenTtlMs": "2026-10-30",
-    "resumeHistoryTurns": "2026-10-31"
+    "resumeHistoryTurns": "2026-10-31",
+    "reconnectHandshakeMs": "2026-10-30"
   }
 }

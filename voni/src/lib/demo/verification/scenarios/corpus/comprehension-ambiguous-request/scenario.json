@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "comprehension-ambiguous-request",
+  "class": "comprehension",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "K4",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "3aa44bff64f2475392bf44f5cdcaad7f36267a6f5d64c4a770e6903d5f308eb8",
+      "text": "Hi, I need to change my appointment."
+    },
+    {
+      "id": "vague",
+      "audio": "takes/vague.wav",
+      "sha256": "0cee57b99e05ad85fb18715fbbbc427eadd3aa351187ddd5bea5e5d1977e3b86",
+      "text": "It is the one from last time."
+    },
+    {
+      "id": "detail",
+      "audio": "takes/detail.wav",
+      "sha256": "11f836064b4702bc4cf815a39393205a031913a1a67b1c3707c8aed93737db89",
+      "text": "The morning one, I think. Maybe the other one."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "vague",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "detail",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

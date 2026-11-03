@@ -42,6 +42,11 @@ export type DemoStartInput = {
 export type DemoStartDeps = {
   /** Injected for tests; the mint fetcher otherwise. */
   mint?: DemoMintFetcher;
+  /**
+   * Called between the mint and the socket start, so a mark can name the mint
+   * before any socket or microphone event lands.
+   */
+  onMinted?: (minted: DemoMint) => void;
 };
 
 /**
@@ -58,15 +63,23 @@ export function demoCascadeConfig(minted: DemoMint): CascadeCallConfig {
   };
 }
 
+/** One mint through the one door, plus the identity the session connects with. */
+export type MintedDemoCall = {
+  minted: DemoMint;
+  config: CascadeCallConfig;
+};
+
 /**
- * Mint one demo call and start the cascade client on it. Must run inside the
- * visitor's click: `CascadeSession.start` acquires the mic and audio graph.
+ * Mint one demo call and return its cascade identity without starting a
+ * session. A start uses it, and so does a live call's one reconnect: the
+ * hold-return resume body for the same call id is minted through the same
+ * route (`POST /api/demo/token`), then an existing client reopens its socket
+ * on the returned config.
  */
-export async function startDemoCall(
-  call: DemoCascadeCall,
+export async function mintDemoCall(
   input: DemoStartInput,
   deps: DemoStartDeps = {},
-): Promise<DemoMint> {
+): Promise<MintedDemoCall> {
   const mint = deps.mint ?? demoMint;
   const minted = await mint(input.voiceId, {
     ...(input.resume === true ? { resume: true } : {}),
@@ -76,6 +89,20 @@ export async function startDemoCall(
       ? { history: input.history }
       : {}),
   });
-  await call.start(demoCascadeConfig(minted), "voice-call");
+  deps.onMinted?.(minted);
+  return { minted, config: demoCascadeConfig(minted) };
+}
+
+/**
+ * Mint one demo call and start the cascade client on it. Must run inside the
+ * visitor's click: `CascadeSession.start` acquires the mic and audio graph.
+ */
+export async function startDemoCall(
+  call: DemoCascadeCall,
+  input: DemoStartInput,
+  deps: DemoStartDeps = {},
+): Promise<DemoMint> {
+  const { minted, config } = await mintDemoCall(input, deps);
+  await call.start(config, "voice-call");
   return minted;
 }

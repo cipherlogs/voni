@@ -1,10 +1,11 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildConfigMessage,
+  CALLER_END_WAIT_MS,
   CASCADE_PROTOCOL_VERSION,
   CascadeSession,
   decodeAudioMessage,
@@ -12,8 +13,12 @@ import {
   encodeAudioFrame,
   encodeContextMessage,
   parseServerMessage,
+  MIC_GATE_FALLBACK_MS,
+  RECONNECT_HANDSHAKE_MS,
   type CascadeCallConfig,
 } from "./cascade-session";
+import { CallMarks } from "./call-marks";
+import { createWorkletPlayout } from "./playout";
 import {
   MICROPHONE_MUTED_CONTEXT,
   MICROPHONE_UNMUTED_CONTEXT,
@@ -107,7 +112,7 @@ test("demo notes reach the context frame and never become a caption", async () =
   const notes = [
     MUTE_CHECK_IN_INSTRUCTIONS,
     TIME_UP_INSTRUCTIONS,
-    rungInstructions("nudge", "the live email test"),
+    rungInstructions("nudge"),
   ];
   const socket = makeSocket();
   const captions: string[] = [];
@@ -144,6 +149,9 @@ test("server messages parse to typed events", () => {
   });
   assert.deepEqual(parseServerMessage(JSON.stringify({ type: "interrupted" })), {
     kind: "interrupted",
+  });
+  assert.deepEqual(parseServerMessage(JSON.stringify({ type: "listening" })), {
+    kind: "listening",
   });
   const end = parseServerMessage(JSON.stringify({ type: "end", metrics: { a: 1 }, turns: 2 }));
   assert.deepEqual(end, { kind: "end", turns: 2, metrics: { a: 1 } });
@@ -307,7 +315,7 @@ type FakeSocket = {
   onopen: (() => void) | null;
   onmessage: ((event: { data: string }) => void) | null;
   onerror: (() => void) | null;
-  onclose: (() => void) | null;
+  onclose: ((event?: { code?: number; reason?: string }) => void) | null;
   closed: boolean;
   readyState: number;
   OPEN: number;
@@ -384,7 +392,137 @@ test("session sends config on open and dispatches server events", async () => {
   assert.equal(socket.closed, true);
 });
 
-test("mic frames are forwarded as audio messages", async () => {
+test("a turn ends only when its caption is final and its audio has drained", async () => {
+  // The live greeting: a 460 ms transcript over 1.76 s of 24 kHz speech. The
+  // final caption alone must not end it; the drain after it must.
+  const socket = makeSocket();
+  let speechEnds = 0;
+  const playout: Playout = { play: () => {}, flush: () => {} };
+  const session = new CascadeSession(
+    { onSpeechEnd: () => (speechEnds += 1) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => playout,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  assert.equal(typeof playout.onDrained, "function", "the session listens for the playout's drain");
+
+  const audio = (seq: number, bytes = 9600) =>
+    socket.emit(
+      JSON.stringify({
+        type: "audio",
+        seq,
+        sample_rate: 24000,
+        data: Buffer.alloc(bytes).toString("base64"),
+      }),
+    );
+  const final = (text: string) =>
+    socket.emit(JSON.stringify({ type: "caption", role: "agent", text, final: true }));
+
+  audio(1, 84480);
+  final("Hi, I'm Voni.");
+  assert.equal(speechEnds, 0, "a final caption while the audio plays is half a turn end");
+
+  playout.onDrained!();
+  assert.equal(speechEnds, 1, "the drain after the final caption ends the turn");
+
+  // The next reply is its own turn: the pair is consumed, not reused.
+  audio(2);
+  final("What needs fixing?");
+  assert.equal(speechEnds, 1, "a new reply needs its own final and drain");
+  playout.onDrained!();
+  assert.equal(speechEnds, 2, "each finished reply is exactly one turn end");
+  await session.stop();
+});
+
+test("a mid-reply drain is a TTS stall, not a turn end; the resumed reply still ends", async () => {
+  // Live call 875aae04: reply 1 played 6,811-7,767, the queue drained while the
+  // agent's final caption had not arrived, the reply resumed at 8,831. The
+  // drain alone must keep `speaking`; the final caption while the resumed audio
+  // is still playing must too; the drain after both ends the turn once.
+  const socket = makeSocket();
+  let speechEnds = 0;
+  const playout: Playout = { play: () => {}, flush: () => {} };
+  const session = new CascadeSession(
+    { onSpeechEnd: () => (speechEnds += 1) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => playout,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+
+  socket.emit(
+    JSON.stringify({ type: "audio", seq: 1, sample_rate: 24000, data: Buffer.alloc(9600).toString("base64") }),
+  );
+  playout.onDrained!();
+  assert.equal(speechEnds, 0, "a drain before the final caption is a stall");
+
+  // The same reply resumes: the stall's drain is cleared, not banked.
+  socket.emit(
+    JSON.stringify({ type: "audio", seq: 2, sample_rate: 24000, data: Buffer.alloc(38400).toString("base64") }),
+  );
+  socket.emit(JSON.stringify({ type: "caption", role: "agent", text: "That's fair.", final: true }));
+  assert.equal(speechEnds, 0, "the final caption lands while the resumed audio plays");
+
+  playout.onDrained!();
+  assert.equal(speechEnds, 1, "only the drain after the final ends the resumed reply");
+  await session.stop();
+});
+
+test("an interruption is not a finished turn: the flush never reports a drain", async () => {
+  // A barge-in cuts the reply; the playout marks itself not-busy in the same
+  // tick, so the worklet's idle report is ignored. The client must keep the
+  // cut and the finish apart: the interrupted path redraws `listening`, the
+  // drained path releases the floor.
+  const socket = makeSocket();
+  const worklet = fakeAudioWorkletNode();
+  const playout = createWorkletPlayout(worklet.node);
+  let drained = 0;
+  let interrupted = 0;
+  const session = new CascadeSession(
+    { onInterrupted: () => (interrupted += 1) },
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {}, playout }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  // After start: the session installs its own drain listener there.
+  playout.onDrained = () => (drained += 1);
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+
+  playout.play(new Uint8Array(2), 24000);
+  socket.emit(JSON.stringify({ type: "interrupted" }));
+  // The idle report that would have belonged to the flushed reply arrives
+  // just after the flush, as the worklet's already-rendered quantum does.
+  worklet.send({
+    type: "level",
+    seq: 1,
+    queuedMs: 0,
+    cushionMs: 0,
+    targetCushionMs: 250,
+    correctionPct: 0,
+    playing: false,
+    idle: true,
+    consumed: 1,
+  });
+
+  assert.equal(interrupted, 1);
+  assert.equal(drained, 0, "a flushed reply is cut, never finished");
+  await session.stop();
+});
+
+
+test("mic frames wait for the service's first audio, then are forwarded", async () => {
   const socket = makeSocket();
   const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
   const session = new CascadeSession(
@@ -401,11 +539,88 @@ test("mic frames are forwarded as audio messages", async () => {
   await session.start(CONFIG, "test-owner");
   socket.readyState = socket.OPEN;
   socket.onopen?.();
+
+  // The connect is not over: the caller speaking here cannot be heard by a
+  // session that does not exist yet, and forwarding it floods the vendor.
   mic.onFrame?.(new Uint8Array([5, 6]).buffer);
-  assert.equal(socket.sent.length, 2);
-  const frame = JSON.parse(socket.sent[1]);
-  assert.equal(frame.type, "audio");
-  assert.equal(Buffer.from(frame.data, "base64").length, 2);
+  assert.equal(socket.sent.length, 1, "only the config frame went out");
+
+  socket.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([1, 2, 3]).toString("base64"),
+      sample_rate: 24000,
+    }),
+  );
+  mic.onFrame?.(new Uint8Array([7, 8]).buffer);
+  const frames = socket.sent.map((raw) => JSON.parse(raw));
+  const audio = frames.filter((frame) => frame.type === "audio");
+  assert.equal(audio.length, 1);
+  assert.equal(Buffer.from(audio[0].data, "base64").length, 2);
+  await session.stop();
+});
+
+test("a call that never speaks still opens the mic after the bound", async () => {
+  // A resumed call deliberately speaks no greeting; without the fallback the
+  // caller would be heard by nobody. The bound is the only thing that opens it.
+  const socket = makeSocket();
+  const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async (_owner, onFrame) => {
+        mic.onFrame = onFrame;
+        return { stop: () => {} };
+      },
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  const clock = mock.timers;
+  clock.enable({ apis: ["setTimeout"] });
+  try {
+    await session.start(CONFIG, "test-owner");
+    socket.readyState = socket.OPEN;
+    socket.onopen?.();
+    mic.onFrame?.(new Uint8Array([1]).buffer);
+    assert.equal(socket.sent.length, 1, "held before the bound");
+    clock.tick(MIC_GATE_FALLBACK_MS);
+    mic.onFrame?.(new Uint8Array([2]).buffer);
+    assert.equal(socket.sent.length, 2, "released at the bound");
+    const stopping = session.stop();
+    // The fake clock also owns the bounded wait for the service's end.
+    clock.tick(CALLER_END_WAIT_MS);
+    await stopping;
+  } finally {
+    clock.reset();
+  }
+});
+
+test("a listening event opens the mic before the greeting", async () => {
+  // The service sends `listening` before the opening line so a caller who
+  // speaks first is heard first and the greeting can be skipped.
+  const socket = makeSocket();
+  const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async (_owner, onFrame) => {
+        mic.onFrame = onFrame;
+        return { stop: () => {} };
+      },
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  mic.onFrame?.(new Uint8Array([1]).buffer);
+  assert.equal(socket.sent.length, 1, "held until the service opens the line");
+
+  socket.emit(JSON.stringify({ type: "listening" }));
+  mic.onFrame?.(new Uint8Array([2]).buffer);
+  assert.equal(socket.sent.length, 2, "released by listening, not by first audio");
   await session.stop();
 });
 
@@ -426,6 +641,14 @@ test("muting cascade drops mic frames and sends context without stopping playbac
   await session.start(CONFIG, "test-owner");
   socket.readyState = socket.OPEN;
   socket.onopen?.();
+  // The service is live, so the mic gate is open for the mute test itself.
+  socket.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([0]).toString("base64"),
+      sample_rate: 24000,
+    }),
+  );
   mic.onFrame?.(new Uint8Array([1]).buffer);
   session.setInputMuted(true);
   mic.onFrame?.(new Uint8Array([2]).buffer);
@@ -635,6 +858,135 @@ test("delivered capture: a cascade tap that never acks is a named failure on the
     name: "delivered-20261029-140506.wav",
     samples: 1,
     bytes: 46,
+  });
+});
+
+// ── The tap's final block must be acked before the graph closes ──────────
+// A caller hang-up sends `stop`; the service's `end` can land while the tap's
+// final block is still in flight. Teardown then closed the mic's AudioContext
+// before the worklet acked, so the WAV lost the last block and the session
+// reported a false `tap-timeout`. The graph has to outlive the ack (bounded by
+// the tap's own timeout), never the other way round.
+
+/** The AudioWorkletNode surface `createWorkletPlayout` uses, speakable from a test. */
+function fakeAudioWorkletNode() {
+  let handler: ((e: { data: unknown }) => void) | null = null;
+  const port = {
+    get onmessage() {
+      return handler;
+    },
+    set onmessage(fn: ((e: { data: unknown }) => void) | null) {
+      handler = fn;
+    },
+    postMessage: () => {},
+    close: () => {
+      handler = null;
+    },
+  } as unknown as MessagePort;
+  return {
+    node: { port } as unknown as AudioWorkletNode,
+    send: (data: unknown) => handler?.({ data }),
+    close: () => {
+      handler = null;
+    },
+  };
+}
+
+test("caller hang-up: the worklet's final block is acked before the graph closes", async () => {
+  const socket = makeSocket();
+  const worklet = fakeAudioWorkletNode();
+  const playout = createWorkletPlayout(worklet.node);
+  const written: Uint8Array[] = [];
+  let graphStops = 0;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {
+          graphStops += 1;
+          // A closed context can no longer deliver a worklet message.
+          worklet.close();
+        },
+        audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+        playout,
+      }),
+      writeCapture: (_name, bytes) => {
+        written.push(bytes);
+      },
+    },
+  );
+  session.setDeliveredCapture(true);
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  worklet.send({ type: "tap", samples: new Float32Array([0.25, -0.25]) });
+  const stopping = session.stop();
+  // The service's end frame lands first (the race the live run surfaced).
+  socket.emit(JSON.stringify({ type: "end", turns: 0, metrics: {} }));
+  // The ack and its final block arrive just after that teardown began.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  worklet.send({ type: "tap", samples: new Float32Array([0.5]) });
+  worklet.send({ type: "tap-end" });
+  await stopping;
+
+  assert.equal(graphStops, 1, "the graph is still released exactly once");
+  assert.deepEqual(
+    session.deliveredCaptureResult(),
+    {
+      complete: true,
+      reason: "",
+      name: session.deliveredCaptureResult()!.name,
+      samples: 3,
+      bytes: written[0]!.length,
+    },
+    "the final block is in the delivered WAV, never a false timeout",
+  );
+  assert.deepEqual(Array.from(decodeWav(written[0]!).samples), [8192, -8192, 16384]);
+});
+
+test("caller hang-up: a suspended worklet still reports tap-timeout, not a complete capture", async () => {
+  // The complement: the graph is kept only until the tap's bound, and a
+  // context that emits no final block is still named as a truncation.
+  const socket = makeSocket();
+  const worklet = fakeAudioWorkletNode();
+  const playout = createWorkletPlayout(worklet.node);
+  const written: Uint8Array[] = [];
+  let graphStops = 0;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({
+        stop: () => {
+          graphStops += 1;
+          worklet.close();
+        },
+        audioCtx: { sampleRate: 48000 } as unknown as AudioContext,
+        playout,
+      }),
+      writeCapture: (_name, bytes) => {
+        written.push(bytes);
+      },
+    },
+  );
+  session.setDeliveredCapture(true);
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+
+  worklet.send({ type: "tap", samples: new Float32Array([0.5]) });
+  const stopping = session.stop();
+  socket.emit(JSON.stringify({ type: "end", turns: 0, metrics: {} }));
+  // No tap block and no ack: the context is suspended for the tap's purposes.
+  await stopping;
+
+  assert.equal(graphStops, 1, "the suspended graph is released, never held forever");
+  assert.deepEqual(session.deliveredCaptureResult(), {
+    complete: false,
+    reason: "tap-timeout",
+    name: session.deliveredCaptureResult()!.name,
+    samples: 1,
+    bytes: written[0]!.length,
   });
 });
 
@@ -926,4 +1278,421 @@ test("a socket that closes after the service accepted the call stays an ordinary
 
   assert.deepEqual(failures, [], "an accepted call ending is not a connect fallback");
   assert.deepEqual(ended, { turns: 0 });
+});
+
+// ── One bounded client reconnect after a live socket drop (R2) ─────────────
+//
+// The demo client used to end a mid-call transport drop as `dropped` with no
+// evidence. It now re-mints the resume body for the same call id (the hold
+// return the pipeline already supports), reconnects once and re-sends config;
+// the resumed body carries no greeting, so nothing is replayed. Every case
+// below is a fake socket and a fake mint: no vendor, no browser.
+
+const RESUME_CONFIG: CascadeCallConfig = {
+  ...CONFIG,
+  serviceUrl: "ws://127.0.0.1:8766/v1/browser-call-resume",
+  callToken: "call-token-resumed",
+};
+
+function testMarks(callId = "call-reconnect"): CallMarks {
+  return new CallMarks({ callId, post: async () => undefined });
+}
+
+function namedMarks(marks: CallMarks, name: string) {
+  return marks.artifact().marks.filter((mark) => mark.name === name);
+}
+
+/** Two fakes plus the factory the session opens them from, in order. */
+function socketPair() {
+  const sockets = [makeSocket(), makeSocket()];
+  let opened = 0;
+  return {
+    sockets,
+    factory: () => sockets[opened++] as unknown as WebSocket,
+    get opened() {
+      return opened;
+    },
+  };
+}
+
+test("an unexpected drop on a live call reconnects once with the resumed identity", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  const requests: Array<{ reason: string; attempt: number }> = [];
+  const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  let micStarts = 0;
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1) },
+    {
+      socketFactory: pair.factory,
+      startMic: async (_owner, onFrame) => {
+        micStarts += 1;
+        mic.onFrame = onFrame;
+        return { stop: () => {} };
+      },
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async (request) => {
+        requests.push(request);
+        return RESUME_CONFIG;
+      },
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const first = pair.sockets[0];
+  first.readyState = first.OPEN;
+  first.onopen?.();
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+  // The service is live (its first audio opens the mic gate).
+  first.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([0]).toString("base64"),
+      sample_rate: 24_000,
+    }),
+  );
+
+  first.onclose?.({ code: 1006, reason: "transport dropped" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(requests, [{ reason: "socket-closed", attempt: 1 }]);
+  assert.equal(pair.opened, 2, "one replacement socket, never a loop");
+  assert.equal(ended, 0, "a call that is reconnecting has not ended");
+  assert.equal(micStarts, 1, "the live microphone is kept, never re-acquired");
+  assert.equal(pair.sockets[1].sent.length, 0, "nothing is sent before it opens");
+
+  const reconnects = namedMarks(marks, "reconnect");
+  assert.equal(reconnects.length, 1);
+  assert.deepEqual(reconnects[0].detail, { reason: "socket-closed", attempt: 1, code: 1006 });
+
+  // The resumed call sends config on the new socket and replays nothing: the
+  // resume body omits the greeting, so the client has no greeting to re-send.
+  const second = pair.sockets[1];
+  second.readyState = second.OPEN;
+  second.onopen?.();
+  assert.deepEqual(
+    second.sent.map((raw) => JSON.parse(raw).type),
+    ["config"],
+    "the reconnected socket opens with config alone",
+  );
+  assert.deepEqual(JSON.parse(second.sent[0]), {
+    type: "config",
+    protocolVersion: CASCADE_PROTOCOL_VERSION,
+    agentId: CONFIG.agentId,
+    callToken: RESUME_CONFIG.callToken,
+  });
+
+  // The same microphone now reaches the new socket (the old closure held the
+  // first socket and would have gone silent).
+  second.emit(JSON.stringify({ type: "caption", role: "agent", text: "go on", final: true }));
+  mic.onFrame?.(new Uint8Array([7]).buffer);
+  assert.equal(
+    second.sent.filter((raw) => JSON.parse(raw).type === "audio").length,
+    1,
+    "caller audio follows the reconnected socket",
+  );
+  assert.equal(ended, 0);
+});
+
+test("the reconnected session's call sequence restarts and still plays", async () => {
+  // The pipeline's `seq` is per browser session, not per call id: a
+  // replacement socket's first frame starts again at seq 1. Keeping the first
+  // session's high-water mark would drop every frame of the resumed call.
+  const pair = socketPair();
+  const played: number[] = [];
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({
+        play: (pcm: Uint8Array) => played.push(pcm[0] ?? -1),
+        flush: () => {},
+      }),
+      reconnect: async () => RESUME_CONFIG,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const first = pair.sockets[0];
+  first.readyState = first.OPEN;
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+  first.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([5]).toString("base64"),
+      sample_rate: 24_000,
+      seq: 5,
+    }),
+  );
+  assert.deepEqual(played, [5]);
+
+  first.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const second = pair.sockets[1];
+  second.readyState = second.OPEN;
+  second.onopen?.();
+  second.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([1]).toString("base64"),
+      sample_rate: 24_000,
+      seq: 1,
+    }),
+  );
+
+  assert.deepEqual(played, [5, 1], "the resumed session's seq 1 is played, not dropped");
+});
+
+test("a caller's stop never reconnects", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  let requests = 0;
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => {
+        requests += 1;
+        return RESUME_CONFIG;
+      },
+    },
+  );
+  const clock = mock.timers;
+  clock.enable({ apis: ["setTimeout"] });
+  try {
+    await session.start(CONFIG, "test-owner");
+    const socket = pair.sockets[0];
+    socket.readyState = socket.OPEN;
+    socket.onopen?.();
+    socket.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+    const stopping = session.stop();
+    clock.tick(CALLER_END_WAIT_MS);
+    await stopping;
+    // The browser fires close after a teardown.
+    socket.onclose?.({ code: 1000, reason: "caller hung up" });
+    await Promise.resolve();
+
+    assert.equal(requests, 0, "a stop is not a drop");
+    assert.equal(namedMarks(marks, "reconnect").length, 0);
+    assert.equal(pair.opened, 1, "no second socket is opened");
+  } finally {
+    clock.reset();
+  }
+});
+
+test("a connect failure before the call is live never reconnects", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  const failures: DrainingError[] = [];
+  let requests = 0;
+  const session = new CascadeSession(
+    { onConnectFailure: (error) => failures.push(error) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => {
+        requests += 1;
+        return RESUME_CONFIG;
+      },
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  pair.sockets[0].readyState = pair.sockets[0].OPEN;
+  pair.sockets[0].onerror?.();
+  pair.sockets[0].onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].code, "unavailable");
+  assert.equal(requests, 0, "nothing was live, so there is nothing to resume");
+  assert.equal(namedMarks(marks, "reconnect").length, 0);
+  assert.equal(pair.opened, 1);
+});
+
+test("a failed reconnect ends the call once with its named cause", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  const causes: string[] = [];
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1), onReconnectFailed: (cause) => causes.push(cause) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => {
+        throw new Error("the mint refused the resume");
+      },
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const socket = pair.sockets[0];
+  socket.readyState = socket.OPEN;
+  socket.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+  socket.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(pair.opened, 1, "a refused attempt opens no second socket");
+  assert.equal(ended, 1, "the call ends honestly");
+  assert.deepEqual(causes, ["mint-failed"]);
+  const failed = namedMarks(marks, "reconnect_failed");
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].detail?.cause, "mint-failed");
+  assert.equal(failed[0].detail?.attempt, 1);
+});
+
+test("a second drop ends the call with the named cause, never a third socket", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  let requests = 0;
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => {
+        requests += 1;
+        return RESUME_CONFIG;
+      },
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const first = pair.sockets[0];
+  first.readyState = first.OPEN;
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+  first.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const second = pair.sockets[1];
+  second.readyState = second.OPEN;
+  second.onopen?.();
+  second.emit(JSON.stringify({ type: "caption", role: "agent", text: "hello again", final: true }));
+
+  second.onclose?.({ code: 1006, reason: "dropped again" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(requests, 1, "exactly one reconnect is attempted");
+  assert.equal(pair.opened, 2, "the second drop opens no third socket");
+  assert.equal(ended, 1);
+  const failed = namedMarks(marks, "reconnect_failed");
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].detail?.cause, "second-drop");
+  assert.equal(failed[0].detail?.attempt, 2);
+});
+
+test("a replacement socket that cannot open is a named reconnect failure", async () => {
+  const first = makeSocket();
+  const marks = testMarks();
+  const causes: string[] = [];
+  let opened = 0;
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1), onReconnectFailed: (cause) => causes.push(cause) },
+    {
+      socketFactory: () => {
+        opened += 1;
+        if (opened === 2) throw new Error("malformed service URL");
+        return first as unknown as WebSocket;
+      },
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => RESUME_CONFIG,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  first.readyState = first.OPEN;
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+  first.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(opened, 2, "the replacement was attempted once");
+  assert.equal(ended, 1);
+  assert.deepEqual(causes, ["socket-error"]);
+  assert.equal(namedMarks(marks, "reconnect_failed")[0]?.detail?.cause, "socket-error");
+});
+
+test("a reconnect that is never admitted is bounded and names the timeout", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  let ended = 0;
+  const session = new CascadeSession(
+    { onEnd: () => (ended += 1) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: () => new Promise<CascadeCallConfig>(() => undefined),
+    },
+  );
+  const clock = mock.timers;
+  clock.enable({ apis: ["setTimeout"] });
+  try {
+    await session.start(CONFIG, "test-owner");
+    const socket = pair.sockets[0];
+    socket.readyState = socket.OPEN;
+    socket.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+    socket.onclose?.({ code: 1006 });
+    // The mint hangs; only the recorded handshake bound releases the call.
+    clock.tick(RECONNECT_HANDSHAKE_MS);
+    await Promise.resolve();
+
+    assert.equal(ended, 1, "a stuck reconnect never holds the call open");
+    const failed = namedMarks(marks, "reconnect_failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].detail?.cause, "timeout");
+    assert.equal(failed[0].detail?.attempt, 1);
+    assert.equal(pair.opened, 1, "the socket never opened");
+  } finally {
+    clock.reset();
+  }
+});
+
+test("a service refusal during the reconnect is a reconnect failure, not a connect refusal", async () => {
+  const pair = socketPair();
+  const marks = testMarks();
+  const failures: DrainingError[] = [];
+  let ended = 0;
+  const session = new CascadeSession(
+    { onConnectFailure: (error) => failures.push(error), onEnd: () => (ended += 1) },
+    {
+      socketFactory: pair.factory,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      marks,
+      reconnect: async () => RESUME_CONFIG,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  const first = pair.sockets[0];
+  first.readyState = first.OPEN;
+  first.emit(JSON.stringify({ type: "caption", role: "user", text: "hi", final: false }));
+
+  first.onclose?.({ code: 1006 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const second = pair.sockets[1];
+  second.readyState = second.OPEN;
+  second.emit(JSON.stringify({ type: "error", code: "draining", message: "draining now" }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(failures, [], "the call was live; this is not a connect refusal");
+  assert.equal(ended, 1);
+  const failed = namedMarks(marks, "reconnect_failed");
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].detail?.cause, "refused:draining");
 });

@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "locale-nonsense-de",
+  "class": "emotion",
+  "locale": "de",
+  "heldOut": false,
+  "expectedProperties": [
+    "C3",
+    "K7"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "6924367aea48c469c842003358e12da2c1cbc12448b8bf6196473f2ce02fb8b7",
+      "text": "Hallo, mein Termin ist lila, können Sie den Mond reparieren?"
+    },
+    {
+      "id": "nonsense",
+      "audio": "takes/nonsense.wav",
+      "sha256": "fd0790e78e7f3a3fdf02754b881ee370b52f48749fff54647b6b6b30e7f2275d",
+      "text": "Der Glibberflax liegt unter Dienstag, bitte drehen Sie den Briefkasten."
+    },
+    {
+      "id": "pivot",
+      "audio": "takes/pivot.wav",
+      "sha256": "29ab3600630399d216668021bd8e3eabb7926ef882626c9c95cbddc4a029ede5",
+      "text": "Okay. Eigentlich brauche ich nur die Öffnungszeiten."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "nonsense",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "pivot",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

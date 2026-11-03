@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "name": "emotion-overwhelmed",
+  "class": "emotion",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "K4",
+    "K7",
+    "C10"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "intro",
+      "audio": "takes/intro.wav",
+      "sha256": "740aac537ac7a2a06fc911b41653e6e10e793ce0e618458a611fa6531c11751f",
+      "text": "I am sorry, I am a bit overwhelmed. I do not know where to start."
+    },
+    {
+      "id": "vague",
+      "audio": "takes/vague.wav",
+      "sha256": "0c464adb18e1109daf512f1e4e0bd12a2ce2f2e526119f0e0a0dbad73aa2cb7d",
+      "text": "There are so many things. Maybe the thing from last time?"
+    },
+    {
+      "id": "clarify",
+      "audio": "takes/clarify.wav",
+      "sha256": "cf8654aaa76418b38bdb37c5a97d06f1053d67c69aee76b5cd3c0d6bb0a0a102",
+      "text": "The appointment. The one I missed."
+    }
+  ],
+  "script": [
+    {
+      "take": "intro",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "vague",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    },
+    {
+      "take": "clarify",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

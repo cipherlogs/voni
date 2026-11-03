@@ -51,6 +51,10 @@ await instant(page, async () => {
 });
 ```
 
+## Browser-demo evidence
+
+- The cascade rig is the only browser-demo evidence. The managed-era demo specs were retired by demo-verification ticket 01; `test:e2e:behavior` runs the liveness scaffold only, and `test:e2e:cascade` runs `cascade-delivery.spec.ts`.
+
 ## Runs
 
 | Date | Candidate fingerprint | Command | Result | Notes |

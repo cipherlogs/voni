@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from cascade.ack import ACK_LINES, ACK_TONE_GROUPS
 from cascade.call import OutboundAudio
 from cascade.meta_llm import MetaLLMTurn, TurnUsage
 from cascade.meta_stt import SpeechComplete, SpeechEnd, SpeechStart
@@ -152,6 +153,18 @@ class StreamTest(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_the_stream_names_the_model_it_serves(self):
+        # The call prices its llm leg from this: a demo override must be priced
+        # on its own model's rates, so the stream has to name it (ADR-0014).
+        stream = self.make(replies=["one reply"])
+        self.assertIsNone(stream.model, "a turn layer without a model names none")
+
+        self.llm.model = "muse-wonder-1.0"
+        self.assertEqual("muse-wonder-1.0", stream.model)
+
+        self.llm.model = ""
+        self.assertIsNone(stream.model, "a blank model is not a model")
+
     def test_a_reply_ends_with_one_final_agent_caption(self):
         captions: list[tuple[str, str, bool]] = []
 
@@ -189,6 +202,7 @@ class StreamTest(unittest.TestCase):
         # The model saw the authoritative final, never a partial.
         self.assertEqual("book a demo", self.llm.requests[0][0]["content"])
         self.assertEqual(1, stream.turn_count())
+        self.assertEqual(1, stream.request_count())
         self.assertEqual(
             4, stream.turn_usage()["0:t1"].prompt_tokens
         )
@@ -201,6 +215,7 @@ class StreamTest(unittest.TestCase):
 
         self.assertEqual([], self.llm.requests)
         self.assertEqual(0, stream.turn_count())
+        self.assertEqual(0, stream.request_count())
         self.assertEqual({}, stream.turn_usage())
 
     def test_a_speech_start_while_speaking_cancels_the_voice(self):
@@ -244,6 +259,8 @@ class StreamTest(unittest.TestCase):
         self.assertEqual("check_email", executor.calls[0].name)
         self.assertEqual(["One unread email."], self.tts.spoken)
         self.assertEqual(1, stream.turn_count())
+        # The tool round is a second model request on the same logical turn.
+        self.assertEqual(2, stream.request_count())
 
 
 class KeepaliveTTS(FakeTTS):
@@ -557,8 +574,8 @@ class AckTest(unittest.TestCase):
             async def complete(self, *, messages, tools=None, turn=None):
                 await gate.wait()
                 record = turn if turn is not None else MetaLLMTurn()
-                record.content_text += "Sure."
-                yield TokenDelta(text="Sure.")
+                record.content_text += "I can do that."
+                yield TokenDelta(text="I can do that.")
                 record.finished = True
 
         captions: list[tuple[str, str, bool]] = []
@@ -590,16 +607,62 @@ class AckTest(unittest.TestCase):
 
         asyncio.run(run())
 
-        self.assertEqual(["Mhm.", "Sure."], stream._tts.spoken)
+        self.assertEqual(["Mhm.", "I can do that."], stream._tts.spoken)
         self.assertNotIn("Mhm.", [text for _, text, _ in captions], "the ack is not a caption")
-        self.assertIn(("agent", "Sure.", True), captions, "the reply is the final caption")
+        self.assertIn(("agent", "I can do that.", True), captions, "the reply is the final caption")
+
+    def test_the_ack_is_chosen_from_the_callers_tone(self):
+        groups = ACK_TONE_GROUPS["en"]
+
+        def speak_ack(final: str) -> str:
+            gate = asyncio.Event()
+
+            class SlowLLM:
+                async def complete(self, *, messages, tools=None, turn=None):
+                    await gate.wait()
+                    record = turn if turn is not None else MetaLLMTurn()
+                    record.content_text += "I can do that."
+                    yield TokenDelta(text="I can do that.")
+                    record.finished = True
+
+            tts = FakeTTS()
+            stream = CascadeTurnStream(
+                llm=SlowLLM(),
+                tts=tts,
+                emit_audio=RecordingAudio(),
+                ledger=RecordingLedger(),
+                clock=FakeClock(),
+                ack_lines=ACK_LINES["en"],
+                ack_delay_ms=5,
+            )
+
+            async def run():
+                await stream.start()
+                await stream.event(SpeechStart("t1"))
+                await stream.event(SpeechComplete(final, turn_id="t1"))
+                for _ in range(200):
+                    if tts.spoken:
+                        break
+                    await asyncio.sleep(0.001)
+                gate.set()
+                await stream.drain()
+
+            asyncio.run(run())
+            return tts.spoken[0]
+
+        angry = speak_ack("This is ridiculous.")
+        self.assertNotIn(angry, ("Okay.", "Yeah."), "a complaint got a bright ack")
+        self.assertIn(angry, set(groups["sympathetic"]) | set(groups["thinking"]))
+
+        question = speak_ack("What does it cost?")
+        self.assertIn(question, set(groups["thinking"]))
 
     def test_a_fast_reply_never_speaks_an_ack(self):
         class FastLLM:
             async def complete(self, *, messages, tools=None, turn=None):
                 record = turn if turn is not None else MetaLLMTurn()
-                record.content_text += "Sure."
-                yield TokenDelta(text="Sure.")
+                record.content_text += "I can do that."
+                yield TokenDelta(text="I can do that.")
                 record.finished = True
 
         stream = CascadeTurnStream(
@@ -620,7 +683,7 @@ class AckTest(unittest.TestCase):
 
         asyncio.run(run())
 
-        self.assertEqual(["Sure."], stream._tts.spoken)
+        self.assertEqual(["I can do that."], stream._tts.spoken)
 
 
 class EndCallSignalTest(unittest.TestCase):
@@ -685,7 +748,7 @@ class EndCallSignalTest(unittest.TestCase):
 
         asyncio.run(run())
 
-        self.assertEqual([closing], stream._tts.spoken)
+        self.assertEqual(["Bye!"], stream._tts.spoken)
         self.assertEqual(["end"], ended)
 
     def _run_caller_request(self, final_text, reply_text, *, locale="en", calls=(), executor=None):
@@ -721,7 +784,7 @@ class EndCallSignalTest(unittest.TestCase):
             "Okay, bye!",
         )
 
-        self.assertEqual(["Okay, bye!"], stream._tts.spoken)
+        self.assertEqual(["Bye!"], stream._tts.spoken)
         self.assertEqual(["end"], ended, "the caller's request is call control")
 
     def test_a_german_caller_asking_to_hang_up_ends_the_call(self):
@@ -741,7 +804,7 @@ class EndCallSignalTest(unittest.TestCase):
         )
 
         self.assertEqual([], ended)
-        self.assertEqual(["Of course, go ahead."], stream._tts.spoken)
+        self.assertEqual(["Go ahead."], stream._tts.spoken)
 
     def test_an_empty_model_hang_up_still_ends_on_the_callers_request(self):
         from cascade.meta_llm import MetaToolCall, ToolDenial
@@ -766,7 +829,7 @@ class EndCallSignalTest(unittest.TestCase):
             executor=DenyingExecutor(),
         )
 
-        self.assertEqual(["Okay, bye!"], stream._tts.spoken)
+        self.assertEqual(["Bye!"], stream._tts.spoken)
         self.assertEqual(["end"], ended)
 
     def test_a_barge_in_during_the_goodbye_keeps_listening_and_never_hangs_up(self):
@@ -812,7 +875,7 @@ class EndCallSignalTest(unittest.TestCase):
         asyncio.run(run())
 
         self.assertEqual([], ended, "a barge-in during the goodbye still hung up")
-        self.assertEqual([closing, "Sure, I am still here."], tts.spoken)
+        self.assertEqual([closing, "I am still here."], tts.spoken)
         self.assertEqual(2, len(audio.frames))
 
 

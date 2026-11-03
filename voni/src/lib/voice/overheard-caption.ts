@@ -26,3 +26,13 @@ export function settleOverheardTurn(turn: Transcript, overheard: boolean): Trans
 export function overheardLabel(line: Transcript | null | undefined): string {
   return line?.overheard ? " · overheard" : "";
 }
+
+/**
+ * The transcript row's speaker from its rendered label. The label is `You`,
+ * or `You · overheard` for a visitor turn spoken over the agent; an agent line
+ * is `Voni`. Evidence readers must map both visitor forms to the caller — a
+ * caller line filed as an agent line corrupts the transcript, not the product.
+ */
+export function transcriptRole(label: string): "caller" | "agent" {
+  return label === "You" || label.startsWith("You ·") ? "caller" : "agent";
+}

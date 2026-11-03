@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { tickAllowed } from "../lib/voice/call-sounds";
-import { overheardLabel, settleOverheardTurn, userCaption } from "../lib/voice/overheard-caption";
+import { overheardLabel, settleOverheardTurn, transcriptRole, userCaption } from "../lib/voice/overheard-caption";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -161,6 +161,48 @@ test("the production early return cannot short-circuit the browser E2E capture f
   );
 });
 
+test("the browser call marks are gated by the capture flag and wired to the cascade", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const demo = call.slice(
+    call.indexOf('if (modeKind === "demo") {'),
+    call.indexOf("const session = new VoiceSession({"),
+  );
+
+  // The recorder exists only through the gated factory; a production build
+  // without the capture flag gets `null` and writes nothing.
+  assert.match(
+    demo,
+    /const marks = createCallMarks\(\s*window\.location\.search,\s*process\.env\.NODE_ENV === "production",\s*\)/,
+    "the one capture flag decides whether marks exist",
+  );
+  assert.doesNotMatch(demo, /new CallMarks\(/, "no ungated recorder construction");
+  assert.match(demo, /marks\?\.mark\("start_requested"\)/);
+  assert.match(
+    demo,
+    /onMinted: \(minted\) => \{\s*marks\?\.mark\("mint_done"\);\s*const callId = callIdFromDemoToken\(minted\.demoCallToken\);\s*if \(callId !== null && marks\?\.adoptCallId\(callId\) === true\) \{\s*cascade\.setDeliveredCapture\(callDebugFlags\(\)\.deliverCapture, callId\);\s*\}\s*\}/,
+    "the mint binds the WAV and marks to the trace's call id before the mic attaches",
+  );
+  assert.match(
+    demo,
+    /setDeliveredCapture\(callDebugFlags\(\)\.deliverCapture, marks\?\.callId\)/,
+    "the WAV and the marks share one call id",
+  );
+  assert.match(
+    demo,
+    /new CascadeSession\(\{[\s\S]*?\}, \{\s*marks,[\s\S]*?reconnect: async \(\) => \{/,
+    "the session emits the transport marks and owns the one reconnect",
+  );
+  assert.match(
+    demo,
+    /mintDemoCall\(\{[\s\S]*?resume: true,[\s\S]*?history: boundedResumeHistory\(turnsRef\.current\)/,
+    "a reconnect re-mints the resume body with the carried turns",
+  );
+  assert.match(demo, /mark\("turn", \{ role: caption\.role, index: turnsRef\.current\.length \}\)/);
+  assert.match(demo, /marks\.mark\("connected_painted"\)/);
+  assert.match(demo, /marks\?\.mark\("start_failed"/);
+  assert.match(call, /marksRef\.current\?\.mark\("chime"\)/, "the chime is a mark");
+});
+
 test("the contact chip has one render site, gated on the invite, the inbox and the call tag", () => {
   const call = readRepo("components/voice-call.tsx");
   assert.equal((call.match(/<DemoAddressChip\b/g) ?? []).length, 1, "one chip, never a second");
@@ -199,7 +241,7 @@ test("every demo note is hidden context on the cascade, never a spoken managed l
     "checkEmailInstructions(result)",
     "emailArrivedInstructions(result, { fromLastCall: !test.invited })",
     "body.data.instructions",
-    "rungInstructions(rung, goal)",
+    "rungInstructions(rung)",
     "inviteNowInstructions(tag)",
   ]) {
     assert.ok(
@@ -226,10 +268,11 @@ test("the cascade demo restores the off-track ladder and invite fallback as note
   assert.match(call, /beatGoal\(emailTestRef\.current\)/);
   assert.match(
     call,
-    /ladderRef\.current\?\.onVerdict\(\s*verdict\.decision === "off-track",?\s*\)/,
+    /ladderRef\.current\?\.onVerdict\(\{\s*offTrack: verdict\.decision === "off-track",\s*upset: verdict\.upset,?\s*\}\)/,
+    "an upset turn never climbs the ladder",
   );
-  assert.match(call, /if \(rung === "end"\) closeCall\(rungInstructions\(rung, goal\)\)/);
-  assert.match(call, /else speak\(rungInstructions\(rung, goal\)\)/);
+  assert.match(call, /if \(rung === "end"\) closeCall\(rungInstructions\(rung\)\)/);
+  assert.match(call, /else speak\(rungInstructions\(rung\)\)/);
 
   // Voni mentioned the screen without the invite: the fallback note is hidden
   // context. The chip itself is ticket 15's job.
@@ -463,8 +506,13 @@ test("the pipeline's tools leave the demo UI working without a browser tool rela
   );
   assert.match(
     cascade,
-    /if \(action === "show-and-speak" && tag\) \{?\s*speak\(inviteNowInstructions\(tag\), \{ key: "invite" \}\)/,
-    "only a line without the tag gets the spoken fallback",
+    /if \(shouldSpeakInvite\(action, tag, callerFinalRef\.current\)\) \{?\s*speak\(inviteNowInstructions\(tag\), \{ key: "invite" \}\)/,
+    "only a willing turn without the tag gets the spoken fallback",
+  );
+  assert.match(
+    cascade,
+    /if \(caption\.role === "user"\) callerFinalRef\.current = caption\.text/,
+    "the invite gate reads the caller's final, not the agent's line",
   );
   assert.doesNotMatch(cascade, /onToolResult/, "the cascade never waits for a browser tool result");
   assert.doesNotMatch(cascade, /putTestUp|SHOW_TEST_ADDRESS_TOOL|CHECK_CODE_TOOL|SEND_CODE_REPLY_TOOL/);
@@ -623,4 +671,61 @@ test("tickAllowed: visitor words into silence only", () => {
   assert.equal(tickAllowed("user", false, draining), false, "agent tail still draining");
   assert.equal(tickAllowed("user", false, null), true, "no session (cascade idle)");
   assert.equal(tickAllowed("user", false, {}), true, "cascade has no playout probe");
+});
+
+// ── The turn ends on the playout's drain, not on the caption ─────────────
+// Call 285138f6: the greeting's final caption completed at 460 ms over 1.76 s
+// of audio and moved the call to `listening`, so the synthetic caller answered
+// 1.2 s before the speech ended. The state now follows `onSpeechEnd`.
+
+test("a final agent caption does not end the turn: the audio is still playing", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const branch = (() => {
+    const start = call.indexOf('marks?.mark("turn", { role: caption.role');
+    assert.ok(start >= 0, "the final caption branch is where the turn was marked");
+    const agent = call.indexOf('if (caption.role === "agent") {', start);
+    const otherwise = call.indexOf("} else {", agent);
+    assert.ok(agent >= 0 && otherwise > agent, "the agent final caption branch has a body");
+    return call.slice(agent, otherwise);
+  })();
+  assert.ok(
+    !branch.includes('setCallState("listening")'),
+    "the caption's final flag is text completion, not the end of the reply's audio",
+  );
+  assert.ok(
+    !branch.includes("speakingRef.current = false"),
+    "the caller still hears the agent as speaking until the playout drains",
+  );
+  assert.ok(
+    !branch.includes("replyDone("),
+    "the floor is released when the audio ends, never when the transcript does",
+  );
+});
+
+test("the playout's drain is the turn end: speaking -> listening and the floor", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const start = call.indexOf("onSpeechEnd: () => {");
+  assert.ok(start >= 0, "the cascade session's drain handler is wired");
+  const body = call.slice(start, call.indexOf("},", start));
+  assert.ok(body.includes("speakingRef.current = false"), "the drained turn stops speaking");
+  assert.ok(body.includes('setCallState("listening")'), "the drained turn opens the caller's turn");
+  assert.ok(body.includes("replyDone(false)"), "a finished reply releases the floor");
+});
+
+test("a barge-in still ends the turn at the cut, not at a drain that never comes", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const start = call.indexOf("onInterrupted: () => {");
+  assert.ok(start >= 0);
+  const body = call.slice(start, call.indexOf("},", start));
+  assert.ok(body.includes('setCallState("listening")'));
+  assert.ok(body.includes("replyDone(true)"), "the cut reply is recorded as interrupted");
+});
+
+test("the transcript label reader maps both visitor labels to the caller", () => {
+  // Call 875aae04: the caller's final landed as `You · overheard`; the harness
+  // reader only knew `You`, so the caller's line was filed as an agent line.
+  assert.equal(transcriptRole("You"), "caller");
+  assert.equal(transcriptRole("You · overheard"), "caller", "an overheard visitor line is still the caller");
+  assert.equal(transcriptRole("Voni"), "agent");
+  assert.equal(transcriptRole(""), "agent", "an unknown label is never credited to the caller");
 });

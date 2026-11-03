@@ -10,7 +10,15 @@
  * `scoreboard-budgets.json` together — the freeze guard fails otherwise.
  */
 
-export type BudgetUnit = "ms" | "s" | "count" | "ratio" | "db" | "dbtp" | "lufs";
+export type BudgetUnit =
+  | "ms"
+  | "s"
+  | "count"
+  | "ratio"
+  | "db"
+  | "dbtp"
+  | "lufs"
+  | "usd";
 
 export type BudgetEntry = {
   value: number;
@@ -348,6 +356,514 @@ const BUDGETS = {
     unit: "count",
     gate: "timbre-probes",
     source: "spec W5/testing: two independent raters on one shared recording per subject",
+  },
+
+  // Demo-verification contract bars (ticket 06). New records only: every
+  // budget above is untouched, so a scoreboard green keeps its meaning. The
+  // contract registry references these keys and never restates a value. A bar
+  // edit is a spec change: move this table, the JSON record, the pinned
+  // expectation in scoreboard.test.ts and the contract bar record together.
+  dvRingbackAfterAnswerMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/L1",
+    source: "demo-verification spec L1: ringback after the answer",
+  },
+  dvRingbackOnHoldReturnMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/L1",
+    source: "demo-verification spec L1: ringback on a hold return",
+  },
+  dvConnectedBeforeAdmissionMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/L2",
+    source: "demo-verification spec L2: a connected mark before pipeline admission",
+  },
+  dvChimeCountExact: {
+    value: 1,
+    unit: "count",
+    gate: "contract/L3",
+    source: "demo-verification spec L3: exactly one chime at the first audible greeting sample",
+  },
+  dvChimeWindowMs: {
+    value: 300,
+    unit: "ms",
+    gate: "contract/L3",
+    source: "demo-verification spec L3: the chime lands within 300 ms of the first audible sample",
+  },
+  dvGreetingFirstAudioP95Ms: {
+    value: 2000,
+    unit: "ms",
+    gate: "contract/L4",
+    source: "demo-verification spec L4: greeting first audio p95 <= 2 s after connected",
+  },
+  dvGreetingFirstAudioMaxMs: {
+    value: 3000,
+    unit: "ms",
+    gate: "contract/L4",
+    source: "demo-verification spec L4: greeting first audio max 3 s after connected",
+  },
+  dvConfigAfterMicMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/L5",
+    source: "demo-verification spec L5: a config frame sent after mic-acquired",
+  },
+  dvTtsOpenMaxMs: {
+    value: 3000,
+    unit: "ms",
+    gate: "contract/L6",
+    source: "demo-verification spec L6: bounded TTS open, else the named unavailable state",
+  },
+  dvGreetingContinuousMaxMs: {
+    value: 4000,
+    unit: "ms",
+    gate: "contract/L7",
+    source: "demo-verification spec L7: one human breath, <= 4 s continuous or a natural split",
+  },
+  dvClockStartBeforeAudioMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/L8",
+    source: "demo-verification spec L8: a talk clock started before first audible audio",
+  },
+  dvGoodbyePlayedRatioMin: {
+    value: 1,
+    unit: "ratio",
+    gate: "contract/L9",
+    source: "demo-verification spec L9: a started goodbye fully audible (100% played)",
+  },
+  dvDropAfterLastSampleMaxMs: {
+    value: 300,
+    unit: "ms",
+    gate: "contract/L9/C7",
+    source: "demo-verification spec L9/C7: line drop <= 300 ms after the last goodbye sample",
+  },
+  dvSilentEndMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/L10",
+    source: "demo-verification spec L10: a silent end after a failed greeting",
+  },
+  dvEndEndCallDivergenceMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/L11",
+    source: "demo-verification spec L11: end/end_call divergence",
+  },
+  dvFirstResponseP50Ms: {
+    value: 350,
+    unit: "ms",
+    gate: "contract/T1",
+    source: "demo-verification spec T1: first response p50 <= 350 ms",
+  },
+  dvFirstResponseP95Ms: {
+    value: 700,
+    unit: "ms",
+    gate: "contract/T1",
+    source: "demo-verification spec T1: first response p95 <= 700 ms",
+  },
+  dvFirstResponseMaxMs: {
+    value: 1200,
+    unit: "ms",
+    gate: "contract/T1",
+    source: "demo-verification spec T1: first response max 1.2 s",
+  },
+  dvSubstantiveResponseP50Ms: {
+    value: 900,
+    unit: "ms",
+    gate: "contract/T2",
+    source: "demo-verification spec T2: substantive response p50 <= 900 ms",
+  },
+  dvSubstantiveResponseP95Ms: {
+    value: 1800,
+    unit: "ms",
+    gate: "contract/T2",
+    source: "demo-verification spec T2: substantive response p95 <= 1.8 s",
+  },
+  dvSubstantiveResponseMaxMs: {
+    value: 2500,
+    unit: "ms",
+    gate: "contract/T2",
+    source: "demo-verification spec T2: substantive response max 2.5 s",
+  },
+  dvBargeInStopP95Ms: {
+    value: 300,
+    unit: "ms",
+    gate: "contract/T3",
+    source: "demo-verification spec T3: barge-in stop p95 <= 300 ms",
+  },
+  dvBargeInStopMaxMs: {
+    value: 500,
+    unit: "ms",
+    gate: "contract/T3",
+    source: "demo-verification spec T3: barge-in stop max 500 ms",
+  },
+  dvFillerTurnMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/T4",
+    source: "demo-verification spec T4: a filler or backchannel answered as a turn",
+  },
+  dvFillerResumeMaxMs: {
+    value: 400,
+    unit: "ms",
+    gate: "contract/T5",
+    source: "demo-verification spec T5: resume after a filler cut <= 400 ms, no repeat",
+  },
+  dvRestartFromTopMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/T6",
+    source: "demo-verification spec T6: an interruption restarted from the top",
+  },
+  dvDoubledFramesMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/T7",
+    source: "demo-verification spec T7: doubled playback frames under overlap",
+  },
+  dvLostFinalMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/T7",
+    source: "demo-verification spec T7: lost caller finals under overlap",
+  },
+  dvDeadAirWithoutBridgeMaxMs: {
+    value: 700,
+    unit: "ms",
+    gate: "contract/T8",
+    source: "demo-verification spec T8: dead air without a bridge never exceeds 700 ms",
+  },
+  dvPrematureCutMaxRatio: {
+    value: 0.03,
+    unit: "ratio",
+    gate: "contract/T9",
+    source: "demo-verification spec T9: premature endpoint cut <= 3% of turns",
+  },
+  dvMissedEndMaxMs: {
+    value: 500,
+    unit: "ms",
+    gate: "contract/T9",
+    source: "demo-verification spec T9: missed end <= 500 ms",
+  },
+  dvReplyWhileCallerSpeaksMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/T10",
+    source: "demo-verification spec T10: a reply that starts while the caller speaks",
+  },
+  dvUnilateralEndMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/C1",
+    source: "demo-verification spec C1: an end not caused by caller, clock, budget or unrecoverable failure",
+  },
+  dvGreetingOnlyOpenMinS: {
+    value: 30,
+    unit: "s",
+    gate: "contract/C2",
+    source: "demo-verification spec C2: a greeting-only call stays open at least 30 s",
+  },
+  dvClarificationLoopMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/C3",
+    source: "demo-verification spec C3: a clarification loop",
+  },
+  dvInventedMeaningMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/C3",
+    source: "demo-verification spec C3: invented meaning on nonsense",
+  },
+  dvHostilityHangUpMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/C4",
+    source: "demo-verification spec C4: a hang-up under hostility",
+  },
+  dvVerbatimRepeatMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/C5",
+    source: "demo-verification spec C5: a verbatim repeated line within a call",
+  },
+  dvToolNarrationMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/C6",
+    source: "demo-verification spec C6: a narrated tool call",
+  },
+  dvUndoneWorkClaimMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/C6",
+    source: "demo-verification spec C6: a claim of work not done",
+  },
+  dvPostEndAudioMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/C8",
+    source: "demo-verification spec C8: narration or audio after the end signal",
+  },
+  dvSpelledEmailMismatchMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/K1",
+    source: "demo-verification spec K1: a spelled email reconstructed inexactly",
+  },
+  dvNumberReadbackMismatchMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/K2",
+    source: "demo-verification spec K2: a number read back incorrectly",
+  },
+  dvAmbiguityGuessMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/K4",
+    source: "demo-verification spec K4: a guess where ambiguity needed one targeted question",
+  },
+  dvEnglishLeakMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/K5",
+    source: "demo-verification spec K5: an English leak in a non-English Locale",
+  },
+  dvInventedFactMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/K7",
+    source: "demo-verification spec K7: an invented fact",
+  },
+  dvTranscriptEntityMismatchMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/K8",
+    source: "demo-verification spec K8: an entity mismatch between transcript and delivered audio",
+  },
+  dvToolDecisionMaxMs: {
+    value: 300,
+    unit: "ms",
+    gate: "contract/X1",
+    source: "demo-verification spec X1: tool decision <= 300 ms after turn end",
+  },
+  dvToolBridgeMaxMs: {
+    value: 700,
+    unit: "ms",
+    gate: "contract/X2",
+    source: "demo-verification spec X2: a spoken bridge when a tool exceeds 700 ms",
+  },
+  dvToolContinuationP95Ms: {
+    value: 2000,
+    unit: "ms",
+    gate: "contract/X3",
+    source: "demo-verification spec X3: result plus spoken continuation p95 <= 2 s",
+  },
+  dvToolSilenceMaxMs: {
+    value: 3000,
+    unit: "ms",
+    gate: "contract/X3",
+    source: "demo-verification spec X3: a tool turn silent for more than 3 s fails",
+  },
+  dvPersonalDomainGateCount: {
+    value: 1,
+    unit: "count",
+    gate: "contract/X5",
+    source: "demo-verification spec X5: the personal-domain email gate fires exactly once",
+  },
+  dvToolResultSpokenMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/X9",
+    source: "demo-verification spec X9: a tool result or secret spoken aloud",
+  },
+  dvDropoutMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/A1",
+    source: "demo-verification spec A1: a dropout longer than 20 ms, a click or a seam",
+  },
+  dvAudioFormatMismatchMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/A2",
+    source: "demo-verification spec A2: a sample-rate or format mismatch end-to-end",
+  },
+  dvEchoAsCallerSpeechMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/A4",
+    source: "demo-verification spec A4: agent echo returned as caller speech",
+  },
+  dvPlayoutUnderrunMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/A6",
+    source: "demo-verification spec A6: a playout underrun",
+  },
+  dvPlayoutOverrunMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/A6",
+    source: "demo-verification spec A6: a playout overrun",
+  },
+  dvBargeInFadeMaxMs: {
+    value: 120,
+    unit: "ms",
+    gate: "contract/A7",
+    source: "demo-verification spec A7: a barge-in fade longer than 120 ms",
+  },
+  dvBargeInPopMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/A7",
+    source: "demo-verification spec A7: a pop at the barge-in fade",
+  },
+  dvSilentFrameMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/A8",
+    source: "demo-verification spec A8: a silent frame sent as audio",
+  },
+  dvJitterLostTurnMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/R1",
+    source: "demo-verification spec R1: a turn lost under jitter and loss",
+  },
+  dvJitterDoubledAudioMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/R1",
+    source: "demo-verification spec R1: doubled audio under jitter and loss",
+  },
+  dvPromptLeakMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/S1",
+    source: "demo-verification spec S1: a prompt or secret revealed by injection",
+  },
+  dvCrossSubjectToolCallMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/S2",
+    source: "demo-verification spec S2: a tool call for another subject or call",
+  },
+  dvPiiBeyondContractMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/S4",
+    source: "demo-verification spec S4: caller PII in traces beyond the contract",
+  },
+  dvCredentialLeakMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/S5",
+    source: "demo-verification spec S5: a credential in client frames or logs",
+  },
+  dvCrossCallMemoryLeakMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/S6",
+    source: "demo-verification spec S6: a cross-call memory leak",
+  },
+  dvCostPerCallMaxUsd: {
+    value: 0.15,
+    unit: "usd",
+    gate: "contract/E2",
+    source: "demo-verification spec E2: cost per demo call <= $0.15",
+  },
+  dvCostFastRunMaxUsd: {
+    value: 2,
+    unit: "usd",
+    gate: "contract/E3",
+    source: "demo-verification spec E3: fast-contract run ceiling <= $2",
+  },
+  dvCostNightlyRunMaxUsd: {
+    value: 15,
+    unit: "usd",
+    gate: "contract/E3",
+    source:
+      "demo-verification owner amendment 2026-10-31: nightly-health run ceiling <= $15 " +
+      "(91 calls x $0.15 = $13.65)",
+  },
+  dvCostFullRunMaxUsd: {
+    value: 45,
+    unit: "usd",
+    gate: "contract/E3",
+    source:
+      "demo-verification owner amendment 2026-10-31: full-certification run ceiling <= $45 " +
+      "(273 calls x $0.15 = $40.95)",
+  },
+  dvBudgetStopMaxCount: {
+    value: 0,
+    unit: "count",
+    gate: "contract/E4",
+    source: "demo-verification spec E4: a budget stop on the golden path",
+  },
+  dvStayOnCallYesMinRatio: {
+    value: 0.8,
+    unit: "ratio",
+    gate: "contract/H1",
+    source: "demo-verification spec H1: >= 80% would stay on the call",
+  },
+  dvStayOnCallLocaleMinRatio: {
+    value: 0.7,
+    unit: "ratio",
+    gate: "contract/H1",
+    source: "demo-verification spec H1: no Locale below 70% would stay",
+  },
+  dvHumanDetectionMinRatio: {
+    value: 0.4,
+    unit: "ratio",
+    gate: "contract/H2",
+    source: "demo-verification spec H2: blind A/B human detection >= 40%",
+  },
+  dvHumanDetectionMaxRatio: {
+    value: 0.6,
+    unit: "ratio",
+    gate: "contract/H2",
+    source: "demo-verification spec H2: blind A/B human detection <= 60%",
+  },
+  dvHumanDetectionMinJudgments: {
+    value: 40,
+    unit: "count",
+    gate: "contract/H2",
+    source: "demo-verification spec H2: at least 40 blind A/B judgments per Locale",
+  },
+  dvSoundsHumanMedianMin: {
+    value: 4,
+    unit: "count",
+    gate: "contract/H3",
+    source: "demo-verification spec H3: sounds-human median >= 4",
+  },
+  dvSoundsHumanCallMin: {
+    value: 3,
+    unit: "count",
+    gate: "contract/H3",
+    source: "demo-verification spec H3: no call rated below 3",
+  },
+  dvTurnTakingMedianMin: {
+    value: 4,
+    unit: "count",
+    gate: "contract/H4",
+    source: "demo-verification spec H4: turn-taking naturalness median >= 4",
+  },
+  dvAgentNotPreferredMaxRatio: {
+    value: 0.4,
+    unit: "ratio",
+    gate: "contract/H5",
+    source: "demo-verification spec H5: agent not preferred < 40%",
+  },
+  dvJudgeKappaMin: {
+    value: 0.65,
+    unit: "ratio",
+    gate: "contract/H6",
+    source: "demo-verification spec H6: weighted kappa >= 0.65, else unverified",
   },
 } as const satisfies Record<string, BudgetEntry>;
 

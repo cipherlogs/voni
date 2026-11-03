@@ -56,6 +56,21 @@ CASCADE_GAPS = (
     ("reply_gap_ms", "speech_complete", "first_playout"),
 )
 
+#: Counters that exist only once a reply guard fires (repeat, unanswered
+#: question, acknowledgement opener or an uninvited test offer). They are
+#: omitted from a summary while zero, so a ledger that predates the guards
+#: (and the frozen managed artifact) keeps its exact shape.
+OPTIONAL_COUNTERS = (
+    "repeat_repair",
+    "repeat_dropped",
+    "question_repair",
+    "question_withheld",
+    "filler_stripped",
+    "offer_withheld",
+    "reply_held",
+    "reply_merged",
+)
+
 COUNTERS = (
     "backchannel",
     "yield",
@@ -68,6 +83,7 @@ COUNTERS = (
     "tool_denied",
     "end_call",
     "overheard",
+    *OPTIONAL_COUNTERS,
 )
 
 
@@ -120,7 +136,11 @@ class TimingLedger:
                     "floor_take", "first_playout"
                 ),
             },
-            "counts": dict(self._counts),
+            "counts": {
+                name: value
+                for name, value in self._counts.items()
+                if name not in OPTIONAL_COUNTERS or value
+            },
         }
 
     def reset(self) -> None:

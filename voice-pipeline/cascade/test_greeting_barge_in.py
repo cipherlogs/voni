@@ -29,7 +29,7 @@ import unittest
 
 from cascade.assemblyai_tts import AssemblyAIStreamingTTS
 from cascade.body_map import CascadeBody, adapt_body
-from cascade.call import CallLifecycle, OpenedLeg
+from cascade.call import AudioFrame, BrowserStop, CallLifecycle, OpenedLeg
 from cascade.greeting import CallGreeting
 from cascade.meta_stt import SpeechComplete, SpeechPartial, SpeechStart
 from cascade.test_call import CALL_ID, ISSUED_S, SECRET, FakeStream, signed_message
@@ -242,6 +242,7 @@ class TurnTransport:
         self.inputs = list(inputs)
         self.sent: list[dict] = []
         self.closed = False
+        self.listening_sent = False
         self.finish = asyncio.Event()
 
     async def receive(self):
@@ -255,6 +256,12 @@ class TurnTransport:
 
     async def send(self, message) -> None:
         self.sent.append(dict(message))
+
+    async def listening(self) -> None:
+        self.listening_sent = True
+
+    async def interrupted(self) -> None:
+        self.sent.append({"type": "interrupted"})
 
     async def close(self) -> None:
         self.closed = True
@@ -274,8 +281,12 @@ class StoppingStream(FakeStream):
 
 
 class GreetingBargeInCallTest(unittest.TestCase):
-    def make(self, *, trace, voice, inputs=()):
+    def make(self, *, trace, voice, inputs=(), listening=False):
         transport = TurnTransport(inputs)
+        if not listening:
+            # The legacy barge tests script a caller who speaks after the
+            # greeting starts; without the seam the opening window is not run.
+            transport.listening = None  # type: ignore[method-assign]
         stream = StoppingStream(transport)
         frames = []
 
@@ -333,6 +344,91 @@ class GreetingBargeInCallTest(unittest.TestCase):
         self.assertIn("cancelled", marks)
         self.assertIn("greeting_done", marks)
         self.assertEqual([], speech.audio)
+
+    def test_caller_speech_before_the_greeting_starts_skips_it_entirely(self):
+        """A caller who opens first is never greeted, not even for one word.
+
+        The line is not started, so there is no synthesis, no frame and no
+        caption; the buffered caller events are the first thing the turn layer
+        sees. The client is told to open the mic before the greeting, so this
+        is reachable on a real call rather than only in a unit fake.
+        """
+        voice = GatedVoice()
+        lifecycle, transport, stream, frames, speech = self.make(
+            trace=[
+                SpeechStart("t1"),
+                SpeechComplete("this is ridiculous", turn_id="t1"),
+            ],
+            voice=voice,
+            listening=True,
+        )
+
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=2.0))
+
+        self.assertEqual([], voice.greeted)
+        self.assertEqual(0, voice.cancelled)
+        self.assertTrue(transport.listening_sent)
+        self.assertFalse(end.greeting.spoken)
+        self.assertFalse(end.greeting.cancelled)
+        self.assertIn("caller spoke first", end.greeting.reason)
+        self.assertEqual([], [frame for frame in frames if frame.kind == "greeting"])
+        self.assertTrue(stream.started)
+        self.assertEqual(
+            [SpeechStart, SpeechComplete], [type(event) for event in stream.events]
+        )
+        self.assertEqual(1, end.turns)
+        self.assertEqual("stop", end.ended_by)
+
+    def test_caller_audio_before_the_greeting_skips_it_without_a_provider_event(self):
+        """The provider's first speech event is slow; the PCM is early.
+
+        Two loud caller frames are enough to know the opening was interrupted
+        before the greeting started, even if the speech provider has not formed
+        its first partial yet. A stop ends the call so the test needs no turn.
+        """
+        voice = GatedVoice()
+        loud = b"\x00\x40" * 480
+        lifecycle, transport, stream, frames, speech = self.make(
+            trace=[],
+            voice=voice,
+            inputs=[AudioFrame(loud), AudioFrame(loud), BrowserStop()],
+            listening=True,
+        )
+
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=2.0))
+
+        self.assertEqual([], voice.greeted)
+        self.assertEqual(0, voice.cancelled)
+        self.assertFalse(end.greeting.spoken)
+        self.assertIn("caller spoke first", end.greeting.reason)
+        self.assertEqual([], [frame for frame in frames if frame.kind == "greeting"])
+        self.assertEqual(2, len(speech.audio))
+
+    def test_a_greeting_cut_tells_the_browser_to_drop_the_audio_it_has_queued(self):
+        """The cut owns the whole line, including the part the browser holds.
+
+        Synthesis runs far ahead of real time: a 4.96 s greeting is fully
+        streamed in 0.87 s (delivered call eeaeba6a: 238080 bytes, 62 frames,
+        cancelled 874 ms after the first frame). Cancelling the producer stops
+        new frames but leaves that queue playing, so the caller hears the line
+        they interrupted. The browser already drops its playout on
+        ``{"type": "interrupted"}``; the greeting cut must send it.
+        """
+        voice = GatedVoice()
+        lifecycle, transport, stream, frames, speech = self.make(
+            trace=[SpeechStart("t1"), SpeechComplete("book a demo", turn_id="t1")],
+            voice=voice,
+        )
+
+        end = asyncio.run(asyncio.wait_for(lifecycle.run(), timeout=2.0))
+
+        self.assertEqual(1, voice.cancelled)
+        self.assertTrue(end.greeting.cancelled)
+        self.assertIn(
+            {"type": "interrupted"},
+            transport.sent,
+            "the greeting was cut but the browser was never told to drop its queue",
+        )
 
     def test_a_taking_the_floor_partial_also_cuts_without_a_speech_start(self):
         voice = GatedVoice()

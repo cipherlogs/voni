@@ -56,6 +56,8 @@ test("the browser's demo call token and the service's shared secret resolve the 
   assert.ok(service.ok);
   assert.deepEqual(browser.call, service.call, "both credentials run the same DemoCall");
   assert.deepEqual(browser.args, service.args);
+  assert.equal(browser.toolCallId, "call_abc123");
+  assert.equal(service.toolCallId, "call_abc123");
   assert.equal(browser.credential, "browser");
   assert.equal(service.credential, "service");
 });

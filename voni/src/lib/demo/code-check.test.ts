@@ -147,19 +147,172 @@ test("the invite comes once, from the show tool's own result: no lead-in, no sec
   assert.doesNotMatch(rules, /Let me put something on your screen|a note follows/);
 });
 
-test("the call opens with the hook, and a yes goes straight to the test", async () => {
+test("the call opens as itself, and a yes goes straight to the test", async () => {
   const { VONI_GREETINGS, voniConfig } = await import("./voni-agent");
-  assert.match(VONI_GREETINGS.en, /Let's try something cool/);
+  assert.equal(VONI_GREETINGS.en, "Hi, I'm Voni.", "the opening is a greeting, not a hook");
   assert.doesNotMatch(VONI_GREETINGS.en, /business/, "the business comes later");
   const rules = voniConfig("any").knowledge;
-  assert.match(rules, /As soon as they say yes[\s\S]*in that same turn, put the test on their screen/);
+  assert.match(rules, /When the caller accepts the test or asks what you can do[\s\S]*put the test on their screen in the same reply/);
   assert.doesNotMatch(rules, /Once they've told you a little about their business/);
+});
+
+test("a skeptical first turn is not an invitation", async () => {
+  const { voniConfig } = await import("./voni-agent");
+  const rules = voniConfig("any").knowledge;
+  assert.doesNotMatch(rules, /willing or neutral/, "neutrality alone is not acceptance");
+  assert.match(
+    rules,
+    /only when the caller accepts it or asks what you can do/,
+    "acceptance or a capability question is the signal",
+  );
+  assert.match(
+    rules,
+    /A challenge, skepticism, a question about whether you are real, small talk, or a neutral answer is not acceptance/,
+    "a skeptical challenge is answered without an invite",
+  );
+});
+
+test("a willing turn gets the test", async () => {
+  const { voniConfig } = await import("./voni-agent");
+  const rules = voniConfig("any").knowledge;
+  assert.match(
+    rules,
+    /When the caller accepts the test or asks what you can do[\s\S]*put the test on their screen in the same reply/,
+    "acceptance or a capability question brings the test",
+  );
+  assert.match(
+    rules,
+    /Once the invite is said, never say it again or paraphrase it/,
+    "one invite per call",
+  );
+});
+
+test("Voni's demo rules are principles, not a phrase ban-list", async () => {
+  const { voniConfig } = await import("./voni-agent");
+  const rules = voniConfig("any").knowledge;
+
+  // The rules must predate the test corpus: no scenario may have supplied its words.
+  for (const phrase of ["ridiculous", "scripted", "useless", "when you open", "Fair enough", "I'll fix that"]) {
+    assert.ok(!rules.toLowerCase().includes(phrase.toLowerCase()), `no corpus phrase: ${phrase}`);
+  }
+
+  assert.ok(
+    rules.includes("Every turn, answer the caller's actual words first, in one short sentence, two at most."),
+    "answer-first is a rule over any input",
+  );
+  assert.ok(
+    rules.includes("stop once you have answered: no follow-up question"),
+    "a direct answer is not padded with a follow-up question",
+  );
+  assert.ok(
+    rules.includes(
+      "When they complain or push back, don't label, narrate or diagnose their feelings",
+    ),
+    "a complaint is answered as content, never diagnosed or echoed",
+  );
+  assert.ok(
+    rules.includes(
+      "A complaint or frustration is answered and stopped too: no test offer, no invite, and no question about their business.",
+    ),
+    "a complaint still bars the invite",
+  );
+  assert.ok(
+    rules.includes(
+      "A challenge, skepticism, small talk, or a neutral answer is answered and stopped too; only acceptance or a question about what you can do brings the test next.",
+    ),
+    "only acceptance or a capability question brings the test",
+  );
+  assert.ok(
+    rules.includes("do not treat a neutral answer as a complaint"),
+    "a neutral answer is not read as a complaint",
+  );
+  assert.ok(
+    rules.includes("Talk like a person on a phone, not like a company: contractions, ordinary words, short sentences."),
+    "the register is casual as a principle, with no phrases to copy",
+  );
+  assert.ok(
+    rules.includes(
+      "Begin every reply with the substance itself: no acknowledgement or filler opener, and never an acknowledgement alone.",
+    ),
+    "the reply starts with its substance as a principle",
+  );
+  assert.ok(
+    rules.includes(
+      "Never reuse a line, question or opener within a call: word every turn afresh, never start two replies the same way, and never fall back on a reflex pitch.",
+    ),
+    "repetition and reflex pitching are banned as behaviours",
+  );
+  assert.ok(
+    !rules.includes("A short filler can open a real reply"),
+    "no wording hands the model a filler to open with",
+  );
+  for (const filler of ["Got it,", "Okay,", "Right,", "Fair enough"]) {
+    assert.ok(
+      !rules.includes(filler),
+      `the prompt does not exemplify a filler opener: ${filler}`,
+    );
+  }
+  assert.ok(
+    rules.includes("Never promise to fix, change, or look into something this demo cannot actually do."),
+    "the honesty rule survives",
+  );
+});
+
+test("a complaint gets content, never a feelings formula or an offer", async () => {
+  const { COMPLAINT_REPLY_RULE, voniConfig } = await import("./voni-agent");
+  const rules = voniConfig("any").knowledge;
+
+  for (const formula of [
+    "that's fair",
+    "that sounds frustrating",
+    "sounds frustrating",
+    "i understand",
+    "i hear you",
+    "i'm here for you",
+    "i'm here if you want",
+  ]) {
+    assert.ok(
+      !rules.toLowerCase().includes(formula),
+      `no therapy formula in the prompt: ${formula}`,
+    );
+  }
+
+  assert.ok(rules.includes(COMPLAINT_REPLY_RULE), "the complaint shape reaches the body");
+  assert.match(
+    COMPLAINT_REPLY_RULE,
+    /don't label, narrate or diagnose their feelings/,
+    "feelings are never labelled or narrated",
+  );
+  assert.match(
+    COMPLAINT_REPLY_RULE,
+    /Never announce that you're available or there for them, and never add an offer, a pitch or an invite after a complaint/,
+    "no availability line and no offer after a complaint",
+  );
+  assert.match(
+    COMPLAINT_REPLY_RULE,
+    /one flowing sentence, not two clipped ones/,
+    "one flowing sentence, not two clipped fragments",
+  );
+  assert.match(COMPLAINT_REPLY_RULE, /Vary the shape every time, never the same twice/);
+  for (const shape of [
+    "ask what actually happened",
+    "say what you can do about it",
+    "ask for the one thing you need to act",
+  ]) {
+    assert.ok(COMPLAINT_REPLY_RULE.includes(shape), `shape offered: ${shape}`);
+  }
+  assert.doesNotMatch(
+    COMPLAINT_REPLY_RULE,
+    /like:|"/,
+    "shapes only: no fixed reply line to copy",
+  );
 });
 
 test("a personal address: acknowledged, asked again, never a hang-up", async () => {
   const { checkEmailInstructions, beatGoal, EMAIL_BEAT_GOAL, OPEN_BEAT_GOAL } = await import("./voni-agent");
   const line = checkEmailInstructions({ status: "free", address: "nedal@gmail.com" });
-  assert.match(line, /Got it, Nedal! But that's a personal address, and I need your work one/);
+  assert.match(line, /That's a personal address, Nedal, and I need your work one/);
+  assert.doesNotMatch(line, /Got it|No problem/, "the example opens with the point, not an ack");
   assert.match(line, /Never hang up over it/);
   assert.doesNotMatch(line, /Then hang up/);
   const invited = { invited: true, found: false };

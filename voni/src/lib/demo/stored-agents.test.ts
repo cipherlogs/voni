@@ -587,16 +587,36 @@ test("the browser never receives the write-only LLM key", () => {
 });
 
 test("ladder and time-up instructions describe hanging up without naming the tool", async () => {
-  const { rungInstructions, TIME_UP_INSTRUCTIONS, OPEN_BEAT_GOAL } = await import("./voni-agent");
+  const { rungInstructions, TIME_UP_INSTRUCTIONS } = await import("./voni-agent");
   for (const text of [
-    rungInstructions("nudge", OPEN_BEAT_GOAL),
-    rungInstructions("warning", OPEN_BEAT_GOAL),
-    rungInstructions("end", OPEN_BEAT_GOAL),
+    rungInstructions("nudge"),
+    rungInstructions("warning"),
+    rungInstructions("end"),
     TIME_UP_INSTRUCTIONS,
   ]) {
     assert.doesNotMatch(text, /end_call/);
   }
-  assert.match(rungInstructions("end", OPEN_BEAT_GOAL), /hang up/);
+  assert.match(rungInstructions("end"), /hang up/);
+});
+
+test("a nudge or warning invites only acceptance, and never a complaint", async () => {
+  const { rungInstructions } = await import("./voni-agent");
+  for (const rung of ["nudge", "warning"] as const) {
+    const text = rungInstructions(rung);
+    assert.match(text, /Never pitch or invite a complaint/, `${rung}: a complaint is never pitched`);
+    assert.match(
+      text,
+      /If the caller accepts the test or asks what you can do, put it up/,
+      `${rung}: acceptance or a capability question still invites`,
+    );
+    assert.match(
+      text,
+      /a challenge, skepticism, small talk, or a neutral answer is not acceptance/,
+      `${rung}: a skeptical or neutral turn is not an invitation`,
+    );
+    assert.doesNotMatch(text, /\?/, `${rung}: no question, so no business question`);
+    assert.doesNotMatch(text, /steers? back to the goal/i, `${rung}: never steer to a pitch`);
+  }
 });
 
 test("the email-test lines never name a tool", async () => {

@@ -115,12 +115,12 @@ DEMO_VOICE_IDS: tuple[str, ...] = _read_demo_voice_ids()
 #: than leaving a stale clip describing a sentence the call never says.
 GREETINGS: Mapping[str, str] = MappingProxyType(
     {
-        "en": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
-        "es": "¡Hola, soy Voni! Probemos algo genial: te muestro lo que puedo hacer mientras hablamos. ¿Listo?",
-        "fr": "Bonjour, ici Voni ! On essaie un truc sympa : je vous montre ce que je sais faire pendant qu'on parle. On y va ?",
-        "de": "Hallo, hier ist Voni! Probieren wir etwas Cooles: Ich zeige Ihnen, was ich kann, während wir reden. Bereit?",
-        "it": "Ciao, sono Voni! Proviamo una cosa forte: ti mostro cosa so fare mentre parliamo. Pronti?",
-        "pt": "Olá, aqui é Voni! Vamos testar algo legal: mostro o que sei fazer enquanto conversamos. Pronto?",
+        "en": "Hi, I'm Voni.",
+        "es": "Hola, soy Voni.",
+        "fr": "Bonjour, ici Voni.",
+        "de": "Hallo, hier ist Voni.",
+        "it": "Ciao, sono Voni.",
+        "pt": "Olá, aqui é Voni.",
     }
 )
 

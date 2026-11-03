@@ -17,7 +17,7 @@ import unittest
 
 from cascade.assemblyai_tts import Billing
 from cascade.meta_llm import TurnUsage
-from cascade.usage import UsageMeter
+from cascade.usage import NO_REQUEST, UsageMeter
 
 
 class RecordedTokenTests(unittest.TestCase):
@@ -203,6 +203,108 @@ class RecordedTokenTests(unittest.TestCase):
         self.assertFalse(usage.measured)
 
 
+class OpenedLegTests(unittest.TestCase):
+    """A leg the pipeline opened and never asked anything: a measured zero.
+
+    The count is the pipeline's own (it makes every request), so ``requests=0``
+    is a fact, not an estimate. The same leg with a request and no usage record
+    stays unmeasured, because the missing number is the vendor's to send.
+    """
+
+    def test_a_leg_opened_with_no_request_is_a_measured_zero(self):
+        meter = UsageMeter()
+        meter.record_opened("llm", requests=0)
+
+        llm = meter.usage().leg("llm")
+
+        self.assertTrue(llm.measured)
+        self.assertEqual(0, llm.requests)
+        for name in ("prompt_tokens", "completion_tokens", "cached_tokens", "reasoning_tokens"):
+            with self.subTest(unit=name):
+                unit = llm.unit(name)
+                self.assertEqual(0, unit.quantity)
+                self.assertTrue(unit.measured)
+                self.assertEqual(NO_REQUEST, unit.source)
+        self.assertEqual(
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+            {
+                name: unit["quantity"]
+                for name, unit in meter.to_document()["legs"]["llm"]["units"].items()
+            },
+        )
+
+    def test_a_request_with_no_usage_record_stays_unmeasured_by_name(self):
+        meter = UsageMeter()
+        meter.record_opened("llm", requests=1)
+        meter.record_llm("turn-1", None)
+
+        llm = meter.usage().leg("llm")
+
+        self.assertFalse(llm.measured)
+        self.assertIsNone(llm.unit("prompt_tokens").quantity)
+        self.assertIn("no usage chunk", llm.unit("prompt_tokens").source)
+        self.assertIn("no usage chunk", llm.unit("completion_tokens").source)
+
+    def test_a_request_counted_with_no_turn_is_still_unmeasured(self):
+        # The stream counted a request but registered no turn: the absence is
+        # the vendor's, so the leg is unmeasured even though the count is 1.
+        meter = UsageMeter()
+        meter.record_opened("llm", requests=1)
+
+        llm = meter.usage().leg("llm")
+
+        self.assertFalse(llm.measured)
+        self.assertEqual(1, llm.requests)
+        self.assertIn("no vendor usage record", llm.unit("prompt_tokens").source)
+
+    def test_a_vendor_record_beats_the_zero_request_statement(self):
+        # A record means a request happened; it is never discarded for a
+        # contradictory count.
+        meter = UsageMeter()
+        meter.record_opened("llm", requests=0)
+        meter.record_llm(
+            "turn-1",
+            {
+                "prompt_tokens": 128,
+                "completion_tokens": 16,
+                "prompt_tokens_details": {"cached_tokens": 0},
+                "completion_tokens_details": {"reasoning_tokens": 0},
+            },
+        )
+
+        llm = meter.usage().leg("llm")
+
+        self.assertTrue(llm.measured)
+        self.assertEqual(128, llm.unit("prompt_tokens").quantity)
+
+    def test_an_opened_leg_that_was_never_counted_stays_unmeasured(self):
+        # ``requests=None`` is "not counted in this scope", never zero.
+        meter = UsageMeter()
+        meter.record_opened("llm", requests=None)
+
+        llm = meter.usage().leg("llm")
+
+        self.assertFalse(llm.measured)
+        self.assertIn("no vendor usage record", llm.unit("prompt_tokens").source)
+
+    def test_an_unknown_leg_or_a_negative_count_is_refused(self):
+        meter = UsageMeter()
+        with self.assertRaises(ValueError):
+            meter.record_opened("voice", requests=0)
+        with self.assertRaises(ValueError):
+            meter.record_opened("llm", requests=-1)
+        with self.assertRaises(ValueError):
+            meter.record_opened("llm", requests=True)
+        meter.record_opened("llm", requests=0)
+        with self.assertRaises(ValueError):
+            meter.record_opened("llm", requests=0)
+
+
 class RecordedVoiceTests(unittest.TestCase):
     def billing(self, **overrides):
         values = {
@@ -283,6 +385,22 @@ class RecordedSpeechTests(unittest.TestCase):
         self.assertTrue(stt.unit("audio_seconds").measured)
         self.assertIn("whole seconds", stt.unit("audio_seconds").source)
         self.assertTrue(stt.measured)
+
+    def test_a_supplied_source_is_carried_not_relabelled_as_a_vendor_frame(self):
+        meter = UsageMeter()
+        meter.record_stt(
+            {
+                "audio_duration_seconds": 3.0,
+                "source": "meta speech: audio frames sent by the pipeline",
+            }
+        )
+
+        unit = meter.usage().leg("stt").unit("audio_seconds")
+
+        self.assertEqual(
+            unit.source, "meta speech: audio frames sent by the pipeline"
+        )
+        self.assertEqual(unit.quantity, 3)
 
     def test_a_whole_second_is_not_rounded_up(self):
         meter = UsageMeter()

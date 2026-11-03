@@ -144,7 +144,7 @@ the artifact-directory default). Secrets are names only in
 | `META_REASONING_EFFORT` | yes | the measured Spark effort; Spark refuses construction without it |
 | `META_IDENTIFIER_SALT` | yes | salts the stable internal id sent to Meta; never leaves the service |
 | `ASSEMBLYAI_API_KEY` | yes | the TTS leg |
-| `VOICE_PIPELINE_TOOL_BASE_URL` | yes | the app origin for `/api/tools/<name>`; empty ⇒ no tool executor and tool calls are dropped |
+| `VOICE_PIPELINE_TOOL_BASE_URL` | yes | the app origin for the tool route: `/api/demo/tools/<name>` for a demo subject, `/api/tools/<name>` for a tenant subject; empty ⇒ no tool executor and tool calls are dropped |
 | `VONI_TOOL_SECRET` | yes | bearer for the app's tool route |
 | `VOICE_PIPELINE_PORT` | no | listen port, 8766 |
 | `VOICE_PIPELINE_EVENTS_DIR` | no | trace artifact directory (`/var/lib/voni/events` in the image) |
@@ -160,9 +160,13 @@ one volume, port 8766, a 30-second drain. See `deploy/northflank/README.md`.
   `.events/`, gitignored). Every call-scoped line names its subject
   (`demo:<voice>`), so a reader knows which voice produced it; the end message
   cites the path (`eventsPath`) or why it is missing (`eventsError`).
-- Every call is priced from `cascade/rates/v1.json`. A leg with no measured unit
-  or no rate is `measured: false` with a named reason — never `0`. The end
-  message carries the per-leg cost, the rate-table version and the total.
+- Every call is priced from the rate table its own model selects:
+  `cascade/rates/v1.json` for the default `muse-spark-1.3`, and
+  `cascade/rates/v2.json` (model-scoped rates) for the demo's
+  `muse-wonder-1.0` body override. A leg with no measured unit or no rate is
+  `measured: false` with a named reason — never `0`, and a model with no
+  declared rate is unmeasured rather than priced at another model's rate. The
+  end message carries the per-leg cost, the rate-table version and the total.
 - The demo's evidence reads: `scoreboard:demo --pipeline cascade
   --ledger <end-message.json>` (from `voni/`) writes the cascade artifact, and
   `readiness:pack` accepts cascade artifacts only. The managed scoreboard reads

@@ -5,7 +5,12 @@ import {
   signEnvelope,
   type EnvelopeClaimsV2,
 } from "@/lib/voice/envelope";
-import { buildDemoAgentBody, demoAgentFingerprint, type DemoAgentBody } from "@/lib/demo/stored-agents";
+import {
+  buildDemoAgentBody,
+  demoAgentFingerprint,
+  type DemoAgentBody,
+  type LlmOverride,
+} from "@/lib/demo/stored-agents";
 import { DEMO_VOICE_IDS } from "@/lib/demo/voni-agent";
 import { secret } from "@/lib/env";
 import type { ResumeMessage } from "@/lib/voice/resume-history";
@@ -29,6 +34,25 @@ import type { ResumeMessage } from "@/lib/voice/resume-history";
  * that binding reproducible across deploys.
  */
 export const DEMO_ACCOUNT_SALT = "demo-cascade-body-account";
+
+/**
+ * The demo's one model (owner decision 2026-11-03: "we can use wonder"). The
+ * demo body always names it, so no env flag is needed for the product default:
+ * `buildDemoCascadeBody` puts exactly one provider entry in the signed body,
+ * and that explicit entry is the only path the pipeline's override allowlist
+ * accepts. The Standard rung keeps refusing `muse-wonder-1.0` everywhere else.
+ *
+ * `DEMO_LLM_MODEL_OVERRIDE` is a test/A-B switch, not a product setting: unset
+ * leaves the default above, set it to `muse-spark-1.3` to compare on the same
+ * branch. Only the two Meta Standard ids are accepted (Contributor ids are
+ * refused by the pipeline's guard too), and `META_API_KEY` must be present
+ * because the entry carries the credential it will be sent with.
+ */
+export const DEMO_LLM_MODEL: DemoLlmModel = "muse-wonder-1.0";
+export const DEMO_LLM_BASE_URL = "https://api.meta.ai/v1";
+export const DEMO_LLM_MODELS = ["muse-spark-1.3", "muse-wonder-1.0"] as const;
+export type DemoLlmModel = (typeof DEMO_LLM_MODELS)[number];
+export const DEMO_LLM_MODEL_OVERRIDE = "DEMO_LLM_MODEL_OVERRIDE";
 
 export type DemoCascadeBodyInput = {
   /** One of `DEMO_VOICE_IDS`; the voice picks the Locale. */
@@ -91,6 +115,48 @@ export class UnknownDemoVoice extends DemoCascadeBodyError {
   }
 }
 
+export class UnknownDemoLlmModel extends DemoCascadeBodyError {
+  readonly model: unknown;
+
+  constructor(model: unknown) {
+    super(
+      `unknown ${DEMO_LLM_MODEL_OVERRIDE} ${JSON.stringify(model)}; the demo ` +
+        `offers ${DEMO_LLM_MODELS.join(", ")}`,
+    );
+    this.model = model;
+  }
+}
+
+/**
+ * The demo's one override, read through `secret()` so `.env.local`, plain Node
+ * and the Worker agree. The model is always named: the product default unless
+ * the test/A-B switch says otherwise, never an absent override.
+ */
+export async function demoLlmOverride(): Promise<LlmOverride[]> {
+  const override = (await secret(DEMO_LLM_MODEL_OVERRIDE))?.trim();
+  const model = override || DEMO_LLM_MODEL;
+  if (!(DEMO_LLM_MODELS as readonly string[]).includes(model)) {
+    throw new UnknownDemoLlmModel(model);
+  }
+  const apiKey = (await secret("META_API_KEY"))?.trim();
+  if (!apiKey) {
+    throw new DemoCascadeBodyError(
+      `the demo body names ${model} but "META_API_KEY" is not set: the ` +
+        "override must carry the credential it will be sent with, and the " +
+        "Meta key is never substituted from another source",
+    );
+  }
+  const effort = (await secret("META_REASONING_EFFORT"))?.trim();
+  return [
+    {
+      base_url: DEMO_LLM_BASE_URL,
+      model,
+      api_key: apiKey,
+      ...(effort ? { reasoning_effort: effort } : {}),
+    },
+  ];
+}
+
 export type DemoCascadeBodyDeps = {
   /** Injectable clock in epoch milliseconds; `Date.now()` otherwise. */
   now?: number;
@@ -148,11 +214,14 @@ export async function buildDemoCascadeBody(
   // (stored-agents.ts): nothing is amended after it returns. The history is
   // inside the signed body, so the service cannot read a resumed conversation
   // the app did not sign.
-  // Meta only: the demo runs the pipeline's Standard rung (`muse-spark-1.3`).
-  // The gateway override is deliberately not carried here: its free tier
-  // refuses every Meta model, and a non-Meta model is not this product.
+  // Meta only: the demo runs the pipeline's Standard rung (`muse-spark-1.3`)
+  // unless the signed body names the demo's one model, Muse Wonder. The gateway
+  // override is deliberately not carried here: its free tier refuses every Meta
+  // model, and a non-Meta model is not this product.
+  const llm = await demoLlmOverride();
   const body = buildDemoAgentBody(voice, {
     resume,
+    llm,
     ...(input.history === undefined ? {} : { history: input.history }),
   });
   const agentId = `demo:${voice}`;

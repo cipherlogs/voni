@@ -263,6 +263,59 @@ class UnmeasuredCostTests(unittest.TestCase):
             self.assertIn("no units", " ".join(empty.leg(leg).reasons))
 
 
+class NoRequestLegTests(unittest.TestCase):
+    """A leg opened with no request is a measured zero, priced as one.
+
+    Every other leg here is measured, so the call's total is measurable: the
+    point of the zero is that it stops a greeting-only call from making the
+    whole run unmeasured. A request with no usage record is the next test,
+    and it stays unmeasured by name.
+    """
+
+    def measured_with(self, *, requests: int | None) -> UsageMeter:
+        meter = UsageMeter()
+        meter.record_stt({"audio_duration_seconds": 90})
+        meter.record_tts(
+            Billing(
+                characters=1000,
+                measured=True,
+                source="billed_characters",
+                audio_duration_seconds=0.0,
+                session_duration_seconds=1,
+            )
+        )
+        meter.record_opened("llm", requests=requests)
+        return meter
+
+    def test_a_leg_opened_with_no_request_prices_to_a_measured_zero(self):
+        priced = cost.cost_call(self.measured_with(requests=0).usage())
+
+        self.assertTrue(priced.measured)
+        llm = priced.leg("llm")
+        self.assertTrue(llm.measured)
+        self.assertEqual(Decimal(0), llm.amount)
+        self.assertEqual(
+            {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "reasoning_tokens": 0},
+            {line.rate.split(".", 1)[1]: line.billed for line in llm.lines},
+        )
+        # stt 90 s x $0.00005 + tts 1000 chars x $0.000015
+        self.assertEqual(Decimal("0.0195"), priced.amount)
+        self.assertEqual("0", priced.to_document()["legs"]["llm"]["amount"])
+
+    def test_a_request_with_no_usage_record_makes_the_leg_unmeasured(self):
+        meter = self.measured_with(requests=1)
+        meter.record_llm("turn-1", None)
+
+        priced = cost.cost_call(meter.usage())
+
+        self.assertFalse(priced.measured)
+        self.assertIsNone(priced.amount)
+        self.assertIsNone(priced.leg("llm").amount)
+        reasons = " ".join(priced.leg("llm").reasons)
+        self.assertIn("llm.prompt_tokens", reasons)
+        self.assertIn("no usage chunk", reasons)
+
+
 class IncompleteTableTests(unittest.TestCase):
     def test_a_unit_the_table_does_not_price_makes_the_total_unmeasured(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -454,6 +507,56 @@ class RecordIntegrityTests(unittest.TestCase):
             with self.assertRaises(cost.RateTableError) as caught:
                 table_with(tmp, negative)
             self.assertIn("negative", str(caught.exception))
+
+
+class DemoTicketModelABCostTests(unittest.TestCase):
+    """A model is priced only from its own sourced rates."""
+
+    def test_wonder_is_priced_from_its_own_scoped_v2_rates(self):
+        table = cost.load_rate_table(version=2)
+        priced = cost.cost_call(
+            known_call_usage(), table=table, llm_model="muse-wonder-1.0"
+        )
+
+        # Hand-worked from the public page (2026-11-03):
+        #   input  750,000 * $4.00/1M  = 3.00
+        #   cached 250,000 * $0.20/1M  = 0.05
+        #   out    150,000 * $20/1M    = 3.00
+        #   reason  50,000 * $20/1M    = 1.00
+        #   stt 90 s * $0.18/3600      = 0.0045
+        #   tts 1,000 chars * $15/1M   = 0.015
+        self.assertTrue(priced.measured)
+        self.assertEqual(priced.leg("llm").amount, Decimal("7.05"))
+        self.assertEqual(priced.amount, Decimal("7.0695"))
+        self.assertEqual(priced.to_document()["rateTable"]["version"], 2)
+
+    def test_the_wonder_rates_name_their_source_and_date(self):
+        table = cost.load_rate_table(version=2)
+        for unit in usage.TOKEN_UNITS:
+            rate = table.require(f"llm.muse-wonder-1.0.{unit}")
+            self.assertEqual(rate.model, "muse-wonder-1.0")
+            self.assertTrue(rate.source.strip())
+            self.assertTrue(rate.url.startswith("https://"))
+            self.assertEqual(rate.date, "2026-11-03")
+
+    def test_an_unpriced_model_leaves_the_llm_leg_unmeasured(self):
+        table = cost.load_rate_table(version=2)
+        priced = cost.cost_call(
+            known_call_usage(), table=table, llm_model="muse-unknown-1.0"
+        )
+
+        self.assertFalse(priced.measured)
+        self.assertIsNone(priced.leg("llm").amount)
+        self.assertEqual(priced.leg("stt").amount, Decimal("0.0045"))
+        self.assertIn("muse-unknown-1.0", " ".join(priced.reasons))
+        self.assertIn("never priced", " ".join(priced.reasons))
+
+    def test_spark_keeps_its_v1_prices_on_the_default_table(self):
+        priced = cost.cost_call(
+            known_call_usage(), llm_model=cost.DEFAULT_LLM_MODEL
+        )
+        self.assertEqual(priced.leg("llm").amount, Decimal("1.825"))
+        self.assertEqual(priced.to_document()["rateTable"]["version"], 1)
 
 
 if __name__ == "__main__":

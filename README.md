@@ -1,14 +1,23 @@
 # Voni
 
-An AI employee with a mission, not another chatbot. Voni runs phone and WhatsApp voice agents that qualify leads, book viewings, handle follow-ups, and hand off to humans when stuck.
+Voice-first agent platform for B2B. Deploy agents that resolve real work over calls, video, voice notes, and text — in one persistent session from trigger until resolved.
 
-## What it does
+## Vision
 
-- **Voice agents** — build phone agents through a guided wizard (goal, personality, voice + language with live sample, tasks), backed by AssemblyAI voice agents with business tools (property search, availability, booking, lead update, human transfer).
-- **Campaigns + dialer** — create campaigns with calling windows and consent policy, import leads from CSV, and dial through the Telnyx bridge (dry-run preview by default, explicit `--live --yes` for real calls).
-- **Leads, numbers, calls** — lead records with pipeline state, phone-number to agent binding for inbound calls, call history.
-- **Voice copilot** — global in-app voice assistant (header mic) that can navigate, fill the agent wizard, and operate jobs through a confirm gate.
-- **Durable background jobs** — anything slow (agent generation, CSV import, deployments, connection tests) runs as a job with a global status pill, a `/jobs` page, retry/cancel, and survival across reloads.
+Voni is where a company designs a workflow once and serves customers everywhere they already talk:
+
+- **Any trigger** — phone call, video call, voice note, WhatsApp, Instagram DMs/calls, social messaging. The trigger only starts the session.
+- **One session until resolved** — live + background in the same case. Hang up doesn't kill it. If a task takes 3 minutes, the customer goes on with their day; the agent follows up with a callback or voice note (voice preferred, feels personal) per what was agreed on-call.
+- **Voice in any form** — live calls, video, voice notes. Text welcome too. 24/7 instant pickup, no queue. Example: accident panic video call — understand damage live, plate, type, dispatch ambulance, keep following up for days in the same session.
+- **Customer-designed workflows** — non-technical ops build with a cold-email-builder-like canvas: do this, if success do X else Y, escalate, wait, hand off to human, request callback, close session. Technical builders can do anything with code.
+- **Any tool** — BYO APIs, MCPs, LLMs during the call and across the whole session. Prebuilt connectors ship over time.
+- **Single or group** — one voice talking + silent specialists, or handoffs between voices. Client's design choice.
+
+Bank-freeze and accident are the same loop: `verify → act → confirm`, live if possible, background if better, always smooth.
+
+## What exists now (current slice)
+
+The repo currently proves a narrow slice of this: phone + WhatsApp voice agents for qualification/booking/follow-up, agent wizard, campaigns + Telnyx dialer, leads/numbers/calls, in-app voice copilot, durable background jobs. The vision above is the target; the slice is the starting point.
 
 ## Stack
 

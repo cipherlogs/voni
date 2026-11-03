@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voni Studio — Corpus</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0d0f12; --panel: #16191f; --panel-2: #1d222a; --ink: #e8ebf0;
+        --muted: #9aa3b2; --line: #2b323d; --accent: #8ab4ff; --good: #6ee7a8; --bad: #ff8b8b;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+      header { display: flex; align-items: baseline; gap: 14px; padding: 18px 22px; border-bottom: 1px solid var(--line); }
+      header h1 { font-size: 18px; margin: 0; }
+      header .local { color: var(--muted); font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+      nav { display: flex; gap: 12px; margin-left: auto; }
+      nav a { color: var(--muted); text-decoration: none; font-size: 13px; }
+      nav a[aria-current="page"] { color: var(--ink); border-bottom: 1px solid var(--accent); }
+      main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(360px, 1fr); gap: 20px; padding: 20px 22px 60px; max-width: 1240px; margin: 0 auto; }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+      section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+      h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; }
+      h3 { font-size: 15px; margin: 0 0 8px; }
+      button, select, textarea, input { font: inherit; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
+      button { cursor: pointer; }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      button.primary { background: var(--accent); color: #0b1020; border-color: transparent; font-weight: 600; }
+      button.record { background: #3a1f24; border-color: #6b2c35; }
+      button.record.live { background: #7a2130; border-color: #ff5a6e; }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      .stack { display: grid; gap: 10px; }
+      label.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+      label.field input, label.field textarea, label.field select { width: 100%; }
+      textarea { resize: vertical; min-height: 64px; }
+      .status { min-height: 22px; font-size: 13px; }
+      .status.ok { color: var(--good); }
+      .status.bad { color: var(--bad); white-space: pre-wrap; }
+      .muted { color: var(--muted); font-size: 13px; }
+      .takes { display: grid; gap: 10px; max-height: 72vh; overflow: auto; padding-right: 4px; }
+      article.take { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 8px; }
+      article.take.retired { border-left: 3px solid var(--bad); }
+      article.take.baseline { border-left: 3px solid var(--good); }
+      article.take .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+      article.take .id { font-weight: 600; }
+      article.take .hash { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .chip { font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; color: var(--muted); }
+      .chip b { color: var(--ink); font-weight: 500; }
+      .consent { font-size: 12px; color: var(--muted); }
+      audio { width: 100%; height: 34px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Voni Studio</h1>
+      <span class="local">Corpus · local only</span>
+      <nav aria-label="Studio surfaces">
+        <a href="/">Record</a>
+        <a href="/rate">Rate</a>
+        <a href="/corpus" aria-current="page">Corpus</a>
+        <a href="/baseline">Baseline</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="panel" aria-labelledby="corpus-heading">
+        <h2 id="corpus-heading">Corpus</h2>
+        <div class="stack">
+          <p class="muted">
+            Every take keeps its sha256 for ever. Retire marks a take so a new scenario cannot select it; the
+            audio and record stay readable. Takes are never edited in place.
+          </p>
+          <div class="row">
+            <label class="field" style="flex: 1">Retire reviewer
+              <input id="retire-reviewer" type="text" placeholder="owner" />
+            </label>
+            <label class="field" style="flex: 2">Retire reason
+              <input id="retire-reason" type="text" placeholder="why this take leaves selection" />
+            </label>
+            <button id="refresh" type="button">Refresh</button>
+          </div>
+          <span class="status" id="corpus-status" role="status"></span>
+          <div class="takes" id="takes"></div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="baseline-heading">
+        <h2 id="baseline-heading">Human baseline capture</h2>
+        <div class="stack">
+          <p class="muted">
+            Baseline takes are blind comparison audio only; they never enter a certification scenario. The
+            participant id is a pseudonym, and the consent reference points at the signed form kept outside
+            the repository.
+          </p>
+          <div class="row">
+            <label class="field" style="flex: 1">Participant id (pseudonym)
+              <input id="participant" type="text" placeholder="p-01" />
+            </label>
+            <label class="field" style="flex: 1">Call
+              <select id="baseline-call">
+                <option value="1">1</option>
+                <option value="2">2</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">Consent reference — where the signed consent is filed
+            <input id="consent-ref" type="text" placeholder="consent-2026-10-31-p01" />
+          </label>
+          <label class="field">Consent date
+            <input id="consented-at" type="date" />
+          </label>
+          <div class="row">
+            <label class="field" style="flex: 1">Intent
+              <input id="label-intent" type="text" placeholder="book a table" />
+            </label>
+            <label class="field" style="flex: 1">Emotion
+              <input id="label-emotion" type="text" placeholder="neutral" />
+            </label>
+            <label class="field" style="flex: 1">Accent
+              <input id="label-accent" type="text" placeholder="Indian English" />
+            </label>
+          </div>
+          <div class="row">
+            <button class="record" id="record" type="button">Record baseline call</button>
+            <span class="muted" id="record-status">or choose a file below</span>
+          </div>
+          <label class="field">Baseline audio file (WAV, WebM, Ogg, MP3 or M4A)
+            <input id="baseline-file" type="file" accept="audio/*" />
+          </label>
+          <div class="row">
+            <button class="primary" id="save-baseline" type="button">Save baseline take</button>
+            <span class="status" id="baseline-status" role="status"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      let recorder = null;
+      let recorded = null;
+
+      function setStatus(id, text, kind) {
+        const node = $(id);
+        node.textContent = text;
+        node.className = `status${kind ? ` ${kind}` : ""}`;
+      }
+
+      async function json(response) {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.message || body.error || `request failed (${response.status})`);
+        return body;
+      }
+
+      function chip(label, value) {
+        const node = document.createElement("span");
+        node.className = "chip";
+        const strong = document.createElement("b");
+        strong.textContent = value;
+        node.append(`${label}: `, strong);
+        return node;
+      }
+
+      function renderTakes(takes) {
+        const box = $("takes");
+        box.replaceChildren();
+        if (takes.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No takes yet. Record one on the Record page.";
+          box.append(empty);
+          return;
+        }
+        for (const entry of takes) {
+          const take = entry.record;
+          const article = document.createElement("article");
+          article.className = `take${entry.retirement ? " retired" : ""}${take.baseline ? " baseline" : ""}`;
+
+          const top = document.createElement("div");
+          top.className = "top";
+          const id = document.createElement("span");
+          id.className = "id";
+          id.textContent = take.takeId;
+          const state = document.createElement("span");
+          state.className = "muted";
+          state.textContent = entry.retirement
+            ? `retired by ${entry.retirement.reviewer}`
+            : take.baseline
+              ? "baseline · not selectable"
+              : entry.selectable
+                ? "selectable"
+                : "not selectable";
+          top.append(id, state);
+
+          const hash = document.createElement("div");
+          hash.className = "hash";
+          hash.textContent = `sha256 ${take.audioSha256}`;
+
+          const chips = document.createElement("div");
+          chips.className = "chips";
+          chips.append(
+            chip("intent", take.labels.intent),
+            chip("emotion", take.labels.emotion),
+            chip("accent", take.labels.accent),
+            chip("recorded", take.recordedAt),
+          );
+
+          const audio = document.createElement("audio");
+          audio.controls = true;
+          audio.preload = "metadata";
+          audio.src = `/api/takes/${take.takeId}/audio`;
+
+          article.append(top, hash, chips, audio);
+
+          if (take.baseline) {
+            const consent = document.createElement("div");
+            consent.className = "consent";
+            consent.textContent =
+              `consent ${take.baseline.consentRef} · given ${take.baseline.consentedAt} · ` +
+              `participant ${take.baseline.participantId} · call ${take.baseline.call} of 2`;
+            article.append(consent);
+          }
+
+          if (entry.retirement) {
+            const why = document.createElement("div");
+            why.className = "consent";
+            why.textContent = `${entry.retirement.retiredAt} — ${entry.retirement.reason}`;
+            article.append(why);
+          } else {
+            const row = document.createElement("div");
+            row.className = "row";
+            const retire = document.createElement("button");
+            retire.type = "button";
+            retire.textContent = "Retire this take";
+            retire.addEventListener("click", () => retireTake(take.takeId));
+            row.append(retire);
+            article.append(row);
+          }
+
+          box.append(article);
+        }
+      }
+
+      async function reload() {
+        try {
+          const corpus = await json(await fetch("/api/corpus"));
+          renderTakes(corpus.takes);
+          setStatus("corpus-status", `${corpus.takes.length} take(s)`, "ok");
+        } catch (error) {
+          setStatus("corpus-status", error.message, "bad");
+        }
+      }
+
+      async function retireTake(takeId) {
+        const reviewer = $("retire-reviewer").value.trim();
+        const reason = $("retire-reason").value.trim();
+        if (!reviewer || !reason) {
+          setStatus("corpus-status", "A retirement needs a reviewer and a reason.", "bad");
+          return;
+        }
+        try {
+          await json(await fetch(`/api/takes/${takeId}/retire`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ reviewer, reason }),
+          }));
+          setStatus("corpus-status", `${takeId} retired; its audio and hash are untouched.`, "ok");
+          await reload();
+        } catch (error) {
+          setStatus("corpus-status", error.message, "bad");
+        }
+      }
+
+      function base64(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",")[1]);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      async function toggleRecord() {
+        if (recorder && recorder.state === "recording") {
+          recorder.stop();
+          return;
+        }
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const chunks = [];
+          recorded = null;
+          recorder = new MediaRecorder(stream);
+          recorder.ondataavailable = (event) => {
+            if (event.data.size > 0) chunks.push(event.data);
+          };
+          recorder.onstop = () => {
+            recorded = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+            $("record").classList.remove("live");
+            $("record").textContent = "Record baseline call";
+            $("record-status").textContent = `Recorded ${(recorded.size / 1024).toFixed(0)} KB; save it below.`;
+            for (const track of stream.getTracks()) track.stop();
+          };
+          recorder.start();
+          $("record").classList.add("live");
+          $("record").textContent = "Stop recording";
+          $("record-status").textContent = "Recording…";
+        } catch (error) {
+          setStatus("baseline-status", `Microphone unavailable: ${error.message}`, "bad");
+        }
+      }
+
+      async function saveBaseline() {
+        const participantId = $("participant").value.trim();
+        const consentRef = $("consent-ref").value.trim();
+        const consentedAt = $("consented-at").value;
+        const call = Number($("baseline-call").value);
+        const labels = {
+          intent: $("label-intent").value.trim(),
+          emotion: $("label-emotion").value.trim(),
+          accent: $("label-accent").value.trim(),
+        };
+        const file = $("baseline-file").files?.[0];
+        const audio = recorded ?? file;
+        if (!participantId || !consentRef || !consentedAt) {
+          setStatus("baseline-status", "Participant id, consent reference and consent date are required.", "bad");
+          return;
+        }
+        if (!labels.intent || !labels.emotion || !labels.accent) {
+          setStatus("baseline-status", "Intent, emotion and accent labels are required.", "bad");
+          return;
+        }
+        if (!audio) {
+          setStatus("baseline-status", "Record a baseline call or choose an audio file.", "bad");
+          return;
+        }
+        try {
+          const audioBase64 = await base64(audio);
+          const filename = file?.name || `baseline-${participantId}-call-${call}.webm`;
+          await json(await fetch("/api/takes", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              mode: "upload",
+              audioBase64,
+              labels,
+              upload: { filename, ...(audio.type ? { contentType: audio.type } : {}) },
+              baseline: { participantId, consentRef, consentedAt, call },
+            }),
+          }));
+          setStatus("baseline-status", "Baseline take landed with its consent metadata.", "ok");
+          recorded = null;
+          $("record-status").textContent = "or choose a file below";
+          await reload();
+        } catch (error) {
+          setStatus("baseline-status", error.message, "bad");
+        }
+      }
+
+      $("refresh").addEventListener("click", reload);
+      $("record").addEventListener("click", toggleRecord);
+      $("save-baseline").addEventListener("click", saveBaseline);
+      reload();
+    </script>
+  </body>
+</html>

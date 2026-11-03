@@ -36,6 +36,31 @@ rules live once, in ``voni/src/lib/demo/event-sanitizer.ts`` (ticket 07);
 ``test_sanitizer.py`` parses the TS source and fails by name when the copy
 drifts. There is no second denylist and no unsanitized write path.
 
+A finished call keeps its turn-level ledger in that trace
+(demo-verification 04): :class:`TurnLedger` writes one row per turn event —
+caller final, reply start, first audio, cut, tool call, tool result, goodbye,
+hangup, failed turn — each against its logical turn, phase and call-relative
+time, through the same :class:`EventStream` and sanitizer as every other line.
+The methods take typed values and closed vocabularies only, so a row cannot
+carry the caller's words, a tool's arguments or its payload. One event is one
+row: a replayed final or a repeated tool result writes nothing. A hold return
+resumes the same trace, and the ledger offsets its turn ids past every epoch
+the file already names, so two sessions never share an id; the end row's
+``turnSummary`` is the distinct reply starts of the session it closes, and
+``agrees`` is the reader-repeatable check that the end document's ``turns``
+count and the ledger say the same thing. A ``provider_fallback`` row (connect or
+mid-turn) is written through :meth:`TurnLedger.fallback`, and a provider
+protocol failure through :meth:`TurnLedger.protocol_error`, so a contaminated
+run is visible in the same file as the turns it contaminated.
+
+A finished call keeps its end document beside its trace
+(demo-verification 03): :meth:`OperationalEvents.end` writes the exact document
+the client received to ``<call-id>.end.json`` and adds one call-level ``end``
+row pointing at it. A hold return rewrites that row and the sidecar, so a call
+has one final end document and never two ``end`` rows. An unwritable evidence
+directory raises :class:`EndEvidenceError` and is named on the end message; it
+is never a silent skip.
+
 Operational decisions are first-class events, not console lines (ticket 110):
 :class:`OperationalEvents` emits ``budget.crossing`` (line, day, spend, cap),
 ``budget.stopped`` (call, spend, ceiling), ``deploy.drain``, ``reconnect`` (leg,
@@ -60,10 +85,11 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +161,27 @@ RECONNECT_EVENT_TYPE = "reconnect"
 PROTOCOL_ERROR_EVENT_TYPE = "protocol.error"
 TURN_FAILED_EVENT_TYPE = "turn.failed"
 
+#: The one row a finished call adds to its trace (demo-verification 03). The
+#: sidecar beside the trace keeps the raw end document the client received; the
+#: row is the call-level pointer to it. A hold return rewrites the row rather
+#: than appending a second one, so a call has exactly one ``end`` row.
+END_EVENT_TYPE = "end"
+
+#: The sidecar's suffix: ``<call-id>.end.json`` beside ``<call-id>.jsonl``.
+END_DOCUMENT_SUFFIX = ".end.json"
+
+#: The fields every end document carries, whether the call completed or failed.
+END_DOCUMENT_FIELDS = (
+    "metrics",
+    "providers",
+    "cost",
+    "eligibility",
+    "turns",
+    "endedBy",
+    "drain",
+    "bounds",
+)
+
 #: The three greeting marks, in the order a spoken greeting writes them.
 GREETING_EVENT_TYPES = (
     "greeting.start",
@@ -177,6 +224,24 @@ class ForbiddenEventKey(EventEnvelopeError):
             f"forbidden event key {named}; a line carrying caller text or audio "
             "is refused, not written",
         )
+
+
+class EndEvidenceError(RuntimeError):
+    """The call's end evidence could not be persisted; named, never silent.
+
+    The end document and the one ``end`` row are the evidence a failure cites,
+    so an unwritable evidence directory must be reported with the path and the
+    reason rather than skipped. The call still ends: the failure travels on the
+    end message as ``endEvidenceError``.
+    """
+
+    def __init__(self, what: str, path: str | Path, error: OSError | None = None) -> None:
+        reason = "" if error is None else (error.strerror or str(error))
+        detail = f"{what} {path}" + (f": {reason}" if reason else "")
+        super().__init__(detail)
+        self.what = what
+        self.path = str(path)
+        self.reason = reason
 
 
 def _require_text(field: str, value: Any) -> str:
@@ -978,6 +1043,9 @@ class OperationalEvents:
             _require_demo_subject(subject)
         self.subject = _require_text("subject", subject)
         self._now = now
+        #: The call's turn rows, created on first use so a call that never
+        #: reaches the turn layer writes no turn row and no turn ledger.
+        self._turn_ledger: TurnLedger | None = None
 
     @property
     def path(self) -> Path | None:
@@ -988,6 +1056,46 @@ class OperationalEvents:
     def error(self) -> str | None:
         """Why the call's event artifact is unavailable, when it is."""
         return getattr(self.stream, "unavailable", None)
+
+    @property
+    def directory(self) -> Path | None:
+        """The evidence directory the trace is written under, when one exists."""
+        return getattr(self.stream, "directory", None)
+
+    @property
+    def now(self) -> Callable[[], float]:
+        """The call's clock; the turn ledger timestamps its rows with it."""
+        return self._now
+
+    @property
+    def turns(self) -> TurnLedger:
+        """The call's turn ledger: the same stream, one row per turn event."""
+        if self._turn_ledger is None:
+            self._turn_ledger = TurnLedger(self)
+        return self._turn_ledger
+
+    def end(self, document: Mapping[str, Any]) -> Path | None:
+        """Persist the call's final end document and its one end row.
+
+        The sidecar is the exact document the client received, written beside
+        the trace under the call id (``<call-id>.end.json``). The trace carries
+        one ``end`` row keyed by the same call id; a hold return rewrites that
+        row rather than appending a second one, so the row and the sidecar
+        always describe the same final state. A call wired to a non-persisting
+        sink (a test list) has no evidence directory and writes nothing; a
+        directory the host named but cannot write is a named
+        :class:`EndEvidenceError`.
+        """
+        directory = self.directory
+        if directory is None:
+            return None
+        evidence = EndEvidence(directory, call_id=self.stream.writer.call_id)
+        return evidence.write(
+            document,
+            stream=self.stream,
+            subject=self.subject,
+            at_ms=self._moment(None),
+        )
 
     # -- envelope helpers -------------------------------------------------
 
@@ -1358,6 +1466,443 @@ class OperationalEvents:
 
 
 # ---------------------------------------------------------------------------
+# The turn-level ledger: one row per turn event (demo-verification 04)
+# ---------------------------------------------------------------------------
+
+#: The turn row vocabulary. Each row is one fact about one logical turn, in the
+#: order the ticket lists them; a defect card cites a row's ``turn``.
+TURN_USER_FINAL_EVENT_TYPE = "turn.user_final"
+TURN_REPLY_START_EVENT_TYPE = "turn.reply_start"
+TURN_FIRST_AUDIO_EVENT_TYPE = "turn.first_audio"
+TURN_ACK_EVENT_TYPE = "turn.ack"
+TURN_CUT_EVENT_TYPE = "turn.cut"
+TURN_TOOL_CALL_EVENT_TYPE = "turn.tool_call"
+TURN_TOOL_RESULT_EVENT_TYPE = "turn.tool_result"
+TURN_GOODBYE_EVENT_TYPE = "turn.goodbye"
+TURN_HANGUP_EVENT_TYPE = "turn.hangup"
+
+#: Why a sounding reply was cut. Closed, so a reason cannot become a channel
+#: for caller text.
+CUT_REASONS = ("barge_in",)
+
+#: The longest cover line the ledger accepts. An ack is one short sound, not a
+#: sentence, so an over-long value is caller text dressed as a cover.
+ACK_LINE_MAX_CHARS = 40
+
+#: Why the turn closed and the call drained. Closed for the same reason.
+DRAIN_REASONS = ("end_call", "caller_end")
+
+
+class TurnLedger:
+    """One call's turn rows, each written once, through the one stream.
+
+    The ledger never builds a second write path: every row goes through the
+    call's :class:`EventStream`, so the one sanitizer runs and a forbidden key
+    refuses the line before it is written. The methods take typed values and
+    closed vocabularies — never caller text, tool arguments or tool payloads —
+    so a turn row cannot smuggle the words or audio a defect card must not
+    quote.
+
+    One event is one row. A replayed provider final, a second first-audio frame
+    or a repeated tool result is a duplicate, not a second fact, and writes
+    nothing. A genuine second event (a different tool call, a different turn)
+    has its own key and is written.
+    """
+
+    def __init__(
+        self,
+        events: OperationalEvents,
+        *,
+        now: Callable[[], float] | None = None,
+    ) -> None:
+        if not isinstance(events, OperationalEvents):
+            raise TypeError(f"TurnLedger needs OperationalEvents, got {events!r}")
+        self._events = events
+        self._stream = events.stream
+        self._subject = events.subject
+        self._now = events.now if now is None else now
+        self._emitted: set[tuple[Any, ...]] = set()
+        #: A hold return resumes the same call id and trace, so this session's
+        #: turn ids continue past every epoch the file already names. The
+        #: provider's own session counter restarts at 0 with the new process;
+        #: the offset keeps the trace's identities unique without asking the
+        #: vendor to count for us.
+        self._epoch_offset = self.prior_turn_epoch + 1
+
+    @property
+    def path(self) -> Path | None:
+        """The trace the rows were written to, when the stream persists one."""
+        return self._stream.path
+
+    @property
+    def stream(self) -> EventStream:
+        """The one stream every row passes through."""
+        return self._stream
+
+    @property
+    def prior_turn_epoch(self) -> int:
+        """The highest session epoch already in this call's trace, or ``-1``.
+
+        A hold return resumes the same call id and the same trace file, so a
+        new session's turn ids must not reuse an epoch the file already names:
+        two different chains under one id would make a defect card ambiguous.
+        """
+        path = self._stream.path
+        if path is None or not path.exists():
+            return -1
+        highest = -1
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return -1
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            turn = row.get("turn") if isinstance(row, Mapping) else None
+            if not isinstance(turn, str) or ":" not in turn:
+                continue
+            head = turn.split(":", 1)[0]
+            if head.isdigit():
+                highest = max(highest, int(head))
+        return highest
+
+    def _moment(self, at_ms: float | int | None) -> float | int:
+        return _require_at_ms(self._now() * 1000.0 if at_ms is None else at_ms)
+
+    def _once(
+        self, key: tuple[Any, ...], build: Callable[[], dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        if key in self._emitted:
+            return None
+        event = build()
+        self._emitted.add(key)
+        return event
+
+    def _row_turn(self, turn: str) -> str:
+        """This session's trace identity for one logical turn."""
+        head, separator, tail = turn.partition(":")
+        if separator and head.isdigit():
+            return f"{int(head) + self._epoch_offset}:{tail}"
+        return turn
+
+    def _call(
+        self,
+        type: str,
+        *,
+        turn: str,
+        phase: str,
+        fields: Mapping[str, Any],
+        at_ms: float | int | None,
+    ) -> dict[str, Any]:
+        _require_turn(turn)
+        turn = self._row_turn(turn)
+        return self._stream.call_scoped(
+            type,
+            subject=self._subject,
+            turn=turn,
+            at_ms=self._moment(at_ms),
+            phase=phase,
+            fields=fields,
+        )
+
+    # -- the turn chain ---------------------------------------------------
+
+    def user_final(
+        self,
+        turn: str,
+        *,
+        chars: int,
+        empty: bool = False,
+        wants_end: bool = False,
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """The authoritative caller final: how long, never what was said."""
+        return self._once(
+            (TURN_USER_FINAL_EVENT_TYPE, turn),
+            lambda: self._call(
+                TURN_USER_FINAL_EVENT_TYPE,
+                turn=turn,
+                phase="turn",
+                fields={
+                    "chars": _count_field("chars", chars),
+                    "empty": _bool_field("empty", empty),
+                    "wantsEnd": _bool_field("wantsEnd", wants_end),
+                },
+                at_ms=at_ms,
+            ),
+        )
+
+    def reply_start(
+        self, turn: str, *, at_ms: float | int | None = None
+    ) -> dict[str, Any] | None:
+        """The model request for this turn has started."""
+        return self._once(
+            (TURN_REPLY_START_EVENT_TYPE, turn),
+            lambda: self._call(
+                TURN_REPLY_START_EVENT_TYPE,
+                turn=turn,
+                phase="turn",
+                fields={},
+                at_ms=at_ms,
+            ),
+        )
+
+    def first_audio(
+        self, turn: str, *, seq: int, at_ms: float | int | None = None
+    ) -> dict[str, Any] | None:
+        """The first frame of this turn's reply reached the wire."""
+        return self._once(
+            (TURN_FIRST_AUDIO_EVENT_TYPE, turn),
+            lambda: self._call(
+                TURN_FIRST_AUDIO_EVENT_TYPE,
+                turn=turn,
+                phase="turn",
+                fields={"seq": _count_field("seq", seq)},
+                at_ms=at_ms,
+            ),
+        )
+
+    def ack(
+        self,
+        turn: str,
+        *,
+        line: str,
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """The exact cover line the caller heard, and the turn it covered.
+
+        The ack is never captioned, so the transcript cannot prove which sound
+        was spoken; this row is that proof. ``line`` is the agent's own cover
+        text from the closed palette, never the caller's words — the one
+        sanitizer forbids the key ``text`` outright, which is why the field is
+        named ``line``.
+        """
+        line = _text_field("line", line)
+        if len(line) > ACK_LINE_MAX_CHARS:
+            raise EventEnvelopeError(
+                "line",
+                f"the cover line is longer than {ACK_LINE_MAX_CHARS} characters",
+            )
+        return self._once(
+            (TURN_ACK_EVENT_TYPE, turn, line),
+            lambda: self._call(
+                TURN_ACK_EVENT_TYPE,
+                turn=turn,
+                phase="turn",
+                fields={"line": line},
+                at_ms=at_ms,
+            ),
+        )
+
+    def cut(
+        self,
+        turn: str,
+        *,
+        reason: str = "barge_in",
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """The reply was cut; the reason is one of the closed vocabulary."""
+        if reason not in CUT_REASONS:
+            raise EventEnvelopeError(
+                "reason",
+                f"unknown cut reason {reason!r}; expected one of {', '.join(CUT_REASONS)}",
+            )
+        return self._once(
+            (TURN_CUT_EVENT_TYPE, turn),
+            lambda: self._call(
+                TURN_CUT_EVENT_TYPE,
+                turn=turn,
+                phase="turn",
+                fields={"reason": reason},
+                at_ms=at_ms,
+            ),
+        )
+
+    def tool_call(
+        self,
+        turn: str,
+        *,
+        name: str,
+        call_id: str,
+        index: int = 0,
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """The model asked for a tool: its name and ids, never its arguments."""
+        call_id = _text_field("toolCallId", call_id)
+        return self._once(
+            (TURN_TOOL_CALL_EVENT_TYPE, turn, call_id),
+            lambda: self._call(
+                TURN_TOOL_CALL_EVENT_TYPE,
+                turn=turn,
+                phase="tool",
+                fields={
+                    "name": _text_field("name", name),
+                    "toolCallId": call_id,
+                    "index": _count_field("index", index),
+                },
+                at_ms=at_ms,
+            ),
+        )
+
+    def tool_result(
+        self,
+        turn: str,
+        *,
+        name: str,
+        call_id: str,
+        ok: bool,
+        code: str = "",
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """The tool answered: success and a closed code, never its payload."""
+        call_id = _text_field("toolCallId", call_id)
+        fields: dict[str, Any] = {
+            "name": _text_field("name", name),
+            "toolCallId": call_id,
+            "ok": _bool_field("ok", ok),
+        }
+        if code:
+            fields["code"] = _text_field("code", code)
+        return self._once(
+            (TURN_TOOL_RESULT_EVENT_TYPE, turn, call_id),
+            lambda: self._call(
+                TURN_TOOL_RESULT_EVENT_TYPE,
+                turn=turn,
+                phase="tool",
+                fields=fields,
+                at_ms=at_ms,
+            ),
+        )
+
+    def goodbye(
+        self,
+        turn: str,
+        *,
+        reason: str = "end_call",
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """The turn's closing line is being spoken before the drain."""
+        if reason not in DRAIN_REASONS:
+            raise EventEnvelopeError(
+                "reason",
+                f"unknown goodbye reason {reason!r}; expected one of "
+                f"{', '.join(DRAIN_REASONS)}",
+            )
+        return self._once(
+            (TURN_GOODBYE_EVENT_TYPE, turn),
+            lambda: self._call(
+                TURN_GOODBYE_EVENT_TYPE,
+                turn=turn,
+                phase="drain",
+                fields={"reason": reason},
+                at_ms=at_ms,
+            ),
+        )
+
+    def hangup(
+        self,
+        turn: str,
+        *,
+        reason: str = "end_call",
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """The turn closed and the call is draining."""
+        if reason not in DRAIN_REASONS:
+            raise EventEnvelopeError(
+                "reason",
+                f"unknown hangup reason {reason!r}; expected one of "
+                f"{', '.join(DRAIN_REASONS)}",
+            )
+        return self._once(
+            (TURN_HANGUP_EVENT_TYPE, turn),
+            lambda: self._call(
+                TURN_HANGUP_EVENT_TYPE,
+                turn=turn,
+                phase="drain",
+                fields={"reason": reason},
+                at_ms=at_ms,
+            ),
+        )
+
+    # -- failures and contamination --------------------------------------
+
+    def turn_failed(
+        self,
+        turn: str,
+        *,
+        leg: str,
+        name: str,
+        reason: str,
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """One failed turn: the leg and the error class, never a stack trace."""
+        return self._once(
+            (TURN_FAILED_EVENT_TYPE, turn, leg),
+            lambda: self._events.turn_failed(
+                turn=self._row_turn(turn),
+                leg=leg,
+                name=name,
+                reason=reason,
+                at_ms=self._moment(at_ms),
+            ),
+        )
+
+    def protocol_error(
+        self,
+        *,
+        leg: str,
+        reason: str,
+        code: int | str | None = None,
+        turn: str | None = None,
+        phase: str = "turn",
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """A wire/protocol failure, named by leg and error class."""
+        return self._once(
+            (PROTOCOL_ERROR_EVENT_TYPE, leg, turn, code),
+            lambda: self._events.protocol_error(
+                leg=leg,
+                code=code,
+                reason=reason,
+                turn=None if turn is None else self._row_turn(turn),
+                phase=phase,
+                at_ms=self._moment(at_ms),
+            ),
+        )
+
+    def fallback(
+        self,
+        fallback: Fallback,
+        *,
+        at_ms: float | int | None = None,
+    ) -> dict[str, Any] | None:
+        """One provider fallback, connect-time or mid-turn, written once."""
+        if not isinstance(fallback, Fallback):
+            raise TypeError(f"fallback must be a Fallback, got {fallback!r}")
+        if fallback.turn is not None:
+            fallback = replace(fallback, turn=self._row_turn(fallback.turn))
+        return self._once(
+            (
+                FALLBACK_EVENT_TYPE,
+                fallback.leg,
+                fallback.from_provider,
+                fallback.to_provider,
+                fallback.trigger,
+                fallback.turn,
+            ),
+            lambda: emit_fallback(
+                self._stream.writer,
+                fallback,
+                subject=self._subject,
+                at_ms=self._moment(at_ms),
+                sink=self._stream,
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
 # The persisted per-call stream
 # ---------------------------------------------------------------------------
 
@@ -1381,8 +1926,9 @@ class CallEventLog:
 
     def __init__(self, directory: str | Path, *, call_id: str) -> None:
         self.call_id = _require_text("callId", call_id)
+        self._directory = Path(directory)
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.call_id).strip("._")
-        self._path = Path(directory) / f"{safe or 'call'}.jsonl"
+        self._path = self._directory / f"{safe or 'call'}.jsonl"
         #: Why this call's artifact is unavailable, or ``None`` while it works.
         self.unavailable: str | None = None
         try:
@@ -1394,6 +1940,16 @@ class CallEventLog:
     def path(self) -> Path | None:
         """The artifact path while it is usable, ``None`` once it is disabled."""
         return self._path if self.unavailable is None else None
+
+    @property
+    def directory(self) -> Path:
+        """The evidence directory the host named, usable or not.
+
+        The end document is written beside the trace, so the directory is read
+        even after this sink disabled itself: an unwritable directory is then a
+        named end-evidence failure, not a silent skip.
+        """
+        return self._directory
 
     def _disable(self, what: str, error: OSError) -> None:
         reason = error.strerror or str(error)
@@ -1468,6 +2024,12 @@ class EventStream:
         """Why the sink disabled its artifact, when it did."""
         return getattr(self._sink, "unavailable", None)
 
+    @property
+    def directory(self) -> Path | None:
+        """The directory a persisting sink writes under, when it has one."""
+        directory = getattr(self._sink, "directory", None)
+        return None if directory is None else Path(directory)
+
     def __call__(self, event: Mapping[str, Any]) -> dict[str, Any]:
         """Sanitize one finished line, then write it; a refusal writes nothing."""
         sanitized = sanitize_fields(dict(event))
@@ -1532,4 +2094,234 @@ class EventStream:
                 subject=subject,
                 fields=fields,
             )
+        )
+
+
+# ---------------------------------------------------------------------------
+# The end document: one sidecar and exactly one trace row (demo-verification 03)
+# ---------------------------------------------------------------------------
+
+
+class EndEvidence:
+    """One call's end document beside its trace, and the one ``end`` row.
+
+    The sidecar is ``<call-id>.end.json`` and is the exact document the client
+    received, written atomically so a partial write never claims a record. The
+    trace is ``<call-id>.jsonl`` and gains one call-level ``end`` row pointing
+    at the sidecar; a hold return replaces that row (never appends a second)
+    and overwrites the sidecar, so both describe the same final state.
+
+    Every failure is named: a document missing a required field, a directory
+    that cannot be created, or a write that fails raises
+    :class:`EndEvidenceError` with the path and the reason. Nothing here
+    swallows an error, because a call with no evidence must not look observed.
+    """
+
+    def __init__(self, directory: str | Path, *, call_id: str) -> None:
+        self.call_id = _require_text("callId", call_id)
+        self._directory = Path(directory)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.call_id).strip("._")
+        self._stem = safe or "call"
+        self.document_path = self._directory / f"{self._stem}{END_DOCUMENT_SUFFIX}"
+        self.trace_path = self._directory / f"{self._stem}.jsonl"
+
+    def write(
+        self,
+        document: Mapping[str, Any],
+        *,
+        stream: EventStream,
+        subject: str,
+        at_ms: float | int,
+    ) -> Path:
+        """Write the sidecar, then the one end row; return the sidecar path."""
+        if not isinstance(document, Mapping):
+            raise EndEvidenceError(
+                "the end evidence is not a document at", self.document_path
+            )
+        self._require_document(document)
+        self._ensure_directory()
+        self._write_document(document)
+        self._write_row(document, stream=stream, subject=subject, at_ms=at_ms)
+        return self.document_path
+
+    def _require_document(self, document: Mapping[str, Any]) -> None:
+        if document.get("type") != "end":
+            raise EndEvidenceError(
+                'the end evidence must be a "type": "end" document at',
+                self.document_path,
+            )
+        if document.get("callId") != self.call_id:
+            raise EndEvidenceError(
+                f"the end evidence names callId {document.get('callId')!r}, not "
+                f"{self.call_id!r}, at",
+                self.document_path,
+            )
+        for field in END_DOCUMENT_FIELDS:
+            if field not in document:
+                raise EndEvidenceError(
+                    f'the end evidence is missing the "{field}" field at',
+                    self.document_path,
+                )
+        ended_by = document.get("endedBy")
+        if not isinstance(ended_by, str) or not ended_by.strip():
+            raise EndEvidenceError(
+                "the end evidence names no endedBy at", self.document_path
+            )
+
+    def _ensure_directory(self) -> None:
+        try:
+            self._directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise EndEvidenceError(
+                "cannot create the end evidence directory", self._directory, error
+            ) from error
+
+    def _write_document(self, document: Mapping[str, Any]) -> None:
+        temporary = self.document_path.with_name(self.document_path.name + ".tmp")
+        try:
+            temporary.write_text(
+                json.dumps(dict(document), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, self.document_path)
+        except OSError as error:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise EndEvidenceError(
+                "cannot write the end evidence document", self.document_path, error
+            ) from error
+
+    def _write_row(
+        self,
+        document: Mapping[str, Any],
+        *,
+        stream: EventStream,
+        subject: str,
+        at_ms: float | int,
+    ) -> None:
+        try:
+            existing = (
+                self.trace_path.read_text(encoding="utf-8").splitlines()
+                if self.trace_path.exists()
+                else []
+            )
+        except OSError as error:
+            raise EndEvidenceError(
+                "cannot read the trace for the end row", self.trace_path, error
+            ) from error
+        kept = [
+            line
+            for line in existing
+            if line.strip() and not self._is_end_row(line.strip())
+        ]
+
+        captured: list[str] = []
+        # The row is built by the same envelope writer and sanitizer as every
+        # other line, then written by the one trace rewrite below.
+        capture = EventStream(
+            stream.writer, sink=captured.append, subject_kind=stream.subject_kind
+        )
+        cost = document.get("cost")
+        cost = cost if isinstance(cost, Mapping) else {}
+        budget = document.get("budget")
+        turn = budget.get("turn") if isinstance(budget, Mapping) else None
+        capture.call_scoped(
+            END_EVENT_TYPE,
+            subject=subject,
+            turn=_require_turn(turn),
+            at_ms=at_ms,
+            phase="end",
+            fields={
+                "endedBy": document["endedBy"],
+                "turns": document["turns"],
+                "costMeasured": bool(cost.get("measured")),
+                "totalUsd": cost.get("totalUsd"),
+                "endPath": str(self.document_path),
+                # The summary is derived from the rows already persisted, so the
+                # end document and the ledger cannot quietly disagree. The
+                # previous end row (when a hold return resumed this call) is the
+                # session boundary, so it is read before that row is replaced.
+                "turnSummary": self._turn_summary(existing, document),
+            },
+        )
+        kept.extend(line.rstrip("\n") for line in captured)
+
+        temporary = self.trace_path.with_name(self.trace_path.name + ".tmp")
+        try:
+            temporary.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            os.replace(temporary, self.trace_path)
+        except OSError as error:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise EndEvidenceError(
+                "cannot write the end row to the trace", self.trace_path, error
+            ) from error
+
+    def _turn_summary(
+        self, lines: list[str], document: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The end document's turn count against this session's reply starts.
+
+        A turn that produced a reply is one ``turn.reply_start`` row; a duplicate
+        or a replayed final adds nothing, so the distinct turn ids are the
+        ledger's count. Only rows after the previous ``end`` row are counted: a
+        hold return rewrites the end row, and the resumed session's document
+        describes the turns it ran, not the ones the trace already recorded.
+        ``agrees`` is the check a reader can repeat: a false here is a defect,
+        never a footnote.
+        """
+        current = self._session_lines(lines)
+        turn_ids: list[str] = []
+        for line in current:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, Mapping) or row.get("callId") != self.call_id:
+                continue
+            turn = row.get("turn")
+            if (
+                row.get("type") == TURN_REPLY_START_EVENT_TYPE
+                and isinstance(turn, str)
+                and turn not in turn_ids
+            ):
+                turn_ids.append(turn)
+        reported = document["turns"]
+        return {
+            "turns": reported,
+            "turnsWithReply": len(turn_ids),
+            "turnIds": turn_ids,
+            "agrees": isinstance(reported, int)
+            and not isinstance(reported, bool)
+            and reported == len(turn_ids),
+        }
+
+    def _session_lines(self, lines: list[str]) -> list[str]:
+        """Rows written since this call's previous ``end`` row, if any."""
+        for index in range(len(lines) - 1, -1, -1):
+            try:
+                row = json.loads(lines[index])
+            except ValueError:
+                continue
+            if (
+                isinstance(row, Mapping)
+                and row.get("type") == END_EVENT_TYPE
+                and row.get("callId") == self.call_id
+            ):
+                return lines[index + 1 :]
+        return lines
+
+    def _is_end_row(self, line: str) -> bool:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            return False
+        return (
+            isinstance(row, Mapping)
+            and row.get("type") == END_EVENT_TYPE
+            and row.get("callId") == self.call_id
         )

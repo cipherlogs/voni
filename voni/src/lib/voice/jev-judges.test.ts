@@ -116,6 +116,21 @@ test("requestVoiceJudge honors server decision on success", async () => {
   assert.equal(r.probability, 0.91);
 });
 
+test("requestVoiceJudge carries the judge's upset reading to the caller", async () => {
+  const okFetch = async () =>
+    new Response(
+      JSON.stringify({ decision: "off-track", probability: 0.9, upset: true }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  const r = await requestVoiceJudge(
+    "off-track",
+    { goal: "Answer them.", agentLine: "Hi.", userText: "Your service is useless." },
+    { fetchImpl: okFetch as typeof fetch, timeoutMs: 500 },
+  );
+  assert.equal(r.decision, "off-track");
+  assert.equal(r.upset, true, "the ladder gate sees the complaint, not just the verdict");
+});
+
 test("filler pool is non-empty and agent-voiced", () => {
   assert.ok(FILLER_POOL.length >= 3);
   for (const line of FILLER_POOL) assert.ok(line.length <= 60);

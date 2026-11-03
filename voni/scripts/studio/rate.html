@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voni Studio — Rate</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0d0f12; --panel: #16191f; --panel-2: #1d222a; --ink: #e8ebf0;
+        --muted: #9aa3b2; --line: #2b323d; --accent: #8ab4ff; --good: #6ee7a8; --bad: #ff8b8b;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+      header { display: flex; align-items: baseline; gap: 14px; padding: 18px 22px; border-bottom: 1px solid var(--line); }
+      header h1 { font-size: 18px; margin: 0; }
+      header .local { color: var(--muted); font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+      nav { display: flex; gap: 12px; margin-left: auto; }
+      nav a { color: var(--muted); text-decoration: none; font-size: 13px; }
+      nav a[aria-current="page"] { color: var(--ink); border-bottom: 1px solid var(--accent); }
+      main { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(340px, 1fr); gap: 20px; padding: 20px 22px 60px; max-width: 1240px; margin: 0 auto; }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+      section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+      h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; }
+      h3 { font-size: 15px; margin: 0 0 8px; }
+      button, select, textarea, input { font: inherit; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
+      button { cursor: pointer; }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      button.primary { background: var(--accent); color: #0b1020; border-color: transparent; font-weight: 600; }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      .stack { display: grid; gap: 10px; }
+      label.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+      label.field input, label.field textarea, label.field select { width: 100%; }
+      textarea { resize: vertical; min-height: 78px; }
+      .status { min-height: 22px; font-size: 13px; }
+      .status.ok { color: var(--good); }
+      .status.bad { color: var(--bad); white-space: pre-wrap; }
+      .muted { color: var(--muted); font-size: 13px; }
+      .queue { display: flex; flex-wrap: wrap; gap: 6px; }
+      .queue button { padding: 3px 9px; font-size: 12px; }
+      .queue button[aria-current="true"] { border-color: var(--accent); color: var(--ink); }
+      .card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+      .transcript, .timeline { display: grid; gap: 6px; max-height: 34vh; overflow: auto; }
+      .turn { display: grid; grid-template-columns: 64px 1fr; gap: 8px; font-size: 14px; }
+      .turn .who { color: var(--muted); }
+      .timeline div { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+      .axes { display: grid; gap: 10px; }
+      .axis { display: grid; gap: 4px; }
+      .axis .label { font-size: 14px; }
+      .scale { display: flex; gap: 6px; flex-wrap: wrap; }
+      .scale label { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; display: flex; gap: 4px; align-items: center; }
+      .scale input { accent-color: var(--accent); }
+      audio { width: 100%; height: 34px; }
+      .pair { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+      .pair .card { display: grid; gap: 6px; }
+      .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Voni Studio</h1>
+      <span class="local">Rate · blind · local only</span>
+      <nav aria-label="Studio surfaces">
+        <a href="/">Record</a>
+        <a href="/rate" aria-current="page">Rate</a>
+        <a href="/corpus">Corpus</a>
+        <a href="/baseline">Baseline</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="panel" aria-labelledby="session-heading">
+        <h2 id="session-heading">Blind session</h2>
+        <div class="stack" id="session-setup">
+          <p class="muted">
+            Load a certification pack (certificate plus call evidence). Playback hides the verdict, the
+            model identity and the call identity; the A/B pair names only A and B.
+          </p>
+          <label class="field">Reviewer — the name that signs the certificate
+            <input id="reviewer" type="text" autocomplete="name" placeholder="owner" />
+          </label>
+          <label class="field">Session seed (optional)
+            <input id="seed" type="number" min="0" step="1" placeholder="random" />
+          </label>
+          <label class="field">Certification pack (JSON)
+            <input id="pack" type="file" accept="application/json,.json" />
+          </label>
+          <div class="row">
+            <button class="primary" id="start" type="button">Start blind session</button>
+            <span class="status" id="setup-status" role="status"></span>
+          </div>
+        </div>
+        <div class="stack" id="session-open" hidden>
+          <div class="row">
+            <span class="muted" id="session-meta"></span>
+            <button id="reload-session" type="button">Reload</button>
+          </div>
+          <div class="queue" id="queue" role="list" aria-label="Blind queue"></div>
+          <div class="card" id="item-card">
+            <div class="row">
+              <h3 id="item-heading">Call</h3>
+              <span class="muted" id="item-locale"></span>
+            </div>
+            <audio id="call-audio" controls preload="metadata"></audio>
+            <div class="pair" id="ab-pair" hidden>
+              <div class="card">
+                <div class="row"><strong>Side A</strong></div>
+                <audio id="ab-a" controls preload="metadata"></audio>
+              </div>
+              <div class="card">
+                <div class="row"><strong>Side B</strong></div>
+                <audio id="ab-b" controls preload="metadata"></audio>
+              </div>
+            </div>
+          </div>
+          <div class="stack" id="item-detail">
+            <div class="card">
+              <h3>Transcript</h3>
+              <div class="transcript" id="transcript"></div>
+            </div>
+            <div class="card">
+              <h3>Timeline</h3>
+              <div class="timeline" id="timeline"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="rating-heading">
+        <h2 id="rating-heading">Seven axes</h2>
+        <div class="stack">
+          <div class="axes" id="axes"></div>
+          <div class="pair" id="ab-questions" hidden>
+            <label class="field">Which side sounds human?
+              <select id="human-side">
+                <option value="">— choose —</option>
+                <option value="A">A</option>
+                <option value="B">B</option>
+              </select>
+            </label>
+            <label class="field">Which would you keep?
+              <select id="preferred-side">
+                <option value="">— choose —</option>
+                <option value="A">A</option>
+                <option value="B">B</option>
+                <option value="neither">neither</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">Free text
+            <textarea id="free-text" placeholder="What did you hear?"></textarea>
+          </label>
+          <label class="field">Defect tags — lowercase kebab-case, comma separated
+            <input id="defect-tags" type="text" placeholder="late-greeting, dead-air" />
+          </label>
+          <div class="row">
+            <button class="primary" id="file-rating" type="button" disabled>File rating</button>
+            <span class="status" id="rating-status" role="status"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const state = { session: null, index: 0, axes: [], rated: new Set() };
+
+      function setStatus(id, text, kind) {
+        const node = $(id);
+        node.textContent = text;
+        node.className = `status${kind ? ` ${kind}` : ""}`;
+      }
+
+      async function json(response) {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.message || body.error || `request failed (${response.status})`);
+        return body;
+      }
+
+      function renderTranscript(turns) {
+        const box = $("transcript");
+        box.replaceChildren();
+        for (const turn of turns) {
+          const row = document.createElement("div");
+          row.className = "turn";
+          const who = document.createElement("span");
+          who.className = "who";
+          who.textContent = turn.speaker;
+          const text = document.createElement("span");
+          text.textContent = turn.text;
+          row.append(who, text);
+          box.append(row);
+        }
+      }
+
+      function renderTimeline(events) {
+        const box = $("timeline");
+        box.replaceChildren();
+        for (const event of events) {
+          const row = document.createElement("div");
+          row.textContent = `${(event.atMs / 1000).toFixed(2)}s — ${event.type}`;
+          box.append(row);
+        }
+      }
+
+      function renderAxes() {
+        const box = $("axes");
+        box.replaceChildren();
+        for (const axis of state.axes) {
+          const wrap = document.createElement("div");
+          wrap.className = "axis";
+          const label = document.createElement("div");
+          label.className = "label";
+          label.textContent = axis.label;
+          const hint = document.createElement("div");
+          hint.className = "muted";
+          hint.textContent = axis.hint;
+          const scale = document.createElement("div");
+          scale.className = "scale";
+          for (let score = 1; score <= 5; score += 1) {
+            const choice = document.createElement("label");
+            const input = document.createElement("input");
+            input.type = "radio";
+            input.name = `axis-${axis.id}`;
+            input.value = String(score);
+            choice.append(input, document.createTextNode(String(score)));
+            scale.append(choice);
+          }
+          wrap.append(label, hint, scale);
+          box.append(wrap);
+        }
+      }
+
+      function queueItem(itemId) {
+        return state.session.queue.find((item) => item.itemId === itemId);
+      }
+
+      function showItem(itemId) {
+        const item = queueItem(itemId);
+        if (!item) return;
+        state.index = state.session.queue.indexOf(item);
+        $("item-heading").textContent = `Call ${item.position} of ${state.session.queue.length}`;
+        $("item-locale").textContent = `Locale ${item.locale}`;
+        $("call-audio").src = `/api/rate/sessions/${state.session.sessionId}/items/${item.itemId}/call`;
+        renderTranscript(item.transcript);
+        renderTimeline(item.timeline);
+        const pair = $("ab-pair");
+        const questions = $("ab-questions");
+        $("human-side").value = "";
+        $("preferred-side").value = "";
+        if (item.ab) {
+          pair.hidden = false;
+          questions.hidden = false;
+          $("ab-a").src = `/api/rate/sessions/${state.session.sessionId}/items/${item.itemId}/ab/a`;
+          $("ab-b").src = `/api/rate/sessions/${state.session.sessionId}/items/${item.itemId}/ab/b`;
+        } else {
+          pair.hidden = true;
+          questions.hidden = true;
+        }
+        for (const input of document.querySelectorAll('#axes input[type="radio"]')) input.checked = false;
+        $("free-text").value = "";
+        $("defect-tags").value = "";
+        $("file-rating").disabled = state.rated.has(item.itemId);
+        setStatus("rating-status", state.rated.has(item.itemId) ? "Already filed." : "");
+        renderQueue();
+      }
+
+      function renderQueue() {
+        const box = $("queue");
+        box.replaceChildren();
+        if (!state.session) return;
+        for (const item of state.session.queue) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = String(item.position);
+          button.title = `Call ${item.position}`;
+          button.setAttribute("aria-current", item.itemId === queueItemAt(state.index)?.itemId ? "true" : "false");
+          if (state.rated.has(item.itemId)) button.textContent = `${item.position} ✓`;
+          button.addEventListener("click", () => showItem(item.itemId));
+          box.append(button);
+        }
+      }
+
+      function queueItemAt(index) {
+        return state.session?.queue[index];
+      }
+
+      function axesAnswers() {
+        const axes = {};
+        for (const axis of state.axes) {
+          const chosen = document.querySelector(`input[name="axis-${axis.id}"]:checked`);
+          if (!chosen) return null;
+          axes[axis.id] = Number(chosen.value);
+        }
+        return axes;
+      }
+
+      async function start() {
+        const reviewer = $("reviewer").value.trim();
+        if (!reviewer) {
+          setStatus("setup-status", "A reviewer is required: the session signs the certificate.", "bad");
+          return;
+        }
+        const file = $("pack").files?.[0];
+        if (!file) {
+          setStatus("setup-status", "Choose a certification pack (JSON).", "bad");
+          return;
+        }
+        let pack;
+        try {
+          pack = JSON.parse(await file.text());
+        } catch (error) {
+          setStatus("setup-status", `The pack is not valid JSON: ${error.message}`, "bad");
+          return;
+        }
+        const seed = $("seed").value.trim();
+        setStatus("setup-status", "Opening the blind queue…");
+        try {
+          const body = {
+            reviewer,
+            certificate: pack.certificate,
+            calls: pack.calls,
+            ...(seed === "" ? {} : { seed: Number(seed) }),
+          };
+          const created = await json(await fetch("/api/rate/sessions", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          }));
+          state.session = created.session;
+          state.rated = new Set();
+          $("session-setup").hidden = true;
+          $("session-open").hidden = false;
+          $("session-meta").textContent = `${state.session.reviewer} · ${state.session.date} · ${state.session.queue.length} calls · ${state.session.sessionId}`;
+          showItem(state.session.queue[0].itemId);
+          setStatus("setup-status", "", "");
+        } catch (error) {
+          setStatus("setup-status", error.message, "bad");
+        }
+      }
+
+      async function reloadSession() {
+        if (!state.session) return;
+        try {
+          const loaded = await json(await fetch(`/api/rate/sessions/${state.session.sessionId}`));
+          state.session = loaded.session;
+          const ratings = await json(await fetch(`/api/rate/sessions/${state.session.sessionId}/ratings`));
+          state.rated = new Set(ratings.ratings.map((rating) => rating.itemId));
+          showItem(queueItemAt(state.index)?.itemId ?? state.session.queue[0].itemId);
+        } catch (error) {
+          setStatus("rating-status", error.message, "bad");
+        }
+      }
+
+      async function fileRating() {
+        const item = queueItemAt(state.index);
+        if (!item) return;
+        const axes = axesAnswers();
+        if (!axes) {
+          setStatus("rating-status", "Score all seven axes before filing.", "bad");
+          return;
+        }
+        const humanSide = $("human-side").value;
+        const preferredSide = $("preferred-side").value;
+        if (item.ab && (!humanSide || !preferredSide)) {
+          setStatus("rating-status", "Answer both A/B questions before filing.", "bad");
+          return;
+        }
+        const tags = $("defect-tags").value.split(",").map((tag) => tag.trim()).filter(Boolean);
+        try {
+          const body = {
+            itemId: item.itemId,
+            axes,
+            freeText: $("free-text").value,
+            defectTags: tags,
+            ...(item.ab ? { humanSide, preferredSide } : {}),
+          };
+          await json(await fetch(`/api/rate/sessions/${state.session.sessionId}/ratings`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          }));
+          state.rated.add(item.itemId);
+          setStatus("rating-status", "Rating filed.", "ok");
+          $("file-rating").disabled = true;
+          renderQueue();
+          const next = state.session.queue.find((entry) => !state.rated.has(entry.itemId));
+          if (next) showItem(next.itemId);
+        } catch (error) {
+          setStatus("rating-status", error.message, "bad");
+        }
+      }
+
+      async function boot() {
+        try {
+          const axes = await json(await fetch("/api/rate/axes"));
+          state.axes = axes.axes;
+          renderAxes();
+        } catch (error) {
+          setStatus("setup-status", `Cannot load the rubric: ${error.message}`, "bad");
+        }
+      }
+
+      $("start").addEventListener("click", start);
+      $("reload-session").addEventListener("click", reloadSession);
+      $("file-rating").addEventListener("click", fileRating);
+      boot();
+    </script>
+  </body>
+</html>

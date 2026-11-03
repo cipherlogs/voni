@@ -16,12 +16,20 @@ in the transport, so this module cannot become a second protocol.
 :class:`CallStream` is the turn layer's seam: the stream start, each STT
 event, a context update, the drain and the turn count. The orchestrator tickets
 implement it; this module only orders the call around it. The greeting is not
-part of the turn layer: the lifecycle starts the body's greeting through the
-opened voice (ticket 77) only after the synthesis session acknowledged
-``Begin``, and the opening is a listening window. Caller frames reach STT and
-provider events are buffered while the greeting sounds; a ``speechStart`` or a
-taking-the-floor partial cuts the greeting with ``Cancel`` (ticket 79) so the
-caller's turn wins, and nothing reaches the turn layer before that boundary. A
+part of the turn layer: the lifecycle tells the browser the line is listening
+before it opens the speech leg, buffers what the caller says while the
+handshake is in flight, then speaks the body's greeting through the opened
+voice once that voice acknowledged ``Begin``. Caller frames reach STT and
+provider events are buffered while the opening runs; a caller speech event (or
+loud caller PCM) anywhere from ``listening`` through the opening skips the line
+entirely, so a visitor who opens with a complaint is never greeted over it. The
+pre-ack buffer is bounded by the speech session's own lead bound, and the
+replay is paced by the session: a slow ack costs the oldest words and some
+time, never an audio burst the vendor closes. A ``speechStart`` or a
+taking-the-floor partial after the line starts cuts it with ``Cancel`` (ticket
+79) so the caller's turn wins, and the client is told to drop the audio it has
+already queued, or the caller keeps hearing the line they interrupted. Nothing
+reaches the turn layer before that boundary. A
 greeting synthesis failure ends the call with the voice's own trigger on the
 end message (ticket 80); there is no silent opening.
 
@@ -91,26 +99,42 @@ The end message carries the facts a reader can act on and never a guess:
 from __future__ import annotations
 
 import asyncio
+import array
 import inspect
 import logging
+import sys
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Protocol
 
 from cascade.body_map import BodyFieldError, CascadeBody, adapt_body
-from cascade.cost import CallCost, LegCost as PricedLeg, RateTable, cost_call
+from cascade.breaker import LEGS
+from cascade.cost import (
+    CallCost,
+    LegCost as PricedLeg,
+    RateTable,
+    cost_call,
+    cost_table_for_llm_model,
+)
 from cascade.counter import limit_amount
 from cascade.eligibility import EligibilityDecision
 from cascade.envelope import EnvelopeError, verify_envelope
 from cascade.events import COST_PRICED_EVENT_TYPE, OperationalEvents
 from cascade.greeting import CallGreeting, GreetingOutcome, GreetingPlayback
-from cascade.meta_stt import SpeechPartial, SpeechStart
+from cascade.meta_stt import (
+    BYTES_PER_SECOND,
+    MAX_LEAD_S,
+    SpeechComplete,
+    SpeechPartial,
+    SpeechStart,
+)
 from cascade.reconnect import ReconnectBudget
 from cascade.thresholds import ThresholdError, require_bound
-from cascade.usage import UsageMeter
+from cascade.usage import NO_REQUEST, CallUsage, UsageMeter
 from cascade.voice_binding import VoiceBindingError, bind_voice
 from metrics import TimingLedger
 from providers import SentenceAudio
@@ -134,6 +158,25 @@ BOUNDED_WAITS: dict[str, tuple[str, str]] = {
     # it reads the same settled synthesis idle bound; no new number is invented.
     "goodbye": ("tts.idle_timeout_ms", "GoodbyeTimedOut"),
 }
+
+#: How long the opening listens for caller speech before the greeting starts.
+#: A caller speech event inside it skips the greeting entirely; a quiet caller
+#: hears the line at the end of the window. It is a gate, not filler.
+CALLER_FIRST_WINDOW_MS = float(require_bound("greeting.caller_first_ms"))
+
+#: Opening-window voice activity on the caller's PCM. The committed caller
+#: takes sit around RMS 1500; room tone is far below. Two frames above the bar
+#: keep a single click from suppressing the greeting. This is the early signal
+#: while the speech provider is still forming its first partial (about 3 s on
+#: a live call); a provider speech event remains the authoritative one.
+CALLER_SPEECH_RMS = 500.0
+CALLER_SPEECH_FRAMES = 2
+
+#: The most caller audio the opening may hold before the speech session
+#: acknowledges. It is the session's own lead bound expressed in bytes, not a
+#: new number: a slower ack drops the oldest frames to keep the caller's newest
+#: words rather than build a backlog the vendor refuses.
+OPENING_AUDIO_BYTES = int(MAX_LEAD_S * BYTES_PER_SECOND)
 
 #: The drain/close/event wait's bound name (ticket 76 owns the value in
 #: ``thresholds.json``; this module never restates it).
@@ -204,6 +247,12 @@ class CallTransport(Protocol):
     async def send(self, message: Mapping[str, Any]) -> None:
         """Send the one end message."""
 
+    async def listening(self) -> None:
+        """Tell the browser the line is open before the greeting starts."""
+
+    async def interrupted(self) -> None:
+        """Tell the browser to drop and fade the playout it has queued."""
+
     async def close(self) -> None:
         """Release the socket."""
 
@@ -220,6 +269,13 @@ class CallStream(Protocol):
     async def context(self, text: str) -> None:
         """A browser context update for the next reply."""
 
+    def caller_audio(self, *, speech: bool) -> None:
+        """One caller audio frame: whether it is speech, on the call's clock.
+
+        The pump sees every frame the browser sends, so the turn layer learns
+        when the caller is still speaking without a second audio consumer.
+        """
+
     async def drain(self) -> None:
         """Finish in-flight work and stop producing."""
 
@@ -233,6 +289,15 @@ class CallStream(Protocol):
         model stream, so it is the one that sees the usage chunk; the call
         records it here and prices it. A stream with no model leg returns an
         empty mapping, which leaves the LLM leg unmeasured (never zero).
+        """
+
+    def request_count(self) -> int:
+        """How many model requests this call actually made.
+
+        The pipeline makes every request, so it counts them: a greeting-only
+        call made none, which is a measured zero. This is not ``turn_count`` —
+        a request that never finished is still a request, so its missing usage
+        stays unmeasured.
         """
 
 
@@ -626,7 +691,9 @@ class LegCost:
     and reasoning tokens), so ``units`` carries every reported quantity and
     ``amount_usd`` is what the rate table charged for them. ``unit``/``quantity``
     stay the one-unit shorthand the end message has always carried; a leg with
-    several units sets ``unit="multiple"`` and ``quantity=None``.
+    several units sets ``unit="multiple"`` and ``quantity=None`` unless every
+    unit is zero — a leg opened and asked nothing — where zero is the leg's own
+    measured total.
     """
 
     leg: str
@@ -713,13 +780,20 @@ class CostSummary:
         )
 
     @classmethod
-    def from_call_cost(cls, priced: CallCost) -> "CostSummary":
+    def from_call_cost(
+        cls, priced: CallCost, *, usage: CallUsage | None = None
+    ) -> "CostSummary":
         """Carry a priced call's legs and total, and never a partial total.
 
         The meter recorded what the vendors reported and the rate table priced
         it (tickets 100/101). A leg with one unmeasured unit makes that leg and
         the total unmeasured, with the reason preserved; the rate-table version
         is still cited because it is what the measured legs were priced with.
+
+        A leg the call opened and never asked anything is the one measured zero:
+        its units are zero because the pipeline counted no request, so the leg
+        keeps ``quantity=0`` and carries that fact as its source instead of the
+        generic pricing note.
         """
         legs: list[LegCost] = []
         for priced_leg in priced.legs:
@@ -728,13 +802,25 @@ class CostSummary:
                     (_unit_of(line.rate), line.reported) for line in priced_leg.lines
                 )
                 single = len(units) == 1
+                no_request = (
+                    usage is not None
+                    and usage.leg(priced_leg.leg).requests == 0
+                )
                 legs.append(
                     LegCost(
                         leg=priced_leg.leg,
                         unit=units[0][0] if single else "multiple",
-                        quantity=units[0][1] if single else None,
+                        # Zero across every unit of a leg is a real total; a
+                        # non-zero multi-unit leg keeps the "multiple" shorthand.
+                        quantity=(
+                            units[0][1] if single else (0 if no_request else None)
+                        ),
                         measured=True,
-                        source="priced from the vendor's reported units",
+                        source=(
+                            NO_REQUEST
+                            if no_request
+                            else "priced from the vendor's reported units"
+                        ),
                         amount_usd=float(priced_leg.amount),
                         units=units,
                     )
@@ -884,6 +970,9 @@ class CallEnd:
     #: write it. The call itself still ran: the artifact is a record, not a
     #: precondition.
     events_error: str | None = None
+    #: Why the call's end document could not be written, when it could not.
+    #: Named instead of silently skipped, so a call with no evidence is visible.
+    end_evidence_error: str | None = None
 
     def __post_init__(self) -> None:
         if self.ended_by not in ENDED_BY:
@@ -925,6 +1014,8 @@ class CallEnd:
             document["eventsPath"] = self.events_path
         if self.events_error is not None:
             document["eventsError"] = self.events_error
+        if self.end_evidence_error is not None:
+            document["endEvidenceError"] = self.end_evidence_error
         if self.error is not None:
             document["error"] = self.error.to_document()
         return document
@@ -1023,10 +1114,12 @@ class CallCeiling:
         limit: Any,
         *,
         table: RateTable | None = None,
+        llm_model: str | None = None,
         bound: str = CEILING_BOUND,
     ) -> None:
         self.ceiling = _ceiling_limit(limit)
         self.table = table
+        self.llm_model = llm_model
         self.bound = bound
         self._stopped = False
 
@@ -1038,7 +1131,9 @@ class CallCeiling:
         """``None`` while the call is inside the ceiling; a stop once it is not."""
         if self._stopped:
             return None
-        priced = cost_call(meter.usage(), table=self.table)
+        priced = cost_call(
+            meter.usage(), table=self.table, llm_model=self.llm_model
+        )
         measured = [
             leg.amount for leg in priced.legs if leg.amount is not None
         ]
@@ -1119,6 +1214,9 @@ class CallLifecycle:
         self.sequence = CallSequence()
         self.audio_frames: list[OutboundAudio] = []
         self._on_caption = on_caption
+        #: Bytes of caller opening audio dropped because the speech handshake
+        #: outlasted the buffer bound; the newest frames are kept.
+        self._opening_audio_dropped = 0
         self._clock = clock if clock is not None else time.monotonic
         self._ledger = (
             ledger if ledger is not None else TimingLedger(now=self._clock)
@@ -1126,11 +1224,14 @@ class CallLifecycle:
         self._envelope_clock = envelope_clock
         self._drain_bound_ms = drain_bound_ms
         self._bound_overrides: dict[str, float] = {}
+        known_bounds = {bound for bound, _ in BOUNDED_WAITS.values()} | {
+            "greeting.caller_first_ms"
+        }
         for name, value in (bounds or {}).items():
-            if name not in {bound for bound, _ in BOUNDED_WAITS.values()}:
+            if name not in known_bounds:
                 raise ValueError(
                     f"unknown bound override {name!r}; the bounded waits read "
-                    + ", ".join(sorted({bound for bound, _ in BOUNDED_WAITS.values()}))
+                    + ", ".join(sorted(known_bounds))
                 )
             self._bound_overrides[name] = float(value)
         if drain_bound_ms is not None:
@@ -1144,6 +1245,15 @@ class CallLifecycle:
         # units; without one the call still meters, so a real call cannot end
         # with a fabricated zero.
         self.usage_meter = usage_meter if usage_meter is not None else UsageMeter()
+        # The model this call's stream serves selects its priced table: a demo
+        # override may cite a newer version, and both the live ceiling and the
+        # end-of-call row must read the same one. An unpriced model keeps the
+        # default table and is recorded unmeasured, never at Spark's rate.
+        model = getattr(self._stream, "model", None)
+        self._llm_model = model if isinstance(model, str) and model else None
+        required = cost_table_for_llm_model(self._llm_model)
+        if cost_table is None or cost_table.version < required.version:
+            cost_table = required
         self._cost_table = cost_table
         #: Turns whose vendor usage this call has already recorded, so a live
         #: ceiling check and the end-of-call meter cannot count one turn twice.
@@ -1205,6 +1315,10 @@ class CallLifecycle:
         self._chime = chime
         self.chime_calls = 0
         self.chime_at: float | None = None
+        #: Whether the transport can open the caller's mic before the greeting.
+        #: Only then is the caller-first window meaningful: a transport without
+        #: the seam cannot deliver caller audio ahead of the line.
+        self._listening_opened = False
 
     # -- verification -----------------------------------------------------
 
@@ -1258,39 +1372,38 @@ class CallLifecycle:
             )
 
         opened: list[OpenedLeg] = []
-        try:
-            speech = await self._open(self._open_speech, body, "stt", opened)
-            await self._open(self._open_voice, body, "tts", opened)
-            if self._open_model is not None:
-                await self._open(self._open_model, body, "llm", opened)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            return await self._abort_before_stream(
-                opened, CallFailure.from_exception("open", error)
-            )
-
-        try:
-            greeting = self._start_greeting(body, opened)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            return await self._abort_before_stream(opened, _failure("greeting", error))
-
-        # The opening is a window, not a pause: the caller's frames reach STT
-        # and the provider's events are read while the greeting sounds, so an
-        # interruption is heard at the same moment it happens. Nothing reaches
-        # the turn layer until the greeting has finished or been cut; the
-        # buffer below is replayed in arrival order at that boundary.
+        # The opening is a window, not a pause: the browser's microphone gate
+        # is released by `listening` before the speech leg has acknowledged its
+        # handshake, so a caller who opens with a complaint is captured while
+        # the service is still opening. Frames that arrive before the ack are
+        # buffered in arrival order and replayed once the session can accept
+        # them, at the pace the session accepts rather than in one burst the
+        # vendor would close as a backlog; the handshake's own bound is what
+        # caps that wait, and a failed handshake aborts the call and the buffer
+        # with it. The buffer is bounded by the session's own lead bound and
+        # drops the oldest frame on overflow, so a slow ack costs the caller's
+        # earliest words, never the newest. Nothing reaches the turn layer
+        # until that boundary; the buffers below are replayed then.
         buffered_events: list[Any] = []
         buffered_contexts: list[str] = []
+        #: Caller PCM received before the speech session acknowledged its
+        #: handshake. `audio_lock` keeps the replay and the live frames in
+        #: order, so no opening audio is overtaken.
+        opening_audio: deque[bytes] = deque()
+        opening_bytes = 0
+        audio_lock = asyncio.Lock()
+        stt_session: Any | None = None
+        speech: OpenedLeg | None = None
         barge = asyncio.Event()
         barge_causes: list[str] = []
+        caller_first = asyncio.Event()
+        caller_audio_frames = 0
         stop_reasons: list[str] = []
         delivery_lock = asyncio.Lock()
         streaming = False
         stream_started = False
         stream_failure: CallFailure | None = None
+        greeting: GreetingPlayback | None = None
         # One leg failure that ends the call (a spent reconnect, a bug, a
         # dropped socket's final close) sets this: the supervisor stops waiting
         # for browser input instead of leaving a dead line open. It is the only
@@ -1322,13 +1435,15 @@ class CallLifecycle:
                     buffered_events.append(event)
 
         async def pump() -> None:
+            assert speech is not None  # started only after the speech leg opens
             try:
                 async for event in speech.session.events():
-                    if (
-                        greeting is not None
-                        and not greeting.done
-                        and not barge.is_set()
-                    ):
+                    if greeting is None:
+                        # The opening is still listening: caller speech before
+                        # the greeting starts skips it entirely.
+                        if _caller_spoke(event):
+                            caller_first.set()
+                    elif not greeting.done and not barge.is_set():
                         cause = _greeting_barge_cause(event)
                         if cause is not None:
                             barge_causes.append(cause)
@@ -1342,11 +1457,12 @@ class CallLifecycle:
                 # turn-level failures (a turn bug, an interrupted reply) and
                 # surfaces only the ones that end the call.
                 self._event_failure = _leg_failure(error)
+                self._emit_protocol_error(self._event_failure)
                 stop_reasons.append("error")
                 failure_event.set()
 
         async def receive() -> None:
-            nonlocal stream_failure
+            nonlocal stream_failure, caller_audio_frames, opening_bytes
             try:
                 while True:
                     item = await self._transport.receive()
@@ -1358,7 +1474,33 @@ class CallLifecycle:
                         return
                     if isinstance(item, AudioFrame):
                         self._ledger.mark("audio_in")
-                        await speech.session.send_audio(item.pcm)
+                        speaks = _caller_audio_speaks(item.pcm)
+                        # The turn layer holds a finalised turn until the
+                        # caller's audio has been quiet, so it is told about
+                        # every frame here: the pump is the one audio reader.
+                        self._stream.caller_audio(speech=speaks)
+                        if greeting is None and not caller_first.is_set():
+                            # The provider's first speech event is slow; the
+                            # caller's own PCM is the early evidence that the
+                            # opening has already been interrupted.
+                            if speaks:
+                                caller_audio_frames += 1
+                                if caller_audio_frames >= CALLER_SPEECH_FRAMES:
+                                    caller_first.set()
+                            else:
+                                caller_audio_frames = 0
+                        async with audio_lock:
+                            if stt_session is None:
+                                # The handshake has not been acknowledged yet;
+                                # hold the frame and replay it in order below.
+                                opening_audio.append(item.pcm)
+                                opening_bytes += len(item.pcm)
+                                while opening_bytes > OPENING_AUDIO_BYTES:
+                                    oldest = opening_audio.popleft()
+                                    opening_bytes -= len(oldest)
+                                    self._drop_opening_audio(len(oldest))
+                            else:
+                                await stt_session.send_audio(item.pcm)
                     elif isinstance(item, ContextUpdate):
                         if streaming:
                             await self._stream.context(item.text)
@@ -1370,18 +1512,133 @@ class CallLifecycle:
                 stream_failure = CallFailure.from_exception("stream", error)
                 stop_reasons.append("error")
 
+        window_ms = self._bound_overrides.get(
+            "greeting.caller_first_ms", CALLER_FIRST_WINDOW_MS
+        )
+        # Release the microphone before the speech handshake: the browser holds
+        # every caller frame until this signal, and the handshake can take
+        # seconds. The caller-first window starts here, so the whole opening is
+        # listening time instead of being spent before the gate ever runs.
+        window_started = self._clock()
+        await self._announce_listening()
+        receive_task = asyncio.ensure_future(receive())
+
+        try:
+            speech = await self._open(self._open_speech, body, "stt", opened)
+        except asyncio.CancelledError:
+            receive_task.cancel()
+            await asyncio.gather(receive_task, return_exceptions=True)
+            raise
+        except Exception as error:
+            receive_task.cancel()
+            await asyncio.gather(receive_task, return_exceptions=True)
+            return await self._abort_before_stream(
+                opened, CallFailure.from_exception("open", error)
+            )
+
+        # The handshake is acknowledged: replay everything the caller said while
+        # it was opening, in arrival order, before any live frame overtakes it.
+        # The replay is paced by the session, so a slow ack costs time instead
+        # of an audio burst the vendor closes. The event pump starts first: the
+        # replay can take seconds, and a caller speech event must be able to
+        # skip the greeting while it runs.
+        event_task = asyncio.ensure_future(pump())
+        try:
+            async with audio_lock:
+                while opening_audio:
+                    pcm = opening_audio.popleft()
+                    opening_bytes -= len(pcm)
+                    await _paced_sender(speech.session)(pcm)
+                stt_session = speech.session
+        except asyncio.CancelledError:
+            receive_task.cancel()
+            event_task.cancel()
+            await asyncio.gather(receive_task, event_task, return_exceptions=True)
+            raise
+        except Exception as error:
+            receive_task.cancel()
+            event_task.cancel()
+            await asyncio.gather(receive_task, event_task, return_exceptions=True)
+            return await self._abort_before_stream(
+                opened, CallFailure.from_exception("stream", error)
+            )
+
+        failure_task = asyncio.ensure_future(failure_event.wait())
+        budget_task = asyncio.ensure_future(budget_event.wait())
+        end_task = asyncio.ensure_future(end_event.wait())
+
+        try:
+            await self._open(self._open_voice, body, "tts", opened)
+            if self._open_model is not None:
+                await self._open(self._open_model, body, "llm", opened)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            for task in (event_task, receive_task, failure_task, budget_task, end_task):
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            return await self._abort_before_stream(
+                opened, CallFailure.from_exception("open", error)
+            )
+
+        if self._listening_opened:
+            # The window started at `listening` and ran through the speech,
+            # voice and model opens; caller evidence anywhere in it skips the
+            # greeting. If the opening already used the window, the line has
+            # been quiet for at least that long and the greeting starts now.
+            elapsed_ms = (self._clock() - window_started) * 1000.0
+            remaining_ms = max(0.0, window_ms - elapsed_ms)
+            caller_first_task = asyncio.ensure_future(caller_first.wait())
+            try:
+                await asyncio.wait(
+                    (
+                        caller_first_task,
+                        receive_task,
+                        failure_task,
+                        budget_task,
+                        end_task,
+                    ),
+                    timeout=remaining_ms / 1000.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                # Let the pump drain anything already yielded before the decision.
+                await asyncio.sleep(0)
+            finally:
+                caller_first_task.cancel()
+                await asyncio.gather(caller_first_task, return_exceptions=True)
+
+        opening_over = self._listening_opened and (
+            failure_event.is_set()
+            or receive_task.done()
+            or budget_event.is_set()
+            or end_event.is_set()
+        )
+        if caller_first.is_set() or opening_over:
+            self._greeting = GreetingOutcome.skipped(
+                "the caller spoke first; the greeting was not started"
+                if caller_first.is_set()
+                else "the call ended before the greeting could start"
+            )
+        else:
+            try:
+                greeting = self._start_greeting(body, opened)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                for task in (event_task, receive_task):
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                return await self._abort_before_stream(
+                    opened, _failure("greeting", error)
+                )
+
         greeting_task = greeting.task if greeting is not None else None
         greeting_gate = (
             asyncio.ensure_future(self.run_bounded("greeting", lambda: greeting_task))
             if greeting_task is not None
             else None
         )
-        event_task = asyncio.ensure_future(pump())
-        receive_task = asyncio.ensure_future(receive())
         barge_task = asyncio.ensure_future(barge.wait())
-        failure_task = asyncio.ensure_future(failure_event.wait())
-        budget_task = asyncio.ensure_future(budget_event.wait())
-        end_task = asyncio.ensure_future(end_event.wait())
 
         ended_by = "dropped"
         failure: CallFailure | None = None
@@ -1445,6 +1702,14 @@ class CallLifecycle:
                     if barge.is_set() and not greeting.done:
                         self._greeting = await greeting.cancel(barge_causes[0])
                         await asyncio.gather(greeting_task, return_exceptions=True)
+                        # The producer's frames are not the whole line: the
+                        # browser plays the queue it already holds. Cancel
+                        # stops new frames but leaves that queue sounding, so
+                        # the caller would keep hearing the opening they just
+                        # interrupted. The client drops its playout on
+                        # ``interrupted`` (the same instruction a reply cut
+                        # sends), which is the only way the cut reaches the ear.
+                        await self._interrupt_browser()
                     elif greeting_gate is not None:
                         result, outcome = await greeting_gate
                         if not outcome.ok:
@@ -2020,6 +2285,7 @@ class CallLifecycle:
         exists: there is nothing to drain, only sockets to close, so the same
         path serves both failures instead of a second copy.
         """
+        self._emit_protocol_error(failure)
         drain = await self._close_all(
             opened, event_task=None, drain_stream=False
         )
@@ -2047,6 +2313,66 @@ class CallLifecycle:
         """The per-call ceiling breach, once one has happened."""
         return self._budget_stop
 
+    @property
+    def opening_audio_dropped(self) -> int:
+        """Bytes of opening audio dropped to keep the caller's newest words.
+
+        Non-zero means the speech handshake outlasted the buffer bound and the
+        oldest pre-ack frames were discarded. It is recorded here and in the
+        warning log; the newest audio is what the replay sends, so the caller's
+        most recent words are the ones heard.
+        """
+        return self._opening_audio_dropped
+
+    def _drop_opening_audio(self, dropped: int) -> None:
+        """Record one opening frame dropped on overflow, never silently."""
+        self._opening_audio_dropped += dropped
+        _log.warning(
+            "opening audio buffer is full (%d bytes, %.1f s): dropped the oldest "
+            "frame to keep the caller's newest words (%d bytes dropped in total)",
+            OPENING_AUDIO_BYTES,
+            MAX_LEAD_S,
+            self._opening_audio_dropped,
+        )
+
+    async def _announce_listening(self) -> None:
+        """Open the caller's microphone before the speech handshake and greeting.
+
+        The browser holds microphone frames until the service admits the call,
+        so a caller who opens with a complaint would otherwise be heard only
+        after the greeting's first audible sample. This is the one signal that
+        releases those frames before the opening line: the call layer buffers
+        them through the handshake, then hears the caller first and skips the
+        greeting instead of saying "Hi" over them. A transport without the seam (a test double, a non-browser
+        path) records nothing, and no caller-first window is run because no
+        caller audio can arrive ahead of the line.
+        """
+        announce = getattr(self._transport, "listening", None)
+        if not callable(announce):
+            return
+        result = announce()
+        if inspect.isawaitable(result):
+            await result
+        self._listening_opened = True
+
+    async def _interrupt_browser(self) -> None:
+        """Tell the client to drop the playout it has queued (a barge-in).
+
+        The turn layer sends this through ``on_interrupted`` when it cuts a
+        reply. A greeting cut takes the same floor, and it needs the same
+        instruction: synthesis runs ahead of real time, so the browser can hold
+        seconds of the opening when the caller starts talking (the delivered
+        capture proves it: 4.96 s of greeting played after the cut). A
+        transport without the seam (a test double, a non-browser path) records
+        nothing, and the cut still stops new frames.
+        """
+        interrupt = getattr(self._transport, "interrupted", None)
+        if not callable(interrupt):
+            return
+        result = interrupt()
+        if inspect.isawaitable(result):
+            await result
+
     def _emit_operational(
         self,
         name: str,
@@ -2071,6 +2397,34 @@ class CallLifecycle:
                 f"the {name} event could not be written; the call continues"
             )
             return None
+
+    def _emit_protocol_error(self, failure: CallFailure | None) -> None:
+        """One provider protocol failure, named by leg, code and error class.
+
+        Only a failure the provider itself classified carries a leg, so only
+        that failure becomes a ``protocol.error`` row: a browser-socket failure
+        has no provider to name and stays on the end message, where its stage
+        is already reported. Emitting the row at the moment the failure is
+        classified keeps its timestamp honest.
+        """
+        trigger = None if failure is None else failure.trigger
+        if not isinstance(trigger, Mapping):
+            return
+        leg = trigger.get("leg")
+        if leg not in LEGS:
+            return
+        failure_class = str(trigger.get("class") or failure.name)
+        reason = str(trigger.get("reason") or "").strip()
+        phase = "connect" if failure.stage in ("open", "greeting") else "turn"
+        self._emit_operational(
+            "protocol.error",
+            lambda events: events.protocol_error(
+                leg=leg,
+                code=trigger.get("code"),
+                reason=f"{failure_class}: {reason}" if reason else failure_class,
+                phase=phase,
+            ),
+        )
 
     def deploy_draining(self, reason: str) -> dict[str, Any] | None:
         """Announce a deploy drain for this live call, once.
@@ -2180,7 +2534,11 @@ class CallLifecycle:
             # A routing-only budget line cannot be charged; it is not an error.
             return
         try:
-            priced = cost_call(self.usage_meter.usage(), table=self._cost_table)
+            priced = cost_call(
+                self.usage_meter.usage(),
+                table=self._cost_table,
+                llm_model=self._llm_model,
+            )
         except Exception:
             _log.exception("the day's cost could not be priced; the call continues")
             return
@@ -2225,7 +2583,9 @@ class CallLifecycle:
                 if self._ceiling_usd is not None
                 else require_bound(CEILING_BOUND)
             )
-            self._ceiling = CallCeiling(limit, table=self._cost_table)
+            self._ceiling = CallCeiling(
+                limit, table=self._cost_table, llm_model=self._llm_model
+            )
             self._ceiling_loaded = True
         assert self._ceiling is not None
         return self._ceiling
@@ -2279,11 +2639,14 @@ class CallLifecycle:
         Nothing here estimates. Speech contributes its usage frame when the
         adapter recorded one; synthesis contributes the ``Termination`` billing
         the session closed with; the model's token units come from the turn
-        layer, which is the only reader of the usage chunk. A leg that reported
-        nothing records an absence, so the cost stays unmeasured by name.
+        layer, which is the only reader of the usage chunk. A leg that opened
+        and was asked nothing is a measured zero (the call counted no request);
+        a leg whose request went unanswered records an absence, so the cost
+        stays unmeasured by name.
         """
         try:
             by_leg = {leg.leg: leg for leg in opened}
+            self._record_llm_opened(by_leg)
             speech = by_leg.get("stt")
             if speech is not None:
                 usage = getattr(speech.session, "usage", None)
@@ -2302,6 +2665,31 @@ class CallLifecycle:
                 f"usage meter failed: {type(error).__name__}: {error}"
             )
 
+    def _record_llm_opened(self, by_leg: Mapping[str, OpenedLeg]) -> None:
+        """Tell the meter whether the model leg was asked anything at all.
+
+        A greeting-only call opens the model leg and never requests a reply.
+        That zero is the pipeline's own request count, so the meter records it
+        as a measured zero. A stream that does not count requests (or reports
+        something other than a count) leaves the leg unmeasured: an unknown
+        count is never zero.
+        """
+        if "llm" not in by_leg:
+            return
+        reader = getattr(self._stream, "request_count", None)
+        if not callable(reader):
+            return
+        try:
+            requests = reader()
+        except Exception:  # an unreadable count is an absence, not a zero
+            _log.exception("the model request count could not be read")
+            return
+        if isinstance(requests, bool) or not isinstance(requests, int):
+            return
+        if requests < 0:
+            return
+        self.usage_meter.record_opened("llm", requests=requests)
+
     def _cost(self) -> CostSummary:
         """Price the meter's recorded units; a gap is unmeasured, never zero."""
         if self._usage_error is not None:
@@ -2314,14 +2702,17 @@ class CallLifecycle:
                     f"cost meter failed: {type(error).__name__}: {error}"
                 )
         try:
+            call_usage = self.usage_meter.usage()
             priced = cost_call(
-                self.usage_meter.usage(), table=self._cost_table
+                call_usage,
+                table=self._cost_table,
+                llm_model=self._llm_model,
             )
         except Exception as error:
             return CostSummary.unmeasured(
                 f"the cost cannot be priced: {type(error).__name__}: {error}"
             )
-        return CostSummary.from_call_cost(priced)
+        return CostSummary.from_call_cost(priced, usage=call_usage)
 
     def _turns(self) -> int:
         try:
@@ -2384,6 +2775,19 @@ class CallLifecycle:
             events_path=events_path,
             events_error=events_error,
         )
+        # The end evidence is written before the message goes out, so the
+        # sidecar and the wire carry the same document. An unwritable
+        # directory is named on that document, never skipped in silence, and
+        # the end message still goes out (it is the call's primary contract).
+        if events is not None:
+            try:
+                events.end(end.to_document())
+            except Exception as failure:
+                _log.exception("the end evidence could not be written")
+                end = replace(
+                    end,
+                    end_evidence_error=f"{type(failure).__name__}: {failure}",
+                )
         try:
             await self._transport.send(end.to_document())
         except Exception:
@@ -2400,6 +2804,44 @@ def _unit_of(rate_key: str) -> str:
     """The unit part of a ``<leg>.<unit>`` rate key."""
     leg, _, unit = rate_key.partition(".")
     return unit or leg
+
+
+def _caller_audio_speaks(pcm: bytes) -> bool:
+    """Whether one caller PCM frame is loud enough to be speech, not room tone.
+
+    The browser sends 16-bit little-endian samples. The provider's own speech
+    event is authoritative, but it can take seconds to form; this local RMS
+    check lets the opening skip the greeting as soon as the caller's first
+    words are audible, and tells the turn layer whether a held final's quiet
+    window has been broken. The bar sits below the committed caller takes
+    (~1500) and far above digital silence.
+    """
+    if len(pcm) < 2:
+        return False
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return False
+    mean_square = sum(sample * sample for sample in samples) / len(samples)
+    return mean_square ** 0.5 >= CALLER_SPEECH_RMS
+
+
+def _caller_spoke(event: Any) -> bool:
+    """Whether one provider event is the caller taking their first turn.
+
+    The opening window cares about any caller speech, not only the two events
+    that cut a sounding greeting: a final that arrives before the line starts
+    means the caller has already spoken, and the greeting must not follow it.
+    A backchannel (``mm-hmm``) is not speech that owns the floor.
+    """
+    if isinstance(event, SpeechStart):
+        return True
+    if isinstance(event, (SpeechPartial, SpeechComplete)):
+        text = getattr(event, "text", "") or ""
+        return bool(text.strip()) and not is_backchannel(text)
+    return False
 
 
 def _greeting_barge_cause(event: Any) -> str | None:
@@ -2495,7 +2937,29 @@ def _failure(stage: str, error: BaseException) -> CallFailure:
     return CallFailure.from_exception(stage, error)
 
 
+def _paced_sender(session: Any) -> Callable[[bytes], Awaitable[None]]:
+    """The session's paced opening replay, or its live send for a double.
+
+    A speech session that owns the vendor's lead law replays a pre-ack frame at
+    the pace the session accepts (``replay_audio``). A scripted double that
+    does not implement the seam forwards the frame, which is the live path.
+    """
+    replay = getattr(session, "replay_audio", None)
+    return replay if callable(replay) else session.send_audio
+
+
 def _closer(session: Any) -> Callable[[], Any] | None:
-    """A session's ``close`` when it has one; an LLM stream may not."""
-    close = getattr(session, "close", None)
-    return close if callable(close) else None
+    """A session's deliberate end, or ``None`` when it has neither.
+
+    ``finish`` comes first: it is the synthesis adapter's bounded ``Terminate``
+    that reads the vendor's billing summary before the socket closes. A plain
+    ``close`` would discard that summary and leave the call's cost unmeasured.
+    ``terminate`` is honoured for an adapter that names the operation that way,
+    and ``close`` remains the end for speech and model sessions, which own no
+    summary.
+    """
+    for name in ("finish", "terminate", "close"):
+        closer = getattr(session, name, None)
+        if callable(closer):
+            return closer
+    return None

@@ -1,0 +1,76 @@
+name: Demo monthly production certification
+
+# Ticket 29/30: the monthly full production certification is scheduled, and it
+# is recorded in voni/evidence/cutover/monthly-production.json. This repository
+# has no production evidence sink (the delivered WAV, browser marks and trace
+# are written by the local dev capture path only) and no production keys, so
+# `demo:verify --target production --full` refuses by name (exit 2) before any
+# vendor opens. The record step then reports pending-human (exit 3). Both are
+# failures, never a green month.
+on:
+  schedule:
+    # 04:00 UTC on the first of the month; the same cron as
+    # MONTHLY_PRODUCTION_CRON in src/lib/demo/verification/release/monthly.ts.
+    - cron: "0 4 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  demo-monthly-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: production
+    defaults:
+      run:
+        working-directory: voni
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voni/package-lock.json
+      - run: npm ci
+      - name: Monthly full production (refuses by name without a production sink)
+        run: |
+          set +e
+          npm run demo:verify -- --full --target production --json > "$RUNNER_TEMP/demo-monthly.json" 2> "$RUNNER_TEMP/demo-monthly.err"
+          set -e
+          cat "$RUNNER_TEMP/demo-monthly.json" || true
+          cat "$RUNNER_TEMP/demo-monthly.err" >&2 || true
+          # A refusal (exit 2), a red run or a missing certificate fails. A
+          # clean full production run may be certified or pending-human; only
+          # the owner's signature makes it a pass.
+          node --import tsx scripts/demo-gate-report.mjs full "$RUNNER_TEMP/demo-monthly.json"
+      - name: Record the month (pending-human is exit 3, never green)
+        if: always()
+        run: npm run demo:cutover -- --monthly
+      - name: Monthly run artifacts (never committed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-monthly-run
+          path: voni/.demo-runs/
+          if-no-files-found: error
+          retention-days: 14
+
+  # A skipped or cancelled monthly job must not look like a maintained claim.
+  required-demo-monthly-production:
+    needs: [demo-monthly-production]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: the monthly production job must have succeeded
+        run: |
+          echo "demo-monthly-production result: ${{ needs.demo-monthly-production.result }}"
+          test "${{ needs.demo-monthly-production.result }}" = "success"
+      - name: the monthly run artifact must exist
+        uses: actions/download-artifact@v4
+        with:
+          name: demo-monthly-run
+          path: demo-monthly-run
+      - name: artifact must not be empty
+        run: test -d demo-monthly-run

@@ -42,7 +42,6 @@ import { buildDemoCascadeBody } from "../../src/lib/demo/cascade-body";
 import { deliverCallBody } from "../../src/lib/demo/pipeline-delivery";
 import { getVoice } from "../../src/lib/agents/voices";
 import {
-  OPEN_BEAT_GOAL,
   VONI_GREETINGS,
   rungInstructions,
 } from "../../src/lib/demo/voni-agent";
@@ -1535,7 +1534,7 @@ export async function runRealLegs(
     // would pass even with context handling deleted. The time-up note uses the
     // same frame but tells the agent to hang up, so it is not sent mid-check;
     // the off-track note is the one that leaves the call alive to resume.
-    const contextNote = rungInstructions("nudge", OPEN_BEAT_GOAL);
+    const contextNote = rungInstructions("nudge");
     const captionsBeforeContext = state.captions.length;
     const userFinalsBeforeContext = countUserFinals(state);
     const audioFramesBeforeContext = state.audioFrames;

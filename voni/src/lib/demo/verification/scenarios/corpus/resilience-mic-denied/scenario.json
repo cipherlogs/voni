@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "name": "resilience-mic-denied",
+  "class": "connectivity",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "R5"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "edge": [
+    {
+      "kind": "mic-denied",
+      "atMs": 0
+    }
+  ],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "2fe3d11dc1622f0c566a8c5894a5446d03ee13c4b247583b163eaf3df1efde5c",
+      "text": "Hi, is this Voni?"
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    }
+  ]
+}

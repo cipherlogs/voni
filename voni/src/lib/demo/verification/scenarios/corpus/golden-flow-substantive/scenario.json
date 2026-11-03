@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "golden-flow-substantive",
+  "class": "golden-flow",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "T2",
+    "C1",
+    "T9"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "36c1bd34fdd9d24b7f7de339b2f861c7d5387d1ad1d5492c2f48906fc80f7ef4",
+      "text": "Hi, I'd like to understand how the demo works."
+    },
+    {
+      "id": "detail",
+      "audio": "takes/detail.wav",
+      "sha256": "506c9b572dcb2d2ffdedeac58905b27af257c77c52d91006371c38fb57d47683",
+      "text": "What happens after I send the email?"
+    }
+  ],
+  "script": [
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "detail",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

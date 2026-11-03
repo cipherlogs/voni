@@ -2,9 +2,12 @@
 
 ADR 0006's original sin is two implementations of one agent body. A tool is
 part of that body, so the cascade does not execute it: it calls the app's
-existing ``POST /api/tools/[name]`` route and lets ``executeTool`` do the work.
-Reimplementing the built-ins in Python would be the second implementation, so
-this module owns only the hop and the shape handed back to the model.
+tool route and lets ``executeTool`` do the work. The route is the tenant
+route for a tenant subject and the call-scoped demo route for a demo subject
+(:data:`DEMO_TOOL_ROUTE_PATH`, demo-cascade 14); a demo call has no ``calls``
+row, so only the demo route can resolve it. Reimplementing the built-ins in
+Python would be the second implementation, so this module owns only the hop
+and the shape handed back to the model.
 
 The hop carries four facts and never a fifth:
 
@@ -108,6 +111,14 @@ if TYPE_CHECKING:
 #: The app's existing tool route. The name is one path segment, never a body
 #: field, because that is the route the managed path already serves.
 TOOL_ROUTE_PATH = "/api/tools/{name}"
+
+#: The demo call's tool route (demo-cascade 14). A demo call is not a tenant
+#: call: it has no ``calls`` row, only a ``demo_calls`` row, so the platform
+#: route answers "Call not found". The demo route accepts the same shared
+#: secret plus the call id and resolves the demo call, so a demo body's tools
+#: execute there. The route is chosen from the signed subject kind, never
+#: inferred from an id or a name.
+DEMO_TOOL_ROUTE_PATH = "/api/demo/tools/{name}"
 
 #: The route's bearer secret. Host env by spec; never committed and never part
 #: of an error message.
@@ -402,6 +413,9 @@ class ToolRequest:
     call_id: str
     tool_call_id: str
     arguments: Mapping[str, Any] = field(default_factory=dict)
+    #: The route template the executor bound: the platform route unless the
+    #: signed subject kind is ``demo`` (see :data:`DEMO_TOOL_ROUTE_PATH`).
+    route_path: str = TOOL_ROUTE_PATH
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -416,7 +430,7 @@ class ToolRequest:
 
     def path(self) -> str:
         """The route path; the name is one encoded segment, dots included."""
-        return TOOL_ROUTE_PATH.format(name=quote(self.name, safe=""))
+        return self.route_path.format(name=quote(self.name, safe=""))
 
     def url(self, base_url: str) -> str:
         return f"{base_url.rstrip('/')}{self.path()}"
@@ -1279,6 +1293,7 @@ class ToolExecutor:
         session_factory: Any = None,
         timeout_ms: float | None = None,
         memo: ToolCallMemo | None = None,
+        route_path: str = TOOL_ROUTE_PATH,
     ) -> None:
         if not isinstance(base_url, str) or not base_url.strip():
             raise ToolEndpointError()
@@ -1286,6 +1301,7 @@ class ToolExecutor:
             raise ToolContextError("it is empty")
         self._base_url = base_url.strip()
         self._call_id = call_id
+        self._route_path = route_path
         # The env is read lazily so a deployment can set it after import; an
         # absent secret still refuses at request time.
         self._secret = secret
@@ -1330,6 +1346,13 @@ class ToolExecutor:
             secret=secret,
             session_factory=session_factory,
             timeout_ms=timeout_ms,
+            # The signed kind picks the route: a demo call's only row is in
+            # `demo_calls`, so the platform route cannot resolve it.
+            route_path=(
+                DEMO_TOOL_ROUTE_PATH
+                if verified.subject_kind == "demo"
+                else TOOL_ROUTE_PATH
+            ),
         )
 
     def request_for(self, call: ToolCallRequest) -> ToolRequest:
@@ -1339,6 +1362,7 @@ class ToolExecutor:
             call_id=self._call_id,
             tool_call_id=call.call_id,
             arguments=call.arguments,
+            route_path=self._route_path,
         )
 
     def timeout_ms(self) -> float:
@@ -1650,6 +1674,7 @@ async def continue_after_tool(
     record: MetaLLMTurn | None = None,
     ledger: TimingLedger | None = None,
     loop: ToolLoop | None = None,
+    on_request: Callable[[], None] | None = None,
 ) -> AsyncIterator[TokenDelta | ToolCallRequest]:
     """Continue the same logical turn with a new model request, or nothing.
 
@@ -1669,6 +1694,10 @@ async def continue_after_tool(
     turn is ended through the loop's ``on_cap`` hook, and the cap is recorded.
     The cap is checked after the signals and denials, so an ``end_call`` still
     ends the call at the cap instead of speaking a fallback over the goodbye.
+
+    ``on_request`` is called immediately before the one completion this path
+    makes, and never when it returns without one, so a caller that counts its
+    own requests counts only the ones that were really made.
     """
     outcomes = _outcomes(outcome)
     denials = [item for item in outcomes if isinstance(item, DeniedCall)]
@@ -1705,6 +1734,8 @@ async def continue_after_tool(
     kwargs: dict[str, Any] = {}
     if record is not None:
         kwargs["turn"] = record
+    if on_request is not None:
+        on_request()
     async for event in llm.complete(
         messages=history.request_messages(), tools=tools, **kwargs
     ):

@@ -1,0 +1,130 @@
+name: Demo weekly full certification
+
+# Ticket 30: weekly full certification — English 43 x 3 plus the Locale core
+# 12 x 3 on each of es, fr, de and pt = 273 calls. At the frozen $0.15 per-call
+# cap that is $40.95, inside E3's dvCostFullRunMaxUsd ($45); the run preflights
+# its own plan before the first call. The certificate this run writes is
+# pending-human until the owner rates the panel and signs it with
+# `npm run demo:certificate`; this workflow never signs and never calls a green.
+on:
+  schedule:
+    # Mondays 04:23 UTC, after the nightly health window.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  demo-keys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: nightly
+    outputs:
+      present: ${{ steps.keys.outputs.present }}
+    steps:
+      - name: Demo keys present?
+        id: keys
+        env:
+          META_API_KEY: ${{ secrets.META_API_KEY }}
+          ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+          VOICE_PIPELINE_ENVELOPE_SECRET: ${{ secrets.VOICE_PIPELINE_ENVELOPE_SECRET }}
+        run: |
+          if [ -n "$META_API_KEY" ] && [ -n "$ASSEMBLYAI_API_KEY" ] && [ -n "$VOICE_PIPELINE_ENVELOPE_SECRET" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Demo weekly full: SKIPPED — no demo keys"
+              echo ""
+              echo "No certification ran and this week makes no readiness claim."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=demo weekly skipped::No demo keys; the required wrapper will fail."
+          fi
+
+  demo-weekly-full:
+    needs: [demo-keys]
+    if: needs.demo-keys.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: nightly
+    defaults:
+      run:
+        working-directory: voni
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voni/package-lock.json
+      - run: npm ci
+      - name: Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Full certification (English 43 x 3 + Locale core 12 x 3 x 4)
+        env:
+          META_API_KEY: ${{ secrets.META_API_KEY }}
+          ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+          VOICE_PIPELINE_ENVELOPE_SECRET: ${{ secrets.VOICE_PIPELINE_ENVELOPE_SECRET }}
+          VOICE_PIPELINE_URL: ${{ vars.VOICE_PIPELINE_URL }}
+        run: |
+          set +e
+          npm run demo:verify -- --full --target local --json > "$RUNNER_TEMP/demo-full.json" 2> "$RUNNER_TEMP/demo-full.err"
+          set -e
+          cat "$RUNNER_TEMP/demo-full.json" || true
+          cat "$RUNNER_TEMP/demo-full.err" >&2 || true
+          node --import tsx scripts/demo-gate-report.mjs full "$RUNNER_TEMP/demo-full.json"
+      # The certificate is the one committed artifact. Until the owner signs,
+      # it is pending-human; upload it so the panel can rate the run it names.
+      - name: Certificate (for the owner's panel, not a pass)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-weekly-certificate
+          path: voni/evidence/certificates/*.json
+          if-no-files-found: error
+          retention-days: 14
+      # Audio, traces, delivered WAVs and marks are working files: upload for a
+      # human, never commit.
+      - name: Run artifacts (never committed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-weekly-run
+          path: voni/.demo-runs/
+          if-no-files-found: error
+          retention-days: 7
+
+  # A skipped, cancelled or artifact-less weekly run is a failure, never a
+  # quiet week. Branch protection requires this gate, not the job.
+  required-demo-weekly-full:
+    needs: [demo-keys, demo-weekly-full]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: no keys is a named failure, never a readiness claim
+        if: needs.demo-keys.outputs.present != 'true'
+        run: |
+          echo "SKIPPED: demo weekly full made no call — META_API_KEY, ASSEMBLYAI_API_KEY and VOICE_PIPELINE_ENVELOPE_SECRET are not all set"
+          exit 1
+      - name: the full job must have succeeded
+        if: needs.demo-keys.outputs.present == 'true'
+        run: |
+          echo "demo-weekly-full result: ${{ needs.demo-weekly-full.result }}"
+          test "${{ needs.demo-weekly-full.result }}" = "success"
+      - name: the certificate artifact must exist
+        if: needs.demo-keys.outputs.present == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: demo-weekly-certificate
+          path: demo-weekly-certificate
+      - name: the run artifact must exist
+        if: needs.demo-keys.outputs.present == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: demo-weekly-run
+          path: demo-weekly-run
+      - name: artifacts must carry the certificate and the run
+        if: needs.demo-keys.outputs.present == 'true'
+        run: test -n "$(ls demo-weekly-certificate/*.json 2>/dev/null)" -a -d demo-weekly-run

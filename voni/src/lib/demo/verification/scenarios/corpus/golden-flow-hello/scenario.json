@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "name": "golden-flow-hello",
+  "class": "golden-flow",
+  "locale": "en",
+  "heldOut": false,
+  "expectedProperties": [
+    "L1",
+    "L2",
+    "L3",
+    "L4",
+    "L5",
+    "L6",
+    "L7",
+    "L8",
+    "L10",
+    "T1",
+    "A2",
+    "A5"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "hello",
+      "audio": "takes/hello.wav",
+      "sha256": "4b9e32b6fbafdf5f2a8e8d78234a0fecd8ad65d89e5f7c09e80b2af789b741fe",
+      "text": "Hi, is this Voni?"
+    },
+    {
+      "id": "yes",
+      "audio": "takes/yes.wav",
+      "sha256": "a81aec3d2e393c170f02885dd9800bca7a6e2b117d6c9d2e72deac296d3ddc74",
+      "text": "Yes, that's me."
+    }
+  ],
+  "script": [
+    {
+      "take": "hello",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "yes",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

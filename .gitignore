@@ -34,6 +34,9 @@ __pycache__/
 # Local indexes & scratch
 ruvector.db
 .superpowers/
+# Agent working notes (tickets, specs, research). Intentionally untracked; ignored
+# so a note written during a certification run cannot move the code fingerprint.
+.scratch/
 
 # Voni gate ledger (unlazy runner output, regenerated per run)
 voni/GATES.md
@@ -49,8 +52,15 @@ voni/.dev-certs/
 # Dev delivered capture (WAV of what the playout worklet emitted; working file)
 voni/.captures/
 
+# Local Studio takes (ticket 23): hashed working audio + take records. A take
+# joins a committed corpus only when a human promotes it deliberately.
+voni/.studio/
+
 # Demo scoreboard run artifacts (regenerated per run, never committed)
 voni/scoreboard-runs/
+
+# Demo verification run directories (per-run trace, end doc, PCM; never committed)
+voni/.demo-runs/
 
 # Kept platform channel captures from session QA (audio evidence, never committed)
 voice-captures/

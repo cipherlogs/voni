@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "name": "two-tools-in-turn",
+  "class": "tools",
+  "locale": "en",
+  "heldOut": true,
+  "expectedProperties": [
+    "X1",
+    "X3",
+    "X7",
+    "X8",
+    "X9"
+  ],
+  "soundscape": {
+    "id": "quiet-room"
+  },
+  "faults": [],
+  "takes": [
+    {
+      "id": "ask",
+      "audio": "takes/ask.wav",
+      "sha256": "43fb28cc8c722dea0b9b53f8fd1263e856188a0c93a3a0cbfb5a5cf52cb83673",
+      "text": "Please check my email and send me the reply in one go. I sent it from my work address."
+    },
+    {
+      "id": "both",
+      "audio": "takes/both.wav",
+      "sha256": "d036f4c97bcaff449c8aba71e4442555637aa8da6b74f473dff34a434193ceb1",
+      "text": "Yes, both of them, right now please."
+    }
+  ],
+  "script": [
+    {
+      "take": "ask",
+      "trigger": {
+        "type": "call-open"
+      }
+    },
+    {
+      "take": "both",
+      "trigger": {
+        "type": "agent-turn-end"
+      }
+    }
+  ]
+}

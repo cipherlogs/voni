@@ -9,15 +9,24 @@ is that meter. It reads only vendor reports:
 * the synthesis ``Termination`` summary's billed characters, and its audio and
   session seconds as facts, recorded per session through
   :meth:`UsageMeter.record_tts`;
-* the speech vendor's usage frame, recorded per session through
-  :meth:`UsageMeter.record_stt`, in whole seconds because that is how the
-  vendor bills speech.
+* the speech audio the pipeline actually sent, counted from its own outbound
+  frames and recorded per session through :meth:`UsageMeter.record_stt`, in
+  whole seconds because that is how the speech rate is priced. The realtime
+  protocol reports no usage frame, so this is the one unit whose number comes
+  from the pipeline rather than a vendor report; its source says so.
 
-The invariant is one sentence: a quantity is a number only when a vendor frame
-carried it. A unit the vendor did not report is ``quantity: None`` with
-``measured: false`` and a source naming the absence — never zero, because zero
-is a price the vendor did not quote. A measured zero (``cached_tokens: 0``) is
-kept as zero: it says "none were cached", which is a measurement.
+The invariant is one sentence: a quantity is a number only when a record carried
+it — a vendor frame, or the speech pipeline's own count of frames it actually
+wrote. A unit with no record is ``quantity: None`` with ``measured: false`` and
+a source naming the absence — never zero, because zero is a price nobody
+quoted. A measured zero (``cached_tokens: 0``) is kept as zero: it says "none
+were cached", which is a measurement.
+
+The call also counts its own requests. A leg it opened and never asked anything
+has no usage for the one honest reason — nothing was requested — so its units
+are zero with :data:`NO_REQUEST` as their source. The count is the pipeline's,
+not an estimate: a leg with even one request and no usage frame stays
+unmeasured, because the missing number is the vendor's to send.
 
 A call total is a sum of measured contributions, and one unmeasured contribution
 makes the whole unit unmeasured: a partial sum is never presented as complete.
@@ -48,8 +57,8 @@ TOKEN_UNITS: tuple[str, ...] = (
     "reasoning_tokens",
 )
 
-#: The speech vendor's unit. No usage frame is in the realtime protocol today,
-#: so this stays unmeasured until the vendor supplies one.
+#: The speech unit. The realtime protocol reports no usage frame, so the
+#: adapter counts the audio frames it actually sent and names that source.
 STT_UNITS: tuple[str, ...] = ("audio_seconds",)
 
 #: The voice vendor's units: the billed characters, and the two durations it
@@ -58,6 +67,10 @@ TTS_UNITS: tuple[str, ...] = ("characters", "audio_seconds", "session_seconds")
 
 #: The source an empty leg reports: no frame, so no measurement.
 NO_RECORD = "no vendor usage record"
+
+#: The source a leg reports when it was opened and asked for nothing. The call
+#: counts its own requests, so this zero is a fact, not an estimate.
+NO_REQUEST = "opened, no request made this call"
 
 
 class UsageError(ValueError):
@@ -133,14 +146,29 @@ class Units:
     Units are ordered and unique by name. ``measured`` is true only when every
     unit in the scope was reported, so an unmeasured unit can never hide behind
     a measured sibling.
+
+    ``requests`` is how many vendor requests the pipeline counted for this
+    scope, when it counted them. ``None`` means "not counted here", never zero:
+    a zero count is the measured fact that nothing was asked of the vendor.
     """
 
     units: tuple[Unit, ...] = field(default_factory=tuple)
+    requests: int | None = None
 
     def __post_init__(self) -> None:
         names = tuple(unit.name for unit in self.units)
         if len(set(names)) != len(names):
             raise UsageError(f"a unit set cannot repeat a name, got {names}")
+        if self.requests is not None:
+            if isinstance(self.requests, bool) or not isinstance(self.requests, int):
+                raise UsageError(
+                    f"a request count must be a whole number or None, "
+                    f"got {self.requests!r}"
+                )
+            if self.requests < 0:
+                raise UsageError(
+                    f"a request count cannot be negative, got {self.requests}"
+                )
 
     def unit(self, name: str) -> Unit | None:
         """The named unit, or ``None`` when this scope does not meter it."""
@@ -249,8 +277,38 @@ class UsageMeter:
         self._turns: dict[str, list[Units]] = {}
         self._stt: list[Units] = []
         self._tts: list[Units] = []
+        self._opened: dict[str, int | None] = {}
 
     # -- recording --------------------------------------------------------
+
+    def record_opened(self, leg: str, *, requests: int | None) -> None:
+        """Record that one leg opened and how many requests it received.
+
+        The pipeline makes every request, so it can count them: a leg opened
+        with ``requests=0`` has zero usage as a measured fact, and its units are
+        zero with :data:`NO_REQUEST` as their source. A leg that made at least
+        one request keeps the vendor's report as the only price source, so an
+        absent usage record stays unmeasured by name. ``requests=None`` means
+        "not counted", which is also not zero.
+
+        One call per leg: a reconnect is a second recorded session, not a
+        second opening.
+        """
+        if leg not in LEGS:
+            raise UsageError(f"unknown leg {leg!r}; expected one of {LEGS}")
+        if leg in self._opened:
+            raise UsageError(f"leg {leg!r} was already recorded as opened")
+        if requests is not None:
+            if isinstance(requests, bool) or not isinstance(requests, int):
+                raise UsageError(
+                    f"a leg's request count must be a whole number or None, "
+                    f"got {requests!r}"
+                )
+            if requests < 0:
+                raise UsageError(
+                    f"a leg's request count cannot be negative, got {requests}"
+                )
+        self._opened[leg] = requests
 
     def record_llm(
         self, turn: str, usage: TurnUsage | Mapping[str, Any] | None
@@ -315,13 +373,13 @@ class UsageMeter:
         self._tts.append(units)
 
     def record_stt(self, usage: Mapping[str, Any] | None) -> None:
-        """Record one speech session's audio units from the vendor's usage frame.
+        """Record one speech session's audio from the adapter's own count.
 
-        Speech is billed in whole seconds, so the reported duration is metered
-        down to whole seconds — that is the vendor's billing granularity, not an
-        estimate. A session with no usage frame records absence: the realtime
-        protocol has no usage frame today, and the audio we sent is not the
-        vendor's meter.
+        The realtime protocol has no usage frame, so the adapter reports the
+        seconds it actually sent (the frames it wrote, never a wall-clock
+        estimate) and names that provenance in ``source``. The duration is
+        metered down to whole seconds because that is how the speech rate is
+        priced, not an estimate. A session with no record stays unmeasured.
 
         One call per session: a planned reconnect or a retry is a second session
         and is summed, because the vendor bills both.
@@ -333,7 +391,7 @@ class UsageMeter:
     def usage(self) -> CallUsage:
         """A snapshot of the call's units, per leg and per turn."""
         turns = tuple(
-            (turn, self._leg(TOKEN_UNITS, records))
+            (turn, self._leg(None, TOKEN_UNITS, records))
             for turn, records in self._turns.items()
         )
         llm_records = [
@@ -341,9 +399,9 @@ class UsageMeter:
         ]
         return CallUsage(
             legs=(
-                ("stt", self._leg(STT_UNITS, self._stt)),
-                ("llm", self._leg(TOKEN_UNITS, llm_records)),
-                ("tts", self._leg(TTS_UNITS, self._tts)),
+                ("stt", self._leg("stt", STT_UNITS, self._stt)),
+                ("llm", self._leg("llm", TOKEN_UNITS, llm_records)),
+                ("tts", self._leg("tts", TTS_UNITS, self._tts)),
             ),
             turns=turns,
         )
@@ -374,12 +432,27 @@ class UsageMeter:
             )
         )
 
-    @staticmethod
-    def _leg(names: tuple[str, ...], records: list[Units]) -> Units:
-        return Units(
-            tuple(
-                total(name, _recorded(records, name)) for name in names
+    def _leg(
+        self, leg: str | None, names: tuple[str, ...], records: list[Units]
+    ) -> Units:
+        """One leg's totals, or the measured zero of a leg asked nothing.
+
+        A leg the call opened and never asked anything has no records because
+        nothing was requested, not because the vendor stayed silent: its units
+        are zero with :data:`NO_REQUEST` as their source. Any record means a
+        request happened, so the records win and an absent usage frame stays
+        unmeasured. ``leg=None`` is a turn scope, which never carries an
+        opening.
+        """
+        requests = None if leg is None else self._opened.get(leg)
+        if not records and requests == 0:
+            return Units(
+                tuple(Unit(name, 0, NO_REQUEST) for name in names),
+                requests=requests,
             )
+        return Units(
+            tuple(total(name, _recorded(records, name)) for name in names),
+            requests=requests,
         )
 
 
@@ -414,8 +487,14 @@ def _speech_seconds(usage: Mapping[str, Any] | None) -> Unit:
             f"speech audio_duration_seconds must be finite and non-negative, "
             f"got {seconds!r}"
         )
+    source = usage.get("source")
+    label = (
+        source.strip()
+        if isinstance(source, str) and source.strip()
+        else "usage frame: audio_duration_seconds, billed in whole seconds"
+    )
     return Unit(
         "audio_seconds",
         math.floor(seconds),
-        "usage frame: audio_duration_seconds, billed in whole seconds",
+        label,
     )

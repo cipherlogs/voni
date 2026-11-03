@@ -36,6 +36,7 @@ from cascade.test_call import (
     ISSUED_S,
     SECRET,
     BrowserStop,
+    FakeTransport,
     RecordingAudioSink,
     signed_message,
 )
@@ -164,6 +165,32 @@ class PerRecordChargeTests(unittest.TestCase):
         self.assertEqual(
             [Decimal("0.10"), Decimal("0.20")], counter.amounts
         )
+
+    def test_a_wonder_call_is_charged_at_its_own_model_rates(self):
+        # The demo's model is muse-wonder-1.0 (owner decision 2026-11-03). The
+        # day's counter must charge its v2 input rate: 250,000 prompt tokens are
+        # USD 1.00, where the default model's rate would be USD 0.3125.
+        class RecordingCounter:
+            def __init__(self) -> None:
+                self.amounts: list[Decimal | None] = []
+
+            async def charge(self, call_cost) -> SimpleNamespace:
+                self.amounts.append(call_cost.amount)
+                return SimpleNamespace(crossings=())
+
+        counter = RecordingCounter()
+        stream = DeliverThenReport({"t1": usage(250_000)})
+        stream.model = "muse-wonder-1.0"
+        call = LifecycleForCharge(
+            stream=stream,
+            counter=counter,
+            ceiling_usd=10.0,
+            transport=FakeTransport([BrowserStop()]),
+        )
+
+        call.run()
+
+        self.assertEqual([Decimal("1.00")], counter.amounts)
 
 
 class CrossingAndAdmissionTests(unittest.TestCase):

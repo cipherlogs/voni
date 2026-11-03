@@ -146,6 +146,23 @@ class MeteringStream(FakeStream):
     def turn_usage(self):
         return self.usage
 
+    def request_count(self) -> int:
+        return len(self.usage)
+
+
+class NoRequestStream(MeteringStream):
+    """A turn layer the call opened and never asked anything.
+
+    A greeting-only call is this shape: the model leg is open, no reply was
+    requested, and no usage chunk exists because no request was made.
+    """
+
+    def __init__(self) -> None:
+        super().__init__({})
+
+    def request_count(self) -> int:
+        return 0
+
 
 class FakeVoice:
     """The opened synthesis session: a bound voice and its greeting path."""
@@ -193,6 +210,29 @@ class MeteringVoice(FakeVoice):
     def __init__(self, billing: Billing) -> None:
         super().__init__()
         self.billing = billing
+
+
+class TerminatingVoice(FakeVoice):
+    """A live synthesis session that reports billing only after ``Terminate``.
+
+    Mirrors the real adapter: a plain ``close`` leaves the summary unread, so
+    ``billing`` stays unmeasured; the call's deliberate ``finish`` is what
+    records the vendor's characters and durations.
+    """
+
+    def __init__(self, billing: Billing) -> None:
+        super().__init__()
+        self.billing = Billing(
+            characters=None,
+            measured=False,
+            source="unterminated: the session has not ended",
+        )
+        self._summary = billing
+        self.finished = False
+
+    async def finish(self) -> None:
+        self.finished = True
+        self.billing = self._summary
 
 
 class HangingGreetingVoice(FakeVoice):
@@ -689,6 +729,152 @@ class CallLifecycleTest(unittest.TestCase):
         self.assertFalse(document["legs"]["tts"]["measured"])
         self.assertIsNone(document["legs"]["tts"]["amountUsd"])
         self.assertIn("session_seconds", document["unmeasuredReason"])
+
+    def test_a_greeting_only_call_totals_as_measured(self):
+        # The quiet-room shape: the model leg is open and was asked nothing.
+        # Its zero is the pipeline's own request count, so the call's total is
+        # a measured sum instead of an unmeasured one.
+        speech = ScriptedSTT([], clock=self.clock)
+        speech.usage = {"audio_duration_seconds": 4.0}
+        voice = MeteringVoice(
+            Billing(
+                characters=89,
+                measured=True,
+                source="billed_characters",
+                audio_duration_seconds=6.4,
+                session_duration_seconds=1,
+            )
+        )
+        transport = FakeTransport([])
+
+        end = self.run_call(
+            self.make(
+                transport=transport,
+                speech=speech,
+                voice=voice,
+                stream=NoRequestStream(),
+                open_model=True,
+                model_session=object(),
+            )
+        )
+
+        document = transport.sent[-1]
+        self.assertEqual(0, document["turns"])
+        cost = document["cost"]
+        self.assertTrue(cost["measured"])
+        llm = cost["legs"]["llm"]
+        self.assertTrue(llm["measured"])
+        self.assertEqual(0, llm["quantity"])
+        self.assertEqual(0, llm["amountUsd"])
+        self.assertEqual(
+            "opened, no request made this call", llm["source"]
+        )
+        self.assertEqual(
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+            llm["units"],
+        )
+        # stt 4 s x $0.00005 + tts 89 chars x $0.000015
+        self.assertAlmostEqual(0.001535, cost["totalUsd"], places=12)
+        self.assertTrue(end.cost.measured)
+
+    def test_the_served_stream_reports_a_greeting_only_call_as_a_measured_zero(self):
+        # The real turn layer, not a double: it counts its own model requests,
+        # so the lifecycle prices the untouched model leg as zero.
+        from cascade.test_turn_stream import ScriptedLLM
+        from cascade.turn_stream import CascadeTurnStream
+
+        class RecordingEmitter:
+            def __init__(self) -> None:
+                self.frames: list[object] = []
+
+            async def __call__(self, audio, *, kind="reply", flush_id=None):
+                self.frames.append(audio)
+                return audio
+
+        speech = ScriptedSTT([], clock=self.clock)
+        speech.usage = {"audio_duration_seconds": 4.0}
+        voice = MeteringVoice(
+            Billing(
+                characters=89,
+                measured=True,
+                source="billed_characters",
+                audio_duration_seconds=6.4,
+                session_duration_seconds=1,
+            )
+        )
+        # No canned reply exists: a request would raise before answering.
+        stream = CascadeTurnStream(
+            llm=ScriptedLLM([]),
+            tts=voice,
+            emit_audio=RecordingEmitter(),
+            clock=self.clock,
+        )
+        transport = FakeTransport([])
+
+        end = self.run_call(
+            self.make(
+                transport=transport,
+                speech=speech,
+                voice=voice,
+                stream=stream,
+                open_model=True,
+                model_session=object(),
+            )
+        )
+
+        self.assertEqual(0, stream.request_count())
+        cost = transport.sent[-1]["cost"]
+        self.assertTrue(cost["measured"])
+        self.assertEqual(0, cost["legs"]["llm"]["quantity"])
+        self.assertEqual(0, cost["legs"]["llm"]["amountUsd"])
+        self.assertAlmostEqual(0.001535, cost["totalUsd"], places=12)
+        self.assertTrue(end.cost.measured)
+
+    def test_a_leg_that_made_a_request_with_no_usage_stays_unmeasured_by_name(self):
+        speech = ScriptedSTT(
+            [SpeechStart("t1"), SpeechComplete("book a demo", turn_id="t1")],
+            clock=self.clock,
+        )
+        speech.usage = {"audio_duration_seconds": 3.0}
+        voice = MeteringVoice(
+            Billing(
+                characters=40,
+                measured=True,
+                source="billed_characters",
+                audio_duration_seconds=2.5,
+                session_duration_seconds=4,
+            )
+        )
+        stream = MeteringStream({"t1": TurnUsage.unmeasured()})
+        transport = FakeTransport([BrowserStop()])
+
+        end = self.run_call(
+            self.make(
+                transport=transport,
+                speech=speech,
+                voice=voice,
+                stream=stream,
+                open_model=True,
+                model_session=object(),
+            )
+        )
+
+        document = transport.sent[-1]["cost"]
+        self.assertFalse(document["measured"])
+        self.assertIsNone(document["totalUsd"])
+        llm = document["legs"]["llm"]
+        self.assertFalse(llm["measured"])
+        self.assertIsNone(llm["amountUsd"])
+        self.assertEqual({}, llm["units"])
+        self.assertIn("llm.prompt_tokens is unmeasured", llm["source"])
+        self.assertIn("no usage chunk", llm["source"])
+        self.assertIn("llm: llm.prompt_tokens is unmeasured", document["unmeasuredReason"])
+        self.assertFalse(end.cost.measured)
 
     def test_a_hanging_drain_is_bounded_and_the_call_still_ends(self):
         transport = FakeTransport([BrowserStop()])
