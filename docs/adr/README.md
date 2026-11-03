@@ -17,5 +17,6 @@ One record per decision that constrains future work. A record is never rewritten
 | [0011](0011-owned-cascade-with-meta-muse.md) | An owned cascade: Meta for ear and mind, AssemblyAI for the voice | Tenant path only |
 | [0012](0012-demo-cascade-only.md) | The demo runs only on the cascade; the tenant path stays managed | Demo surface |
 | [0013](0013-demo-readiness-is-a-signed-certificate.md) | Demo readiness is a signed certificate, not a promise of perfection | Demo verification |
+| [0014](0014-demo-model-is-muse-wonder.md) | The demo's model is Muse Wonder, named in the signed body | Demo surface |
 
-ADR-0011 is the standing record for the tenant path only. ADR-0012 records the demo surface split, including the withdrawal of Italian from the demo and its reason. ADR-0013 governs demo readiness: the certificate, the panel as authority, the vendor-independent judge and the staging gate; the risks it accepts are registered in `docs/agents/demo-verification.md`.
+ADR-0011 is the standing record for the tenant path only. ADR-0012 records the demo surface split, including the withdrawal of Italian from the demo and its reason. ADR-0013 governs demo readiness: the certificate, the panel as authority, the vendor-independent judge and the staging gate; the risks it accepts are registered in `docs/agents/demo-verification.md`. ADR-0014 names the demo's model (Muse Wonder) and the signed-body override that carries it.

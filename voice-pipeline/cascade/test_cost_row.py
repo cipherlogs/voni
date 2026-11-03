@@ -25,6 +25,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from cascade.assemblyai_tts import AssemblyAIStreamingTTS, Billing
+from cascade import cost
 from cascade.call import CallLifecycle, CostSummary, OpenedLeg
 from cascade.cost import RATE_TABLE
 from cascade.events import (
@@ -445,6 +446,79 @@ class CostRowTests(unittest.TestCase):
             {key: value for key, value in cascade_row.items() if key != "pipeline"},
             {key: value for key, value in managed_row.items() if key != "pipeline"},
         )
+
+    def test_a_wonder_call_prices_its_llm_leg_on_the_v2_rates(self):
+        # The demo's model is muse-wonder-1.0 (owner decision 2026-11-03). Its
+        # llm leg must be priced from the model-scoped v2 rates, never Spark's.
+        stream = MeteringStream(
+            {
+                "t1": TurnUsage(
+                    prompt_tokens=1000,
+                    completion_tokens=100,
+                    cached_tokens=200,
+                    reasoning_tokens=0,
+                    measured=True,
+                )
+            }
+        )
+        stream.model = "muse-wonder-1.0"
+        v2 = cost.load_rate_table(version=2)
+
+        end, _ = self.run_call(self.ops_for(), stream=stream)
+
+        row = self.cost_rows()[0]
+        self.assertTrue(row["measured"])
+        self.assertEqual("cascade-vendor-rates v2", row["rateTableVersion"])
+        expected_llm = (
+            v2.price("llm.muse-wonder-1.0.prompt_tokens", 800)
+            + v2.price("llm.muse-wonder-1.0.cached_tokens", 200)
+            + v2.price("llm.muse-wonder-1.0.completion_tokens", 100)
+            + v2.price("llm.muse-wonder-1.0.reasoning_tokens", 0)
+        )
+        expected_total = (
+            v2.price("stt.audio_seconds", 3)
+            + expected_llm
+            + v2.price("tts.characters", 40)
+            + v2.price("tts.audio_seconds", 2.5)
+            + v2.price("tts.session_seconds", 4)
+        )
+        self.assertEqual(expected_llm, Decimal(str(row["legs"]["llm"]["amountUsd"])))
+        self.assertEqual(expected_total, Decimal(str(row["totalUsd"])))
+        self.assertEqual(expected_total, Decimal(str(end.cost.total_usd)))
+        # It is not the default model's price for the same units.
+        self.assertNotEqual(
+            RATE_TABLE.price("llm.prompt_tokens", 800)
+            + RATE_TABLE.price("llm.cached_tokens", 200)
+            + RATE_TABLE.price("llm.completion_tokens", 100)
+            + RATE_TABLE.price("llm.reasoning_tokens", 0),
+            expected_llm,
+        )
+
+    def test_a_model_with_no_declared_rate_is_unmeasured_never_mispriced(self):
+        # A model the table does not price must leave the llm leg unmeasured:
+        # the row names the reason and never borrows another model's rate.
+        stream = MeteringStream(
+            {
+                "t1": TurnUsage(
+                    prompt_tokens=1000,
+                    completion_tokens=100,
+                    cached_tokens=200,
+                    reasoning_tokens=0,
+                    measured=True,
+                )
+            }
+        )
+        stream.model = "muse-wonder-9.9"
+
+        _, _ = self.run_call(self.ops_for(), stream=stream)
+
+        row = self.cost_rows()[0]
+        self.assertFalse(row["measured"])
+        self.assertIsNone(row["totalUsd"])
+        self.assertTrue(row["legs"]["stt"]["measured"])
+        self.assertFalse(row["legs"]["llm"]["measured"])
+        self.assertIn("muse-wonder-9.9", row["unmeasuredReason"])
+        self.assertIn("unmeasured", row["unmeasuredReason"])
 
 
 if __name__ == "__main__":

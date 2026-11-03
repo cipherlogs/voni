@@ -152,6 +152,18 @@ class StreamTest(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_the_stream_names_the_model_it_serves(self):
+        # The call prices its llm leg from this: a demo override must be priced
+        # on its own model's rates, so the stream has to name it (ADR-0014).
+        stream = self.make(replies=["one reply"])
+        self.assertIsNone(stream.model, "a turn layer without a model names none")
+
+        self.llm.model = "muse-wonder-1.0"
+        self.assertEqual("muse-wonder-1.0", stream.model)
+
+        self.llm.model = ""
+        self.assertIsNone(stream.model, "a blank model is not a model")
+
     def test_a_reply_ends_with_one_final_agent_caption(self):
         captions: list[tuple[str, str, bool]] = []
 

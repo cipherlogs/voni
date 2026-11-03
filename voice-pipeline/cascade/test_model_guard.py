@@ -10,8 +10,10 @@ import unittest
 
 from cascade.model_guard import (
     DEFAULT_MODEL,
+    OVERRIDE_MODELS,
     STANDARD_MODELS,
     ModelGuardError,
+    assert_override_model,
     assert_standard_model,
     resolve_model,
 )
@@ -89,6 +91,37 @@ class ResolveModelTests(unittest.TestCase):
         with self.assertRaises(ModelGuardError) as caught:
             resolve_model("gateway-gpt")
         self.assertIn("gateway-gpt", str(caught.exception))
+
+
+class DemoTicketModelABTests(unittest.TestCase):
+    """muse-wonder-1.0 is override-only, never a Standard rung model."""
+
+    def test_the_default_rung_still_refuses_wonder_by_name(self):
+        for call in (lambda: resolve_model("muse-wonder-1.0"), lambda: assert_standard_model("muse-wonder-1.0")):
+            with self.assertRaises(ModelGuardError) as caught:
+                call()
+            self.assertIn("muse-wonder-1.0", str(caught.exception))
+            self.assertIn("not a Standard model", str(caught.exception))
+
+    def test_the_standard_allowlist_did_not_grow(self):
+        self.assertEqual(tuple(STANDARD_MODELS), ("muse-spark-1.3",))
+        self.assertEqual(tuple(OVERRIDE_MODELS), ("muse-spark-1.3", "muse-wonder-1.0"))
+
+    def test_only_the_explicit_override_gate_allows_wonder(self):
+        self.assertEqual(assert_override_model("muse-wonder-1.0"), "muse-wonder-1.0")
+        self.assertEqual(assert_override_model("muse-spark-1.3"), "muse-spark-1.3")
+
+    def test_an_unlisted_override_is_refused_by_name(self):
+        with self.assertRaises(ModelGuardError) as caught:
+            assert_override_model("muse-wonder-9.9")
+        self.assertIn("muse-wonder-9.9", str(caught.exception))
+        self.assertIn("not an allowed Meta override", str(caught.exception))
+
+    def test_the_override_gate_still_refuses_a_contributor_id(self):
+        for model in ("muse-wonder-1.0-contributor", "muse-spark-1.3-contributor"):
+            with self.subTest(model=model), self.assertRaises(ModelGuardError) as caught:
+                assert_override_model(model)
+            self.assertIn("Contributor", str(caught.exception))
 
 
 if __name__ == "__main__":

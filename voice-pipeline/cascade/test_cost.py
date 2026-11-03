@@ -509,5 +509,55 @@ class RecordIntegrityTests(unittest.TestCase):
             self.assertIn("negative", str(caught.exception))
 
 
+class DemoTicketModelABCostTests(unittest.TestCase):
+    """A model is priced only from its own sourced rates."""
+
+    def test_wonder_is_priced_from_its_own_scoped_v2_rates(self):
+        table = cost.load_rate_table(version=2)
+        priced = cost.cost_call(
+            known_call_usage(), table=table, llm_model="muse-wonder-1.0"
+        )
+
+        # Hand-worked from the public page (2026-11-03):
+        #   input  750,000 * $4.00/1M  = 3.00
+        #   cached 250,000 * $0.20/1M  = 0.05
+        #   out    150,000 * $20/1M    = 3.00
+        #   reason  50,000 * $20/1M    = 1.00
+        #   stt 90 s * $0.18/3600      = 0.0045
+        #   tts 1,000 chars * $15/1M   = 0.015
+        self.assertTrue(priced.measured)
+        self.assertEqual(priced.leg("llm").amount, Decimal("7.05"))
+        self.assertEqual(priced.amount, Decimal("7.0695"))
+        self.assertEqual(priced.to_document()["rateTable"]["version"], 2)
+
+    def test_the_wonder_rates_name_their_source_and_date(self):
+        table = cost.load_rate_table(version=2)
+        for unit in usage.TOKEN_UNITS:
+            rate = table.require(f"llm.muse-wonder-1.0.{unit}")
+            self.assertEqual(rate.model, "muse-wonder-1.0")
+            self.assertTrue(rate.source.strip())
+            self.assertTrue(rate.url.startswith("https://"))
+            self.assertEqual(rate.date, "2026-11-03")
+
+    def test_an_unpriced_model_leaves_the_llm_leg_unmeasured(self):
+        table = cost.load_rate_table(version=2)
+        priced = cost.cost_call(
+            known_call_usage(), table=table, llm_model="muse-unknown-1.0"
+        )
+
+        self.assertFalse(priced.measured)
+        self.assertIsNone(priced.leg("llm").amount)
+        self.assertEqual(priced.leg("stt").amount, Decimal("0.0045"))
+        self.assertIn("muse-unknown-1.0", " ".join(priced.reasons))
+        self.assertIn("never priced", " ".join(priced.reasons))
+
+    def test_spark_keeps_its_v1_prices_on_the_default_table(self):
+        priced = cost.cost_call(
+            known_call_usage(), llm_model=cost.DEFAULT_LLM_MODEL
+        )
+        self.assertEqual(priced.leg("llm").amount, Decimal("1.825"))
+        self.assertEqual(priced.to_document()["rateTable"]["version"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

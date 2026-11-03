@@ -11,6 +11,8 @@ import {
   UnknownDemoVoice,
   buildDemoCascadeBody,
   DEMO_ACCOUNT_SALT,
+  DEMO_LLM_BASE_URL,
+  DEMO_LLM_MODEL,
 } from "./cascade-body";
 import { DEMO_VOICE_IDS, VONI_GREETINGS } from "./voni-agent";
 
@@ -35,6 +37,12 @@ const REGISTRY = JSON.parse(
 const SECRET = "test-only-cascade-body-secret";
 // The module reads the secret through `secret()`; the test supplies it the same way.
 process.env.VOICE_PIPELINE_ENVELOPE_SECRET = SECRET;
+// The demo body always names a model, so every build here needs the Meta key the
+// override carries. The effort is pinned absent and the test/A-B switch unset so
+// the body is the product default, not this shell's environment.
+process.env.META_API_KEY = "test-meta-key";
+delete process.env.META_REASONING_EFFORT;
+delete process.env.DEMO_LLM_MODEL_OVERRIDE;
 const NOW = 1_761_771_100_000;
 
 /** The Locale each demo voice pins (spec: five voices, one per Locale). */
@@ -180,7 +188,7 @@ test("history is a hold-return field: a fresh call, bad roles and over-bound his
   );
 });
 
-test("the demo body carries no tenant fields", async () => {
+test("the demo body carries no tenant fields and one explicit model override", async () => {
   for (const voice of DEMO_VOICE_IDS) {
     const { body } = await buildDemoCascadeBody(
       { voice, callId: `call-tenant-fields-${voice}` },
@@ -194,8 +202,14 @@ test("the demo body carries no tenant fields", async () => {
       "voice",
       "output",
       "tools",
+      "llm",
       "input",
     ]);
+    // `llm` is the demo's own model choice, carried in the signed body and
+    // delivered server-to-server; it is not a tenant field and its credential
+    // never reaches the browser or the top level of the body.
+    assert.equal(body.llm?.length, 1);
+    assert.equal(body.llm?.[0]?.model, "muse-wonder-1.0");
     for (const key of [
       "organization_id",
       "organizationId",
@@ -449,5 +463,105 @@ test("the demo body module is server-only and makes no network or database call"
   // The body comes from the one builder, never a second one.
   assert.match(source, /buildDemoAgentBody/);
   assert.doesNotMatch(source, /\bbuildStoredAgent\s*\(/);
+});
+
+test("the demo body's default override names muse-wonder-1.0 and the body still signs", async () => {
+  const saved = {
+    override: process.env.DEMO_LLM_MODEL_OVERRIDE,
+    key: process.env.META_API_KEY,
+    effort: process.env.META_REASONING_EFFORT,
+  };
+  try {
+    delete process.env.DEMO_LLM_MODEL_OVERRIDE;
+    process.env.META_API_KEY = "test-meta-key";
+    process.env.META_REASONING_EFFORT = "minimal";
+
+    const call = await buildDemoCascadeBody(
+      { voice: "audrey", callId: "call-default" },
+      { now: NOW },
+    );
+
+    assert.deepEqual(call.body.llm, [
+      {
+        base_url: DEMO_LLM_BASE_URL,
+        model: "muse-wonder-1.0",
+        api_key: "test-meta-key",
+        reasoning_effort: "minimal",
+      },
+    ]);
+    assert.equal(DEMO_LLM_MODEL, "muse-wonder-1.0");
+    // The model entry is inside the signed body, not appended after signing.
+    assert.deepEqual(call.signedBody.body, call.body);
+    assert.equal(call.bodyHash, call.signedBody.envelope.body_hash);
+    assert.equal(
+      call.signedBody.envelope.signature,
+      hmac(call.signedBody.envelope, SECRET),
+      "the body with the model override is the one the signer covered",
+    );
+  } finally {
+    for (const [name, value] of [
+      ["DEMO_LLM_MODEL_OVERRIDE", saved.override],
+      ["META_API_KEY", saved.key],
+      ["META_REASONING_EFFORT", saved.effort],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("the test/A-B switch may name the other Standard model, never an unlisted one", async () => {
+  const saved = {
+    override: process.env.DEMO_LLM_MODEL_OVERRIDE,
+    key: process.env.META_API_KEY,
+  };
+  try {
+    process.env.META_API_KEY = "test-meta-key";
+    process.env.DEMO_LLM_MODEL_OVERRIDE = "muse-spark-1.3";
+    const spark = await buildDemoCascadeBody(
+      { voice: "audrey", callId: "call-ab" },
+      { now: NOW },
+    );
+    assert.equal(spark.body.llm?.[0]?.model, "muse-spark-1.3");
+
+    process.env.DEMO_LLM_MODEL_OVERRIDE = "muse-wonder-9.9";
+    await assert.rejects(
+      () => buildDemoCascadeBody({ voice: "audrey", callId: "call-bad" }, { now: NOW }),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.name === "UnknownDemoLlmModel" &&
+        /muse-wonder-9\.9/.test(error.message),
+    );
+
+    process.env.DEMO_LLM_MODEL_OVERRIDE = "muse-wonder-1.0-contributor";
+    await assert.rejects(
+      () => buildDemoCascadeBody({ voice: "audrey", callId: "call-bad" }, { now: NOW }),
+      /muse-wonder-1\.0-contributor/,
+      "a Contributor id is refused before it is signed",
+    );
+  } finally {
+    for (const [name, value] of [
+      ["DEMO_LLM_MODEL_OVERRIDE", saved.override],
+      ["META_API_KEY", saved.key],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("the demo body refuses to name a model it cannot credential", async () => {
+  const saved = process.env.META_API_KEY;
+  try {
+    delete process.env.META_API_KEY;
+    await assert.rejects(
+      () => buildDemoCascadeBody({ voice: "audrey", callId: "call-nokey" }, { now: NOW }),
+      /META_API_KEY/,
+      "the override carries its own credential; never another source's key",
+    );
+  } finally {
+    if (saved === undefined) delete process.env.META_API_KEY;
+    else process.env.META_API_KEY = saved;
+  }
 });
 

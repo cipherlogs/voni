@@ -626,6 +626,16 @@ class CascadeTurnStream:
         if self._failure is not None:
             raise self._failure
 
+    @property
+    def model(self) -> str | None:
+        """The model id this call's stream is serving, if it names one.
+
+        The call prices its llm leg from this, so a demo override is priced
+        from its own model's rates rather than the default model's.
+        """
+        value = getattr(self._llm, "model", None)
+        return value if isinstance(value, str) and value else None
+
     def turn_count(self) -> int:
         """How many logical turns produced a model reply."""
         return len(self._completed)
