@@ -8,7 +8,7 @@
     },
     "cascade-thresholds": {
       "path": "voice-pipeline/cascade/thresholds.json",
-      "sha256": "9e831d6c6e9b50c3e6a07a127bf7647cc6d00c59d393c456d5fb6bfbeda0c627"
+      "sha256": "be48f8b5c6a7fe35df71f183d499d5871ba878204d30309e2ba7b11bae2f93f8"
     }
   },
   "properties": {
