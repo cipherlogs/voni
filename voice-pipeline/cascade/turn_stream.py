@@ -131,13 +131,16 @@ _NON_WORD = re.compile(r"[^\w\s]+", re.UNICODE)
 _FILLER_OPENERS = (
     "right",
     "got it",
+    "you got it",
     "okay",
     "ok",
     "alright",
     "fair enough",
     "no worries",
+    "no problem",
     "sure",
     "of course",
+    "you're welcome",
     "absolutely",
     "i see",
     "yeah",
@@ -263,9 +266,34 @@ def _content_words(text: str) -> frozenset[str]:
     )
 
 
+#: The words that open a question even when the sentence carries no "?".
+#: Deliberately grammar only: a normal word ("your service is useless") never
+#: makes a statement a question.
+_QUESTION_OPENERS = frozenset(
+    "what why how when where who which whose can could do does did are is was "
+    "were would will should have has am".split()
+)
+
+#: A request for information ("Tell me what went wrong") asks its question
+#: after an imperative frame. The measured hostile call's first question had
+#: no "?" and did not start with a question word.
+_QUESTION_REQUEST = re.compile(
+    r"^(?:(?:tell|show)\s+(?:me|us)|explain)\s+", re.IGNORECASE
+)
+
+
 def _is_question(sentence: str) -> bool:
-    """A spoken sentence is a question when it carries a question mark."""
-    return "?" in sentence
+    """A spoken sentence is a question when it asks one, with or without "?".
+
+    A question ends with "?", opens with a wh-word or auxiliary, or follows an
+    information request frame ("tell me what ..."). The live hostile call asked
+    "What exactly needs fixing right now ..." with no question mark at all.
+    """
+    if "?" in sentence:
+        return True
+    text = _QUESTION_REQUEST.sub("", sentence.strip(), count=1)
+    words = _WORD.findall(text.casefold())
+    return bool(words) and words[0] in _QUESTION_OPENERS
 
 
 def _reply_sentences(text: str) -> list[str]:
