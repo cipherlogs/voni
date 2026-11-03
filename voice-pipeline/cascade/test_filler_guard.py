@@ -28,12 +28,15 @@ from metrics import TimingLedger
 OPENERS = (
     "Right",
     "Got it",
+    "You got it",
     "Okay",
     "Alright",
     "Fair enough",
     "No worries",
+    "No problem",
     "Sure",
     "Of course",
+    "You're welcome",
     "Absolutely",
     "I see",
     "Yeah",
@@ -142,6 +145,26 @@ class FillerGuardTests(unittest.TestCase):
 
         self.assertEqual([SPOKEN], self.tts.spoken)
         self.assertEqual(2, stream.filler_stripped)
+
+    def test_the_measured_you_got_it_opener_is_stripped(self):
+        stream = self.make(
+            replies=[
+                {
+                    "deltas": [
+                        "You got it — showing the live test now. "
+                        "I can handle calls…"
+                    ]
+                }
+            ]
+        )
+
+        self.run_turns(stream, ["what can you do?"])
+
+        self.assertEqual(
+            ["Showing the live test now.", "I can handle calls…"],
+            self.tts.spoken,
+        )
+        self.assertEqual(1, stream.filler_stripped)
 
     def test_the_caption_carries_the_substance_not_the_opener(self):
         captions: list[tuple[str, str, bool]] = []

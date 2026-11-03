@@ -31,6 +31,16 @@ REPAIR_STATEMENT = "That's okay. We can go slow."
 OVERWHELMED = "I am a bit overwhelmed."
 STILL_UNANSWERED = "There are so many things maybe the thing from last time?"
 
+#: The measured hostile call (71d37258): neither agent sentence carries a "?".
+HOSTILE_INTRO = "This is ridiculous. Your service is useless."
+HOSTILE_AGAIN = "Do not give me that scripted rubbish. Just fix it."
+HOSTILE_FIRST = (
+    "Tell me what just went wrong and I'll sort what I can from here"
+)
+HOSTILE_SECOND = (
+    "What exactly needs fixing right now so I can get it done"
+)
+
 
 class RecordingTurnLedger:
     """A turn ledger that keeps every row the stream writes."""
@@ -109,6 +119,55 @@ class QuestionGuardTests(unittest.TestCase):
         counts = self.ledger.summary()["counts"]
         self.assertEqual(1, counts["question_withheld"])
         self.assertEqual(1, counts["question_repair"])
+
+    def test_the_measured_hostile_question_without_a_mark_is_withheld(self):
+        repaired = "We can take this one step at a time."
+        stream = self.make(
+            replies=[
+                {"deltas": [HOSTILE_FIRST]},
+                {"deltas": [HOSTILE_SECOND]},
+                {"deltas": [repaired]},
+            ]
+        )
+
+        self.run_turns(stream, [HOSTILE_INTRO, HOSTILE_AGAIN])
+
+        # The first question is heard; the second, with no "?", is withheld
+        # because the caller still has not answered the first.
+        self.assertEqual([HOSTILE_FIRST, repaired], self.tts.spoken)
+        self.assertEqual(1, stream.question_withheld)
+        self.assertEqual(1, stream.question_repair)
+        self.assertEqual(3, stream.request_count())
+        self.assertEqual(2, stream.turn_count())
+
+    def test_a_statement_starting_with_a_normal_word_is_not_a_question(self):
+        statement = "Your service is covered."
+        stream = self.make(
+            replies=[
+                {"deltas": [FIRST_QUESTION]},
+                {"deltas": [statement]},
+            ]
+        )
+
+        self.run_turns(stream, [OVERWHELMED, STILL_UNANSWERED])
+
+        self.assertEqual([FIRST_QUESTION, statement], self.tts.spoken)
+        self.assertEqual(0, stream.question_withheld)
+
+    def test_an_answered_question_allows_the_next_question_without_a_mark(self):
+        answer = "We run a plumbing business on Main Street."
+        next_question = "Which plumbing jobs do you take"
+        stream = self.make(
+            replies=[
+                {"deltas": [FIRST_QUESTION]},
+                {"deltas": [next_question]},
+            ]
+        )
+
+        self.run_turns(stream, [OVERWHELMED, answer])
+
+        self.assertEqual([FIRST_QUESTION, next_question], self.tts.spoken)
+        self.assertEqual(0, stream.question_withheld)
 
     def test_the_repair_request_tells_the_model_not_to_ask_again(self):
         stream = self.make(
