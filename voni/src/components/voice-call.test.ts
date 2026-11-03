@@ -442,7 +442,7 @@ test("a refused cascade connect is unavailable, never a managed retry", () => {
   assert.match(call, /demoUnavailableMessage/);
   assert.match(
     handler,
-    /cascadeEnded = true;[\s\S]*?setError\(\{ message: demoUnavailableMessage\(failure\.code\) \}\)[\s\S]*?setCallState\("ended"\)/,
+    /setError\(\{ message: demoUnavailableMessage\(failure\.code\) \}\)[\s\S]*?setCallState\("ended"\)/,
     "the refusal maps the cause and ends the call",
   );
   assert.doesNotMatch(call, /decideCascadeFallback|FALLBACK_REASONS/);

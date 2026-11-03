@@ -204,20 +204,25 @@ export function createReviewRatings(
   };
 }
 
-/** Append-only turn record without holding a store (route sink seam). */
-export function recordTurnRating(
-  store: ReviewRatingsStore,
-  input: ReviewTurnRatingInput,
-): ReviewTurnRating {
-  return store.recordTurn(input);
-}
+/**
+ * The sink that persists the artifact beside the call's marks and delivered
+ * capture. The store stays pure in-memory; the host supplies the write (the
+ * overlay passes one in, so a rating survives unmount and replays as a repro).
+ */
+export type ReviewRatingsSink = (
+  callId: string,
+  artifact: ReviewRatingsArtifact,
+) => void;
 
-/** The call's one start record without holding a store. */
-export function recordStartRating(
+/** Serialize the call's ratings and hand the artifact to the beside-marks sink. */
+export function saveReviewRatings(
   store: ReviewRatingsStore,
-  input: ReviewStartRatingInput,
-): ReviewStartRating {
-  return store.recordStart(input);
+  callId: string,
+  sink: ReviewRatingsSink,
+): ReviewRatingsArtifact {
+  const artifact = store.toArtifact(callId);
+  sink(callId, artifact);
+  return artifact;
 }
 
 /** The `?review=1` flag that hosts the overlay on the landing demo. */

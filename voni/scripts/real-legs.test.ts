@@ -36,7 +36,6 @@ import {
   assessReplyGaps,
   assessTrace,
   carriedHistory,
-  classifyBand,
   createIngressPump,
   defaultCallerClip,
   formatRealLegsReport,
@@ -1069,8 +1068,8 @@ test("reply gaps with no timed reply fail by name", () => {
 test("timed reply gaps pass against the frozen reply-gap budget", () => {
   const budget = SCOREBOARD_BUDGETS.replyGapP95Ms.value;
   const [check] = assessReplyGaps([
-    { endpointingMs: 120, replyGapMs: 800, band: "ordinary" },
-    { endpointingMs: 200, replyGapMs: budget, band: "ordinary" },
+    { endpointingMs: 120, replyGapMs: 800, partial: true },
+    { endpointingMs: 200, replyGapMs: budget, partial: true },
   ]);
   assert.equal(check?.status, "pass");
   assert.equal(check?.code, "reply-gap");
@@ -1081,29 +1080,21 @@ test("timed reply gaps pass against the frozen reply-gap budget", () => {
   );
   assert.match(
     check?.detail ?? "",
-    /turn 1: endpointing 120ms \+ reply 800ms \[ordinary\]/,
-    "every reviewed reply carries its endpointing plus reply split and band",
+    /turn 1: endpointing 120ms \+ reply 800ms \[partial\]/,
+    "every reviewed reply carries its endpointing plus reply split, marked partial",
   );
 });
 
 test("a reply gap past the frozen budget fails and names the turn", () => {
   const budget = SCOREBOARD_BUDGETS.replyGapP95Ms.value;
   const [check] = assessReplyGaps([
-    { endpointingMs: 120, replyGapMs: 800, band: "ordinary" },
-    { endpointingMs: null, replyGapMs: budget + 1, band: "post-cut" },
+    { endpointingMs: 120, replyGapMs: 800, partial: true },
+    { endpointingMs: null, replyGapMs: budget + 1, partial: true },
   ]);
   assert.equal(check?.status, "fail");
   assert.equal(check?.code, "reply-gap");
   assert.match(check?.detail ?? "", /turn 2/);
   assert.match(check?.detail ?? "", /replyGapP95Ms/);
-});
-
-test("the band is post-cut only when speech began while audio still sounded", () => {
-  assert.equal(classifyBand(1000, 900), "ordinary");
-  assert.equal(classifyBand(900, 900), "ordinary");
-  assert.equal(classifyBand(800, 900), "post-cut");
-  assert.equal(classifyBand(null, 900), "ordinary");
-  assert.equal(classifyBand(800, null), "ordinary");
 });
 
 test("the call's flow passes every assertion against a fake service", async () => {

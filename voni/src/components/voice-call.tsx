@@ -1273,7 +1273,6 @@ export function VoiceCall({
       // Cascade slice: Python pipeline service over WebSocket. Same UI
       // states as managed (connecting/listening/speaking/ended) so every
       // indicator, timer, caption, and the countdown below works unchanged.
-      let cascadeEnded = false;
       // Browser call evidence: the same flag as the delivered WAV, so the two
       // artifacts of one call share a call id. `null` means no marks exist.
       const marks = createCallMarks(
@@ -1282,12 +1281,10 @@ export function VoiceCall({
       );
       marksRef.current = marks;
       marks?.mark("start_requested");
-      // A fresh dial waits for its own first audible sample; a hold rejoin
-      // continues a call that was already live, so its wait is already over.
-      if (!preserving) {
-        audibleRef.current = false;
-        livePaintedRef.current = false;
-      }
+      // Every start waits for its own first audible sample, hold rejoin or
+      // fresh dial: the wait ends only when delivered audio is audible.
+      audibleRef.current = false;
+      livePaintedRef.current = false;
       // The demo's guardrail words follow the picked voice's Locale (the same
       // per-Locale recognition layer the managed path uses); hidden notes stay
       // model-directed English, while the service speaks its Locale's hold and
@@ -1410,7 +1407,7 @@ export function VoiceCall({
           cascadeFloorRef.current?.replyStarted();
           // Frames arrive before they sound (pre-roll cushion), so painting
           // speaking here would end the wait early. Live paints at the first
-          // audible sample; a hold rejoin is already live and paints as before.
+          // audible sample.
           if (audibleRef.current) setCallState("speaking");
         },
         // The connected chime waits for the first audible sample, not this
@@ -1456,7 +1453,6 @@ export function VoiceCall({
           console.debug("[voice-call] cascade metrics", { turns, metrics });
         },
         onError: (message) => {
-          cascadeEnded = true;
           setError({ message });
         },
         onConnectFailure: (failure) => {
@@ -1465,18 +1461,15 @@ export function VoiceCall({
           // protocol mismatch — ends in the visitor-facing unavailable state.
           // The copy is vendor-free and distinct per cause; no managed token
           // request and no managed socket follows.
-          cascadeEnded = true;
           setError({ message: demoUnavailableMessage(failure.code) });
           setCallState("ended");
         },
         onReconnectFailed: (cause) => {
           // The call was live, so this is not a start refusal: say the line
           // dropped and that it could not be resumed, by name in the marks.
-          cascadeEnded = true;
           setError({ message: demoReconnectFailedMessage(cause) });
         },
         onEnd: () => {
-          cascadeEnded = true;
           speakingRef.current = false;
           overheardRef.current = false;
           setCallState("ended");
@@ -1544,7 +1537,6 @@ export function VoiceCall({
         // audible sample paints live with the chime (onFirstAudible above).
         // A refusal that landed before the mic resolved already ended the
         // call on its own path, so there is nothing to paint either way.
-        void cascadeEnded;
       } catch (e) {
         // The demo mint's 429 is the countdown; every other refusal keeps its
         // own line. Either way no managed session is opened.
@@ -1918,13 +1910,8 @@ export function VoiceCall({
   if (isDemo) {
     const open = demoOpen;
     const reveal = "duration-(--motion-reveal) ease-(--ease-out-soft)";
-    const voiceIndex = Math.max(0, DEMO_VOICE_IDS.indexOf(voiceId as (typeof DEMO_VOICE_IDS)[number]));
     // English-only (demo-cascade ticket 01): the roster holds one voice, so
     // the ‹ › voice-cycle control is disabled — there is nothing to switch to.
-    const cycle = (step: number) => {
-      void step;
-      setVoiceId(DEMO_VOICE_IDS[voiceIndex]);
-    };
     const demoStatus = getDemoCallStatus({
       hasError: error !== null,
       returning,
@@ -1942,9 +1929,7 @@ export function VoiceCall({
       <button
         type="button"
         aria-label={step < 0 ? "Previous voice" : "Next voice"}
-        aria-disabled="true"
         disabled
-        onClick={() => cycle(step)}
         className={cn(
           "text-foreground/70 hover:bg-muted hover:text-foreground flex size-11 cursor-pointer items-center justify-center rounded-full outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
           open && "invisible opacity-0",

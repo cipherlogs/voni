@@ -781,7 +781,7 @@ class AckTest(unittest.TestCase):
 
     def test_the_ack_never_enters_captions_or_memory(self):
         """The cover is demo-only ephemera: same voice, never captioned, never recalled."""
-        from cascade.ack import ack_line as deterministic_line
+        from cascade.ack import cover_line as deterministic_line
 
         gate = asyncio.Event()
         final = "What does it cost?"
@@ -835,7 +835,7 @@ class AckTest(unittest.TestCase):
 
     def test_a_timed_out_judge_fails_open_to_the_hash(self):
         """A judge that never answers still covers: the deterministic line speaks."""
-        from cascade.ack import ack_line as deterministic_line
+        from cascade.ack import cover_line as deterministic_line
 
         gate = asyncio.Event()
         final = "What does it cost?"

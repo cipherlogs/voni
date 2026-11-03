@@ -5,7 +5,7 @@
   "callTokenTtlMs": 60000,
   "resumeHistoryTurns": 12,
   "reconnectHandshakeMs": 10000,
-  "firstAudioMs": 30000,
+  "firstAudioMs": 15000,
   "source": "voice-pipeline/cascade/thresholds.json#bounds.envelope.ttl_ms, bounds.call_token.ttl_ms, bounds.resume.history_turns, bounds.reconnect.handshake_ms, bounds.start.first_audio_ms",
   "dates": {
     "envelopeTtlMs": "2026-10-30",

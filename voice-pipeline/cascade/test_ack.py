@@ -23,7 +23,6 @@ from cascade.ack import (
     ACK_LINES,
     ACK_TONE_GROUPS,
     NEGATIVE_CUES,
-    ack_line,
     ack_lines,
     ack_tone,
     cover_line,
@@ -176,7 +175,7 @@ class AckSelectionTest(unittest.TestCase):
         ]
         for final in finals:
             for previous in (None, "Let's see.", "Ah, I see."):
-                line = ack_line("en", final, previous=previous)
+                line = cover_line("en", final, previous=previous)
                 self.assertNotIn(line, BRIGHT, final)
                 self.assertIn(line, thinking | sympathetic, final)
 
@@ -191,7 +190,7 @@ class AckSelectionTest(unittest.TestCase):
         ):
             for previous in (None, "Let's see.", "Got it, one moment."):
                 self.assertIn(
-                    ack_line("en", final, previous=previous), allowed, final
+                    cover_line("en", final, previous=previous), allowed, final
                 )
 
     def test_a_neutral_final_can_get_okay(self) -> None:
@@ -207,7 +206,7 @@ class AckSelectionTest(unittest.TestCase):
             "That address is correct.",
             "I'd like to book a viewing.",
         ]
-        self.assertIn("Okay.", {ack_line("en", text) for text in neutral})
+        self.assertIn("Okay.", {cover_line("en", text) for text in neutral})
 
     def test_a_judge_silence_is_obeyed_not_overruled(self) -> None:
         self.assertIsNone(
@@ -231,20 +230,20 @@ class AckSelectionTest(unittest.TestCase):
             "",
         ]
         for final in finals:
-            first = ack_line("en", final)
-            second = ack_line("en", final, previous=first)
+            first = cover_line("en", final)
+            second = cover_line("en", final, previous=first)
             self.assertNotEqual(first, second, final)
-            third = ack_line("en", final, previous=second)
+            third = cover_line("en", final, previous=second)
             self.assertNotEqual(second, third, final)
 
     def test_the_choice_is_deterministic_for_one_final(self) -> None:
-        first = ack_line("en", "What does it cost?", previous="Let's see.")
-        again = ack_line("en", "What does it cost?", previous="Let's see.")
+        first = cover_line("en", "What does it cost?", previous="Let's see.")
+        again = cover_line("en", "What does it cost?", previous="Let's see.")
         self.assertEqual(first, again)
 
     def test_an_injected_palette_is_still_chosen_from(self) -> None:
-        self.assertEqual("Mhm.", ack_line("en", "hello", lines=("Mhm.",)))
-        self.assertIsNone(ack_line("en", "hello", lines=()))
+        self.assertEqual("Mhm.", cover_line("en", "hello", lines=("Mhm.",)))
+        self.assertIsNone(cover_line("en", "hello", lines=()))
 
 
 class JudgeContractTest(unittest.TestCase):
