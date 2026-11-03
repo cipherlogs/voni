@@ -297,6 +297,15 @@
       "date": "2026-10-31",
       "note": "Demo-only. One short line through the same voice, skipped when the reply starts speaking first."
     },
+    "reply.judge_timeout_ms": {
+      "unit": "ms",
+      "gate": "reply.ack",
+      "ticket": "demo-cascade-fixes/04",
+      "value": 120,
+      "source": "owner decision 2026-11-03: the fast cover judge picks tone-or-none well inside the 300 ms ack delay; a timeout fails open to the deterministic tone hash or silence",
+      "date": "2026-11-03",
+      "note": "Demo-only. The judge cap is never reported as speed; live round-trips size blocking versus pre-select behaviour."
+    },
     "turn.hold_silence_ms": {
       "unit": "ms",
       "gate": "turn.hold",

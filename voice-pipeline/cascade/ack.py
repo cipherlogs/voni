@@ -6,50 +6,46 @@ same voice at the registry's delay. It is not the reply:
 
 * it is never captioned and never enters the reply text or history;
 * it is skipped when the reply starts speaking first;
+* it is skipped outright on greeting turns (``Hi``) and filler-only turns;
 * it carries no model request and no tool call.
 
 The table is per Locale because the demo roster is one voice per Locale.
+English carries the owner-approved bounded palette (ticket 04): tone groups
+plus short statement covers. The fast judge picks tone-or-none; the pipeline
+rotates inside the tone without repeating the previous line. A judge timeout
+or failure fails open to the deterministic tone hash; silence stays silence.
 
-Every line is a real word in its Locale. A listening sound spelled as letters
-("Mhm.") is not one: the vendor synthesises it as the letters m-h-m, which no
-caller has ever said, and because acks are never captioned the defect is
-invisible in every transcript. The first line of each Locale used to be "Mhm."
-and is now a word.
-
-English has more than one sound because one sound does not fit every final.
-The same flat "Okay." that acknowledges an address lands wrong after "this is
-ridiculous", so the palette is grouped by what the caller hears in the line and
-the group is chosen from the caller's final before the line is picked:
-
-* thinking ("Mm.", "Hmm.", "So.", "Let's see.") — the caller asked something or
-  said nothing legible, so the agent is visibly working the answer out;
-* sympathetic ("Ah.", "Mm.") — the caller complained, so a cheerful "Okay."
-  would sound tone-deaf at the caller's expense;
-* acknowledging ("Okay.", "Yeah.", "Uh-huh.") — a neutral or positive final;
-* surprise ("Oh.") — a mild, interested acknowledgement, used only with the
-  neutral group.
-
-The other Locales keep their small flat palette and rotate through it; only
-English carries tone groups today.
+Deliberately excluded: bare ``Mm.`` / ``Hmm.`` / ``Uh-huh.`` (the "Hi -> Mm"
+feeling named in the spec), any multi-sentence cover, any non-English line.
+Other Locales keep their small flat palette and rotate through it; only
+English carries tone groups.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any
 
 #: The English palette by what the line does, not by how it is spelled.
+#: Owner-approved bounded set (ticket 04, approved as-is): 13 lines.
 ACK_TONE_GROUPS: Mapping[str, Mapping[str, tuple[str, ...]]] = {
     "en": {
-        "thinking": ("Mm.", "Hmm.", "So.", "Let's see."),
-        "sympathetic": ("Ah.", "Mm."),
-        "acknowledging": ("Okay.", "Yeah.", "Uh-huh."),
-        "surprise": ("Oh.",),
+        "thinking": ("Let's see.", "One moment.", "Let me think."),
+        "sympathetic": ("Ah, I see.", "Sorry to hear that."),
+        "acknowledging": ("Okay.", "Yeah.", "Got it."),
+        "surprise": ("Oh.", "Oh, nice."),
+        "statement": (
+            "Got it, one moment.",
+            "Let me check that.",
+            "Good question, one sec.",
+        ),
     },
 }
 
 #: The flat palette per Locale: what the turn layer rotates over. English is
-#: the union of its tone groups, in group order and without the duplicate "Mm.".
+#: the union of its tone groups, in group order and without duplicates.
 ACK_LINES: Mapping[str, tuple[str, ...]] = {
     "en": tuple(
         dict.fromkeys(
@@ -64,11 +60,36 @@ ACK_LINES: Mapping[str, tuple[str, ...]] = {
     "pt": ("Certo.", "Claro.", "Tá."),
 }
 
-#: A small, deliberately coarse negativity heuristic. It is not sentiment
-#: analysis: it exists only to keep a bright "Okay."/"Yeah." off a final that
-#: complains, so it names the plain words a caller uses when something is
-#: wrong. The phrase "not working" is matched as a phrase; every other cue is
-#: one whole word (so "broken" does not fire on "broke").
+#: Words that are only a greeting. A caller turn made solely of these never
+#: hears a cover: silence is better than a robotic "Mm" back to a "Hi".
+GREETING_TOKENS: frozenset[str] = frozenset(
+    {
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "howdy",
+        "hiya",
+        "good",
+        "morning",
+        "afternoon",
+        "evening",
+    }
+)
+
+#: The fast-judge time cap's bound. The judge must answer well inside the ack
+#: delay so a slow judge never delays the cover; a timeout fails open.
+JUDGE_TIMEOUT_BOUND = "reply.judge_timeout_ms"
+
+#: Fallback cap when the registry has no judge bound (tests, tenants): the
+#: judge still answers well inside the 300 ms ack delay.
+_JUDGE_TIMEOUT_FALLBACK_S = 0.12
+
+#: A small, deliberately coarse negativity heuristic. It exists only to keep
+#: a bright "Okay."/"Yeah." off a final that complains, so it names the plain
+#: words a caller uses when something is wrong. The phrase "not working" is
+#: matched as a phrase; every other cue is one whole word (so "broken" does
+#: not fire on "broke").
 NEGATIVE_CUES: tuple[str, ...] = (
     "useless",
     "rubbish",
@@ -99,20 +120,25 @@ _QUESTION_OPENER = re.compile(
 
 #: Which tone groups may answer each tone read from the caller's final. A
 #: complaint never reaches "acknowledging" (so never "Okay."/"Yeah."); a
-#: question and an unreadable final get only the thinking sounds.
+#: question gets a thinking sound or a short statement bridge; a neutral final
+#: may also hear a mild surprise or a statement bridge.
 _TONE_GROUPS: Mapping[str, tuple[str, ...]] = {
     "negative": ("sympathetic", "thinking"),
-    "question": ("thinking",),
-    "neutral": ("acknowledging", "thinking", "surprise"),
+    "question": ("thinking", "statement"),
+    "neutral": ("acknowledging", "thinking", "surprise", "statement"),
     "unknown": ("thinking",),
 }
+
+#: Tones the fast judge may return. ``None`` is silence-when-better, never a
+#: fallback: a judge that chooses silence is obeyed, not overruled.
+_JUDGE_TONES = frozenset({"negative", "question", "neutral", "unknown"})
 
 
 def ack_lines(locale: str | None) -> tuple[str, ...]:
     """The lines for one Locale; an unknown Locale gets no acknowledgement.
 
-    The demo roster is five Locales; a tenant or an unexpected code must not
-    hear an English filler, so the fallback is silence rather than English.
+    The demo roster is one voice per Locale; a tenant or an unexpected code must
+    not hear an English filler, so the fallback is silence rather than English.
     """
     return ACK_LINES.get((locale or "").lower(), ())
 
@@ -133,11 +159,83 @@ def ack_tone(caller_text: str | None) -> str:
     return "neutral"
 
 
+def is_greeting_turn(caller_text: str | None) -> bool:
+    """True when the caller's turn is only a greeting, so the cover stays silent.
+
+    "Hi" never hears a line back; "Hi, I'm calling about the flat" is a real
+    turn with content and may still be covered. Tokenisation matches the
+    cascade's one tokenizer so a browser rule cannot disagree about a word.
+    """
+    from turns import clean_tokens
+
+    words = clean_tokens(caller_text or "")
+    return bool(words) and all(token in GREETING_TOKENS for token in words)
+
+
+def should_cover(locale: str | None, caller_text: str | None) -> bool:
+    """Whether this final may hear a cover at all. Silence-when-better lives here.
+
+    False on greeting turns, filler-only turns, and Locales with no palette.
+    Anything else may be covered (or silenced later by the judge's ``None``).
+    """
+    from turns import is_backchannel
+
+    if not ack_lines(locale):
+        return False
+    if is_greeting_turn(caller_text):
+        return False
+    if is_backchannel(caller_text or ""):
+        return False
+    return True
+
+
 def _stable_offset(text: str) -> int:
     """A deterministic fold of the text; ``hash()`` is salted per process."""
     return sum(
         (index + 1) * ord(character) for index, character in enumerate(text.lower())
     )
+
+
+def cover_line(
+    locale: str | None,
+    caller_text: str = "",
+    *,
+    previous: str | None = None,
+    lines: Sequence[str] | None = None,
+    tone: str | None = ...,
+) -> str | None:
+    """Choose one line for this final inside one tone, never repeating ``previous``.
+
+    ``tone`` is the judge's pick: ``None`` is silence-when-better and returns
+    ``None`` without a fallback. The default (``...``) reads the deterministic
+    tone hash, so callers without a judge keep the old behavior. An unknown
+    tone name also falls back to the hash rather than failing the turn.
+    """
+    palette = tuple(lines) if lines is not None else ack_lines(locale)
+    if not palette:
+        return None
+    resolved = ack_tone(caller_text) if tone is ... else tone
+    if resolved is None:
+        return None
+    if not isinstance(resolved, str) or resolved not in _TONE_GROUPS:
+        resolved = ack_tone(caller_text)
+    groups = ACK_TONE_GROUPS.get((locale or "").lower())
+    candidates: list[str] = []
+    if groups:
+        allowed = tuple(
+            dict.fromkeys(
+                line
+                for name in _TONE_GROUPS[resolved]
+                for line in groups.get(name, ())
+            )
+        )
+        candidates = [line for line in allowed if line in palette]
+    if not candidates:
+        candidates = list(palette)
+    varied = [line for line in candidates if line != previous]
+    if varied:
+        candidates = varied
+    return candidates[_stable_offset(caller_text) % len(candidates)]
 
 
 def ack_line(
@@ -157,23 +255,64 @@ def ack_line(
     previous line always yield the same next line, and a second consecutive turn
     with the same words moves to a different line.
     """
-    palette = tuple(lines) if lines is not None else ack_lines(locale)
-    if not palette:
+    return cover_line(
+        locale, caller_text, previous=previous, lines=lines, tone=...
+    )
+
+
+def judge_timeout_s(default: float = _JUDGE_TIMEOUT_FALLBACK_S) -> float:
+    """The fast-judge time cap in seconds, from the bounds registry when present."""
+    try:
+        from cascade.thresholds import require_bound
+
+        return float(require_bound(JUDGE_TIMEOUT_BOUND)) / 1000.0
+    except Exception:
+        return default
+
+
+async def resolve_cover_tone(
+    caller_text: str,
+    judge: Callable[[str], Awaitable[str | None]] | None,
+    timeout_s: float | None = None,
+) -> str | None:
+    """Pick tone-or-None through the fast judge with fail-open to the hash.
+
+    ``None`` from the judge is an obeyed silence, never a fallback. A timeout,
+    an exception, or an unknown tone name fails open to :func:`ack_tone`.
+    A missing judge is the deterministic path: the hash directly.
+    """
+    if judge is None:
+        return ack_tone(caller_text)
+    cap = timeout_s if timeout_s is not None else judge_timeout_s()
+    try:
+        picked = await asyncio.wait_for(judge(caller_text), timeout=cap)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        return ack_tone(caller_text)
+    except Exception:
+        return ack_tone(caller_text)
+    if picked is None:
         return None
-    groups = ACK_TONE_GROUPS.get((locale or "").lower())
-    candidates: list[str] = []
-    if groups:
-        allowed = tuple(
-            dict.fromkeys(
-                line
-                for tone in _TONE_GROUPS[ack_tone(caller_text)]
-                for line in groups.get(tone, ())
-            )
-        )
-        candidates = [line for line in allowed if line in palette]
-    if not candidates:
-        candidates = list(palette)
-    varied = [line for line in candidates if line != previous]
-    if varied:
-        candidates = varied
-    return candidates[_stable_offset(caller_text) % len(candidates)]
+    if picked not in _JUDGE_TONES:
+        return ack_tone(caller_text)
+    return picked
+
+
+def resolve_cover_tone_sync(
+    caller_text: str,
+    judge_result: Any,
+    *,
+    timed_out: bool = False,
+    failed: bool = False,
+) -> str | None:
+    """The synchronous half of the judge contract, for tests and non-async seams.
+
+    ``judge_result`` is what the judge returned (tone-or-None). Timeouts and
+    failures fail open to the hash; ``None`` is obeyed silence.
+    """
+    if timed_out or failed:
+        return ack_tone(caller_text)
+    if judge_result is None:
+        return None
+    if judge_result not in _JUDGE_TONES:
+        return ack_tone(caller_text)
+    return judge_result

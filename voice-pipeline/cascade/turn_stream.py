@@ -69,7 +69,12 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
-from cascade.ack import ack_line
+from cascade.ack import (
+    cover_line,
+    judge_timeout_s,
+    resolve_cover_tone,
+    should_cover,
+)
 from cascade.assemblyai_tts import split_sentences
 from cascade.end_intent import wants_to_end
 from cascade.event_rules import EventKind, EventRules
@@ -121,6 +126,9 @@ KEEPALIVE_BOUND = "tts.keepalive_interval_ms"
 
 #: How long a reply may stay silent before one short spoken ack covers it.
 ACK_DELAY_BOUND = "reply.ack_delay_ms"
+
+#: The fast cover-judge cap: tone-or-none well inside the ack delay, fail-open.
+JUDGE_TIMEOUT_BOUND = "reply.judge_timeout_ms"
 
 #: How quiet the caller's audio must be before a finalised turn is answered.
 #: The owner's direction (2026-11-03): never take the floor while the caller is
@@ -429,6 +437,8 @@ class CascadeTurnStream:
         history: Sequence[Mapping[str, Any]] = (),
         ack_lines: Sequence[str] = (),
         ack_delay_ms: float | None = None,
+        ack_judge: Callable[[str], Awaitable[str | None]] | None = None,
+        ack_judge_timeout_ms: float | None = None,
         turn_events: TurnLedger | None = None,
     ) -> None:
         self._llm = llm
@@ -459,6 +469,15 @@ class CascadeTurnStream:
         )
         #: One ack watcher per reply; never spoken as the reply or captioned.
         self._ack_task: asyncio.Task | None = None
+        #: The fast judge: tone-or-None per final, fail-open on timeout.
+        self._ack_judge = ack_judge
+        if ack_judge_timeout_ms is None:
+            try:
+                self._ack_judge_timeout_s = float(require_bound(JUDGE_TIMEOUT_BOUND)) / 1000.0
+            except Exception:
+                self._ack_judge_timeout_s = judge_timeout_s()
+        else:
+            self._ack_judge_timeout_s = float(ack_judge_timeout_ms) / 1000.0
         #: The last line the caller actually heard, so two consecutive turns
         #: never repeat the same sound even when they read the same tone.
         self._last_ack: str | None = None
@@ -1507,13 +1526,18 @@ class CascadeTurnStream:
         makes no model or tool request. It holds the voice lock only while its
         own short line plays, so the reply follows it instead of overlapping.
 
-        The line is chosen from the caller's final: the same sound does not fit
-        a complaint and a question, so the tone picks the group and the previous
-        line is excluded. Because the ack is never captioned, the exact line is
-        written to the turn ledger when its first frame reaches the wire: that
-        row is the only proof of what the caller heard.
+        Silence wins outright on greeting turns, filler-only turns, and
+        Locales with no palette: no line is chosen and no row is written.
+        Otherwise the fast judge picks tone-or-None under its cap and fails
+        open to the deterministic tone hash; the pipeline rotates the line
+        inside the tone without repeating the previous line. Because the ack
+        is never captioned, the exact line is written to the turn ledger when
+        its first frame reaches the wire: that row is the only proof of what
+        the caller heard.
         """
         if not self._ack_lines:
+            return
+        if not should_cover(self._locale_code, caller_text):
             return
         try:
             await self._sleep(self._ack_delay_s)
@@ -1521,11 +1545,15 @@ class CascadeTurnStream:
             return
         if self._ending or self._speaking or self._reply_text.strip():
             return
-        line = ack_line(
+        tone = await resolve_cover_tone(
+            caller_text, self._ack_judge, self._ack_judge_timeout_s
+        )
+        line = cover_line(
             self._locale_code,
             caller_text,
             previous=self._last_ack,
             lines=self._ack_lines,
+            tone=tone,
         )
         if line is None:
             return
