@@ -263,6 +263,13 @@ class CallStream(Protocol):
     async def context(self, text: str) -> None:
         """A browser context update for the next reply."""
 
+    def caller_audio(self, *, speech: bool) -> None:
+        """One caller audio frame: whether it is speech, on the call's clock.
+
+        The pump sees every frame the browser sends, so the turn layer learns
+        when the caller is still speaking without a second audio consumer.
+        """
+
     async def drain(self) -> None:
         """Finish in-flight work and stop producing."""
 
@@ -1448,11 +1455,16 @@ class CallLifecycle:
                         return
                     if isinstance(item, AudioFrame):
                         self._ledger.mark("audio_in")
+                        speaks = _caller_audio_speaks(item.pcm)
+                        # The turn layer holds a finalised turn until the
+                        # caller's audio has been quiet, so it is told about
+                        # every frame here: the pump is the one audio reader.
+                        self._stream.caller_audio(speech=speaks)
                         if greeting is None and not caller_first.is_set():
                             # The provider's first speech event is slow; the
                             # caller's own PCM is the early evidence that the
                             # opening has already been interrupted.
-                            if _caller_audio_speaks(item.pcm):
+                            if speaks:
                                 caller_audio_frames += 1
                                 if caller_audio_frames >= CALLER_SPEECH_FRAMES:
                                     caller_first.set()
@@ -2771,8 +2783,9 @@ def _caller_audio_speaks(pcm: bytes) -> bool:
     The browser sends 16-bit little-endian samples. The provider's own speech
     event is authoritative, but it can take seconds to form; this local RMS
     check lets the opening skip the greeting as soon as the caller's first
-    words are audible. The bar sits below the committed caller takes (~1500)
-    and far above digital silence.
+    words are audible, and tells the turn layer whether a held final's quiet
+    window has been broken. The bar sits below the committed caller takes
+    (~1500) and far above digital silence.
     """
     if len(pcm) < 2:
         return False
