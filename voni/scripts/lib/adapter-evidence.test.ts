@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   defaultEventsDir,
@@ -119,7 +120,12 @@ test("both adapters resolve the pipeline's own trace directory, not a voni/ copy
   // refuses a real call as if it had produced no evidence.
   const resolved = defaultEventsDir({});
   assert.match(resolved, /(^|[/\\])voice-pipeline[/\\]\.events$/, resolved);
-  assert.doesNotMatch(resolved, /voni[/\\]voice-pipeline/, resolved);
+  // Structural, not substring: the upstream checkout directory is itself named
+  // `voni` (github.com/cipherlogs/voni), so on CI the correct absolute path is
+  // `/home/runner/work/voni/voni/voice-pipeline/.events` and a substring rule
+  // rejects it as the app-local copy. Compare against the copy that is wrong.
+  const appCopy = fileURLToPath(new URL("../../voice-pipeline/.events", import.meta.url));
+  assert.notEqual(resolved, appCopy, `resolved the app-local copy: ${resolved}`);
   assert.ok(
     existsSync(join(resolved, "..", "server.py")),
     `the resolved directory must sit beside voice-pipeline/server.py: ${resolved}`,

@@ -8,9 +8,9 @@ Every ballot for this Locale judges these exact bytes, so two independent review
 
 - Voice: anna (en)
 - Play: `/voices/anna.mp3` (committed as `public/voices/anna.mp3`)
-- sha256: `8b4c4212816f1bf9a9cabc4fc2e55f658632a3035ce999566eb22dc637fae554`
-- Line: “Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?”
-- Format: 6024 ms, 24000 Hz, mono, 160 kbps
+- sha256: `1317106f134eaccf25f7a370a79a137903da328ae8b8cb4fdb3b31f8424ecfa2`
+- Line: “Hi, I'm Voni.”
+- Format: 1872 ms, 24000 Hz, mono, 160 kbps
 - Provenance: audition-clip (the picker's preview, at native level)
 
 ## The ballot

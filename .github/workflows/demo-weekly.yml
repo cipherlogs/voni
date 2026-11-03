@@ -69,7 +69,7 @@ jobs:
           VOICE_PIPELINE_URL: ${{ vars.VOICE_PIPELINE_URL }}
         run: |
           set +e
-          npm run demo:verify -- --full --target local --json > "$RUNNER_TEMP/demo-full.json" 2> "$RUNNER_TEMP/demo-full.err"
+          npm run --silent demo:verify -- --full --target local --json > "$RUNNER_TEMP/demo-full.json" 2> "$RUNNER_TEMP/demo-full.err"
           set -e
           cat "$RUNNER_TEMP/demo-full.json" || true
           cat "$RUNNER_TEMP/demo-full.err" >&2 || true

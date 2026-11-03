@@ -104,9 +104,57 @@ jobs:
   # path. It runs unconditionally (no paths filter): running it on every PR is
   # the superset of "every call-path change". A clean scoped-pass exits 1 by
   # contract, so scripts/demo-gate-report.mjs is what turns it into a gate.
-  # Without the vendor keys or the committed vendor-build record the run
-  # refuses by name (exit 2) and this gate fails; it never skips green.
+  #
+  # Policy (owner decision, 2026-11-03): CI holds no vendor keys, so the fast
+  # contract makes no call here. `demo-fast-keys` turns key presence into an
+  # output (a secret is not available to a job-level `if:`); without the keys
+  # the run job is SKIPPED BY NAME and `required-demo-fast-contract` passes with
+  # that skip printed in the log and the step summary. A skip is never a
+  # contract claim: the real gate is the post-deploy cutover run
+  # (`npm run check:real-legs`), which must not skip for a cutover claim.
+  # The keys must be repository secrets (or this job must name the environment
+  # that holds them); no `environment:` is declared on this PR workflow.
+  demo-fast-keys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      present: ${{ steps.keys.outputs.present }}
+      missing: ${{ steps.keys.outputs.missing }}
+    steps:
+      - name: Vendor keys present?
+        id: keys
+        env:
+          META_API_KEY: ${{ secrets.META_API_KEY }}
+          ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+          VOICE_PIPELINE_ENVELOPE_SECRET: ${{ secrets.VOICE_PIPELINE_ENVELOPE_SECRET }}
+        run: |
+          missing=""
+          if [ -z "$META_API_KEY" ]; then missing="META_API_KEY"; fi
+          if [ -z "$ASSEMBLYAI_API_KEY" ]; then
+            if [ -n "$missing" ]; then missing="$missing, "; fi
+            missing="${missing}ASSEMBLYAI_API_KEY"
+          fi
+          if [ -z "$VOICE_PIPELINE_ENVELOPE_SECRET" ]; then
+            if [ -n "$missing" ]; then missing="$missing, "; fi
+            missing="${missing}VOICE_PIPELINE_ENVELOPE_SECRET"
+          fi
+          if [ -n "$missing" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "missing=$missing" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: the demo fast contract made no call — missing vendor keys: $missing."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "missing=" >> "$GITHUB_OUTPUT"
+            echo "vendor keys present: the demo fast contract will run."
+          fi
+
+  # Keys alone are not sufficient for a real run: VONI_APP_URL and
+  # VOICE_PIPELINE_URL must also point at a loopback app (with the dev capture
+  # sink) and pipeline, both reachable from the runner. This job does not start
+  # that stack; a keyed run without it refuses by name (app-url/pipeline-url).
   demo-fast-contract:
+    needs: [demo-fast-keys]
+    if: needs.demo-fast-keys.outputs.present == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -130,7 +178,7 @@ jobs:
           VOICE_PIPELINE_URL: ${{ vars.VOICE_PIPELINE_URL }}
         run: |
           set +e
-          npm run demo:verify -- --fast --target local --json > "$RUNNER_TEMP/demo-fast.json" 2> "$RUNNER_TEMP/demo-fast.err"
+          npm run --silent demo:verify -- --fast --target local --json > "$RUNNER_TEMP/demo-fast.json" 2> "$RUNNER_TEMP/demo-fast.err"
           set -e
           cat "$RUNNER_TEMP/demo-fast.json" || true
           cat "$RUNNER_TEMP/demo-fast.err" >&2 || true
@@ -145,24 +193,47 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # A skipped, cancelled or artifact-less fast job must not report success.
-  # Require this gate in branch protection, not the job.
+  # The required check. It passes on the named key skip (policy A) and still
+  # fails when the keys were present but the run failed, was cancelled, or left
+  # no run artifact. The skip is printed and annotated, so it never reads as a
+  # clean contract. Require this gate in branch protection, not the job.
   required-demo-fast-contract:
     runs-on: ubuntu-latest
-    needs: [demo-fast-contract]
+    needs: [demo-fast-keys, demo-fast-contract]
     if: always()
     timeout-minutes: 5
     steps:
-      - name: fast contract job must have succeeded
+      # A failed, cancelled or skipped key gate is red. Only a gate that ran and
+      # reported the keys absent may take the named-skip branch below.
+      - name: the key gate must have run
+        if: needs.demo-fast-keys.result != 'success'
+        run: |
+          echo "demo-fast-keys result: ${{ needs.demo-fast-keys.result }}"
+          exit 1
+      - name: no vendor keys is a named skip, never a contract claim
+        if: needs.demo-fast-keys.result == 'success' && needs.demo-fast-keys.outputs.present != 'true'
+        run: |
+          line="SKIPPED: the demo fast contract made no call — missing vendor keys: ${{ needs.demo-fast-keys.outputs.missing }}. No call was made, so the demo contract is unproven in CI. The real gate is the post-deploy cutover run, which must not skip for a cutover claim."
+          echo "$line"
+          {
+            echo "### Demo fast contract: SKIPPED — no vendor keys"
+            echo ""
+            echo "$line"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=demo fast contract skipped::No vendor keys; no call was made and the contract is unproven in CI."
+      - name: keys present — the fast job must have succeeded
+        if: needs.demo-fast-keys.outputs.present == 'true'
         run: |
           echo "demo-fast-contract result: ${{ needs.demo-fast-contract.result }}"
           test "${{ needs.demo-fast-contract.result }}" = "success"
-      - name: the run artifact must exist
+      - name: keys present — the run artifact must exist
+        if: needs.demo-fast-keys.outputs.present == 'true'
         uses: actions/download-artifact@v4
         with:
           name: demo-fast-run
           path: demo-fast-run
-      - name: artifact must not be empty
+      - name: keys present — artifact must not be empty
+        if: needs.demo-fast-keys.outputs.present == 'true'
         run: test -d demo-fast-run
 
   # The Python suites: telephony-bot/ plus voice-pipeline/, which includes the
@@ -205,10 +276,10 @@ jobs:
       # otherwise look green. A skip is an unfinished test, not a pass.
       - name: Python suites (no unexpected skips)
         run: PYTHON=.venv/bin/python bash scripts/python-tests.sh
-      # The ticket graph is committed with the spec, so CI can prove it is not
-      # stale: dangling blockers, cycles, a resolved ticket with no answer.
-      - name: Ticket graph
-        run: .venv/bin/python scripts/tickets.py validate --effort meta-cascade
+      # No ticket-graph step: specs and tickets are deleted once done
+      # (c375e909), and `.scratch/` is untracked so a local note cannot move
+      # the code fingerprint, so a committed graph never exists to validate.
+      # The tool stays covered by voice-pipeline/test_ticket_tool.py.
       # Ticket 135/141: the topology and secret validators exist but were only
       # run by hand. A validator that is not in CI is a runbook, not a guardrail.
       - name: Deployment topology and secret scan

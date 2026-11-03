@@ -63,6 +63,16 @@ function job(file: string, name: string): string {
   return body;
 }
 
+/** One named step inside a job body, from `- name:` to the next step. */
+function step(body: string, name: string): string | null {
+  const marker = `      - name: ${name}\n`;
+  const from = body.indexOf(marker);
+  if (from === -1) return null;
+  const rest = body.slice(from + marker.length);
+  const next = rest.search(/^ {6}- (?:name|uses):/m);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
 function scheduler(text: string): string {
   const start = text.indexOf("\non:\n");
   const end = text.indexOf("\njobs:\n");
@@ -96,9 +106,100 @@ test("the fast contract runs on every PR with no path filter and as a merge gate
   assert.match(CI, /\n {2}pull_request:\n/);
   assert.doesNotMatch(CI, /^\s+paths:/m, "no path filter may narrow the merge gate");
   const fast = job(CI, "demo-fast-contract");
-  assert.doesNotMatch(fast, /^ {4}if:/m, "the fast job may not skip itself");
+  // Policy A: the job is gated on the key-presence output, so without keys no
+  // call is even attempted. The wrapper below names the skip; it is never a
+  // silent green.
+  assert.match(
+    fast,
+    /^ {4}if: needs\.demo-fast-keys\.outputs\.present == 'true'$/m,
+    "the fast job runs only when the key gate reports the keys",
+  );
   assert.match(fast, /demo:verify -- --fast/);
   assert.match(fast, /demo-gate-report\.mjs fast/);
+});
+
+test("every report capture runs npm with --silent, so the report is pure JSON", () => {
+  for (const [file, text] of [
+    ["ci.yml", CI],
+    ["nightly.yml", NIGHTLY],
+    ["demo-weekly.yml", WEEKLY],
+    ["demo-monthly.yml", MONTHLY],
+  ] as const) {
+    const captures = text
+      .split("\n")
+      .filter((line) => line.includes("$RUNNER_TEMP/") && line.includes("demo:verify"));
+    assert.equal(captures.length, 1, `${file} captures exactly one demo:verify report`);
+    for (const line of captures) {
+      // `npm run` writes its own script banner to stdout; capturing it makes the
+      // report unparsable. `--silent` keeps stdout the script's JSON only.
+      assert.match(
+        line,
+        /npm run --silent demo:verify -- /,
+        `${file} captures npm's script banner into the report: ${line.trim()}`,
+      );
+    }
+  }
+
+  // The reader stays strict: it parses the file as-is. A prefix is never
+  // stripped and a missing report is never defaulted to a pass.
+  const reader = readFileSync(resolve(REPO, "voni/scripts/demo-gate-report.mjs"), "utf8");
+  assert.match(reader, /JSON\.parse\(readFileSync\(path, "utf8"\)\)/);
+});
+
+test("the fast wrapper passes on a named key skip and still fails a keyed run", () => {
+  const keys = job(CI, "demo-fast-keys");
+  assert.match(keys, /timeout-minutes:/, "the key gate needs a hang guard");
+  assert.match(keys, /^ {4}outputs:$/m);
+  assert.match(keys, /present: \$\{\{ steps\.keys\.outputs\.present \}\}/);
+  for (const key of [
+    "META_API_KEY",
+    "ASSEMBLYAI_API_KEY",
+    "VOICE_PIPELINE_ENVELOPE_SECRET",
+  ]) {
+    assert.match(
+      keys,
+      new RegExp(`${key}: \\$\\{\\{ secrets\\.${key} \\}\\}`),
+      `the key gate reads ${key}`,
+    );
+  }
+
+  const gate = job(CI, "required-demo-fast-contract");
+  assert.match(gate, /needs: \[demo-fast-keys, demo-fast-contract\]/);
+
+  // A broken key gate is red, not a skip.
+  const broken = step(gate, "the key gate must have run");
+  assert.ok(broken !== null, "the wrapper fails a failed key gate");
+  assert.match(broken, /if: needs\.demo-fast-keys\.result != 'success'/);
+  assert.match(broken, /exit 1/);
+
+  // The skip branch passes the required check, but it names itself in the log,
+  // the step summary and an annotation.
+  const skip = step(gate, "no vendor keys is a named skip, never a contract claim");
+  assert.ok(skip !== null, "the wrapper has a no-keys step");
+  assert.match(
+    skip,
+    /if: needs\.demo-fast-keys\.result == 'success' && needs\.demo-fast-keys\.outputs\.present != 'true'/,
+  );
+  assert.match(skip, /SKIPPED: the demo fast contract made no call/);
+  assert.match(skip, /GITHUB_STEP_SUMMARY/, "the skip is written to the step summary");
+  assert.match(skip, /::warning /, "the skip is an annotation, not a silent green");
+  assert.doesNotMatch(skip, /exit 1/, "the named skip passes the required check");
+
+  // The keyed branch still fails a failed, cancelled or artifact-less run.
+  const keyed = step(gate, "keys present — the fast job must have succeeded");
+  assert.ok(keyed !== null, "the wrapper fails a keyed run");
+  assert.match(keyed, /if: needs\.demo-fast-keys\.outputs\.present == 'true'/);
+  assert.match(
+    keyed,
+    /test "\$\{\{ needs\.demo-fast-contract\.result \}\}" = "success"/,
+    "a keyed skip or failure is red",
+  );
+  const artifact = step(gate, "keys present — the run artifact must exist");
+  assert.ok(artifact !== null, "the wrapper downloads the run artifact");
+  assert.match(artifact, /download-artifact@v4/);
+  const nonEmpty = step(gate, "keys present — artifact must not be empty");
+  assert.ok(nonEmpty !== null, "the wrapper refuses an empty artifact");
+  assert.match(nonEmpty, /test -d demo-fast-run/);
 });
 
 test("nightly is English plus four Locale cores and weekly full is the same plan at three repetitions", () => {

@@ -147,7 +147,8 @@ pass. The manifest contract and file map are in
 1. Set the durable routing switch to `off`.
 2. Start a new call: it must route managed, with zero cascade sockets.
 3. Let a live cascade call finish; confirm it was not moved.
-4. Set routing back to `all`.
+4. Set routing back to `demo` — the production value (ADR-0012). `all` is unused
+   by this product; restoring it would leave the demo refusing every call.
 
 ```
 cd voice-pipeline
@@ -156,7 +157,7 @@ cd voice-pipeline
   --mode off --operator "NAME" --reason "153 rollback rehearsal"
 # ... run the calls, then:
 ../telephony-bot/.venv/bin/python scripts/routing_switch.py set \
-  --mode all --operator "NAME" --reason "153 rehearsal complete"
+  --mode demo --operator "NAME" --reason "153 rehearsal complete"
 ```
 
 The command reads one store: `CASCADE_STORE_PATH` (sqlite) or `DATABASE_URL`

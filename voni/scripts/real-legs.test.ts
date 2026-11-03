@@ -307,7 +307,12 @@ test("an INFO row is printed as information and does not fail the run", () => {
 // --------------------------------------------------------------------------
 
 test("CI never invokes the real-legs check", () => {
-  const workflow = readFileSync(CI_WORKFLOW, "utf8");
+  // A comment cannot invoke anything, so the guard reads executable lines: the
+  // policy note in ci.yml names the command it explains.
+  const workflow = readFileSync(CI_WORKFLOW, "utf8")
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
   assert.ok(
     !/real-legs|check:real-legs/.test(workflow),
     "the real-legs check is key-gated and must never run in the pull-request workflow",

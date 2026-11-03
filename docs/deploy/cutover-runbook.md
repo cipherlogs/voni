@@ -104,10 +104,15 @@ prints its source (the CLI, the socket URL, the trace path, the cited rig).
 
 ## The production flip — the operator's human step
 
-This workspace has **no Northflank credentials**. The production switch is the
-operator's human step, run once against the Northflank Postgres; **the
-production flip has not been executed here**, and no command below was run
-against production by this checkout.
+**Executed 2026-11-03** against the Northflank Postgres (project `default`,
+service `voice-pipeline`), through the addon port-forward because shell access
+is not enabled on the account: the switch read `off` with no record, was set to
+`demo` with the owner's git identity as operator and the reason
+`demo cutover: routing=demo is production (ADR-0012)`, and was re-read to
+confirm `recordVersion: 1` and one audit entry. `parity:check` then passed
+11/11 and `cutover:check --show` 2/2 against the deployed service.
+
+The commands below are the same human step, kept for a fresh store.
 
 ```sh
 # 0. The app must already carry both cascade secrets on its Worker, or the mint

@@ -7,10 +7,10 @@
     "locale": "en",
     "asset": "public/voices/anna.mp3",
     "url": "/voices/anna.mp3",
-    "sha256": "8b4c4212816f1bf9a9cabc4fc2e55f658632a3035ce999566eb22dc637fae554",
-    "line": "Hi, I'm Voni! Let's try something cool: I'll show you what I can do while we talk. Ready?",
-    "lineSha256": "1fc5f4bc46cd75037b68c4af616afb58740fb27478ec90652c45a7ff48f18ac6",
-    "durationMs": 6024,
+    "sha256": "1317106f134eaccf25f7a370a79a137903da328ae8b8cb4fdb3b31f8424ecfa2",
+    "line": "Hi, I'm Voni.",
+    "lineSha256": "b5b42407a89bad5ed58d0e0a6450bf524b80e4a000e26127c655c447490f4976",
+    "durationMs": 1872,
     "sampleRate": 24000,
     "channels": 1,
     "bitrateKbps": 160,
@@ -31,6 +31,6 @@
     "reasonRequiredBelow": 5
   },
   "verdict": null,
-  "generatedOn": "2026-10-30",
+  "generatedOn": "2026-11-03",
   "source": "evidence/audition-clips/clips.json"
 }

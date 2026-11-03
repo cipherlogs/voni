@@ -83,14 +83,17 @@ test("every other voice is compared to its own reference, never another voice's 
 });
 
 test("the artifact's floor record is the committed file's path and hash, never audio", () => {
-  const evidence = vendorFloorEvidence(loadVendorFloor());
+  const floor = loadVendorFloor();
+  const evidence = vendorFloorEvidence(floor);
 
   assert.deepEqual(evidence, {
     path: join(VENDOR_FLOOR_DIR, "anna-en.wav"),
     sha256: committedSha256(),
     voice: "anna",
     locale: "en",
-    capturedOn: "2026-10-29",
+    // The record carries the committed capture's own date; the sidecar is the
+    // source of truth, so a recapture does not require editing this test.
+    capturedOn: floor.provenance.capturedOn,
     method: "vendor-tts-http",
   });
   assert.equal(JSON.stringify(evidence).includes("RIFF"), false);

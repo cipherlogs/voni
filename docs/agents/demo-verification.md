@@ -223,10 +223,22 @@ artifact disappears.
   reads the JSON and requires ten calls, `failedPropertyIds: []`,
   `ineligible: false` and `status: "scoped-pass"`; anything else fails, and a
   property failure reds even if the status claims scoped-pass. The gate is run
-  with `node --import tsx` because it imports the cadence's one count source.
-  The required wrapper `required-demo-fast-contract` fails a skipped, cancelled,
-  failed or artifact-less job. Branch protection must require the wrapper, not
-  the job.
+  with `node --import tsx` because it imports the cadence's one count source,
+  and every capture uses `npm run --silent demo:verify` so the report is the
+  script's JSON alone (npm's script banner is not JSON and is never stripped;
+  the reader's `JSON.parse` stays strict).
+  CI holds no vendor keys (owner decision, 2026-11-03), so `demo-fast-keys`
+  publishes key presence and the run job is skipped by name without it. The
+  required wrapper `required-demo-fast-contract` passes on that named skip —
+  the log and the step summary say `SKIPPED: …` and that the demo contract is
+  unproven in CI — and still fails when the keys were present but the job
+  failed, was cancelled, or left no run artifact. A skip is never a contract
+  claim: the real gate is the post-deploy cutover run
+  (`npm run check:real-legs`), which must not skip for a cutover claim. Keys
+  alone are not sufficient for a real run either: `VONI_APP_URL` and
+  `VOICE_PIPELINE_URL` must also name a loopback app and pipeline (the app in
+  dev mode for the capture sink), which this job does not start. Branch
+  protection must require the wrapper, not the job.
 - **Nightly health.** `.github/workflows/nightly.yml` adds
   `demo-nightly-health`: English 43 × 1 plus Locale core 12 × 1 on es, fr, de
   and pt = 91 calls. E3's `dvCostNightlyRunMaxUsd` ($15) is preflighted; at the

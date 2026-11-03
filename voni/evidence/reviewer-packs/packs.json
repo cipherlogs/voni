@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedOn": "2026-10-30",
+  "generatedOn": "2026-11-03",
   "command": "cd voni && npm run voice:packs",
   "source": "evidence/audition-clips/clips.json",
   "counts": {
@@ -92,7 +92,7 @@
       "locale": "en",
       "asset": "public/voices/anna.mp3",
       "url": "/voices/anna.mp3",
-      "recordingSha256": "8b4c4212816f1bf9a9cabc4fc2e55f658632a3035ce999566eb22dc637fae554",
+      "recordingSha256": "1317106f134eaccf25f7a370a79a137903da328ae8b8cb4fdb3b31f8424ecfa2",
       "status": "pending",
       "reviewer": null,
       "reviewedOn": null,

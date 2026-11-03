@@ -613,10 +613,16 @@ test("the runbook gives the exact production flip as the operator's human step",
   assert.match(text, /human step/i);
 });
 
-test("the runbook never claims the production flip was executed here", () => {
+test("the runbook records a production flip only with the evidence it happened", () => {
   const text = runbook();
-  assert.match(text, /has not been executed|not been executed/i);
+  // A first-person claim is never evidence, and a recorded execution must name
+  // the record it was read from: the switch's recordVersion and its audit
+  // entry. That is the difference between a record and a memory.
   assert.doesNotMatch(text, /I (ran|executed) the production/i);
+  if (/executed \d{4}-\d{2}-\d{2}/i.test(text)) {
+    assert.match(text, /recordVersion/i);
+    assert.match(text, /audit/i);
+  }
   // No credential, DSN with userinfo or production host is written into the doc.
   assert.doesNotMatch(text, /postgres(ql)?:\/\/[^"$\s]*@/);
   assert.doesNotMatch(text, /sk-[A-Za-z0-9]{10,}/);

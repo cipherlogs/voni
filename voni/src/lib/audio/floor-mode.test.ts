@@ -24,6 +24,7 @@ import {
   type FloorReference,
 } from "./floor-mode";
 import { loadVendorFloor } from "./vendor-floor";
+import { analyseLevel } from "./level-facts";
 
 const SAMPLE_RATE = 24_000;
 const FULL_SCALE = 32_767;
@@ -312,9 +313,17 @@ test("a copy of the committed floor clears it, and the floor is cited by path", 
 
   assert.equal(comparison.verdict, "pass");
   assert.match(comparison.summary, new RegExp(floor.path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(comparison.summary, /2026-10-29/);
+  // Read the baseline from the committed floor itself: pinning the capture date
+  // and level here made every recapture a false failure.
+  assert.ok(floor.provenance.capturedOn);
+  assert.match(comparison.summary, new RegExp(floor.provenance.capturedOn));
   // The committed floor's own measured baseline is what the subject matched.
-  assert.match(comparison.summary, /-20\.\d\d LUFS/);
+  const level = analyseLevel(floor.audio);
+  assert.equal(level.measured, true);
+  assert.match(
+    comparison.summary,
+    new RegExp(`${(level as { integratedLufs: number }).integratedLufs.toFixed(2)} LUFS`),
+  );
 });
 
 test("the floor verdict prints its axes, the floor path and one verdict", () => {

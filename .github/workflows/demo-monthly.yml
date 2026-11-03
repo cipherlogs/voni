@@ -36,7 +36,7 @@ jobs:
       - name: Monthly full production (refuses by name without a production sink)
         run: |
           set +e
-          npm run demo:verify -- --full --target production --json > "$RUNNER_TEMP/demo-monthly.json" 2> "$RUNNER_TEMP/demo-monthly.err"
+          npm run --silent demo:verify -- --full --target production --json > "$RUNNER_TEMP/demo-monthly.json" 2> "$RUNNER_TEMP/demo-monthly.err"
           set -e
           cat "$RUNNER_TEMP/demo-monthly.json" || true
           cat "$RUNNER_TEMP/demo-monthly.err" >&2 || true

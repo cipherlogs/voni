@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedOn": "2026-10-30",
+  "generatedOn": "2026-11-03",
   "command": "cd voni && npm run voice:clips",
   "source": "silent-greeting Voice Agent session (output.voice only: no output.volume, no gain, no limiter), the same payload the agent speaks through; for a voice the Voice Agent API does not serve, that voice's committed cascade clip supplies the native audio",
   "bitrateKbps": 160,
@@ -209,20 +209,21 @@
         "sampleRate": 24000,
         "channels": 1,
         "bitrateKbps": 160,
-        "frames": 251,
-        "durationMs": 6024
+        "frames": 78,
+        "durationMs": 1872
       },
       "level": {
-        "sourceIntegratedLufs": -17.37,
-        "assetIntegratedLufs": -17.74,
-        "assetTruePeakDbtp": -1.57,
-        "assetCrestDb": 16.4,
-        "secondEncodeLufs": -18.34,
-        "secondEncodeTruePeakDbtp": -2.02,
-        "secondEncodeCrestDb": 16.43,
+        "sourceIntegratedLufs": -20.26,
+        "assetIntegratedLufs": -20.72,
+        "assetTruePeakDbtp": -6.77,
+        "assetCrestDb": 15.31,
+        "secondEncodeLufs": -21.14,
+        "secondEncodeTruePeakDbtp": -7.21,
+        "secondEncodeCrestDb": 15.43,
         "referenceIntegratedLufs": -20.11
       },
-      "generatedOn": "2026-10-29"
+      "generatedOn": "2026-11-03",
+      "source": "agent-session"
     },
     {
       "voice": "vera",
@@ -390,7 +391,7 @@
     {
       "voice": "rafael",
       "locale": "pt",
-      "line": "Ol\u00e1, aqui \u00e9 Voni.",
+      "line": "Olá, aqui é Voni.",
       "lineSha256": "39400647e877c13774621211d754f5937b25b9519c2f4ab5e5f60138a03f3881",
       "asset": "public/voices/rafael.mp3",
       "url": "/voices/rafael.mp3",

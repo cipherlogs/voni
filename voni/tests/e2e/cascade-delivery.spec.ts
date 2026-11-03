@@ -763,7 +763,16 @@ test("a refused cascade connect shows the demo unavailable state and opens no ma
   expect(managedSockets, "no managed socket was opened").toEqual([]);
   expect(vendorRequests, "no vendor host was contacted").toEqual([]);
   expect(sounds, "no audio ever sounded, so the chime stayed silent").toEqual([]);
-  expect(captures, "a call with no audible sample writes no capture").toEqual([]);
+  // The playout tap is live from the moment the playout exists (the microphone
+  // was already acquired), and this refusal lands ~70 ms later, so the worklet
+  // writes a WAV of digital silence. That file proves the tap ran and nothing
+  // was queued; it is not the capture of an audible call. Assert what the
+  // visitor heard, not that the tap never ran: the latter needs the refusal to
+  // outrun getUserMedia, which the fake media device does not guarantee.
+  const voiced = captures.flatMap((bytes) =>
+    analyse(parseWav(bytes), {}).filter((window) => window.rms >= SILENCE_RMS),
+  );
+  expect(voiced, "a call with no audible sample writes no voiced capture").toEqual([]);
   expect(pageErrors).toEqual([]);
 
   // The refused call is evidence too: the artifact records what was refused
@@ -789,7 +798,8 @@ test("a refused cascade connect shows the demo unavailable state and opens no ma
           voiceTokenRequests,
           vendorRequests,
           audibleSamples: sounds.length,
-          captures: captures.length,
+          captureFiles: captures.length,
+          voicedCaptures: voiced.length,
         },
         managedFallback: false,
       },
