@@ -7,6 +7,7 @@ import {
   buildConfigMessage,
   type CascadeCallConfig,
 } from "./cascade-session";
+import { VoiceStartError } from "./mic-capture";
 import { DEMO_MINT_FIELDS, type DemoMint } from "./demo-mint";
 import { mintDemoCall, startDemoCall, type DemoCascadeCall } from "./demo-start";
 
@@ -278,6 +279,33 @@ test("a second start after hang-up is a fresh cascade call", async () => {
 test("the minted demo response has exactly the nine route fields", () => {
   const value = minted(1);
   assert.deepEqual(Object.keys(value).sort(), [...DEMO_MINT_FIELDS].sort());
+});
+
+test("a refused mint never starts any session", async () => {
+  // Demo-cascade 06: a refused connect ends before any session exists. The
+  // mint refusal propagates untouched, so the caller renders its unavailable
+  // line — and no session, managed or cascade, is ever started.
+  const session = recordingSession();
+  const refusal = new VoiceStartError(
+    "network",
+    "The live demo is not available right now.",
+  );
+  let thrown: unknown = null;
+  try {
+    await startDemoCall(
+      session,
+      { voiceId: "audrey", resume: false },
+      {
+        mint: async () => {
+          throw refusal;
+        },
+      },
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assert.equal(thrown, refusal, "the refusal propagates untouched");
+  assert.equal(session.records.length, 0, "no session starts on a refused mint");
 });
 
 type FakeSocket = {
