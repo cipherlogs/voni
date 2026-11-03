@@ -15,7 +15,7 @@
  * two runs, oldest first. A manifest with no history is blocked as
  * `run history not supplied; last-two consecutive unverified`, never passed.
  *
- * The six demo voices are always required (the ticket's minimum). A demo voice
+ * The single English demo voice is always required (the ticket's minimum). A demo voice
  * with no supplied evidence is listed as missing and blocks unless a dated
  * deferral covers it. `--tenants <path>`
  * lists every subject eligible under `routing=all`; each entry is

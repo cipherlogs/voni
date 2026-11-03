@@ -42,6 +42,7 @@ import { buildDemoCascadeBody } from "../../src/lib/demo/cascade-body";
 import { deliverCallBody } from "../../src/lib/demo/pipeline-delivery";
 import { getVoice } from "../../src/lib/agents/voices";
 import {
+  DEMO_VOICE_IDS,
   VONI_GREETINGS,
   rungInstructions,
 } from "../../src/lib/demo/voni-agent";
@@ -67,8 +68,14 @@ export function defaultCallerClip(): string {
   );
 }
 
-/** The demo voice whose locale matches the committed caller clip. */
-export const DEFAULT_VOICE = "jorg";
+/**
+ * The demo voice a no-flags rehearsal measures: the roster's one English
+ * voice (demo-cascade ticket 01). The harness reads the roster, never its own
+ * literal. Note the pairing is gone: the only committed caller clip is still
+ * the German line, so a no-flags run replays German caller audio against the
+ * English agent until an English clip is committed.
+ */
+export const DEFAULT_VOICE: string = DEMO_VOICE_IDS[0];
 
 /**
  * The one pricing path, named on every `cost.priced` row. Source of truth:
@@ -91,8 +98,9 @@ export const REAL_LEGS_USAGE = `usage: npm run ${REAL_LEGS_COMMAND} -- [options]
   --base-url URL      the pipeline's HTTP(S) base (default: VOICE_PIPELINE_URL,
                       then VOICE_PIPELINE_SERVICE_URL)
   --ws-url URL        the browser-call WebSocket URL (derived from --base-url)
-  --voice ID          the demo voice and subject (default: ${DEFAULT_VOICE}, whose
-                      committed German caller clip ships in the repo)
+  --voice ID          the demo voice and subject (default: ${DEFAULT_VOICE}, the
+                      roster's English voice; the committed caller clip is
+                      still the German line until an English clip ships)
   --audio PATH        a caller clip replayed for each caller turn (default:
                       the committed clip; without it, one short line is
                       synthesized with the key)

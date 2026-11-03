@@ -74,17 +74,17 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-const LOLA: SubjectRecord = {
-  agent: { kind: "demo", voice: "malvina", agentId: null },
-  locale: "es",
+const AUDREY: SubjectRecord = {
+  agent: { kind: "demo", voice: "audrey", agentId: null },
+  locale: "en",
   transport: "browser",
   source: "flag",
   pipeline: "cascade",
 };
 
 const TRANSCRIPT: ContentTurn[] = [
-  { speaker: "agent", text: VONI_GREETINGS.es! },
-  { speaker: "caller", text: "Sí, claro." },
+  { speaker: "agent", text: VONI_GREETINGS.en! },
+  { speaker: "caller", text: "Yes, of course." },
 ];
 
 /**
@@ -96,7 +96,7 @@ const DELIVERED_PATH = join(tmpdir(), "cascade-verdict-delivered.wav");
 
 function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "cascade-verdict-"));
-  const referencePath = join(dir, "malvina-reference.wav");
+  const referencePath = join(dir, "audrey-reference.wav");
   const deliveredPath = DELIVERED_PATH;
   const referenceBytes = wavFrom(tone(1, 1_000, 0.4));
   const deliveredBytes = wavFrom(tone(1, 1_000, 0.4));
@@ -110,8 +110,8 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
       reviewedOn: "2026-10-30",
       recordingSha256: deliveredSha,
       scores: { timbre: 5, accent: 5, languageNaturalness: 3 },
-      reason: "Natural enough, but one phrase is calqued from English.",
-      axisReasons: { languageNaturalness: "'Siento oír eso' reads as translationese." },
+      reason: "Natural enough, but one phrase is awkward in English.",
+      axisReasons: { languageNaturalness: "'Sorry to hear that' reads as a stock phrase." },
     },
     {
       reviewer: "marta",
@@ -123,9 +123,9 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
     },
   ];
 
-  const runId = "run-malvina-1";
+  const runId = "run-audrey-1";
   const artifact = buildSkeletonArtifact({
-    voice: "malvina",
+    voice: "audrey",
     scenario: "stop-over",
     runnerStdout: "",
     exitCode: 0,
@@ -133,12 +133,12 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
     runs: 1,
     dryRun: true,
     runId,
-    subject: LOLA,
+    subject: AUDREY,
     engine: {
       pipeline: "cascade",
       run: {
         runId,
-        variant: "cascade-malvina-1",
+        variant: "cascade-audrey-1",
         startedAt: "2026-10-30T10:00:00.000Z",
         finishedAt: "2026-10-30T10:00:03.000Z",
       },
@@ -152,13 +152,13 @@ function fixture(overrides: Partial<CascadeReauditionRequest> = {}) {
   });
 
   const request: CascadeReauditionRequest = {
-    subject: LOLA,
+    subject: AUDREY,
     artifact,
     artifactPath: join(dir, "scoreboard.json"),
     reference: referencePath,
     delivered: deliveredPath,
     transcript: TRANSCRIPT,
-    line: { kind: "greeting", text: VONI_GREETINGS.es! },
+    line: { kind: "greeting", text: VONI_GREETINGS.en! },
     ballots,
     now: () => new Date("2026-10-30T12:00:00.000Z"),
     ...overrides,
@@ -184,7 +184,7 @@ function input(
     decidedOn: "2026-10-30",
     reviewer: "Owner Name",
     capture: { path: DELIVERED_PATH, sha256: deliveredSha },
-    reasons: ["The Spanish line stumbles on the second sentence and ends mid-clause."],
+    reasons: ["The English line stumbles on the second sentence and ends mid-clause."],
     ...overrides,
   };
 }
@@ -198,8 +198,8 @@ test("a complete pack accepts a named owner verdict with date and reasons", () =
   assert.equal(record.reviewer, "Owner Name");
   assert.equal(record.decidedOn, "2026-10-30");
   assert.equal(record.capture.sha256, deliveredSha);
-  assert.equal(record.subject.voice, "malvina");
-  assert.equal(record.subject.locale, "es");
+  assert.equal(record.subject.voice, "audrey");
+  assert.equal(record.subject.locale, "en");
   assert.equal(record.pack.readyForOwner, true);
   assert.match(record.artifact.path, /scoreboard\.json$/);
   assert.equal(record.artifact.eligible, true);

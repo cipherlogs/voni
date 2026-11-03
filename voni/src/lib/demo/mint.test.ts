@@ -195,7 +195,7 @@ test("one mint builds the body locally, delivers it, and returns the cascade con
 });
 
 test("the subject is the picked demo voice, and no tenant or arbitrary subject can mint", async () => {
-  for (const voiceId of ["audrey", "malvina", "donatien", "jorg", "benicio"]) {
+  for (const voiceId of ["audrey"]) {
     const app = harness();
     const response = await app.handler(mintRequest({ voiceId }));
     assert.equal(response.status, 200);
@@ -204,7 +204,8 @@ test("the subject is the picked demo voice, and no tenant or arbitrary subject c
     assert.equal(app.deliveries.length, 1);
   }
 
-  for (const voiceId of ["tenant:acme", "acme", "", undefined, 42]) {
+  // Withdrawn demo voices are refused like any unknown voice: English only.
+  for (const voiceId of ["malvina", "donatien", "jorg", "benicio", "tenant:acme", "acme", "", undefined, 42]) {
     const app = harness();
     const response = await app.handler(mintRequest({ voiceId }));
     assert.equal(response.status, 400, `voice ${JSON.stringify(voiceId)} is refused`);
@@ -317,18 +318,18 @@ test("a missing, invalid or insecure pipeline URL is the same 503", async () => 
 
 test("a carried tag keeps its id, its token and its email", async () => {
   const app = harness();
-  const first = await readJson(await app.handler(mintRequest({ voiceId: "malvina" })));
+  const first = await readJson(await app.handler(mintRequest({ voiceId: "audrey" })));
   const heldToken = String(first.tagToken);
 
   const second = await readJson(
-    await app.handler(mintRequest({ voiceId: "malvina", tagToken: heldToken })),
+    await app.handler(mintRequest({ voiceId: "audrey", tagToken: heldToken })),
   );
 
   assert.equal(second.testTag, first.testTag, "the same tag comes back");
   assert.equal(second.tagToken, heldToken, "same id and issue time, so the same token");
   assert.equal(second.tagCarried, true);
   assert.notEqual(second.demoCallToken, first.demoCallToken, "a new call, the tag carried");
-  assert.deepEqual(app.issued, ["es"], "a carried tag issues nothing new");
+  assert.deepEqual(app.issued, ["en"], "a carried tag issues nothing new");
 });
 
 test("a hold rejoin keeps the call id and drops the greeting", async () => {
@@ -336,19 +337,19 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
   // the return signs a fresh one for the same call.
   let now = NOW;
   const app = harness({ clock: () => now });
-  const first = await readJson(await app.handler(mintRequest({ voiceId: "jorg" })));
+  const first = await readJson(await app.handler(mintRequest({ voiceId: "audrey" })));
   const callId = verifyDemoCall(KEY, String(first.demoCallToken), now)?.callId;
   assert.ok(callId);
   const history = [
-    { role: "user", content: "Wir backen Brot." },
-    { role: "assistant", content: "Sehr schön — wo?" },
+    { role: "user", content: "We bake bread downtown." },
+    { role: "assistant", content: "Lovely — whereabouts?" },
   ];
   now = NOW + 30_000;
 
   const second = await readJson(
     await app.handler(
       mintRequest({
-        voiceId: "jorg",
+        voiceId: "audrey",
         resume: true,
         callToken: first.demoCallToken,
         tagToken: first.tagToken,
@@ -365,7 +366,7 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
     "the hold return keeps the call's first start (the inbox lookback does not move)",
   );
   assert.notEqual(second.callToken, first.callToken, "a fresh single-use call token");
-  assert.equal(second.agentId, "demo:jorg");
+  assert.equal(second.agentId, "demo:audrey");
   assert.equal(second.testTag, first.testTag);
   assert.deepEqual(
     [...new Set(app.recorded.map((row) => row.callId))],
@@ -379,7 +380,7 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
   const third = await readJson(
     await app.handler(
       mintRequest({
-        voiceId: "jorg",
+        voiceId: "audrey",
         resume: true,
         callToken: second.demoCallToken,
         tagToken: second.tagToken,
@@ -406,7 +407,7 @@ test("a hold rejoin keeps the call id and drops the greeting", async () => {
   assert.equal("greeting" in resumedBody, false, "the welcome-back is the first utterance");
   assert.deepEqual(resumedBody.history, history, "the recent turns ride in the signed body");
   const freshBody = (firstDelivery.signedBody as { body: Record<string, unknown> }).body;
-  assert.equal(freshBody.greeting, VONI_GREETINGS.de);
+  assert.equal(freshBody.greeting, VONI_GREETINGS.en);
   assert.equal("history" in freshBody, false, "a fresh call starts blank");
 });
 

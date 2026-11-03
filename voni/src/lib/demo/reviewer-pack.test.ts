@@ -411,12 +411,12 @@ test("a complete pack's sheet records the reviewer, the date and the reasons", (
 // ── Ticket 75: a filed verdict becomes the weighted ballot's third axis ─────
 
 test("a filed verdict loads into the weighted ballot with language naturalness", () => {
-  const pack = fileVerdict(packFixture("malvina"), {
+  const pack = fileVerdict(packFixture("audrey"), {
     reviewer: "a named native reviewer",
     reviewedOn: "2026-10-29",
-    locale: "es",
+    locale: "en",
     scores: { timbre: 5, accent: 5, languageNaturalness: 4 },
-    reasons: { languageNaturalness: "the greeting reads like a translation of the English" },
+    reasons: { languageNaturalness: "the greeting clips the second word" },
   });
 
   const human = humanRatingsFromPack(pack);
@@ -427,22 +427,22 @@ test("a filed verdict loads into the weighted ballot with language naturalness",
   assert.equal(human.ratings[0]?.languageNaturalness, 4, "the third axis crosses into the ballot");
   assert.equal(
     human.ratings[0]?.reasons?.languageNaturalness,
-    "the greeting reads like a translation of the English",
+    "the greeting clips the second word",
     "the reviewer's reason is kept with the score",
   );
   assert.equal(human.recordingSha256, pack.recording?.sha256, "the ballot judges the pack's shared cut");
   assert.equal(human.ratings[0]?.recordingSha256, pack.recording?.sha256);
-  assert.equal(human.subject?.locale, "es", "the ballot is per subject, derived from the pack's voice");
+  assert.equal(human.subject?.locale, "en", "the ballot is per subject, derived from the pack's voice");
   assert.equal(human.languageNaturalness, 4);
   // 0.5×5 + 0.25×5 + 0.25×4 = 4.75, worked out independently of the module.
   assert.equal(human.weighted, 4.75);
 });
 
 test("a pending pack yields an empty ballot bound to its recording, never an invented score", () => {
-  const human = humanRatingsFromPack(reviewerPackFor(clipFixture("malvina"), RECORDING_SHA));
+  const human = humanRatingsFromPack(reviewerPackFor(clipFixture("audrey"), RECORDING_SHA));
   assert.deepEqual(human.ratings, []);
   assert.equal(human.recordingSha256, RECORDING_SHA);
-  assert.equal(human.subject?.locale, "es");
+  assert.equal(human.subject?.locale, "en");
   assert.equal(human.weighted, null);
   assert.equal(human.languageNaturalness, null);
 });
@@ -465,10 +465,18 @@ test("the adapter refuses a verdict that drops the third axis instead of loading
 });
 
 test("a pack is one subject's ballot: it never loads against another Locale's subject", () => {
-  const pack = fileVerdict(packFixture("malvina"), verdictFixture());
-  const english = resolveSubject({ voice: "audrey" });
+  const pack = fileVerdict(
+    packFixture("audrey"),
+    verdictFixture({ locale: "en", scores: { timbre: 5, accent: 5, languageNaturalness: 5 } }),
+  );
+  const spanishTenant = resolveSubject({
+    agent: "agent_es_1",
+    voice: "malvina",
+    locale: "es",
+    explicit: true,
+  });
   assert.throws(
-    () => humanRatingsFromPack(pack, english),
+    () => humanRatingsFromPack(pack, spanishTenant),
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /locale|Spanish|es/);
@@ -476,8 +484,8 @@ test("a pack is one subject's ballot: it never loads against another Locale's su
     },
   );
   // The subject it names loads unchanged.
-  const spanish = resolveSubject({ voice: "malvina" });
-  const human = humanRatingsFromPack(pack, spanish);
+  const english = resolveSubject({ voice: "audrey" });
+  const human = humanRatingsFromPack(pack, english);
   assert.equal(human.subject?.agent.kind, "demo");
   assert.equal(human.weighted, 5);
 });
@@ -523,12 +531,28 @@ test("a voice with no committed recording has no pack, only a named pending row"
   const evidence = manifest();
   const recorded = new Set(evidence.clips.map((clip) => clip.voice));
   const pending = evidence.pending;
+  const byVoice = new Map(pending.map((row) => [row.voice, row]));
 
+  // English-only: the single demo voice has no committed recording yet.
+  assert.equal(recorded.has("audrey"), false, "audrey has no committed clip");
   assert.deepEqual(
-    pending.map((row) => row.voice).sort(),
     DEMO_VOICE_IDS.filter((voice) => !recorded.has(voice)).sort(),
-    "the demo voices still missing a recording are exactly the named pending voices",
+    ["audrey"],
+    "the only demo voice still missing a recording is audrey",
   );
+  const audreyPending = byVoice.get("audrey");
+  assert.ok(audreyPending, "audrey names a pending row");
+  assert.match(audreyPending.command, /voice:clips -- --voice/, "the remedy names the clip command");
+  assert.match(audreyPending.reason, /does not serve|cascade clip/i, "the reason names the gap");
+
+  // Withdrawn demo voices never reach the subject gate: refused by name.
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    assert.throws(
+      () => resolveSubject({ voice, explicit: true }),
+      /unknown gate voice/,
+      `${voice} is refused by name`,
+    );
+  }
 
   const index = JSON.parse(readFileSync(new URL(REVIEWER_PACK_INDEX_PATH, root), "utf8")) as {
     packs: Array<{ voice: string }>;

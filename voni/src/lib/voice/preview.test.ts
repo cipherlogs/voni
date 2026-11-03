@@ -67,13 +67,7 @@ test("previewRateLimitExceeded allows bursts then reports retry seconds", () => 
 });
 
 test("every demo voice's preview is its own native clip", () => {
-  const subjects: ReadonlyArray<readonly [string, string]> = [
-    ["audrey", "en"],
-    ["malvina", "es"],
-    ["donatien", "fr"],
-    ["jorg", "de"],
-    ["benicio", "pt"],
-  ];
+  const subjects: ReadonlyArray<readonly [string, string]> = [["audrey", "en"]];
   assert.deepEqual(
     subjects.map(([voice]) => voice),
     [...DEMO_VOICE_IDS],
@@ -108,35 +102,30 @@ test("a cascade preview with no committed asset is reported, never served as a d
   };
   const committed = evidence.clips.map((clip) => clip.asset.replace(/^voni\//, ""));
 
-  // The one rendered demo preview is playable and unchanged.
-  assert.equal(cascadePreviewGap("jorg", committed), null);
-  const missing = cascadePreviewGap(
-    "jorg",
-    committed.filter((asset) => !asset.endsWith("/jorg.wav")),
-  );
-  assert.ok(missing, "a URL whose asset is absent is reported, not returned as playable");
-  assert.equal(missing.asset, "public/voices/cascade/jorg.wav");
-  assert.match(missing.message, /not committed/);
-  assert.equal(cascadePreviewUrl("jorg"), "/voices/cascade/jorg.wav");
+  // The offered voice's cascade clip is not committed yet: the picker
+  // reports the gap instead of emitting a URL that 404s. Rendering the clip
+  // is pipeline-binding work, not a silent absence.
+  const gap = cascadePreviewGap("audrey", committed);
+  assert.ok(gap, "a URL whose asset is absent is reported, not returned as playable");
+  assert.equal(gap.asset, "public/voices/cascade/audrey.wav");
+  assert.match(gap.message, /not committed/);
+  assert.equal(cascadePreviewUrl("audrey"), "/voices/cascade/audrey.wav");
   assert.equal(
-    existsSync(new URL("../../../public/voices/cascade/jorg.wav", import.meta.url)),
-    true,
-    "the jorg preview's committed asset is the one that exists",
+    existsSync(new URL("../../../public/voices/cascade/audrey.wav", import.meta.url)),
+    false,
+    "the audrey preview's committed asset is the one that is missing",
   );
 
-  // Every demo voice whose cascade clip is not committed yet is a named gap:
-  // the picker reports it instead of emitting a URL that 404s. Rendering those
-  // clips is ticket 05's pipeline-binding work, not a silent absence.
-  for (const voice of DEMO_VOICE_IDS) {
-    if (committed.includes(`public/voices/cascade/${voice}.wav`)) continue;
-    const gap = cascadePreviewGap(voice, committed);
-    assert.ok(gap, `${voice}: the uncommitted preview is reported`);
-    assert.equal(gap.asset, `public/voices/cascade/${voice}.wav`);
-    assert.match(gap.message, /not committed/);
+  // A withdrawn voice has no URL even when its old clip is still on disk:
+  // jorg.wav is committed, but the voice is off the roster, so there is no
+  // playable URL and no gap to report — the picker offers nothing, never a
+  // dead URL and never another voice's clip.
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    assert.equal(cascadePreviewUrl(voice), null, `${voice} is withdrawn: no preview URL`);
     assert.equal(
-      existsSync(new URL(`../../../public/voices/cascade/${voice}.wav`, import.meta.url)),
-      false,
-      `${voice}: the asset is genuinely absent, so the gap is not stale`,
+      cascadePreviewGap(voice, committed),
+      null,
+      `${voice} is withdrawn: no gap either, the picker offers nothing`,
     );
   }
 
@@ -155,14 +144,21 @@ test("a cascade preview with no committed asset is reported, never served as a d
 
 test("a voice with no binding has no preview, never another voice's", () => {
   assert.equal(
-    cascadePreviewUrl("jorg"),
-    "/voices/cascade/jorg.wav",
-    "the chosen German voice has its own preview",
+    cascadePreviewUrl("audrey"),
+    "/voices/cascade/audrey.wav",
+    "the offered English voice has its own preview",
   );
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    assert.equal(
+      cascadePreviewUrl(voice),
+      null,
+      `${voice} is withdrawn and never borrows audrey's preview`,
+    );
+  }
   assert.equal(
     cascadePreviewUrl("juergen"),
     null,
-    "the retired German id has no preview and never borrows jorg's",
+    "the retired German id has no preview and never borrows audrey's",
   );
   assert.equal(cascadePreviewUrl("morgan-freeman"), null, "a voice outside the catalog has none");
   assert.notEqual(cascadePreviewUrl("anna"), "/voices/anna.mp3", "the managed picker asset is separate");

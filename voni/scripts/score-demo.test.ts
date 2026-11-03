@@ -1173,20 +1173,18 @@ test("unknown voice fails fast with no artifact", () => {
   assert.match(result.stderr + result.stdout, /unknown gate voice/);
 });
 
-test("dry run lists every beat with its window plus gate and regression voices", () => {
+test("dry run lists every beat with its window plus the single gate voice", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "score.json");
-  const gate = DEMO_VOICE_IDS[1];
+  const gate = DEMO_VOICE_IDS[0];
   const result = run(["--dry-run", "--gate-voice", gate, "--out", out], new URL("../", import.meta.url).pathname);
   assert.equal(result.status, 0, result.stderr + result.stdout);
   for (const beat of GATE_BEATS) {
     assert.ok(result.stdout.includes(beat), `dry run missing beat ${beat}`);
   }
   assert.ok(result.stdout.includes(gate), "dry run names the gate voice");
+  // English-only: the roster holds one voice, so the regression set is empty.
   assert.ok(result.stdout.includes("regression"), "dry run names the regression set");
-  for (const voice of DEMO_VOICE_IDS.filter((v) => v !== gate)) {
-    assert.ok(result.stdout.includes(voice), `dry run missing regression voice ${voice}`);
-  }
   const artifact = JSON.parse(readFileSync(out, "utf8")) as {
     voice: string;
     regressionVoices: string[];
@@ -1198,25 +1196,33 @@ test("dry run lists every beat with its window plus gate and regression voices",
     GATE_BEATS,
   );
   assert.ok(!artifact.regressionVoices.includes(gate), "regression set excludes the gate");
-  assert.deepEqual(
-    [...artifact.regressionVoices].sort(),
-    [...DEMO_VOICE_IDS].filter((v) => v !== gate).sort(),
-  );
+  assert.deepEqual(artifact.regressionVoices, [], "English-only ships no regression voices");
 });
 
 test("--voice stays an alias of --gate-voice and the default needs no voice literal", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const aliasOut = join(dir, "alias.json");
-  const alias = run(["--dry-run", "--voice", DEMO_VOICE_IDS[2], "--out", aliasOut], new URL("../", import.meta.url).pathname);
+  const alias = run(["--dry-run", "--voice", DEMO_VOICE_IDS[0], "--out", aliasOut], new URL("../", import.meta.url).pathname);
   assert.equal(alias.status, 0, alias.stderr + alias.stdout);
   const aliased = JSON.parse(readFileSync(aliasOut, "utf8")) as { voice: string };
-  assert.equal(aliased.voice, DEMO_VOICE_IDS[2]);
+  assert.equal(aliased.voice, DEMO_VOICE_IDS[0]);
 
   const defaultOut = join(dir, "default.json");
   const fallback = run(["--dry-run", "--out", defaultOut], new URL("../", import.meta.url).pathname);
   assert.equal(fallback.status, 0, fallback.stderr + fallback.stdout);
   const resolved = JSON.parse(readFileSync(defaultOut, "utf8")) as { voice: string };
   assert.equal(resolved.voice, DEMO_VOICE_IDS[0]);
+});
+
+test("a withdrawn demo voice is refused by name with no artifact", () => {
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
+    const out = join(dir, "score.json");
+    const result = run(["--dry-run", "--voice", voice, "--out", out], new URL("../", import.meta.url).pathname);
+    assert.notEqual(result.status, 0, `${voice} is withdrawn from the English-only roster`);
+    assert.ok(!existsSync(out), `no artifact is written for withdrawn voice ${voice}`);
+    assert.match(result.stderr + result.stdout, /unknown gate voice/);
+  }
 });
 
 test("measured gaps inside budget pass the reply-gap gate and fill per-beat gaps", () => {
@@ -3541,11 +3547,17 @@ test("--rate files two blind ballots at five out of five on one shared recording
 test("--rate files the third axis: timbre, accent and language naturalness", () => {
   const dir = mkdtempSync(join(tmpdir(), "scoreboard-"));
   const out = join(dir, "three-axis.json");
+  // English-only demo: the third axis is exercised through a tenant Spanish
+  // subject (the catalogue voice via the --agent path), never a demo voice.
   const result = run(
     [
       "--dry-run",
+      "--agent",
+      "agent_es_1",
       "--voice",
       "malvina",
+      "--subject-locale",
+      "es",
       "--out",
       out,
       "--recording",
@@ -3593,8 +3605,12 @@ test("--rate without the third axis is an incomplete ballot for a non-English su
   const result = run(
     [
       "--dry-run",
+      "--agent",
+      "agent_es_1",
       "--voice",
       "malvina",
+      "--subject-locale",
+      "es",
       "--out",
       out,
       "--recording",
@@ -3654,7 +3670,7 @@ test("--reviewer-pack loads a reviewer's filed verdict into the ballot with all 
   writeFileSync(packPath, JSON.stringify(pack));
 
   const result = run(
-    ["--dry-run", "--voice", "malvina", "--out", out, "--reviewer-pack", packPath],
+    ["--dry-run", "--agent", "agent_es_1", "--voice", "malvina", "--subject-locale", "es", "--out", out, "--reviewer-pack", packPath],
     new URL("../", import.meta.url).pathname,
   );
   assert.equal(result.status, 0, result.stderr + result.stdout);
@@ -3688,8 +3704,12 @@ test("--reviewer-pack loads a reviewer's filed verdict into the ballot with all 
   const withSecond = run(
     [
       "--dry-run",
+      "--agent",
+      "agent_es_1",
       "--voice",
       "malvina",
+      "--subject-locale",
+      "es",
       "--out",
       two,
       "--reviewer-pack",
@@ -3756,8 +3776,12 @@ test("--reviewer-pack is refused when its cut is not the one the run measured", 
   const result = run(
     [
       "--dry-run",
+      "--agent",
+      "agent_es_1",
       "--voice",
       "malvina",
+      "--subject-locale",
+      "es",
       "--out",
       out,
       "--reviewer-pack",

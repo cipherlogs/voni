@@ -32,6 +32,7 @@ import {
   transcriptTurnsFromTranscript,
   type AnsweredQuestionPromotion,
 } from "./answered-question";
+import { SubjectError } from "./subject";
 
 /** A Spanish call where the caller's email is asked for twice. */
 const ES_REPEAT = [
@@ -84,6 +85,24 @@ const EN_ONCE = [
   "sess_en_once  agent=agent_anna  12.0s  end=client_end",
   ' 1.20s  HEARD   "Hi, I run a bakery."  (1.20s–2.20s)',
   ' 3.40s  VONI    "What\'s your email address?"  (reply_create gap 800ms)',
+];
+
+/** An English call where the caller's email is asked for twice. */
+const EN_REPEAT = [
+  "sess_en_repeat  agent=agent_audrey  18.0s  end=client_end",
+  ' 1.20s  VONI    "Hi, this is Audrey from Voni. How can I help?"  (reply_create gap 700ms)',
+  ' 3.10s  HEARD   "Sure, my email is andres@casaverde.pt."  (3.10s–4.20s)',
+  ' 5.40s  VONI    "And what is your test tag?"  (reply_create gap 800ms)',
+  ' 7.60s  VONI    "Perfect. What is your email so I can send the details?"  (reply_create gap 800ms)',
+];
+
+/** The same call, with the email acknowledged instead of asked for again. */
+const EN_CLEAN = [
+  EN_REPEAT[0]!,
+  EN_REPEAT[1]!,
+  EN_REPEAT[2]!,
+  EN_REPEAT[3]!,
+  ' 7.60s  VONI    "Perfect, I have sent the email to andres@casaverde.pt."  (reply_create gap 800ms)',
 ];
 
 function count(lines: string[], locale = "es") {
@@ -258,17 +277,22 @@ test("the false-positive measurement can fail: a mislabelled clarification is a 
 });
 
 test("the artifact records the count and the promotion decision", () => {
-  const repeated = artifactFor("malvina", ES_REPEAT, "run-es-repeat");
+  const repeated = artifactFor("audrey", EN_REPEAT, "run-en-repeat");
 
   assert.ok(repeated.answeredQuestion, "the artifact carries the counter");
   assert.equal(repeated.answeredQuestion.count, 1);
   assert.equal(repeated.answeredQuestion.requests, 2);
-  assert.equal(repeated.answeredQuestion.locale, "es");
+  assert.equal(repeated.answeredQuestion.locale, "en");
   assert.equal(repeated.answeredQuestion.reportOnly, true);
+  assert.deepEqual(repeated.answeredQuestion.findings[0]!.categories, ["email"]);
+  assert.equal(repeated.answeredQuestion.findings[0]!.turn, 3, "the third VONI turn is the repeat");
+  assert.equal(repeated.answeredQuestion.findings[0]!.answeredAt.turn, 1, "the first caller turn supplied it");
+  assert.equal(repeated.answeredQuestion.findings[0]!.answeredAt.value, "andres@casaverde.pt");
+  assert.match(repeated.answeredQuestion.findings[0]!.text, /your email/);
   assert.deepEqual(repeated.answeredQuestion.promotion, ANSWERED_QUESTION_PROMOTION);
   assert.equal(repeated.answeredQuestion.promotion.gating, false);
 
-  const clean = artifactFor("malvina", ES_CLEAN, "run-es-clean");
+  const clean = artifactFor("audrey", EN_CLEAN, "run-en-clean");
   assert.equal(clean.answeredQuestion?.count, 0);
   assert.equal(clean.answeredQuestion?.status, "clear");
 
@@ -280,19 +304,32 @@ test("the artifact records the count and the promotion decision", () => {
   assert.equal(fromArtifact.requests, 2);
 });
 
+test("a withdrawn voice is refused by name, never measured as a demo subject", () => {
+  for (const voice of ["malvina", "donatien", "jorg", "benicio"]) {
+    assert.throws(
+      () => artifactFor(voice, ES_REPEAT, `run-${voice}-refused`),
+      (error: unknown) =>
+        error instanceof SubjectError &&
+        error.field === "agent" &&
+        new RegExp(`unknown gate voice "${voice}"`).test(error.message),
+      `${voice} is withdrawn from the English-only roster`,
+    );
+  }
+});
+
 test("a redacted transcript still counts the answer, and the value stays redacted", () => {
   // No Call trace: the artifact's own transcript is redacted, so the caller's
   // address is the `[email]` placeholder. The category is still structured
   // evidence, and the value never leaves the transcript's redaction.
   const redacted = buildSkeletonArtifact({
-    voice: "malvina",
+    voice: "audrey",
     scenario: "suite",
-    runnerStdout: ES_REPEAT.join("\n"),
+    runnerStdout: EN_REPEAT.join("\n"),
     exitCode: 0,
     durationMs: 1_000,
     runs: 1,
     dryRun: true,
-    runId: "run-es-redacted",
+    runId: "run-en-redacted",
   });
   assert.equal(redacted.answeredQuestion?.count, 1);
   assert.equal(redacted.answeredQuestion?.findings[0]?.answeredAt.value, "[email]");
@@ -304,8 +341,8 @@ test("a redacted transcript still counts the answer, and the value stays redacte
 });
 
 test("the counter is report-only: a repeating turn and a clean one have identical gates", () => {
-  const repeated = artifactFor("malvina", ES_REPEAT, "run-es-repeat");
-  const clean = artifactFor("malvina", ES_CLEAN, "run-es-clean");
+  const repeated = artifactFor("audrey", EN_REPEAT, "run-en-repeat");
+  const clean = artifactFor("audrey", EN_CLEAN, "run-en-clean");
 
   assert.deepEqual(repeated.gates, clean.gates);
   assert.deepEqual(repeated.subScores, clean.subScores);
@@ -320,17 +357,17 @@ test("the counter is report-only: a repeating turn and a clean one have identica
 });
 
 test("the compact report exposes the repeated question and the English baseline", () => {
-  const spanish = buildInspectReport(
-    artifactFor("malvina", ES_REPEAT, "run-es-repeat"),
+  const englishRepeat = buildInspectReport(
+    artifactFor("audrey", EN_REPEAT, "run-en-repeat"),
   );
-  assert.equal(spanish.answeredQuestion.count, 1);
-  assert.equal(spanish.answeredQuestion.rate, 1 / 2);
-  const text = formatInspectReport(spanish);
+  assert.equal(englishRepeat.answeredQuestion.count, 1);
+  assert.equal(englishRepeat.answeredQuestion.rate, 1 / 2);
+  const text = formatInspectReport(englishRepeat);
   assert.match(text, /answered-question \(report-only, never gated\)/);
   assert.match(text, /1 of 2 requests repeat an answer \(0\.50\)/);
   assert.match(
     text,
-    /repeated\s+sess_es_repeat turn 3: email already answered at turn 1 \(andres@casaverde\.pt\)/,
+    /repeated\s+sess_en_repeat turn 3: email already answered at turn 1 \(andres@casaverde\.pt\)/,
   );
   assert.match(text, /promotion\s+report-only \(never gated\)/);
 

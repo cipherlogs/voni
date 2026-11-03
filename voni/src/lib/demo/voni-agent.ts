@@ -17,12 +17,13 @@ import type { WebsiteState } from "./website";
 export const VONI_AGENT_ID = "voni";
 
 /**
- * The demo picker: exactly five voices, one per Locale, English first
- * (demo-cascade ticket 04). Withdrawing a voice is this one line — the picker,
- * the mint validation and the harness all read it. Italian is intentionally
- * absent; its renderings stay in the per-Locale layer, unused.
+ * The demo picker: English only, one voice (demo-cascade ticket 01). The
+ * voice-cycle control is disabled and the call body pins English. Withdrawing
+ * or restoring a voice is this one line — the picker, the mint validation and
+ * the harness all read it. Italian and the other per-Locale renderings stay in
+ * the per-Locale layer, unused.
  */
-export const DEMO_VOICE_IDS = ["audrey", "malvina", "donatien", "jorg", "benicio"] as const;
+export const DEMO_VOICE_IDS = ["audrey"] as const;
 
 /**
  * The opening beat, per output language. Short by owner decision (2026-11-02):

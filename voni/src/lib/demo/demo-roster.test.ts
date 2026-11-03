@@ -7,24 +7,23 @@ import { getVoice, tenantVoices, VOICES } from "@/lib/agents/voices";
 import { voiceForLanguage } from "@/lib/agents/wizard";
 
 /**
- * Demo-cascade ticket 04: the demo offers exactly five Locales, one voice each,
- * English first. The voice catalogue keeps every entry a stored agent may run
- * on; the tenant picker narrows to English while a stored non-English agent
- * still resolves.
+ * Demo-cascade ticket 01: the demo offers English only, one voice. The voice
+ * catalogue keeps every entry a stored agent may run on; the tenant picker
+ * narrows to English while a stored non-English agent still resolves.
  */
 
-const LOCALES = ["en", "es", "fr", "de", "pt"] as const;
+const LOCALES = ["en"] as const;
 
-test("the demo roster is exactly five voices, one per Locale, English first", () => {
+test("the demo roster is exactly one English voice", () => {
   assert.deepEqual(
     [...DEMO_VOICE_IDS],
-    ["audrey", "malvina", "donatien", "jorg", "benicio"],
+    ["audrey"],
     "the demo picker's order is the product decision",
   );
   assert.deepEqual(
     DEMO_VOICE_IDS.map((voice) => getVoice(voice)?.languageCode),
     [...LOCALES],
-    "each voice speaks the Locale it is offered for, in order",
+    "the one offered voice speaks English",
   );
   assert.equal(new Set(DEMO_VOICE_IDS).size, DEMO_VOICE_IDS.length, "no voice is offered twice");
 });
@@ -43,37 +42,45 @@ test("withdrawing a demo voice is the roster line, and every surface reads it", 
   );
 });
 
+test("the voice-cycle control is disabled: one voice, no switching", () => {
+  // The picker (switcher) still derives from DEMO_VOICE_IDS, but with a
+  // single voice there is nothing to cycle through: both arrows stay
+  // disabled so no other locale can be offered.
+  const picker = readFileSync(new URL("../../components/voice-call.tsx", import.meta.url), "utf8");
+  assert.match(picker, /Previous voice/, "the switcher arrows still render");
+  assert.match(picker, /Next voice/, "the switcher arrows still render");
+  assert.equal(DEMO_VOICE_IDS.length, 1, "a single voice leaves the cycle nowhere to go");
+  assert.match(
+    picker,
+    /aria-label=\{step < 0 \? "Previous voice"[\s\S]*?disabled/,
+    "the voice arrows are a disabled control",
+  );
+});
+
 test("Italian is not offered in the demo, and its catalogue entry and rendering stay", () => {
   assert.equal(
     DEMO_VOICE_IDS.some((voice) => getVoice(voice)?.languageCode === "it"),
     false,
-    "the demo offers five Locales and Italian is not one",
+    "the demo offers English only and Italian is not one",
   );
   assert.ok(getVoice("giovanni"), "the Italian catalogue entry is untouched");
   assert.match(VONI_GREETINGS.it, /Voni/, "the Italian rendering stays, unused");
 });
 
-test("every demo body pins that voice's Locale and speaks that Locale's words", () => {
+test("every demo body pins English and speaks the English greeting", () => {
   for (const voice of DEMO_VOICE_IDS) {
     const locale = getVoice(voice)?.languageCode;
     assert.ok(locale, `${voice} is a catalogue voice`);
     const body = buildDemoAgentBody(voice);
 
     assert.deepEqual(body.voice, { voice_id: voice }, `${voice}: the body runs the picked voice`);
-    assert.deepEqual(body.input.language_codes, [locale], `${voice}: the Locale is pinned, not English by default`);
+    assert.deepEqual(body.input.language_codes, ["en"], `${voice}: the Locale is pinned to English`);
     assert.equal(
       body.greeting,
-      VONI_GREETINGS[locale],
-      `${voice}: the opening words come from the per-Locale rendering layer`,
+      VONI_GREETINGS.en,
+      `${voice}: the opening words come from the English rendering`,
     );
-    assert.equal(voniConfig(voice).greeting, VONI_GREETINGS[locale], `${voice}: one greeting source`);
-    if (locale !== "en") {
-      assert.notEqual(
-        body.greeting,
-        VONI_GREETINGS.en,
-        `${voice}: a non-English demo never opens in English scenario text`,
-      );
-    }
+    assert.equal(voniConfig(voice).greeting, VONI_GREETINGS.en, `${voice}: one greeting source`);
   }
 });
 
