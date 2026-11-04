@@ -2180,7 +2180,7 @@ export function VoiceCall({
           <div className="flex w-220">
             <div
               className={cn(
-                "flex w-90 shrink-0 flex-col items-center justify-center gap-3.5 border-r px-6 transition-[padding,border-color]",
+                "flex w-90 shrink-0 flex-col items-center justify-center gap-6 border-r px-6 transition-[padding,border-color]",
                 reveal,
                 open ? "py-7" : "border-transparent py-2",
               )}
@@ -2249,7 +2249,7 @@ export function VoiceCall({
               <div className="absolute top-0 left-0 translate-x-(--landing-orb-center) translate-y-5.5">
                 <LandingOrb />
               </div>
-              <div className="absolute inset-x-0 top-47 flex flex-col items-center gap-3.5 md:top-54">
+              <div className="absolute inset-x-0 top-47 flex flex-col items-center gap-6 pt-2 md:top-54">
                 {mobileTrigger}
               </div>
             </div>
