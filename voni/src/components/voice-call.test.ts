@@ -770,3 +770,43 @@ test("the demo stays waiting until the first audible sample, then paints live wi
     "live paints at first audible (speaking when the reply started, else listening), never on a silent start",
   );
 });
+
+test("the first agent caption waits for the first audible sample, then paints with the chime", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const demo = call.slice(
+    call.indexOf('if (modeKind === "demo") {'),
+    call.indexOf("const session = new VoiceSession({"),
+  );
+  // The agent's frames arrive before they sound (pre-roll): the first caption
+  // is held, not painted on arrival.
+  const caption = demo.slice(demo.indexOf("onCaption: (caption) => {"), demo.indexOf("onAudio: () => {"));
+  assert.ok(caption.includes("pendingAgentCaption"), "the first agent caption is buffered, not painted on arrival");
+  assert.ok(caption.includes("audibleRef"), "the buffer holds only until the first audible sample");
+  // ...and flushed inside onFirstAudible strictly before the chime.
+  const firstAudible = demo.slice(
+    demo.indexOf("onFirstAudible:"),
+    demo.indexOf("onSpeechEnd: () => {"),
+  );
+  assert.ok(firstAudible.includes("flushPendingAgentCaption()"), "the held caption flushes at first audible");
+  assert.ok(
+    firstAudible.indexOf("flushPendingAgentCaption()") < firstAudible.indexOf("playConnectedChime()"),
+    "the held caption paints before the chime fires",
+  );
+});
+
+test("the live caption line paints urgent: deferral is for settled history only", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const line = call.slice(call.indexOf("const liveCaptionLine"), call.indexOf("── Demo layout"));
+  assert.ok(!line.includes("deferredLiveCaption"), "the live line never waits for deferral");
+  assert.ok(line.includes("liveCaption"), "the live line paints the urgent caption");
+  assert.ok(!call.includes("deferredLiveCaption"), "no live surface reads the deferred caption");
+});
+
+test("the connected chime element preloads while ringback sounds", () => {
+  const call = readRepo("components/voice-call.tsx");
+  const connecting = call.slice(call.indexOf('if (state === "connecting") {'), call.indexOf('} else if (state === "ended") {'));
+  assert.ok(connecting.includes('preload("connected")'), "ringback start warms the chime element");
+  const sounds = readRepo("lib/voice/call-sounds.ts");
+  assert.ok(sounds.includes("preload("), "the sound player warms one-shot elements");
+  assert.ok(sounds.includes("preloaded"), "play reuses the warmed element");
+});

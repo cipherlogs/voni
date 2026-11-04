@@ -1194,6 +1194,10 @@ export class VoiceSession {
       case "reply.audio":
         // Late audio of a superseded reply, or of any reply after the goodbye: never play it.
         if (this.isDropped(msg.reply_id)) break;
+        // Speaker anchor, not a queue timestamp: this reply's first sample
+        // sounds when the worklet has consumed everything queued before it
+        // (FIFO), so the paced caption below opens exactly there — never in
+        // the pre-roll, never into a draining tail.
         if (this.replyAudioStart === null) this.replyAudioStart = this.playout?.sentSamples?.() ?? 0;
         this.setState("speaking");
         this.lastAudioAt = Date.now();
@@ -1799,15 +1803,23 @@ export class VoiceSession {
 
   /**
    * What the caller has heard of the current reply: its words up to the
-   * audio played so far. A playout that can't report (tests) hears it all.
+   * audio played so far. The anchor is the speaker position where this
+   * reply's audio starts (its queue point, FIFO): the caption gate below
+   * opens only once the speaker has passed it, so the paint is anchored to
+   * the first audible frame, never to queue-insert. Without a speaker
+   * position (no playout reporters, no resolved rate, no audio yet) nothing
+   * is heard — never the whole line at once.
    */
   private heardAgentText(): string {
     const playout = this.playout;
-    if (!playout?.consumedSamples || !playout.sentSamples) return this.currentAgentText;
+    if (!playout?.consumedSamples || !playout.sentSamples) return "";
     if (this.replyAudioStart === null) return "";
-    // Consumed samples are at the resolved rate, not a module constant.
-    if (this.outputSampleRate === null) return this.currentAgentText;
+    if (this.outputSampleRate === null) return "";
     const playedMs = ((playout.consumedSamples() - this.replyAudioStart) / this.outputSampleRate) * 1000;
+    // The queue runs ahead of the speaker (pre-roll cushion, a draining
+    // tail): a reply whose first sample has not sounded yet paints nothing,
+    // instead of leading the voice by the cushion.
+    if (playedMs <= 0) return "";
     return heardWords(this.currentAgentText, playedMs);
   }
 

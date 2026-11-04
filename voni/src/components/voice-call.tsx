@@ -462,6 +462,18 @@ export function VoiceCall({
   const audibleRef = useRef(false);
   const livePaintedRef = useRef(false);
   /**
+   * The first agent caption's frames arrive before they sound (pre-roll
+   * cushion), so the paint waits with the chime for the first audible
+   * sample instead of leading the voice. Flushed in `onFirstAudible`
+   * strictly before the chime; cleared when the final turn lands.
+   */
+  const pendingAgentCaptionRef = useRef<{ role: "user" | "agent"; text: string } | null>(null);
+  const flushPendingAgentCaption = useCallback(() => {
+    const pending = pendingAgentCaptionRef.current;
+    pendingAgentCaptionRef.current = null;
+    if (pending && stateRef.current !== "ended") setLiveCaption(pending);
+  }, []);
+  /**
    * The connected chime marks the agent actually sounding, so it hangs off the
    * playout's first audible sample — not the moment a greeting is queued (the
    * worklet holds that for its whole pre-roll) and not `session.ready`. A
@@ -638,10 +650,11 @@ export function VoiceCall({
     : voiceLabel(voiceId);
 
 
-  // Non-urgent echoes (ticket 08): per-word partials and the ticking second
-  // resolve after urgent work (final turns, presses) — identical pixels once
-  // settled, without re-rendering the urgent tree for meter traffic.
-  const deferredLiveCaption = useDeferredValue(liveCaption);
+  // Settled echoes (ticket 08): the ticking second resolves after urgent
+  // work (final turns, live captions, presses) — identical pixels once
+  // settled, without re-rendering the urgent tree for meter traffic. The
+  // live caption line below stays urgent: deferring it lags the voice under
+  // load, while history only ever appends settled finals.
   const deferredElapsed = useDeferredValue(elapsed);
   // Background discovery yields (ticket 08): inbox/website polls only flip
   // the chip/copy, so they commit as transitions, never ahead of a press.
@@ -1069,6 +1082,10 @@ export function VoiceCall({
   useEffect(() => {
     if (state === "connecting") {
       connectedChimeRef.current = false;
+      // Warm the chime element now: `playConnectedChime` fires from the first
+      // audible sample, and building the Audio then starts it half a second
+      // into the first word instead of with it.
+      sounds().preload("connected");
       sounds().startRingback();
       if (!ringbackActiveRef.current) {
         ringbackActiveRef.current = true;
@@ -1244,6 +1261,7 @@ export function VoiceCall({
     setMutedState(nextMuted);
     setFiller(null);
     setLiveCaption(null);
+    pendingAgentCaptionRef.current = null;
     setClosed(false);
     // Captions default open on phones (the toggle only exists below lg —
     // desktop always shows the transcript panel). The user can still close
@@ -1285,6 +1303,7 @@ export function VoiceCall({
       // fresh dial: the wait ends only when delivered audio is audible.
       audibleRef.current = false;
       livePaintedRef.current = false;
+      pendingAgentCaptionRef.current = null;
       // The demo's guardrail words follow the picked voice's Locale (the same
       // per-Locale recognition layer the managed path uses); hidden notes stay
       // model-directed English, while the service speaks its Locale's hold and
@@ -1324,6 +1343,9 @@ export function VoiceCall({
             turnsRef.current = [...turnsRef.current, settledTurn];
             setTurns((prev) => [...prev, settledTurn]);
             setLiveCaption(null);
+            // A settled final supersedes any held partial: the flush must
+            // never re-show a stale line over settled history.
+            pendingAgentCaptionRef.current = null;
             // The caller's final is the turn the invite is gated on.
             if (caption.role === "user") callerFinalRef.current = caption.text;
             // Ticket 12: the browser's live notes are hidden context on the
@@ -1399,6 +1421,11 @@ export function VoiceCall({
                 overheardRef.current = line.overheard === true;
                 setLiveCaption(line);
               }
+            } else if (caption.role === "agent" && !audibleRef.current) {
+              // The agent's frames arrive before they sound (pre-roll): hold
+              // the first caption until the first audible sample, flushed
+              // with the chime — never painted over the waiting state.
+              pendingAgentCaptionRef.current = { role: caption.role, text: caption.text };
             } else setLiveCaption({ role: caption.role, text: caption.text });
           }
         },
@@ -1417,6 +1444,9 @@ export function VoiceCall({
         // and a silent start never paints and never chimes.
         onFirstAudible: () => {
           audibleRef.current = true;
+          // The held first caption paints now, ordered strictly before the
+          // chime: caption and sound land on the same audible sample.
+          flushPendingAgentCaption();
           playConnectedChime();
           if (livePaintedRef.current || stateRef.current === "ended") return;
           livePaintedRef.current = true;
@@ -1588,6 +1618,7 @@ export function VoiceCall({
           overheardRef.current = false;
         }
         setLiveCaption(null);
+        pendingAgentCaptionRef.current = null;
         turnsRef.current = [...turnsRef.current, turn];
         setTurns((prev) => [...prev, turn]);
       },
@@ -1606,8 +1637,12 @@ export function VoiceCall({
         }
       },
       // The connected chime marks the first audible sample of the agent's
-      // voice, not the greeting's arrival on the wire.
-      onFirstAudible: playConnectedChime,
+      // voice, not the greeting's arrival on the wire. A paced caption that
+      // arrived with the frames flushes here, with it.
+      onFirstAudible: () => {
+        flushPendingAgentCaption();
+        playConnectedChime();
+      },
       // Barge-in recovery lives in the session (lib/voice/barge-in.ts);
       // the card only leaves a trace line for `npm run call:trace`.
       onBargeIn: (event) => {
@@ -1628,9 +1663,15 @@ export function VoiceCall({
       },
       onAgentPartial: (partial) => {
         // Agent captions stream word-by-word while it speaks — same live
-        // caption line, cleared when the final agent turn lands.
+        // caption line, cleared when the final agent turn lands. Before the
+        // first audible sample the frames run ahead of the voice, so the
+        // first caption holds with the chime instead of leading it.
         if (partial.text) {
-          setLiveCaption({ role: "agent", text: partial.text });
+          if (!audibleRef.current) {
+            pendingAgentCaptionRef.current = { role: "agent", text: partial.text };
+          } else {
+            setLiveCaption({ role: "agent", text: partial.text });
+          }
           timingsRef.current?.mark("firstPartial");
         }
       },
@@ -1761,7 +1802,7 @@ export function VoiceCall({
       setStarting(false);
       notifyPending({ ...pendingRef.current, starting: false });
     }
-  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, setCallState, setReturnPending, enterHold, setEmailTest, setTestTag, playConnectedChime, speak, closeCall]);
+  }, [modeKind, inlineAgentId, notifyPending, voiceId, config, setCallState, setReturnPending, enterHold, setEmailTest, setTestTag, playConnectedChime, flushPendingAgentCaption, speak, closeCall]);
 
   const hangUp = useCallback(async () => {
     if (hangingUp) return;
@@ -1891,12 +1932,12 @@ export function VoiceCall({
       </>
     ) : null;
 
-  // One-line partial echo (deferred: settles without blocking urgent turns).
-  const liveCaptionLine = deferredLiveCaption ? (
+  // One-line live caption (urgent: it tracks the voice, never deferral).
+  const liveCaptionLine = liveCaption ? (
     <p className="text-xs italic" aria-live="polite">
-      {deferredLiveCaption.role === "user" ? "You: " : `${displayName}: `}
-      <MemoStreamingText text={deferredLiveCaption.text} />
-      {overheardLabel(deferredLiveCaption)}
+      {liveCaption.role === "user" ? "You: " : `${displayName}: `}
+      <MemoStreamingText text={liveCaption.text} />
+      {overheardLabel(liveCaption)}
     </p>
   ) : null;
 
@@ -2017,7 +2058,7 @@ export function VoiceCall({
           <MemoDemoTranscript
             turns={turns}
             agentName={displayName}
-            liveCaption={deferredLiveCaption}
+            liveCaption={liveCaption}
             footer={countdown}
           />
         ) : state === "ended" ? (
@@ -2130,7 +2171,7 @@ export function VoiceCall({
               <MemoDemoTranscript
                 turns={turns}
                 agentName={displayName}
-                liveCaption={deferredLiveCaption}
+                liveCaption={liveCaption}
                 footer={countdown}
               />
             </div>
@@ -2299,12 +2340,12 @@ export function VoiceCall({
                     aria-live="polite"
                     className={cn("flex h-10 w-full max-w-75 items-center justify-center", transcriptShown && "hidden")}
                   >
-                    {deferredLiveCaption ? (
+                    {liveCaption ? (
                       // Partial: an early guess, dimmed until the final lands.
                       <p className="line-clamp-2 text-center text-sm text-foreground/60">
-                        {deferredLiveCaption.role === "user" ? "You: " : `${displayName}: `}
-                        <MemoStreamingText text={deferredLiveCaption.text} />
-                        {overheardLabel(deferredLiveCaption)}
+                        {liveCaption.role === "user" ? "You: " : `${displayName}: `}
+                        <MemoStreamingText text={liveCaption.text} />
+                        {overheardLabel(liveCaption)}
                       </p>
                     ) : connected && turns.length > 0 ? (
                       // The settled final stays up, so the corrected words are
