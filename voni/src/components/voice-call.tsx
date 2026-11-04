@@ -13,8 +13,6 @@ import {
 } from "react";
 import {
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Mic,
   MicOff,
   Phone,
@@ -76,7 +74,6 @@ import {
   getDemoCallStatus,
   getVoiceStatusText,
 } from "@/lib/voice/call-status-view";
-import { ACCENT_FLAG, getVoice, voiceLabel } from "@/lib/agents/voices";
 import {
   DEMO_VOICE_IDS,
   HOLD_TIMEOUT_INSTRUCTIONS,
@@ -139,11 +136,9 @@ import {
  *    thing inside it. Nothing outside the card can move now.
  *
  * 2. **Demo mode is its own layout.** The demo call (DESIGN.md §10c): the
- *    orb with a disabled ‹ › voice switcher (English-only, one voice) and
- *    Start call at rest, opening
+ *    orb with status and Start call at rest, opening
  *    into the call card with live state, hang-up and a flat live transcript.
- *    Voni always talks as itself; the switcher locks during a call because
- *    the voice genuinely is immutable once a session starts.
+ *    Voni always talks as itself.
  *
  * The rest follows the phone-call model people already have — portrait, name,
  * one pill to call, a timer while connected, a red circle to hang up, captions
@@ -656,10 +651,6 @@ export function VoiceCall({
     () => inlineConfig ?? voniConfig(voiceId),
     [inlineConfig, voiceId],
   );
-  const voice = getVoice(voiceId);
-  const voiceLine = voice
-    ? `${ACCENT_FLAG[voice.accent]} ${voice.language} · ${voiceLabel(voiceId)}`
-    : voiceLabel(voiceId);
 
 
   // Settled echoes (ticket 08): the ticking second resolves after urgent
@@ -1947,7 +1938,7 @@ export function VoiceCall({
 
   // ── Demo layout ────────────────────────────────────────────────────────
   // The demo call (DESIGN.md §10c, round 3 "orb first"): at rest only the
-  // orb, a voice switcher and Start call show. Starting opens the card
+  // orb, status and Start call show. Starting opens the card
   // around them: from lg it unfolds sideways into the portrait + transcript
   // card (A · Unfold); below lg the orb rises into a compact header and the
   // transcript drops open beneath it (B · Rise). Both layouts are rendered and
@@ -1955,8 +1946,6 @@ export function VoiceCall({
   if (isDemo) {
     const open = demoOpen;
     const reveal = "duration-(--motion-reveal) ease-(--ease-out-soft)";
-    // English-only (demo-cascade ticket 01): the roster holds one voice, so
-    // the ‹ › voice-cycle control is disabled — there is nothing to switch to.
     const demoStatus = getDemoCallStatus({
       hasError: error !== null,
       returning,
@@ -1970,29 +1959,6 @@ export function VoiceCall({
       statusText,
     });
 
-    const arrow = (step: number) => (
-      <button
-        type="button"
-        aria-label={step < 0 ? "Previous voice" : "Next voice"}
-        disabled
-        className={cn(
-          "text-foreground/70 hover:bg-muted hover:text-foreground flex size-11 cursor-pointer items-center justify-center rounded-full outline-none transition-opacity focus-visible:ring-2 focus-visible:ring-ring",
-          open && "invisible opacity-0",
-        )}
-      >
-        {step < 0 ? <ChevronLeft className="size-4" aria-hidden /> : <ChevronRight className="size-4" aria-hidden />}
-      </button>
-    );
-    const switcher = (
-      <div className="flex items-center gap-0.5">
-        {arrow(-1)}
-        <div aria-live="polite" className="flex min-w-49 flex-col items-center gap-0.75">
-          <p className="text-base leading-tight font-semibold">{displayName}</p>
-          <p className="text-foreground/70 text-ui leading-tight">{voiceLine}</p>
-        </div>
-        {arrow(1)}
-      </div>
-    );
     const statusLine = (
       <>
         {connected ? (
@@ -2011,8 +1977,8 @@ export function VoiceCall({
       <LoadingButton
         pending={starting}
         pendingText="Calling…"
-        icon={<Phone className="size-4" aria-hidden />}
-        className={`h-11 gap-2 rounded-full px-4.5 text-sm font-medium ${CALL_GREEN}`}
+        icon={<Phone className="size-5" aria-hidden />}
+        className={`h-12 gap-2 rounded-full px-8 text-base font-medium ${CALL_GREEN}`}
         onClick={start}
       >
         {restored ? "Continue call" : open && state === "ended" ? "Call again" : "Start call"}
@@ -2071,7 +2037,7 @@ export function VoiceCall({
               ? "The call ended while you were away."
               : quotaExceeded
                 ? "That's the demo time for this call."
-                : "Call again, or close to try another voice."}
+                : "Call again, or close."}
           </p>
         ) : starting || state === "connecting" ? (
           <p className="text-muted-foreground text-ui">Connecting…</p>
@@ -2089,11 +2055,11 @@ export function VoiceCall({
             ref={mobileTriggerRef}
             type="button"
             data-testid="landing-demo-start"
-            className={`h-11 gap-2 rounded-full px-4.5 text-sm font-medium ${CALL_GREEN}`}
+            className={`h-12 gap-2 rounded-full px-8 text-base font-medium ${CALL_GREEN}`}
           />
         }
       >
-        <Phone className="size-4" aria-hidden />
+        <Phone className="size-5" aria-hidden />
         {restored ? "Continue call" : "Start call"}
       </BaseDialog.Trigger>
     );
@@ -2206,7 +2172,7 @@ export function VoiceCall({
           >
             <div className="flex min-h-0 items-center justify-between overflow-hidden px-4">
               <span className="text-foreground/60 flex h-11 items-center font-mono text-xs">
-                LIVE DEMO · {(voice?.language ?? "English").toUpperCase()}
+                LIVE DEMO
               </span>
               <span className="text-foreground/60 font-mono text-xs">BROWSER CALL · NO SIGN-UP</span>
             </div>
@@ -2222,7 +2188,6 @@ export function VoiceCall({
               <div className={cn("transition-[scale]", reveal, open ? "scale-100" : "scale-110")}>
                 <LandingOrb state={orbState} />
               </div>
-              {switcher}
               <p
                 role="status"
                 aria-hidden={!open}
@@ -2285,7 +2250,6 @@ export function VoiceCall({
                 <LandingOrb />
               </div>
               <div className="absolute inset-x-0 top-47 flex flex-col items-center gap-3.5 md:top-54">
-                {switcher}
                 {mobileTrigger}
               </div>
             </div>
@@ -2312,7 +2276,6 @@ export function VoiceCall({
               <div className="flex min-h-0 flex-1 flex-col">
                 <header className="flex shrink-0 flex-col items-center gap-1 px-4 pt-6 text-center">
                   <p className="text-lg leading-tight font-semibold">{displayName}</p>
-                  <p className="text-foreground/70 text-ui leading-tight">{voiceLine}</p>
                   <p
                     role="status"
                     className="text-foreground/70 text-ui flex items-center gap-1.5 leading-[normal] tabular-nums"
@@ -2364,7 +2327,7 @@ export function VoiceCall({
                           ? "The call ended while you were away."
                           : quotaExceeded
                             ? "That's the demo time for this call."
-                            : "Call again, or close to try another voice."}
+                            : "Call again, or close."}
                       </p>
                     ) : countdown ? (
                       <span className="flex flex-col items-center gap-1">{countdown}</span>

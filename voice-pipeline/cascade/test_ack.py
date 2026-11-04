@@ -1,23 +1,36 @@
 """The spoken acknowledgements must be words a voice can say, and must fit.
 
 A listening sound written as letters ("Mhm.") is not a word: the vendor
-synthesises each letter, so the caller hears "m-h-m". Acks are never captioned,
-so the defect never appears in a transcript — only in the audio. The guard is
-cheap and general: every line must contain a vowel, because a line without one
-is a spelling rather than a word.
+synthesises each letter, so the caller hears "m-h-m". The guard is cheap and
+general: every line must contain a vowel, because a line without one is a
+spelling rather than a word.
 
 The English palette is the owner-approved bounded set (ticket 04): tone groups
-plus short statement covers. The fast judge picks tone-or-none; silence wins
-on greetings, filler-only turns, and judge ``None``. A judge timeout fails open
-to the deterministic tone hash. These tests pin the approved list, the
-silence rules, the group boundaries, and the no-repeat rule — not the exact
-rotation.
+plus short statement covers. Jev picks tone-or-None; silence wins on greetings,
+filler-only turns, end-intent turns, and judge ``None``. A missing, slow,
+failing, low-confidence, or unknown-tone judge is silence, never a hash
+fallback (owner direction: Jev-only, no hash). The cover is captioned as an
+agent final but never enters reply text or history. Neutral never includes the
+statement bridge, so "Good question, one sec." only answers a real question.
+These tests pin the approved list, the silence rules, the group boundaries,
+and the no-repeat rule — not the exact rotation.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
 import unittest
+
+# The cascade calls the bare ``end_intent`` seam (``from end_intent import``);
+# that module lives at ``cascade.end_intent``. Alias it so the tests drive the
+# same seam the implementation imports, without touching behavior files.
+try:
+    import end_intent  # noqa: F401
+except ModuleNotFoundError:
+    import cascade.end_intent as _cascade_end_intent
+
+    sys.modules["end_intent"] = _cascade_end_intent
 
 from cascade.ack import (
     ACK_LINES,
@@ -135,6 +148,10 @@ class GreetingSilenceTest(unittest.TestCase):
         self.assertFalse(should_cover("xx", "What does it cost?"))
         self.assertFalse(should_cover(None, "What does it cost?"))
 
+    def test_end_intent_turns_are_never_covered(self) -> None:
+        for text in ("can you please hang up?", "bye", "that's all"):
+            self.assertFalse(should_cover("en", text), text)
+
 
 class AckToneTest(unittest.TestCase):
     def test_a_complaint_is_negative(self) -> None:
@@ -175,7 +192,7 @@ class AckSelectionTest(unittest.TestCase):
         ]
         for final in finals:
             for previous in (None, "Let's see.", "Ah, I see."):
-                line = cover_line("en", final, previous=previous)
+                line = cover_line("en", final, previous=previous, tone="negative")
                 self.assertNotIn(line, BRIGHT, final)
                 self.assertIn(line, thinking | sympathetic, final)
 
@@ -190,7 +207,27 @@ class AckSelectionTest(unittest.TestCase):
         ):
             for previous in (None, "Let's see.", "Got it, one moment."):
                 self.assertIn(
-                    cover_line("en", final, previous=previous), allowed, final
+                    cover_line("en", final, previous=previous, tone="question"),
+                    allowed,
+                    final,
+                )
+
+    def test_a_neutral_final_never_gets_the_statement_bridge(self) -> None:
+        statement = set(ACK_TONE_GROUPS["en"]["statement"])
+        for final in (
+            "I'm calling about the flat.",
+            "We met on Tuesday.",
+            "The dog barks.",
+            "My name is Alex.",
+            "I'd like to book a viewing.",
+        ):
+            for previous in (None, "Okay.", "Let's see.", "Oh."):
+                line = cover_line("en", final, previous=previous, tone="neutral")
+                self.assertNotIn(line, statement, final)
+                self.assertNotIn(
+                    line,
+                    ("Good question, one sec.", "Got it, one moment.", "Let me check that."),
+                    final,
                 )
 
     def test_a_neutral_final_can_get_okay(self) -> None:
@@ -206,7 +243,9 @@ class AckSelectionTest(unittest.TestCase):
             "That address is correct.",
             "I'd like to book a viewing.",
         ]
-        self.assertIn("Okay.", {cover_line("en", text) for text in neutral})
+        self.assertIn(
+            "Okay.", {cover_line("en", text, tone="neutral") for text in neutral}
+        )
 
     def test_a_judge_silence_is_obeyed_not_overruled(self) -> None:
         self.assertIsNone(
@@ -216,40 +255,65 @@ class AckSelectionTest(unittest.TestCase):
             cover_line("en", "I'm calling about the flat.", previous=None, tone=None)
         )
 
-    def test_an_unknown_judge_tone_fails_open_to_the_hash(self) -> None:
-        line = cover_line("en", "This is ridiculous.", tone="cheerful")
-        thinking = set(ACK_TONE_GROUPS["en"]["thinking"])
-        sympathetic = set(ACK_TONE_GROUPS["en"]["sympathetic"])
-        self.assertIn(line, thinking | sympathetic)
+    def test_a_missing_judge_default_is_silence(self) -> None:
+        self.assertIsNone(cover_line("en", "What does it cost?"))
+        self.assertIsNone(
+            cover_line("en", "I'm calling about the flat.", previous="Okay.")
+        )
+
+    def test_an_unknown_judge_tone_is_silence(self) -> None:
+        self.assertIsNone(cover_line("en", "This is ridiculous.", tone="cheerful"))
+        self.assertIsNone(cover_line("en", "What does it cost?", tone="boom"))
+        self.assertIsNone(cover_line("en", "What does it cost?", tone=123))
 
     def test_two_consecutive_turns_never_repeat_the_same_ack(self) -> None:
-        finals = [
-            "I'm calling about the flat.",
-            "What does it cost?",
-            "This is ridiculous.",
-            "",
+        cases = [
+            ("I'm calling about the flat.", "neutral"),
+            ("What does it cost?", "question"),
+            ("This is ridiculous.", "negative"),
+            ("", "unknown"),
         ]
-        for final in finals:
-            first = cover_line("en", final)
-            second = cover_line("en", final, previous=first)
+        for final, tone in cases:
+            first = cover_line("en", final, tone=tone)
+            second = cover_line("en", final, previous=first, tone=tone)
             self.assertNotEqual(first, second, final)
-            third = cover_line("en", final, previous=second)
+            third = cover_line("en", final, previous=second, tone=tone)
             self.assertNotEqual(second, third, final)
 
     def test_the_choice_is_deterministic_for_one_final(self) -> None:
-        first = cover_line("en", "What does it cost?", previous="Let's see.")
-        again = cover_line("en", "What does it cost?", previous="Let's see.")
+        first = cover_line(
+            "en", "What does it cost?", previous="Let's see.", tone="question"
+        )
+        again = cover_line(
+            "en", "What does it cost?", previous="Let's see.", tone="question"
+        )
         self.assertEqual(first, again)
 
-    def test_an_injected_palette_is_still_chosen_from(self) -> None:
-        self.assertEqual("Mhm.", cover_line("en", "hello", lines=("Mhm.",)))
-        self.assertIsNone(cover_line("en", "hello", lines=()))
+    def test_an_injected_palette_is_still_chosen_from_with_an_explicit_tone(
+        self,
+    ) -> None:
+        self.assertEqual(
+            "Okay.",
+            cover_line("en", "hello", lines=("Okay.", "Yeah."), tone="neutral"),
+        )
+        self.assertEqual(
+            "Let's see.",
+            cover_line("en", "hello", lines=("Let's see.",), tone="question"),
+        )
+        self.assertIsNone(cover_line("en", "hello", lines=(), tone="neutral"))
+        self.assertIsNone(
+            cover_line("en", "hello", lines=("Okay.",), tone=None)
+        )
+        # A palette that shares nothing with the tone's groups is silence,
+        # never a fallback to the raw palette.
+        self.assertIsNone(
+            cover_line("en", "hello", lines=("Mhm.",), tone="neutral")
+        )
 
 
 class JudgeContractTest(unittest.TestCase):
-    def test_a_missing_judge_is_the_deterministic_hash(self) -> None:
-        tone = asyncio.run(resolve_cover_tone("This is ridiculous.", None))
-        self.assertEqual(tone, "negative")
+    def test_a_missing_judge_is_silence(self) -> None:
+        self.assertIsNone(asyncio.run(resolve_cover_tone("This is ridiculous.", None)))
 
     def test_a_judge_none_is_silence(self) -> None:
         async def silent(_: str) -> str | None:
@@ -257,41 +321,43 @@ class JudgeContractTest(unittest.TestCase):
 
         self.assertIsNone(asyncio.run(resolve_cover_tone("Hi there.", silent)))
 
-    def test_a_slow_judge_fails_open_to_the_hash(self) -> None:
+    def test_a_slow_judge_is_silence(self) -> None:
         async def slow(_: str) -> str | None:
             await asyncio.sleep(10)
             return "neutral"
 
-        tone = asyncio.run(resolve_cover_tone("This is ridiculous.", slow, 0.01))
-        self.assertEqual(tone, "negative")
+        self.assertIsNone(
+            asyncio.run(resolve_cover_tone("This is ridiculous.", slow, 0.01))
+        )
 
-    def test_a_throwing_judge_fails_open_to_the_hash(self) -> None:
+    def test_a_throwing_judge_is_silence(self) -> None:
         async def broken(_: str) -> str | None:
             raise RuntimeError("judge is down")
 
-        tone = asyncio.run(resolve_cover_tone("What does it cost?", broken, 1.0))
-        self.assertEqual(tone, "question")
+        self.assertIsNone(
+            asyncio.run(resolve_cover_tone("What does it cost?", broken, 1.0))
+        )
 
-    def test_an_unknown_judge_tone_fails_open_to_the_hash(self) -> None:
+    def test_an_unknown_judge_tone_is_silence(self) -> None:
         async def weird(_: str) -> str | None:
-            return "cheerful"
+            return "cheerful"  # type: ignore[return-value]
 
-        tone = asyncio.run(resolve_cover_tone("What does it cost?", weird, 1.0))
-        self.assertEqual(tone, "question")
+        self.assertIsNone(
+            asyncio.run(resolve_cover_tone("What does it cost?", weird, 1.0))
+        )
 
     def test_the_sync_contract_matches(self) -> None:
         self.assertEqual(
             resolve_cover_tone_sync("What does it cost?", "neutral"), "neutral"
         )
         self.assertIsNone(resolve_cover_tone_sync("Hi.", None))
-        self.assertEqual(
-            resolve_cover_tone_sync("This is ridiculous.", "neutral", timed_out=True),
-            "negative",
+        self.assertIsNone(
+            resolve_cover_tone_sync("This is ridiculous.", "neutral", timed_out=True)
         )
-        self.assertEqual(
-            resolve_cover_tone_sync("What does it cost?", "boom", failed=True),
-            "question",
+        self.assertIsNone(
+            resolve_cover_tone_sync("What does it cost?", "boom", failed=True)
         )
+        self.assertIsNone(resolve_cover_tone_sync("What does it cost?", "cheerful"))
 
 
 if __name__ == "__main__":

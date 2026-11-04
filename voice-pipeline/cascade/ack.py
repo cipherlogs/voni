@@ -2,23 +2,21 @@
 
 The demo's Meta turn measures p50 ~2 s to its first token. A listener reads that
 silence as a broken line, so the cascade speaks one very short line through the
-same voice at the registry's delay. It is not the reply:
+same voice when Jev is highly confident. It is not the reply:
 
-* it is never captioned and never enters the reply text or history;
+* it is captioned as an agent final but never enters reply text or history;
 * it is skipped when the reply starts speaking first;
-* it is skipped outright on greeting turns (``Hi``) and filler-only turns;
+* it is skipped outright on greeting turns, filler-only turns, end-intent turns
+  ("hang up", "bye", "that's all"), and Locales with no palette;
+* a missing, slow, failing, low-confidence, or unknown-tone judge is silence,
+  never a hash fallback (owner direction: Jev-only, no hash);
 * it carries no model request and no tool call.
 
 The table is per Locale because the demo roster is one voice per Locale.
 English carries the owner-approved bounded palette (ticket 04): tone groups
-plus short statement covers. The fast judge picks tone-or-none; the pipeline
-rotates inside the tone without repeating the previous line. A judge timeout
-or failure fails open to the deterministic tone hash; silence stays silence.
-
-Deliberately excluded: bare ``Mm.`` / ``Hmm.`` / ``Uh-huh.`` (the "Hi -> Mm"
-feeling named in the spec), any multi-sentence cover, any non-English line.
-Other Locales keep their small flat palette and rotate through it; only
-English carries tone groups.
+plus short statement covers. Jev picks caller-tone-or-None; silence is obeyed.
+Neutral never includes the statement bridge, so "Good question, one sec." only
+answers a real question.
 """
 
 from __future__ import annotations
@@ -121,11 +119,12 @@ _QUESTION_OPENER = re.compile(
 #: Which tone groups may answer each tone read from the caller's final. A
 #: complaint never reaches "acknowledging" (so never "Okay."/"Yeah."); a
 #: question gets a thinking sound or a short statement bridge; a neutral final
-#: may also hear a mild surprise or a statement bridge.
+#: gets acknowledging, thinking, or surprise -- never the statement bridge, so
+#: "Good question, one sec." only answers a real question.
 _TONE_GROUPS: Mapping[str, tuple[str, ...]] = {
     "negative": ("sympathetic", "thinking"),
     "question": ("thinking", "statement"),
-    "neutral": ("acknowledging", "thinking", "surprise", "statement"),
+    "neutral": ("acknowledging", "thinking", "surprise"),
     "unknown": ("thinking",),
 }
 
@@ -175,9 +174,12 @@ def is_greeting_turn(caller_text: str | None) -> bool:
 def should_cover(locale: str | None, caller_text: str | None) -> bool:
     """Whether this final may hear a cover at all. Silence-when-better lives here.
 
-    False on greeting turns, filler-only turns, and Locales with no palette.
+    False on greeting turns, filler-only turns, end-intent turns
+    ("hang up", "bye", "that's all"), and Locales with no palette.
     Anything else may be covered (or silenced later by the judge's ``None``).
     """
+
+    from cascade.end_intent import wants_to_end
     from turns import is_backchannel
 
     if not ack_lines(locale):
@@ -185,6 +187,8 @@ def should_cover(locale: str | None, caller_text: str | None) -> bool:
     if is_greeting_turn(caller_text):
         return False
     if is_backchannel(caller_text or ""):
+        return False
+    if wants_to_end(caller_text or "", locale or "en"):
         return False
     return True
 
@@ -206,19 +210,22 @@ def cover_line(
 ) -> str | None:
     """Choose one line for this final inside one tone, never repeating ``previous``.
 
-    ``tone`` is the judge's pick: ``None`` is silence-when-better and returns
-    ``None`` without a fallback. The default (``...``) reads the deterministic
-    tone hash, so callers without a judge keep the old behavior. An unknown
-    tone name also falls back to the hash rather than failing the turn.
+    ``tone`` is Jev's pick: ``None`` is silence-when-better and returns
+    ``None`` without a fallback. The default (``...``) means no judge answered,
+    which is also silence (Jev-only: no hash fallback). An unknown tone name
+    is silence rather than failing the turn. Within a tone the first
+    non-repeating candidate wins, so the choice is stable without a hash.
     """
     palette = tuple(lines) if lines is not None else ack_lines(locale)
     if not palette:
         return None
-    resolved = ack_tone(caller_text) if tone is ... else tone
+    if tone is ...:
+        return None
+    resolved = tone
     if resolved is None:
         return None
     if not isinstance(resolved, str) or resolved not in _TONE_GROUPS:
-        resolved = ack_tone(caller_text)
+        return None
     groups = ACK_TONE_GROUPS.get((locale or "").lower())
     candidates: list[str] = []
     if groups:
@@ -231,11 +238,11 @@ def cover_line(
         )
         candidates = [line for line in allowed if line in palette]
     if not candidates:
-        candidates = list(palette)
+        return None
     varied = [line for line in candidates if line != previous]
     if varied:
         candidates = varied
-    return candidates[_stable_offset(caller_text) % len(candidates)]
+    return candidates[0]
 
 
 def judge_timeout_s(default: float = _JUDGE_TIMEOUT_FALLBACK_S) -> float:
@@ -257,16 +264,15 @@ def resolve_tone_result(
 ) -> str | None:
     """The single tone resolver both judge seams share.
 
-    ``judge_result`` is what the judge returned (tone-or-None). Timeouts and
-    failures fail open to the hash; a judge ``None`` is obeyed silence, never
-    a fallback; an unknown tone name fails open to the hash.
+    Jev-only: ``None``, timeouts, failures, and unknown tone names are all
+    silence. There is no hash fallback; a wrong line is worse than none.
     """
     if timed_out or failed:
-        return ack_tone(caller_text)
+        return None
     if judge_result is None:
         return None
     if judge_result not in _JUDGE_TONES:
-        return ack_tone(caller_text)
+        return None
     return judge_result
 
 
@@ -275,21 +281,20 @@ async def resolve_cover_tone(
     judge: Callable[[str], Awaitable[str | None]] | None,
     timeout_s: float | None = None,
 ) -> str | None:
-    """Pick tone-or-None through the fast judge with fail-open to the hash.
+    """Pick tone-or-None through Jev with fail-silence.
 
-    ``None`` from the judge is an obeyed silence, never a fallback. A timeout,
-    an exception, or an unknown tone name fails open to :func:`ack_tone`.
-    A missing judge is the deterministic path: the hash directly.
+    ``None`` from the judge is obeyed silence. A timeout, an exception, an
+    unknown tone name, or a missing judge is also silence -- never the hash.
     """
     if judge is None:
-        return ack_tone(caller_text)
+        return None
     cap = timeout_s if timeout_s is not None else judge_timeout_s()
     try:
         picked = await asyncio.wait_for(judge(caller_text), timeout=cap)
     except (asyncio.TimeoutError, asyncio.CancelledError):
-        return ack_tone(caller_text)
+        return None
     except Exception:
-        return ack_tone(caller_text)
+        return None
     return resolve_tone_result(caller_text, picked)
 
 
@@ -302,8 +307,8 @@ def resolve_cover_tone_sync(
 ) -> str | None:
     """The synchronous half of the judge contract, for tests and non-async seams.
 
-    ``judge_result`` is what the judge returned (tone-or-None). Timeouts and
-    failures fail open to the hash; ``None`` is obeyed silence.
+    Jev-only: timeouts, failures, and unknown tones are silence;
+    ``None`` is obeyed silence.
     """
     return resolve_tone_result(
         caller_text, judge_result, timed_out=timed_out, failed=failed

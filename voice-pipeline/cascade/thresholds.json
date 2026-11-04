@@ -293,7 +293,7 @@
       "gate": "reply.ack",
       "ticket": "demo-latency",
       "value": 300,
-      "source": "owner decision 2026-10-31: a short spoken acknowledgement at 300 ms covers the vendor's first-token wait; it is not the reply and is never captioned",
+      "source": "owner decision 2026-10-31: a short spoken acknowledgement at 300 ms covers the vendor's first-token wait; it is not the reply and is captioned as an agent final, never in history",
       "date": "2026-10-31",
       "note": "Demo-only. One short line through the same voice, skipped when the reply starts speaking first."
     },
@@ -302,7 +302,7 @@
       "gate": "reply.ack",
       "ticket": "demo-cascade-fixes/04",
       "value": 120,
-      "source": "owner decision 2026-11-03: the fast cover judge picks tone-or-none well inside the 300 ms ack delay; a timeout fails open to the deterministic tone hash or silence",
+      "source": "owner decision 2026-11-03: the fast cover judge picks tone-or-none well inside the 300 ms ack delay; a timeout is fail-silence (no hash fallback); Jev-only",
       "date": "2026-11-03",
       "note": "Demo-only. The judge cap is never reported as speed; live round-trips size blocking versus pre-select behaviour."
     },

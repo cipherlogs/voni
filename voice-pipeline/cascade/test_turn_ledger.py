@@ -23,9 +23,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+# Alias the bare ``end_intent`` seam to the packaged module (see test_ack.py).
+try:
+    import end_intent  # noqa: F401
+except ModuleNotFoundError:
+    import cascade.end_intent as _cascade_end_intent
+
+    sys.modules["end_intent"] = _cascade_end_intent
+
+from cascade.ack import ACK_LINES
 
 from cascade.call import CallLifecycle, OpenedLeg
 from cascade.events import (
@@ -328,6 +339,8 @@ class StreamLedgerTests(unittest.TestCase):
         on_end_call=None,
         ack_lines=(),
         ack_delay_ms=None,
+        ack_judge=None,
+        ack_judge_timeout_ms=None,
     ):
         self.llm = replies if not isinstance(replies, list) else ScriptedLLM(replies)
         self.tts = tts if tts is not None else LedgerTTS()
@@ -343,6 +356,8 @@ class StreamLedgerTests(unittest.TestCase):
             on_end_call=on_end_call,
             ack_lines=ack_lines,
             ack_delay_ms=ack_delay_ms,
+            ack_judge=ack_judge,
+            ack_judge_timeout_ms=ack_judge_timeout_ms,
         )
 
     async def settle(self, stream, turns: int) -> None:
@@ -441,10 +456,14 @@ class StreamLedgerTests(unittest.TestCase):
                 yield TokenDelta(text="I can help with that.")
                 record.finished = True
 
+        async def negative_judge(_: str):
+            return "negative"
+
         stream = self.make(
             replies=SlowLLM(),
-            ack_lines=("Mm.", "Hmm."),
+            ack_lines=ACK_LINES["en"],
             ack_delay_ms=5,
+            ack_judge=negative_judge,
         )
 
         async def run():
@@ -468,12 +487,54 @@ class StreamLedgerTests(unittest.TestCase):
             acks[0]["line"],
             "the row does not name the exact line spoken",
         )
-        self.assertIn(acks[0]["line"], ("Mm.", "Hmm."))
+        from cascade.ack import ACK_TONE_GROUPS
+
+        allowed = set(ACK_TONE_GROUPS["en"]["sympathetic"]) | set(
+            ACK_TONE_GROUPS["en"]["thinking"]
+        )
+        self.assertIn(acks[0]["line"], allowed)
+
+    def test_a_silent_judge_records_no_ack_row(self):
+        gate = asyncio.Event()
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "I can help with that."
+                yield TokenDelta(text="I can help with that.")
+                record.finished = True
+
+        async def silent_judge(_: str):
+            return None
+
+        stream = self.make(
+            replies=SlowLLM(),
+            ack_lines=ACK_LINES["en"],
+            ack_delay_ms=5,
+            ack_judge=silent_judge,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("this is ridiculous", turn_id="t1"))
+            for _ in range(200):
+                if self.tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        acks = [row for row in rows_in(self.directory) if row["type"] == "turn.ack"]
+        self.assertEqual([], acks, "a silenced cover left a row")
 
     def test_an_ack_that_never_speaks_records_nothing(self):
         stream = self.make(
             replies=[{"deltas": ["I can help with that."]}],
-            ack_lines=("Mm.", "Hmm."),
+            ack_lines=ACK_LINES["en"],
             ack_delay_ms=50,
         )
 

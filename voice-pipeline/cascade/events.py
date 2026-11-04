@@ -1673,8 +1673,9 @@ class TurnLedger:
     ) -> dict[str, Any] | None:
         """The exact cover line the caller heard, and the turn it covered.
 
-        The ack is never captioned, so the transcript cannot prove which sound
-        was spoken; this row is that proof. ``line`` is the agent's own cover
+        The ack is captioned as an agent final, so the transcript and this
+        ledger row both prove which sound was spoken; history still excludes
+        it. ``line`` is the agent's own cover
         text from the closed palette, never the caller's words — the one
         sanitizer forbids the key ``text`` outright, which is why the field is
         named ``line``.

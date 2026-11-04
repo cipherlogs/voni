@@ -467,9 +467,9 @@ class CascadeTurnStream:
             (float(require_bound(ACK_DELAY_BOUND)) if ack_delay_ms is None else float(ack_delay_ms))
             / 1000.0
         )
-        #: One ack watcher per reply; never spoken as the reply or captioned.
+        #: One ack watcher per reply; captioned as an agent final, never history.
         self._ack_task: asyncio.Task | None = None
-        #: The fast judge: tone-or-None per final, fail-open on timeout.
+        #: Jev: tone-or-None per final, fail-silence on timeout. No hash fallback.
         self._ack_judge = ack_judge
         if ack_judge_timeout_ms is None:
             try:
@@ -1520,34 +1520,29 @@ class CascadeTurnStream:
             await self._on_interrupted()
 
     async def _ack_if_slow(self, turn: str, caller_text: str) -> None:
-        """Speak one short line if the reply has not started by the bound.
+        """Speak one short line the moment Jev is highly confident.
 
-        The ack is not a turn: it writes no reply text, sends no caption and
-        makes no model or tool request. It holds the voice lock only while its
-        own short line plays, so the reply follows it instead of overlapping.
-
-        Silence wins outright on greeting turns, filler-only turns, and
-        Locales with no palette: no line is chosen and no row is written.
-        Otherwise the fast judge picks tone-or-None under its cap and fails
-        open to the deterministic tone hash; the pipeline rotates the line
-        inside the tone without repeating the previous line. Because the ack
-        is never captioned, the exact line is written to the turn ledger when
-        its first frame reaches the wire: that row is the only proof of what
-        the caller heard.
+        Jev-only with no artificial delay: the judge is awaited at once under
+        its 120 ms cap and a confident tone speaks immediately. Silence wins
+        on greeting, filler-only, end-intent, and no-palette turns; a missing,
+        slow, failing, low-confidence, or unknown judge is also silence.
+        The cover is captioned as an agent final before audio so the transcript
+        is instant, but it never enters reply text or history. The ledger
+        ``ack`` row stays the audio proof.
         """
         if not self._ack_lines:
             return
         if not should_cover(self._locale_code, caller_text):
             return
-        try:
-            await self._sleep(self._ack_delay_s)
-        except asyncio.CancelledError:
+        if self._ack_judge is None:
             return
         if self._ending or self._speaking or self._reply_text.strip():
             return
         tone = await resolve_cover_tone(
             caller_text, self._ack_judge, self._ack_judge_timeout_s
         )
+        if tone is None:
+            return
         line = cover_line(
             self._locale_code,
             caller_text,
@@ -1559,6 +1554,9 @@ class CascadeTurnStream:
             return
         if self._may_request is not None and not self._may_request("tts"):
             return
+        if self._ending or self._speaking or self._reply_text.strip():
+            return
+        await self._caption("agent", line, True)
         async with self._voice_lock:
             if self._ending or self._speaking or self._reply_text.strip():
                 return

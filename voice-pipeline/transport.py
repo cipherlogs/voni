@@ -580,6 +580,16 @@ async def handle_browser_call(
             model = legs.model
             if verified.subject_kind == "demo" and model is not None:
                 model = HedgedLLM(model, ledger=ledger)
+            # Jev-only smart cover for the demo: tone-or-silence with no hash
+            # fallback. Missing key means silence, never a guessed line.
+            ack_judge = None
+            if verified.subject_kind == "demo":
+                try:
+                    from cascade.jev import make_cover_judge
+
+                    ack_judge = make_cover_judge(body.language_code or "en")
+                except Exception:
+                    ack_judge = None
             stream = CascadeTurnStream(
                 llm=model,
                 tts=legs.voice,
@@ -601,6 +611,7 @@ async def handle_browser_call(
                     if verified.subject_kind == "demo"
                     else ()
                 ),
+                ack_judge=ack_judge,
             )
             lifecycle = CallLifecycle(
                 message={
