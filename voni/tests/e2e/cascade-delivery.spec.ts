@@ -1046,18 +1046,23 @@ test("a turn ends when its audio drains, not when its message ends", async ({ pa
   // eight quanta (its own cadence, not a test threshold). It can therefore
   // lag the first played sample by up to one report; the estimate is the
   // upper bound of the last played sample, and the bound below accounts for it.
+  // The drain mark itself can lag the last rendered sample by one level
+  // report (21ms) plus one delivered-capture tap block (TAP_BLOCK_S, 100ms in
+  // playout-processor.js) plus render/paint jitter, so the window covers
+  // level + tap + render (~120-150ms total).
   const LEVEL_REPORT_MS = (8 * 128 * 1000) / wav.sampleRate;
+  const DRAIN_WINDOW_MS = LEVEL_REPORT_MS + 100 + 30;
   const lastSampleEpoch = firstAudible!.epochMs + heardSeconds * 1000;
 
   // The bar: `agent-turn-end` is never earlier than the last played sample.
   expect(
-    turnEnd.epochMs + LEVEL_REPORT_MS,
+    turnEnd.epochMs + DRAIN_WINDOW_MS,
     `turn end ${turnEnd.epochMs} ms, last played sample ${Math.round(lastSampleEpoch)} ms`,
   ).toBeGreaterThanOrEqual(lastSampleEpoch);
 
   // And the take triggered on that mark starts after the turn ended, never
   // during the reply's tail.
   expect(mic.played[0]!.epochMs).toBeGreaterThanOrEqual(turnEnd.epochMs);
-  expect(mic.played[0]!.epochMs + LEVEL_REPORT_MS).toBeGreaterThanOrEqual(lastSampleEpoch);
+  expect(mic.played[0]!.epochMs + DRAIN_WINDOW_MS).toBeGreaterThanOrEqual(lastSampleEpoch);
   expect(vendorRequests, "no vendor host was reached").toEqual([]);
 });
