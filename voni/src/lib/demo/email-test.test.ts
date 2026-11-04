@@ -155,6 +155,18 @@ test("check: an unreadable inbox reads as not arrived, never as a crash", async 
   assert.equal(result.status, "not_arrived");
 });
 
+test("check: a disconnected inbox (missing/expired refresh token) throws, never reads as not arrived", async () => {
+  const { InboxNotConnectedError } = await import("./email-test");
+  await assert.rejects(
+    checkEmail("andres@acme.com", {
+      listInbox: async () => {
+        throw new InboxNotConnectedError("demo inbox not configured");
+      },
+    }),
+    InboxNotConnectedError,
+  );
+});
+
 test("check: an exact sender is found without asking Jev", async () => {
   const result = await checkEmail("andres@acme.com", {
     listInbox: listed([msg("m1", "andres@acme.com", 1, { fromName: "Andres Garcia" })]),
@@ -348,6 +360,18 @@ test("tag: an unreadable inbox reads as not arrived", async () => {
     },
   });
   assert.equal(result.status, "not_arrived");
+});
+
+test("tag: a disconnected inbox throws, never reads as not arrived", async () => {
+  const { InboxNotConnectedError } = await import("./email-test");
+  await assert.rejects(
+    checkTag("Lime 42", {
+      listTagged: async () => {
+        throw new InboxNotConnectedError("demo inbox not configured");
+      },
+    }),
+    InboxNotConnectedError,
+  );
 });
 
 test("the browser reads a check back from the tool route's data", () => {

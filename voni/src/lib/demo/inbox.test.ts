@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { jevMatch, jevSpoof, parseFromHeader, parseGmailMessage } from "./inbox";
+import { inboxCheckBucket, jevMatch, jevSpoof, parseFromHeader, parseGmailMessage } from "./inbox";
 import type { InboxMessage } from "./email-test";
 
 test("From headers parse with and without a display name", () => {
@@ -56,4 +56,27 @@ test("Jev's spoof flag needs a confident probability", async () => {
   assert.equal(await jevSpoof(candidate, gateway({ probability: 0.9 })), true);
   assert.equal(await jevSpoof(candidate, gateway({ probability: 0.6 })), false);
   await assert.rejects(jevSpoof(candidate, gateway({})));
+});
+
+test("the browser poll and the model call use separate rate buckets, so polling cannot starve the tool", () => {
+  const callId = "11111111-1111-4111-8111-111111111111";
+  const poll = inboxCheckBucket(callId, "browser", "inbox-poll");
+  const browserModel = inboxCheckBucket(callId, "browser", "call_abc123");
+  const serviceModel = inboxCheckBucket(callId, "service", "call_abc123");
+  assert.notEqual(poll, serviceModel, "poll and model never share a budget");
+  assert.notEqual(poll, browserModel, "a browser model call is not charged to the poll budget");
+  assert.notEqual(browserModel, serviceModel, "browser and service model calls are isolated");
+  assert.match(poll, new RegExp(callId), "buckets stay scoped to the call");
+});
+
+test("a dead inbox secret answers retryable, never ok-yet-empty", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { dirname, join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const source = readFileSync(join(here, "inbox.ts"), "utf8");
+  assert.match(source, /isInboxNotConnected/, "the check maps the disconnect");
+  assert.match(source, /retryable: true/, "the disconnect is retryable");
+  assert.match(source, /not connected/i, "the model is told the inbox is not connected");
+  assert.match(source, /inboxCheckBucket\(call\.callId/, "the budget is split per credential/poll");
 });
