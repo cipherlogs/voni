@@ -1437,6 +1437,11 @@ export function VoiceCall({
         // and a silent start never paints and never chimes.
         onFirstAudible: () => {
           audibleRef.current = true;
+          // The mic gate lifts on the same audible edge: the caller is held
+          // (MUTED context from the start) until the chime + first greeting
+          // word sound, then released (UNMUTED context). A user mute press
+          // before this keeps the mic shut: never pre-unmute over it.
+          if (!mutedRef.current) cascade.setInputMuted(false);
           // The held first caption paints now, ordered strictly before the
           // chime: caption and sound land on the same audible sample. The
           // ended guard lives with the state read, not in the flush, so the
@@ -1524,6 +1529,10 @@ export function VoiceCall({
       // The same dev flag as the managed path: a W0 delivered capture must be
       // written on the cascade path too, or the two captures cannot compare.
       cascade.setDeliveredCapture(callDebugFlags().deliverCapture, marks?.callId);
+      // The mic is live before the agent is: hold it (MUTED context, flushed
+      // on config) until the first audible sample releases it above. A fresh
+      // start never pre-unmutes; a user mute before audible stays shut.
+      cascade.setInputMuted(true);
       setCallState("connecting");
       try {
         // One mint through the one door, then the real cascade client. The
@@ -1552,6 +1561,9 @@ export function VoiceCall({
             }
           },
         });
+        // session.start() resets a pre-mint mute; re-assert so the gate holds
+        // until the first audible sample (flushed on config if not yet sent).
+        cascade.setInputMuted(true);
         callTokenRef.current = minted.demoCallToken;
         if (minted.tagToken) saveTagToken(minted.tagToken);
         setTestTag(minted.testTag ?? null);

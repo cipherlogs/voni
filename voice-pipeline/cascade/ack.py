@@ -16,7 +16,10 @@ The table is per Locale because the demo roster is one voice per Locale.
 English carries the owner-approved bounded palette (ticket 04): tone groups
 plus short statement covers. Jev picks caller-tone-or-None; silence is obeyed.
 Neutral never includes the statement bridge, so "Good question, one sec." only
-answers a real question.
+answers a real question. Inside one tone the lines rotate in palette order:
+the pick is the candidate after the previously spoken line, wrapping, so
+consecutive turns cycle through every line instead of alternating the first
+two. The choice is deterministic with no hash and no randomness.
 """
 
 from __future__ import annotations
@@ -193,13 +196,6 @@ def should_cover(locale: str | None, caller_text: str | None) -> bool:
     return True
 
 
-def _stable_offset(text: str) -> int:
-    """A deterministic fold of the text; ``hash()`` is salted per process."""
-    return sum(
-        (index + 1) * ord(character) for index, character in enumerate(text.lower())
-    )
-
-
 def cover_line(
     locale: str | None,
     caller_text: str = "",
@@ -213,8 +209,13 @@ def cover_line(
     ``tone`` is Jev's pick: ``None`` is silence-when-better and returns
     ``None`` without a fallback. The default (``...``) means no judge answered,
     which is also silence (Jev-only: no hash fallback). An unknown tone name
-    is silence rather than failing the turn. Within a tone the first
-    non-repeating candidate wins, so the choice is stable without a hash.
+    is silence rather than failing the turn. Within a tone the lines rotate in
+    palette order: the pick is the candidate after ``previous``, wrapping, so
+    consecutive turns chained through ``previous`` cycle through every line
+    instead of alternating the first two. A ``previous`` outside the tone (or
+    ``None`` on the first turn) starts at the head. Deterministic with no hash
+    and no randomness; the single-candidate tone repeats only when it has no
+    alternative.
     """
     palette = tuple(lines) if lines is not None else ack_lines(locale)
     if not palette:
@@ -239,9 +240,9 @@ def cover_line(
         candidates = [line for line in allowed if line in palette]
     if not candidates:
         return None
-    varied = [line for line in candidates if line != previous]
-    if varied:
-        candidates = varied
+    if previous in candidates:
+        nxt = (candidates.index(previous) + 1) % len(candidates)
+        return candidates[nxt]
     return candidates[0]
 
 

@@ -1520,15 +1520,18 @@ class CascadeTurnStream:
             await self._on_interrupted()
 
     async def _ack_if_slow(self, turn: str, caller_text: str) -> None:
-        """Speak one short line the moment Jev is highly confident.
+        """Speak one short line the moment Jev is confident.
 
-        Jev-only with no artificial delay: the judge is awaited at once under
-        its 120 ms cap and a confident tone speaks immediately. Silence wins
-        on greeting, filler-only, end-intent, and no-palette turns; a missing,
-        slow, failing, low-confidence, or unknown judge is also silence.
-        The cover is captioned as an agent final before audio so the transcript
-        is instant, but it never enters reply text or history. The ledger
-        ``ack`` row stays the audio proof.
+        Jev-only instant single attempt with no artificial delay: the judge is
+        awaited at once under its 120 ms cap and a confident tone speaks
+        immediately, never retried. Silence wins on greeting, filler-only,
+        end-intent, and no-palette turns; a missing, slow, failing,
+        low-confidence, or unknown judge is also silence. Skip guards stay:
+        ending, speaking, or reply-started (reply text present) never speaks,
+        and a closed TTS leg never synthesizes. The cover is captioned as an
+        agent final before audio so the transcript is instant, but it never
+        enters reply text or history. The ledger ``ack`` row stays the audio
+        proof.
         """
         if not self._ack_lines:
             return

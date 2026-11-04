@@ -13,7 +13,9 @@ fallback (owner direction: Jev-only, no hash). The cover is captioned as an
 agent final but never enters reply text or history. Neutral never includes the
 statement bridge, so "Good question, one sec." only answers a real question.
 These tests pin the approved list, the silence rules, the group boundaries,
-and the no-repeat rule — not the exact rotation.
+the no-repeat rule, and the rotation: inside one tone the lines cycle in
+palette order (the candidate after ``previous``, wrapping) so every line is
+heard instead of alternating the first two.
 """
 
 from __future__ import annotations
@@ -288,6 +290,60 @@ class AckSelectionTest(unittest.TestCase):
             "en", "What does it cost?", previous="Let's see.", tone="question"
         )
         self.assertEqual(first, again)
+
+    def test_rotation_cycles_through_every_line_in_a_tone(self) -> None:
+        """Chained ``previous`` walks the whole tone instead of the first two."""
+        expectations = {
+            "question": list(ACK_TONE_GROUPS["en"]["thinking"])
+            + list(ACK_TONE_GROUPS["en"]["statement"]),
+            "negative": list(ACK_TONE_GROUPS["en"]["sympathetic"])
+            + list(ACK_TONE_GROUPS["en"]["thinking"]),
+            "neutral": list(ACK_TONE_GROUPS["en"]["acknowledging"])
+            + list(ACK_TONE_GROUPS["en"]["thinking"])
+            + list(ACK_TONE_GROUPS["en"]["surprise"]),
+            "unknown": list(ACK_TONE_GROUPS["en"]["thinking"]),
+        }
+        finals = {
+            "question": "What does it cost?",
+            "negative": "This is ridiculous.",
+            "neutral": "I'm calling about the flat.",
+            "unknown": "Fine.",
+        }
+        for tone, full in expectations.items():
+            seen: list[str] = []
+            previous: str | None = None
+            for _ in range(len(full)):
+                line = cover_line("en", finals[tone], previous=previous, tone=tone)
+                self.assertIsNotNone(line, tone)
+                assert line is not None
+                self.assertNotIn(line, seen, f"{tone} repeated before using all lines")
+                seen.append(line)
+                previous = line
+            self.assertEqual(full, seen, f"{tone} did not walk palette order")
+            wrapped = cover_line("en", finals[tone], previous=previous, tone=tone)
+            self.assertEqual(full[0], wrapped, f"{tone} did not wrap")
+
+    def test_a_previous_from_another_tone_starts_at_the_head(self) -> None:
+        self.assertEqual(
+            "Let's see.",
+            cover_line("en", "What does it cost?", previous="Okay.", tone="question"),
+        )
+        self.assertEqual(
+            "Okay.",
+            cover_line(
+                "en", "I'm calling about the flat.",
+                previous="Good question, one sec.", tone="neutral",
+            ),
+        )
+
+    def test_a_single_candidate_tone_repeats_only_when_it_must(self) -> None:
+        only = cover_line("en", "hello", lines=("Let's see.",), tone="question")
+        self.assertEqual("Let's see.", only)
+        again = cover_line(
+            "en", "hello", lines=("Let's see.",), previous="Let's see.",
+            tone="question",
+        )
+        self.assertEqual("Let's see.", again, "no alternative means a repeat")
 
     def test_an_injected_palette_is_still_chosen_from_with_an_explicit_tone(
         self,

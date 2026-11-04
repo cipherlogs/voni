@@ -53,10 +53,15 @@ export const DEMO_PLAYOUT_CUSHION_S = 0.25;
 export const CASCADE_PROTOCOL_VERSION = 1;
 
 /**
- * How long the microphone waits for the service's `listening` (or first audio)
- * before it speaks anyway. The service now sends `listening` before the
- * greeting opens the gate in a normal call; this only covers a resumed or
- * silent call, so the caller is never left unheard.
+ * How long the microphone waits for the service's first audible sample before
+ * it speaks anyway. A fresh call opens the gate on the playout's first
+ * audible sample (the chime + the first greeting word sounding), with the
+ * first agent `caption final` as a captioned-but-silent backup; `listening`
+ * and pre-audible audio arrival alone never open it, so the caller is never
+ * heard before the agent is. The bound therefore solely covers a resumed or
+ * greeting-less call that never sounds, so the caller is never left unheard.
+ * Kept global (not scoped to resumes): the session cannot tell a fresh silent
+ * start from a resume, and a fresh greeting sounds long before it fires.
  */
 export const MIC_GATE_FALLBACK_MS = 8_000;
 
@@ -390,8 +395,9 @@ export class CascadeSession {
   private configSent = false;
   private inputMuted = false;
   /**
-   * The service is live: its first audio frame has arrived. Microphone frames
-   * sent before this are held, never queued:
+   * The agent is audible: the playout sounded its first sample (the chime +
+   * the first greeting word). Microphone frames sent before this are held,
+   * never queued:
    *
    * The connect takes seconds (mint, admission, the vendor handshake), and the
    * mic is live for all of it. Whatever the caller says in that window cannot
@@ -399,7 +405,7 @@ export class CascadeSession {
    * service deliver seconds of backlog at once when the session opened, and the
    * vendor closes a stream that arrives ahead of real time ("Audio processing
    * backlog too large"). A resumed call speaks no greeting, so a bounded timer
-   * opens the gate even when no audio ever arrives.
+   * opens the gate even when nothing ever sounds.
    */
   private micLive = false;
   private micGateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -573,10 +579,13 @@ export class CascadeSession {
       this.marks?.mark("delivered_capture", { complete: false, reason: "not-tappable" });
     }
     // Chime trigger: the worklet's first audible sample, not the queued frame.
+    // The mic gate opens on the same edge: the caller is never heard before
+    // the agent is (first chime + first greeting word audible).
     if (this.playout) {
       this.playout.onFirstAudible = () => {
         this.firstAudibleSeen = true;
         this.clearFirstAudioTimer();
+        this.openMicGate();
         this.marks?.mark("first_audible");
         this.handlers.onFirstAudible?.();
       };
@@ -591,9 +600,10 @@ export class CascadeSession {
       };
     }
     this.started = true;
-    // A silent or skipped greeting sends `listening` before the line, so the
-    // gate opens without an audible sample; the bound still covers a resumed
-    // call or a dropped `listening`, so the caller is never silent forever.
+    // Greeting-less resumes never sound: the bound opens the gate for a call
+    // whose greeting was omitted, so the caller is never silent forever. A
+    // fresh greeting sounds long before it fires; `listening` and pre-audible
+    // audio never open the gate (see `receive` and `onFirstAudible`).
     this.micGateTimer = setTimeout(() => this.openMicGate(), MIC_GATE_FALLBACK_MS);
     // No second silent start (demo-cascade ticket 06): a started call that
     // never sounds ends unavailable at this bound instead of waiting in
@@ -815,6 +825,12 @@ export class CascadeSession {
     if (this.configSent || !this.started) return;
     this.configSent = true;
     this.send(buildConfigMessage(config));
+    // A pre-config setInputMuted(true) held its context (no config on the
+    // wire yet); flush it now, ordered strictly after the config, so the
+    // service learns the mic is muted.
+    if (this.inputMuted) {
+      this.send(encodeContextMessage(MICROPHONE_MUTED_CONTEXT));
+    }
     this.marks?.mark("config_sent");
   }
 
@@ -824,7 +840,9 @@ export class CascadeSession {
     const audio = decodeAudioMessage(raw);
     if (audio) {
       this.admit("audio");
-      this.openMicGate();
+      // Pre-audible arrival alone never opens the mic gate: the frames run
+      // ahead of the voice (pre-roll cushion), and the gate waits for the
+      // playout's first audible sample (or the agent-final backup below).
       if (audio.seq !== undefined) {
         if (audio.seq <= this.highestPlayedSeq) {
           // The session-level contract: an audio frame that is not newer is
@@ -862,16 +880,18 @@ export class CascadeSession {
         // The agent's final caption closes its *text*, not its audio. It is
         // one half of the turn end: the drain is the other. A reply whose
         // audio already drained (a stall the final outlived) ends here.
+        // Backup mic gate: a captioned-but-silent edge (the greeting's text
+        // arrived but never sounded) still releases the caller.
         if (event.role === "agent" && event.final) {
+          this.openMicGate();
           this.replyComplete = true;
           this.endReplyIfDrained();
         }
         break;
       case "listening":
-        // The service opens the line before the greeting so a caller who
-        // speaks first is heard first. Release the microphone now, not on the
-        // greeting's first sample.
-        this.openMicGate();
+        // The service opens the line before the greeting, but the mic gate
+        // stays shut until the agent is audible (first audible sample, or the
+        // agent-final backup): the caller is never heard before the agent is.
         break;
       case "interrupted":
         this.endCallArmed = false;

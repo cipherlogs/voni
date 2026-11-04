@@ -29,12 +29,53 @@ except ModuleNotFoundError:
 
 from cascade.ack import ACK_LINES, ACK_TONE_GROUPS, cover_line
 from cascade.call import OutboundAudio
+from cascade.jev import make_cover_judge
 from cascade.meta_llm import MetaLLMTurn, TurnUsage
 from cascade.meta_stt import SpeechComplete, SpeechEnd, SpeechStart
 from cascade.testing import FakeClock
 from cascade.tools import ToolResult
 from cascade.turn_stream import CascadeTurnStream
 from providers import SentenceAudio, TokenDelta, ToolCallRequest
+
+
+class FakeCoverLogger:
+    """Injectable redacted logger for the Jev cover on the wire."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def info(self, msg, *args):
+        try:
+            line = msg % args if args else str(msg)
+        except Exception:
+            line = str(msg)
+        self.lines.append(line)
+
+
+def _jev_tone_data(pick: str, probability: float) -> dict:
+    return {"answers": {"judge": {"pick": pick, "probability": probability}}}
+
+
+class _JevFakeResp:
+    def __init__(self, data, status: int = 200) -> None:
+        self._data = data
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def json(self):
+        return self._data
+
+
+def _jev_factory_for(data, *, status: int = 200):
+    def factory(url, headers, payload, timeout_s):
+        return _JevFakeResp(data, status=status)
+
+    return factory
 
 
 class ScriptedLLM:
@@ -1273,6 +1314,194 @@ class AckTest(unittest.TestCase):
 
         self.assertEqual(4, len(tts.spoken))
         self.assertNotEqual(tts.spoken[0], tts.spoken[2])
+
+
+class JevSmartCoverWireTest(unittest.TestCase):
+    """The Jev smart cover speaks through the wire with tiered gates + logs.
+
+    No live network: the judge is ``make_cover_judge`` with an injected fake
+    ``session_factory`` and an injectable fake logger. A mid-confidence
+    question (0.75) speaks under the 0.6 tier (silence under the old 0.85);
+    a mid-confidence negative (0.7) stays silent under its 0.85 gate.
+    """
+
+    def _run_one_turn(self, *, final, pick, prob, may_request=None):
+        gate = asyncio.Event()
+        logger = FakeCoverLogger()
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                await gate.wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += "I can do that."
+                yield TokenDelta(text="I can do that.")
+                record.finished = True
+
+        captions: list[tuple[str, str, bool]] = []
+        audio = RecordingAudio()
+        rows: list[tuple] = []
+
+        class Rows:
+            def __getattr__(self, name):
+                if name.startswith("__"):
+                    raise AttributeError(name)
+
+                def record(*args, **kwargs):
+                    rows.append((name, args, kwargs))
+
+                return record
+
+        judge = make_cover_judge(
+            "en",
+            api_key="test-key",
+            timeout_s=0.2,
+            session_factory=_jev_factory_for(_jev_tone_data(pick, prob)),
+            logger=logger,
+        )
+        tts = FakeTTS()
+
+        async def on_caption(role, text, final_):
+            captions.append((role, text, final_))
+
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=tts,
+            emit_audio=audio,
+            may_request=may_request,
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=ACK_LINES["en"],
+            ack_delay_ms=5,
+            ack_judge=judge,
+            ack_judge_timeout_ms=500,
+            on_caption=on_caption,
+            turn_events=Rows(),
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete(final, turn_id="t1"))
+            for _ in range(400):
+                if tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gate.set()
+            await stream.drain()
+
+        asyncio.run(run())
+        return stream, tts, audio, captions, rows, logger
+
+    def test_mid_confidence_question_speaks_under_the_tiered_gate(self):
+        stream, tts, audio, captions, rows, logger = self._run_one_turn(
+            final="What does it cost?", pick="question", prob=0.75,
+        )
+        # Instant single attempt: the cover speaks before the reply.
+        self.assertEqual(2, len(tts.spoken))
+        self.assertIn(tts.spoken[0], set(ACK_TONE_GROUPS["en"]["thinking"])
+                      | set(ACK_TONE_GROUPS["en"]["statement"]))
+        self.assertEqual("I can do that.", tts.spoken[1])
+        # Caption-before-audio + ledger ack row stay.
+        self.assertIn(("agent", tts.spoken[0], True), captions)
+        ack_rows = [row for row in rows if row[0] == "ack"]
+        self.assertEqual(1, len(ack_rows))
+        self.assertEqual(tts.spoken[0], ack_rows[0][2].get("line"))
+        # Redacted log: tone + bucket + latency + reason, no caller text/key.
+        self.assertEqual(1, len(logger.lines))
+        line = logger.lines[0]
+        self.assertIn("tone=question", line)
+        self.assertIn("bucket=0.6-0.85", line)
+        self.assertIn("latency_ms=", line)
+        self.assertIn("reason=ok", line)
+        self.assertNotIn("What does it cost?", line)
+        self.assertNotIn("test-key", line)
+
+    def test_mid_confidence_negative_stays_silent_under_its_own_gate(self):
+        stream, tts, audio, captions, rows, logger = self._run_one_turn(
+            final="This is ridiculous.", pick="negative", prob=0.7,
+        )
+        self.assertEqual(["I can do that."], tts.spoken)
+        self.assertEqual([], [row for row in rows if row[0] == "ack"])
+        self.assertIn("reason=low-conf", logger.lines[0])
+
+    def test_two_question_turns_rotate_through_every_line_on_the_wire(self):
+        gates = [asyncio.Event(), asyncio.Event()]
+        calls = 0
+        logger = FakeCoverLogger()
+
+        class SlowLLM:
+            async def complete(self, *, messages, tools=None, turn=None):
+                nonlocal calls
+                index = calls
+                calls += 1
+                if index < len(gates):
+                    await gates[index].wait()
+                record = turn if turn is not None else MetaLLMTurn()
+                record.content_text += f"Reply number {index} here."
+                yield TokenDelta(text=f"Reply number {index} here.")
+                record.finished = True
+
+        judge = make_cover_judge(
+            "en",
+            api_key="test-key",
+            timeout_s=0.2,
+            session_factory=_jev_factory_for(_jev_tone_data("question", 0.9)),
+            logger=logger,
+        )
+        tts = FakeTTS()
+        stream = CascadeTurnStream(
+            llm=SlowLLM(),
+            tts=tts,
+            emit_audio=RecordingAudio(),
+            ledger=RecordingLedger(),
+            clock=FakeClock(),
+            ack_lines=ACK_LINES["en"],
+            ack_delay_ms=5,
+            ack_judge=judge,
+            ack_judge_timeout_ms=500,
+        )
+
+        async def run():
+            await stream.start()
+            await stream.event(SpeechStart("t1"))
+            await stream.event(SpeechComplete("What does it cost?", turn_id="t1"))
+            for _ in range(400):
+                if tts.spoken:
+                    break
+                await asyncio.sleep(0.001)
+            gates[0].set()
+            await stream.drain()
+            await stream.event(SpeechStart("t2"))
+            await stream.event(SpeechComplete("What does it cost?", turn_id="t2"))
+            for _ in range(400):
+                if len(tts.spoken) >= 3:
+                    break
+                await asyncio.sleep(0.001)
+            gates[1].set()
+            await stream.drain()
+
+        asyncio.run(run())
+
+        self.assertEqual(4, len(tts.spoken))
+        self.assertNotEqual(tts.spoken[0], tts.spoken[2])
+        # Full rotation would walk palette order, not just alternate two:
+        # the second cover is the candidate after the first.
+        expected_second = cover_line(
+            "en", "What does it cost?", previous=tts.spoken[0], tone="question",
+        )
+        self.assertEqual(expected_second, tts.spoken[2])
+
+    def test_a_closed_tts_leg_never_speaks_the_cover(self):
+        def closed(leg: str) -> bool:
+            return False if leg == "tts" else True
+
+        stream, tts, audio, captions, rows, logger = self._run_one_turn(
+            final="What does it cost?", pick="question", prob=0.9,
+            may_request=closed,
+        )
+        self.assertEqual([], [f.kind for f in audio.frames if f.kind == "ack"])
+        self.assertEqual([], [row for row in rows if row[0] == "ack"])
+        self.assertIn("reason=ok", logger.lines[0], "jev still judged; the leg skipped audio")
 
 
 class EndCallSignalTest(unittest.TestCase):

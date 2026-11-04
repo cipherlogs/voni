@@ -523,7 +523,55 @@ test("an interruption is not a finished turn: the flush never reports a drain", 
 });
 
 
-test("mic frames wait for the service's first audio, then are forwarded", async () => {
+test("mic frames wait for the first audible sample, not the first audio frame", async () => {
+  const socket = makeSocket();
+  const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  const playout: Playout = { play: () => {}, flush: () => {} };
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async (_owner, onFrame) => {
+        mic.onFrame = onFrame;
+        return { stop: () => {} };
+      },
+      createPlayout: () => playout,
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+
+  // The connect is not over: the caller speaking here cannot be heard by a
+  // session that does not exist yet, and forwarding it floods the vendor.
+  mic.onFrame?.(new Uint8Array([5, 6]).buffer);
+  assert.equal(socket.sent.length, 1, "only the config frame went out");
+
+  // Pre-audible arrival alone never opens the gate: the frames run ahead of
+  // the voice (pre-roll cushion). The gate waits for the playout's first
+  // audible sample.
+  socket.emit(
+    JSON.stringify({
+      type: "audio",
+      data: Buffer.from([1, 2, 3]).toString("base64"),
+      sample_rate: 24000,
+    }),
+  );
+  mic.onFrame?.(new Uint8Array([7, 8]).buffer);
+  assert.equal(socket.sent.length, 1, "audio arrival alone holds the mic");
+
+  playout.onFirstAudible?.();
+  mic.onFrame?.(new Uint8Array([7, 8]).buffer);
+  const frames = socket.sent.map((raw) => JSON.parse(raw));
+  const audio = frames.filter((frame) => frame.type === "audio");
+  assert.equal(audio.length, 1);
+  assert.equal(Buffer.from(audio[0].data, "base64").length, 2);
+  await session.stop();
+});
+
+test("the first agent caption final opens the mic as a silent-edge backup", async () => {
+  // A captioned-but-silent edge: the greeting's text arrived but never
+  // sounded. The backup releases the caller even without an audible sample.
   const socket = makeSocket();
   const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
   const session = new CascadeSession(
@@ -540,24 +588,12 @@ test("mic frames wait for the service's first audio, then are forwarded", async 
   await session.start(CONFIG, "test-owner");
   socket.readyState = socket.OPEN;
   socket.onopen?.();
+  mic.onFrame?.(new Uint8Array([1]).buffer);
+  assert.equal(socket.sent.length, 1, "held before any greeting");
 
-  // The connect is not over: the caller speaking here cannot be heard by a
-  // session that does not exist yet, and forwarding it floods the vendor.
-  mic.onFrame?.(new Uint8Array([5, 6]).buffer);
-  assert.equal(socket.sent.length, 1, "only the config frame went out");
-
-  socket.emit(
-    JSON.stringify({
-      type: "audio",
-      data: Buffer.from([1, 2, 3]).toString("base64"),
-      sample_rate: 24000,
-    }),
-  );
-  mic.onFrame?.(new Uint8Array([7, 8]).buffer);
-  const frames = socket.sent.map((raw) => JSON.parse(raw));
-  const audio = frames.filter((frame) => frame.type === "audio");
-  assert.equal(audio.length, 1);
-  assert.equal(Buffer.from(audio[0].data, "base64").length, 2);
+  socket.emit(JSON.stringify({ type: "caption", role: "agent", text: "Hi.", final: true }));
+  mic.onFrame?.(new Uint8Array([2]).buffer);
+  assert.equal(socket.sent.length, 2, "released by the agent final backup");
   await session.stop();
 });
 
@@ -597,11 +633,14 @@ test("a call that never speaks still opens the mic after the bound", async () =>
   }
 });
 
-test("a listening event opens the mic before the greeting", async () => {
-  // The service sends `listening` before the opening line so a caller who
-  // speaks first is heard first and the greeting can be skipped.
+test("a listening event alone does not open the mic", async () => {
+  // The service sends `listening` before the opening line, but the gate stays
+  // shut until the agent is audible: the caller is never heard before the
+  // agent is. Only the first audible sample (or the agent-final backup, or
+  // the resume bound) releases it.
   const socket = makeSocket();
   const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  const playout: Playout = { play: () => {}, flush: () => {} };
   const session = new CascadeSession(
     {},
     {
@@ -610,24 +649,29 @@ test("a listening event opens the mic before the greeting", async () => {
         mic.onFrame = onFrame;
         return { stop: () => {} };
       },
-      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      createPlayout: () => playout,
     },
   );
   await session.start(CONFIG, "test-owner");
   socket.readyState = socket.OPEN;
   socket.onopen?.();
   mic.onFrame?.(new Uint8Array([1]).buffer);
-  assert.equal(socket.sent.length, 1, "held until the service opens the line");
+  assert.equal(socket.sent.length, 1, "held until the agent is audible");
 
   socket.emit(JSON.stringify({ type: "listening" }));
   mic.onFrame?.(new Uint8Array([2]).buffer);
-  assert.equal(socket.sent.length, 2, "released by listening, not by first audio");
+  assert.equal(socket.sent.length, 1, "listening alone holds the mic");
+
+  playout.onFirstAudible?.();
+  mic.onFrame?.(new Uint8Array([3]).buffer);
+  assert.equal(socket.sent.length, 2, "released by first audible, not by listening");
   await session.stop();
 });
 
 test("muting cascade drops mic frames and sends context without stopping playback", async () => {
   const socket = makeSocket();
   const mic: { onFrame: ((data: ArrayBuffer) => void) | null } = { onFrame: null };
+  const playout: Playout = { play: () => {}, flush: () => {} };
   const session = new CascadeSession(
     {},
     {
@@ -636,13 +680,13 @@ test("muting cascade drops mic frames and sends context without stopping playbac
         mic.onFrame = onFrame;
         return { stop: () => {} };
       },
-      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+      createPlayout: () => playout,
     },
   );
   await session.start(CONFIG, "test-owner");
   socket.readyState = socket.OPEN;
   socket.onopen?.();
-  // The service is live, so the mic gate is open for the mute test itself.
+  // The agent is audible, so the mic gate is open for the mute test itself.
   socket.emit(
     JSON.stringify({
       type: "audio",
@@ -650,6 +694,7 @@ test("muting cascade drops mic frames and sends context without stopping playbac
       sample_rate: 24000,
     }),
   );
+  playout.onFirstAudible?.();
   mic.onFrame?.(new Uint8Array([1]).buffer);
   session.setInputMuted(true);
   mic.onFrame?.(new Uint8Array([2]).buffer);
@@ -666,6 +711,34 @@ test("muting cascade drops mic frames and sends context without stopping playbac
     ],
   );
   assert.ok(!socket.sent.some((message) => message.includes("reply.create")));
+  await session.stop();
+});
+
+test("a pre-config mute flushes its context on config send", async () => {
+  // The demo starts muted (setInputMuted(true) around startDemoCall) before
+  // the socket admits: the context cannot go out with no config on the wire,
+  // so sendConfig flushes it ordered strictly after the config.
+  const socket = makeSocket();
+  const session = new CascadeSession(
+    {},
+    {
+      socketFactory: () => socket as unknown as WebSocket,
+      startMic: async () => ({ stop: () => {} }),
+      createPlayout: () => ({ play: () => {}, flush: () => {} }),
+    },
+  );
+  await session.start(CONFIG, "test-owner");
+  session.setInputMuted(true);
+  assert.equal(socket.sent.length, 0, "no context before the socket opens");
+  socket.readyState = socket.OPEN;
+  socket.onopen?.();
+  const messages = socket.sent.map((raw) => JSON.parse(raw));
+  assert.deepEqual(
+    messages.map((message) => message.type),
+    ["config", "context"],
+    "the muted context follows the config",
+  );
+  assert.equal(messages[1].content, MICROPHONE_MUTED_CONTEXT);
   await session.stop();
 });
 
