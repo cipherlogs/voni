@@ -802,11 +802,11 @@ test("the live caption line paints urgent: deferral is for settled history only"
   assert.ok(!call.includes("deferredLiveCaption"), "no live surface reads the deferred caption");
 });
 
-test("the connected chime element preloads while ringback sounds", () => {
+test("ringback start never preloads the chime: the chime request fires at first audible", () => {
   const call = readRepo("components/voice-call.tsx");
   const connecting = call.slice(call.indexOf('if (state === "connecting") {'), call.indexOf('} else if (state === "ended") {'));
-  assert.ok(connecting.includes('preload("connected")'), "ringback start warms the chime element");
+  assert.ok(!connecting.includes('preload("connected")'), "ringback start requests no chime bytes (refused connects stay silent; the chime clock starts at first audible)");
   const sounds = readRepo("lib/voice/call-sounds.ts");
-  assert.ok(sounds.includes("preload("), "the sound player warms one-shot elements");
-  assert.ok(sounds.includes("preloaded"), "play reuses the warmed element");
+  assert.ok(sounds.includes("preload("), "the sound player keeps its warm-one-shot API");
+  assert.ok(sounds.includes("preloaded"), "play reuses a warmed element when one exists");
 });

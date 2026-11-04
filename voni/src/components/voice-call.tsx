@@ -471,7 +471,7 @@ export function VoiceCall({
   const flushPendingAgentCaption = useCallback(() => {
     const pending = pendingAgentCaptionRef.current;
     pendingAgentCaptionRef.current = null;
-    if (pending && stateRef.current !== "ended") setLiveCaption(pending);
+    if (pending) setLiveCaption(pending);
   }, []);
   /**
    * The connected chime marks the agent actually sounding, so it hangs off the
@@ -605,6 +605,18 @@ export function VoiceCall({
   const turnsRef = useRef<Transcript[]>([]);
   const stateRef = useRef<VoiceState>(state);
   const mutedRef = useRef(muted);
+  const setCallState = useCallback((next: VoiceState) => {
+    // Handler-driven mirror (ticket 08): every transition flows through here,
+    // so the ref never lags the state — no sync effect needed. Defined beside
+    // the ref it mirrors (before any hook that reads the ref), so the
+    // mutation never follows a hook call that takes the ref.
+    stateRef.current = next;
+    setState(next);
+    if (next === "idle" || next === "ended") {
+      mutedRef.current = false;
+      setMutedState(false);
+    }
+  }, []);
   /**
    * Latest-start holder (ticket 08): hold exit and error rejoins must call
    * the current start without re-subscribing their effects every render.
@@ -1082,10 +1094,11 @@ export function VoiceCall({
   useEffect(() => {
     if (state === "connecting") {
       connectedChimeRef.current = false;
-      // Warm the chime element now: `playConnectedChime` fires from the first
-      // audible sample, and building the Audio then starts it half a second
-      // into the first word instead of with it.
-      sounds().preload("connected");
+      // No chime warm-up here: the chime's HTMLAudio request is the harness's
+      // chime clock (and the refused-connect's silence proof), so it must
+      // fire from the first audible sample in `playConnectedChime` — never
+      // from ringback start. A refused connect therefore constructs zero
+      // connected-chime elements and requests zero connected-chime bytes.
       sounds().startRingback();
       if (!ringbackActiveRef.current) {
         ringbackActiveRef.current = true;
@@ -1141,17 +1154,6 @@ export function VoiceCall({
       sounds().tick(grown);
     }
   }, [liveCaption]);
-
-  const setCallState = useCallback((next: VoiceState) => {
-    // Handler-driven mirror (ticket 08): every transition flows through here,
-    // so the ref never lags the state — no sync effect needed.
-    stateRef.current = next;
-    setState(next);
-    if (next === "idle" || next === "ended") {
-      mutedRef.current = false;
-      setMutedState(false);
-    }
-  }, []);
 
   useEffect(() => {
     notifyPending({ starting, hangingUp });
@@ -1445,8 +1447,10 @@ export function VoiceCall({
         onFirstAudible: () => {
           audibleRef.current = true;
           // The held first caption paints now, ordered strictly before the
-          // chime: caption and sound land on the same audible sample.
-          flushPendingAgentCaption();
+          // chime: caption and sound land on the same audible sample. The
+          // ended guard lives with the state read, not in the flush, so the
+          // flush never closes over the call-state ref.
+          if (stateRef.current !== "ended") flushPendingAgentCaption();
           playConnectedChime();
           if (livePaintedRef.current || stateRef.current === "ended") return;
           livePaintedRef.current = true;
@@ -1640,7 +1644,7 @@ export function VoiceCall({
       // voice, not the greeting's arrival on the wire. A paced caption that
       // arrived with the frames flushes here, with it.
       onFirstAudible: () => {
-        flushPendingAgentCaption();
+        if (stateRef.current !== "ended") flushPendingAgentCaption();
         playConnectedChime();
       },
       // Barge-in recovery lives in the session (lib/voice/barge-in.ts);
