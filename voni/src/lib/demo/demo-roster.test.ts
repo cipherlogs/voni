@@ -29,7 +29,7 @@ test("the demo roster is exactly one English voice", () => {
 });
 
 test("withdrawing a demo voice is the roster line, and every surface reads it", () => {
-  // The picker (switcher), the mint's voice gate and the harness all derive
+  // The demo rest layout, the mint's voice gate and the harness all derive
   // from DEMO_VOICE_IDS; no second roster may exist.
   const picker = readFileSync(new URL("../../components/voice-call.tsx", import.meta.url), "utf8");
   const mintGate = readFileSync(new URL("./stored-agents.ts", import.meta.url), "utf8");
@@ -42,19 +42,21 @@ test("withdrawing a demo voice is the roster line, and every surface reads it", 
   );
 });
 
-test("the voice-cycle control is disabled: one voice, no switching", () => {
-  // The picker (switcher) still derives from DEMO_VOICE_IDS, but with a
-  // single voice there is nothing to cycle through: both arrows stay
-  // disabled so no other locale can be offered.
+test("the demo rest layout has no voice switcher: orb + Start only", () => {
+  // Stripped picker: one voice, nothing to cycle through, so the ‹ ›
+  // switcher is gone entirely — at rest only the orb, status and the big
+  // Start call show, and the demo still runs on the single roster voice.
   const picker = readFileSync(new URL("../../components/voice-call.tsx", import.meta.url), "utf8");
-  assert.match(picker, /Previous voice/, "the switcher arrows still render");
-  assert.match(picker, /Next voice/, "the switcher arrows still render");
-  assert.equal(DEMO_VOICE_IDS.length, 1, "a single voice leaves the cycle nowhere to go");
-  assert.match(
-    picker,
-    /aria-label=\{step < 0 \? "Previous voice"[\s\S]*?disabled/,
-    "the voice arrows are a disabled control",
-  );
+  assert.doesNotMatch(picker, /Previous voice/, "no previous-voice control");
+  assert.doesNotMatch(picker, /Next voice/, "no next-voice control");
+  assert.doesNotMatch(picker, /switcher/, "the voice switcher is gone");
+  assert.doesNotMatch(picker, /arrow\(-1\)/, "the switcher arrows are gone");
+  assert.doesNotMatch(picker, /voiceLine/, "the voice line is gone");
+  assert.match(picker, /LandingOrb/, "the orb stays the rest hero");
+  assert.match(picker, /Start call/, "the big Start call stays at rest");
+  assert.match(picker, /Call again, or close\./, "the ended rest copy offers no other voice");
+  assert.equal(DEMO_VOICE_IDS.length, 1, "the demo runs on the single roster voice");
+  assert.match(picker, /DEMO_VOICE_IDS/, "the demo still derives from the roster");
 });
 
 test("Italian is not offered in the demo, and its catalogue entry and rendering stay", () => {

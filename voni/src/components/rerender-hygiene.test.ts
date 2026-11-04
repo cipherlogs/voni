@@ -264,7 +264,15 @@ test("voice-call keeps the healthy render shape", () => {
   assert.match(call, /function DemoTranscript/, "transcript stays module scope");
   assert.match(call, /function StreamingText/, "streaming text stays module scope");
   assert.match(call, /function FollowingViewport/, "viewport stays module scope");
-  assert.match(call, /\{arrow\(-1\)\}/, "switcher arrows stay plain closures");
+  // Stripped picker: the demo rest layout is orb + status + big Start — no
+  // ‹ › voice switcher, so no arrow/switcher/voiceLine closures remain.
+  assert.doesNotMatch(call, /arrow\(-1\)/, "switcher arrows are gone");
+  assert.doesNotMatch(call, /switcher/, "the voice switcher is gone");
+  assert.doesNotMatch(call, /voiceLine/, "the voice line is gone");
+  assert.doesNotMatch(call, /Previous voice/, "no previous-voice control");
+  assert.doesNotMatch(call, /Next voice/, "no next-voice control");
+  assert.match(call, /LandingOrb/, "the orb stays the rest hero");
+  assert.match(call, /Start call/, "the big Start call stays at rest");
   assert.doesNotMatch(call, /<(arrow|switcher|statusLine)/, "no closure renders as a component");
 });
 
