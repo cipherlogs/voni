@@ -134,7 +134,7 @@ test("delta transcripts are scoped by item, never concatenated", () => {
     { itemId: "u1", text: "hello th" },
   ]);
   handle({ type: "transcript.agent.delta", reply_id: "r1", text: "Hi" });
-  assert.deepEqual(agentPartials, [{ itemId: "r1", text: "Hi" }]);
+  assert.deepEqual(agentPartials, [], "no speaker position yet: the agent line waits for its audio");
   // Finalized turns still arrive separately for captions history.
   handle({ type: "transcript.user", text: "hello there" });
   assert.deepEqual(finalized, [{ role: "user", text: "hello there" }]);
@@ -331,7 +331,7 @@ test("agent captions follow the played audio, not the words' early arrival", asy
   handle({ type: "reply.audio", reply_id: "r1", data: "" });
   handle({ type: "reply.audio", reply_id: "r1", data: "" });
   await new Promise((resolve) => setTimeout(resolve, 150));
-  assert.equal(lastText(), "I", "only the first word at the start of playback");
+  assert.deepEqual(partials, [], "queued audio is not heard: the pre-roll stays silent until it sounds");
   playMs(8 * CAPTION_MS_PER_CHAR);
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(lastText(), "I can take");
@@ -341,6 +341,26 @@ test("agent captions follow the played audio, not the words' early arrival", asy
   const count = partials.length;
   await new Promise((resolve) => setTimeout(resolve, 250));
   assert.equal(partials.length, count, "the ticker stops once the line has played");
+  await session.stop();
+});
+
+test("agent captions stay silent when the playout cannot report progress", async () => {
+  // No consumed/sent reporters (and no null-rate guess): without a speaker
+  // position there is nothing heard — never the whole line at once.
+  const partials: TranscriptPartial[] = [];
+  const { handle, session } = makeSession({ onAgentPartial: (p) => partials.push(p) });
+  (session as unknown as Record<string, unknown>)["playout"] = {
+    play: () => undefined,
+    flush: () => undefined,
+    settled: () => true,
+    queuedMs: () => 0,
+  };
+  handle({ type: "session.ready", session_id: "s1" });
+  handle({ type: "reply.started", reply_id: "r1" });
+  handle({ type: "transcript.agent.delta", reply_id: "r1", text: "Hello there friend" });
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.deepEqual(partials, [], "no speaker position, no caption — never the whole line at once");
   await session.stop();
 });
 
@@ -1650,16 +1670,22 @@ test("WS timing marks fire once per start", () => {
   assert.equal(marks.filter((m) => m === "greetingAudio").length, 1);
 });
 
-test("agent word deltas accumulate into the heard line", () => {
+test("agent word deltas accumulate into the heard line once it sounds", async () => {
   const partials: string[] = [];
-  const { handle } = makeSession({ onAgentPartial: (p) => partials.push(p.text) });
-  handle({ type: "session.ready", session_id: "s1" });
+  const { handle, playMs, session } = pacedReply({ onAgentPartial: (p) => partials.push(p.text) });
   handle({ type: "reply.started", reply_id: "r1" });
   for (const word of ["Hi,", "I'm", "Voni."]) handle({ type: "transcript.agent.delta", reply_id: "r1", delta: word });
-  assert.deepEqual(partials, ["Hi,", "Hi, I'm", "Hi, I'm Voni."]);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(partials, [], "words held until the audio sounds");
+  handle({ type: "reply.audio", reply_id: "r1", data: "" });
+  playMs(60_000);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(partials.at(-1), "Hi, I'm Voni.", "the accumulated line paints once heard");
   handle({ type: "reply.started", reply_id: "r2" });
   handle({ type: "transcript.agent.delta", reply_id: "r2", delta: "Next" });
-  assert.equal(partials.at(-1), "Next", "a new reply starts a new line");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(partials.at(-1), "Hi, I'm Voni.", "a new reply starts silent, never over the old line");
+  await session.stop();
 });
 
 test("stripSpokenToolCall removes a spoken tool name and flags the hangup", () => {
@@ -1695,7 +1721,8 @@ test("a spoken end_call arms the hangup and never reaches the caption", () => {
   handle({ type: "session.ready", session_id: "s1" });
   handle({ type: "transcript.agent.delta", reply_id: "r1", text: "Goodbye! end_call" });
   handle({ type: "transcript.agent", reply_id: "r1", text: "Goodbye! end_call" });
-  assert.deepEqual(partials, ["Goodbye!"]);
+  // No speaker position, no paced caption — the final still lands stripped.
+  assert.deepEqual(partials, []);
   assert.deepEqual(captions, ["Goodbye!"]);
   assert.equal(ended, 1);
   assert.equal(internals["pendingEndCall"], true);

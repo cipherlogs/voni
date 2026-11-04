@@ -116,6 +116,8 @@ function audioAvailable(): boolean {
 export class CallSounds {
   private ringback: HTMLAudioElement | null = null;
   private missing = new Set<string>();
+  /** One-shot elements warmed by `preload`, consumed once by `play`. */
+  private preloaded = new Map<CallSoundState, HTMLAudioElement>();
   private ctx: AudioContext | null = null;
   private tickState: TickState = { nextFree: 0, velocity: 0.6 };
 
@@ -155,13 +157,34 @@ export class CallSounds {
     this.ringback = null;
   }
 
-  /** One-shot earcon. Fire-and-forget; missing files stay silent. */
+  /** Warm a one-shot element so `play` has no construction/startup lag. */
+  preload(state: Exclude<CallSoundState, "ringback">): void {
+    if (!audioAvailable() || this.preloaded.has(state)) return;
+    const url = this.url(state);
+    if (this.missing.has(url)) return;
+    try {
+      const el = new Audio(url);
+      el.preload = "auto";
+      el.volume = 0.4;
+      el.onerror = () => {
+        this.missing.add(url);
+        this.preloaded.delete(state);
+      };
+      this.preloaded.set(state, el);
+    } catch {
+      // No audio, no problem.
+    }
+  }
+
+  /** One-shot earcon. Fire-and-forget; missing files stay silent. Reuses a
+   * preloaded element when one is warm, so the chime starts with the word. */
   play(state: Exclude<CallSoundState, "ringback">): void {
     if (!audioAvailable()) return;
     const url = this.url(state);
     if (this.missing.has(url)) return;
     try {
-      const el = new Audio(url);
+      const el = this.preloaded.get(state) ?? new Audio(url);
+      this.preloaded.delete(state);
       el.volume = 0.4;
       el.onerror = () => this.missing.add(url);
       void el.play().catch(() => undefined);

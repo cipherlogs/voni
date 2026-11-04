@@ -237,11 +237,11 @@ test("voice-call derives during render and defers the non-urgent", () => {
     /from "@\/lib\/voice\/call-status-view"/,
     "derivation lives in the tested lib seam",
   );
-  assert.match(call, /useDeferredValue/, "partials/meter resolve deferred");
-  assert.match(
+  assert.match(call, /useDeferredValue/, "meter resolves deferred");
+  assert.doesNotMatch(
     call,
     /deferredLiveCaption/,
-    "per-word partials render from the deferred value",
+    "the live caption is urgent (it tracks the voice); deferral is for settled meter only",
   );
   assert.match(
     call,
