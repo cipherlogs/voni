@@ -204,9 +204,10 @@ function LanguageChips({
 }
 
 /**
- * Merged language + voice picker. One decision: the language chips filter the
- * voice cards, and choosing a voice sets its language implicitly. Each card
- * IS the preview control — clicking it selects the voice and plays its real
+ * Merged language + voice picker. One decision: when more than one language
+ * group is offered the chips filter the voice cards, and choosing a voice
+ * sets its language implicitly. English-only offers a single group, so the
+ * chips stay hidden — each card IS the preview control — clicking it selects the voice and plays its real
  * AssemblyAI clip (`public/voices`), with a washed avatar + live indicator
  * tracking playback. Clicking the selected card again stops playback.
  */
@@ -312,7 +313,12 @@ export function VoiceField({
         {description ??
           "The voice renders on the call — select a card to hear the real voice."}
       </FieldDescription>
-      <LanguageChips groups={groups} language={language} onValueChange={selectLanguage} />
+      {/* English-only: the language chips are gone when English is the only
+          group — a stored non-English voice still rides along with its own
+          group, and only then is there a language to choose. */}
+      {groups.length > 1 ? (
+        <LanguageChips groups={groups} language={language} onValueChange={selectLanguage} />
+      ) : null}
       {group.voices.length > 1 ? (
         <ToggleGroup
           value={[voiceId]}

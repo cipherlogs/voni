@@ -96,6 +96,9 @@ test("VoiceField merges language chips and voice cards, real clips only", () => 
   // snap dots, no checkmarks — pressed cards are the selection.
   assert.ok(source.includes("ToggleGroup"));
   assert.ok(source.includes("Spoken language"));
+  // English-only: the chips hide when English is the only group — a stored
+  // non-English voice riding along is the only case with a choice to make.
+  assert.ok(source.includes("groups.length > 1"));
   assert.ok(source.includes("voiceForLanguage"));
   assert.ok(source.includes("Carousel"));
   assert.ok(source.includes("CarouselItem"));
