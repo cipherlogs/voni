@@ -8,7 +8,9 @@ import {
   checkEmail,
   checkResultToData,
   checkTag,
+  InboxNotConnectedError,
   INBOX_LOOKBACK_S,
+  isInboxNotConnected,
   normalizeClaim,
   type CheckEmailResult,
   type InboxMessage,
@@ -48,7 +50,7 @@ async function accessToken(): Promise<string> {
     secret("GOOGLE_CLIENT_SECRET"),
     secret("DEMO_INBOX_REFRESH_TOKEN"),
   ]);
-  if (!clientId || !clientSecret || !refreshToken) throw new Error("demo inbox not configured");
+  if (!clientId || !clientSecret || !refreshToken) throw new InboxNotConnectedError("demo inbox not configured");
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -59,7 +61,7 @@ async function accessToken(): Promise<string> {
       grant_type: "refresh_token",
     }),
   });
-  if (!res.ok) throw new Error(`token refresh ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw new InboxNotConnectedError(`token refresh ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = (await res.json()) as { access_token: string; expires_in: number };
   cachedToken = { value: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
   return data.access_token;
@@ -228,18 +230,41 @@ export async function jevSpoof(
 
 const argsSchema = z.object({ address: z.string().trim().max(200).optional() });
 
+/** The browser poll's tool id (voice-call.tsx): charged to its own bucket. */
+export const INBOX_POLL_TOOL_CALL_ID = "inbox-poll";
+
+/**
+ * The `check_email` rate bucket for one call, split so the browser's ~8s poll
+ * cannot starve the model's check: the poll (~112/15min alone) gets its own
+ * budget, and model calls are keyed by credential (pipeline service vs
+ * browser fallback). Every bucket keeps the whole-call fit.
+ */
+export function inboxCheckBucket(callId: string, credential?: string, toolCallId?: string): string {
+  const base = `inbox:call:${callId}`;
+  if (toolCallId === INBOX_POLL_TOOL_CALL_ID) return `${base}:poll`;
+  return `${base}:model:${credential ?? "service"}`;
+}
+
 /**
  * The `check_email` tool for one verified demo call. No address: look for the
  * call's Test tag (the main path). An address: only when the visitor said
  * one ("I forgot the tag"), matched as before. Either way a found email is
  * recorded on the call's tag, so a callback knows it.
  */
-export async function runCheckEmail(call: DemoCall, rawArguments: unknown): Promise<ToolResponse> {
+export async function runCheckEmail(
+  call: DemoCall,
+  rawArguments: unknown,
+  opts: { credential?: string; toolCallId?: string } = {},
+): Promise<ToolResponse> {
   const args = argsSchema.safeParse(rawArguments);
   if (!args.success) {
     return { ok: false, error: "Check again without an address, or with the one the caller said.", retryable: true };
   }
-  const budget = await bumpRateBucket(`inbox:call:${call.callId}`, CHECKS_PER_CALL, CHECK_BUDGET_WINDOW_S);
+  const budget = await bumpRateBucket(
+    inboxCheckBucket(call.callId, opts.credential, opts.toolCallId),
+    CHECKS_PER_CALL,
+    CHECK_BUDGET_WINDOW_S,
+  );
   if (!budget.ok) {
     return { ok: false, error: "Too many inbox checks on this call.", retryable: false };
   }
@@ -253,18 +278,28 @@ export async function runCheckEmail(call: DemoCall, rawArguments: unknown): Prom
   // Placeholders the model sometimes invents ("unknown", "none") are not addresses.
   const spoken = args.data.address && normalizeClaim(args.data.address, recognition) ? args.data.address : null;
   let result: CheckEmailResult;
-  if (spoken) {
-    result = await checkEmail(spoken, {
-      listInbox: () => listDemoInbox(),
-      since: call.startedAt,
-      recognition,
-      jevMatch: (claim, candidates) => jevMatch(claim, candidates, judge),
-      jevSpoof: spoof,
-    });
-  } else if (tag) {
-    result = await checkTag(tag.tag, { listTagged: () => listTaggedMessages(tag.tag, tag.issuedAt), jevSpoof: spoof });
-  } else {
-    return { ok: false, error: "This call has no test tag.", retryable: false };
+  try {
+    if (spoken) {
+      result = await checkEmail(spoken, {
+        listInbox: () => listDemoInbox(),
+        since: call.startedAt,
+        recognition,
+        jevMatch: (claim, candidates) => jevMatch(claim, candidates, judge),
+        jevSpoof: spoof,
+      });
+    } else if (tag) {
+      result = await checkTag(tag.tag, { listTagged: () => listTaggedMessages(tag.tag, tag.issuedAt), jevSpoof: spoof });
+    } else {
+      return { ok: false, error: "This call has no test tag.", retryable: false };
+    }
+  } catch (e) {
+    // A missing/expired DEMO_INBOX_REFRESH_TOKEN (or dead OAuth client) must
+    // not read as `not_arrived`: the call would answer ok-yet-empty forever
+    // ("not landed yet"). Retryable, so the model says so and tries again.
+    if (isInboxNotConnected(e)) {
+      return { ok: false, error: "The test inbox is not connected right now. Say so lightly and try again.", retryable: true };
+    }
+    throw e;
   }
   if (result.status === "found" && result.exact && tag) {
     const { returning } = await recordTagMatch(tag, result);

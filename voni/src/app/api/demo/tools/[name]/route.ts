@@ -38,7 +38,7 @@ export async function POST(
   const started = performance.now();
   let result =
     name === CHECK_EMAIL_TOOL
-      ? await runCheckEmail(call, args)
+      ? await runCheckEmail(call, args, { credential: auth.credential, toolCallId: auth.toolCallId })
       : name === SEND_CODE_REPLY_TOOL
         ? await runSendReply(call, args)
         : name === CHECK_CODE_TOOL

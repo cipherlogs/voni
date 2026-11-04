@@ -63,6 +63,20 @@ export type CheckEmailResult =
       returning?: boolean;
     };
 
+/**
+ * The shared test inbox is unreachable because its OAuth refresh token is
+ * missing or expired (`DEMO_INBOX_REFRESH_TOKEN`). Unlike a transient Gmail
+ * failure (which reads as `not_arrived`), this must surface: otherwise the
+ * call answers ok-yet-empty forever ("not landed yet").
+ */
+export class InboxNotConnectedError extends Error {
+  override name = "InboxNotConnectedError";
+}
+
+export function isInboxNotConnected(e: unknown): e is InboxNotConnectedError {
+  return e instanceof InboxNotConnectedError;
+}
+
 const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 
 /**
@@ -170,6 +184,7 @@ export async function checkEmail(raw: string, deps: CheckEmailDeps): Promise<Che
   const notArrived: CheckEmailResult = { status: "not_arrived", address, name: nameFromAddress(address) };
 
   const inbox = await deps.listInbox().catch((e: unknown) => {
+    if (isInboxNotConnected(e)) throw e;
     console.error(`[demo-inbox] read failed: ${e}`);
     return [];
   });
@@ -223,6 +238,7 @@ export type CheckTagDeps = {
 export async function checkTag(tag: string, deps: CheckTagDeps): Promise<CheckEmailResult> {
   const notArrived: CheckEmailResult = { status: "not_arrived", address: null, name: null };
   const inbox = await deps.listTagged().catch((e: unknown) => {
+    if (isInboxNotConnected(e)) throw e;
     console.error(`[demo-inbox] read failed: ${e}`);
     return [];
   });
