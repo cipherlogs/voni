@@ -16,6 +16,68 @@ const PROTECTED_PREFIXES = [
 
 const APP_PATHS = ["/login", "/signup", ...PROTECTED_PREFIXES];
 
+const DEMO_PATHS = new Set(["/demo", "/demo/"]);
+const DEMO_FALLBACK_URL = "https://www.google.com";
+const DEMO_NO_STORE = "no-store, no-cache, must-revalidate, max-age=0";
+
+/**
+ * Stable public link voni.cc/demo -> DEMO_REDIRECT_URL (307, never cached).
+ * Target lives in the env so it can be re-pointed without a code edit.
+ * Query strings from the incoming request are forwarded.
+ * Note: Next normalizes /demo/ to /demo with its standard 308 first;
+ * that hop only caches the slash mapping, never the target — /demo
+ * itself is always 307 no-store, so re-pointing takes effect immediately.
+ */
+function demoRedirect(request: NextRequest): NextResponse | null {
+  const { host, pathname, search } = request.nextUrl;
+  if (!DEMO_PATHS.has(pathname)) return null;
+
+  const landingHost = process.env.LANDING_HOST;
+  if (landingHost) {
+    const appHost = safeAppHost();
+    if (host !== landingHost && host !== `www.${landingHost}`) {
+      // App host (or unknown host): not the public demo link.
+      if (!appHost || host === appHost) return null;
+    }
+  }
+
+  const rawTarget =
+    process.env.DEMO_REDIRECT_URL?.trim() || DEMO_FALLBACK_URL;
+  let destination: URL;
+  try {
+    destination = new URL(rawTarget);
+  } catch {
+    destination = new URL(DEMO_FALLBACK_URL);
+  }
+  if (destination.protocol !== "http:" && destination.protocol !== "https:") {
+    destination = new URL(DEMO_FALLBACK_URL);
+  }
+  if (search) {
+    const incoming = new URLSearchParams(search);
+    incoming.forEach((value, key) => {
+      if (!destination.searchParams.has(key)) {
+        destination.searchParams.set(key, value);
+      }
+    });
+  }
+
+  const response = NextResponse.redirect(destination, 307);
+  response.headers.set("Cache-Control", DEMO_NO_STORE);
+  response.headers.set("Pragma", "no-cache");
+  response.headers.set("Expires", "0");
+  return response;
+}
+
+function safeAppHost(): string | null {
+  try {
+    const appUrl = process.env.BETTER_AUTH_URL;
+    if (!appUrl) return null;
+    return new URL(appUrl).host;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Production serves two hosts from one Worker: the landing (and its demo) on
  * LANDING_HOST, everything else on the BETTER_AUTH_URL host. Unset (dev,
@@ -41,6 +103,8 @@ function hostRedirect(request: NextRequest): NextResponse | null {
 }
 
 export function proxy(request: NextRequest) {
+  const demo = demoRedirect(request);
+  if (demo) return demo;
   const redirect = hostRedirect(request);
   if (redirect) return redirect;
   const path = request.nextUrl.pathname;
@@ -60,6 +124,8 @@ export function proxy(request: NextRequest) {
 export const config = {
   matcher: [
     "/",
+    "/demo",
+    "/demo/",
     "/login",
     "/signup",
     "/dashboard/:path*",
