@@ -1,13 +1,13 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/b-banner-dark.svg">
-    <img src="docs/readme/assets/b-banner.svg" alt="Voni — voice agents that finish the job" width="100%">
+    <img src="docs/readme/assets/b-banner.svg" alt="Voni: voice agents that finish the job" width="100%">
   </picture>
 </p>
 
 <br>
 
-<h3 align="center">A platform for voice agents that run real business workflows over the phone —<br>and stay attached to the case until it closes.</h3>
+<h3 align="center">A platform for voice agents that run real business workflows over the phone,<br>and stay attached to the case until it closes.</h3>
 
 <br>
 
@@ -22,17 +22,17 @@
 <p align="center">
   <a href="docs/readme/assets/demo-call.mp4"><picture>
     <source type="image/webp" srcset="docs/readme/assets/demo-call.webp">
-    <img src="docs/readme/assets/demo-call.gif" alt="A real Voni demo call — the agent greeting, the caller replying, and the live transcript" width="420">
+    <img src="docs/readme/assets/demo-call.gif" alt="A real Voni demo call: the agent greets, the caller replies, and the live transcript" width="420">
   </picture></a>
 </p>
 
 <p align="center">
-  <sub><b>A real call, recorded from the landing page.</b> Voni picks up, says hello, listens, and transcribes the caller — in the browser, no app install.</sub>
+  <sub><b>A real call, recorded from the landing page.</b> Voni answers and transcribes the caller in the browser. No app install.</sub>
 </p>
 
 <br>
 
-Most voice agents answer questions. Voni agents execute: verify the caller, call the company's own APIs and MCP servers, branch on the outcome, and keep working after the call ends if that's what the job needs.
+Most voice agents answer questions. Voni agents verify the caller, call the company's own APIs and MCP servers, branch on the outcome, and keep working after the call ends when the job needs it.
 
 **Design once. Trigger from anywhere. One session until resolved.**
 
@@ -53,11 +53,11 @@ Three ideas carry the whole model.
   </picture>
 </p>
 
-**The trigger is not the workflow.** A phone call, a video call, a voice note, or a text message all open the same kind of session. Channels are transports, not separate products — nothing in the workflow has to know how it was reached.
+**The trigger is not the workflow.** A phone call, a video call, a voice note, or a text message all open the same kind of session. Channels are transports, not separate products. Nothing in the workflow has to know how it was reached.
 
 **A session is a durable object, not a call.** Calls end. Sessions don't. When the conversation goes quiet, the session's remaining work moves to a durable job queue: Neon holds the row, Cloudflare Queues carries the work, a one-minute cron sweep catches stragglers. When there's something to say, the agent calls back or leaves a voice note on the same record.
 
-**Execution is the point.** The agent has the company's tool surface — REST APIs, MCP servers, custom functions, LLM calls — available mid-conversation and after it. The loop is `verify → act → confirm`, and the confirm step writes an attributable record of what changed.
+**Execution is the point.** The agent can use the company's tools mid-conversation and after it: REST APIs, MCP servers, custom functions, LLM calls. The loop is `verify → act → confirm`, and the confirm step writes an attributable record of what changed.
 
 <br>
 
@@ -77,7 +77,7 @@ Three ideas carry the whole model.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-02-loop-dark.svg">
-    <img src="docs/readme/assets/figures/fig-02-loop-light.svg" alt="Verify, act, confirm — with the unresolved branch back into act" width="100%">
+    <img src="docs/readme/assets/figures/fig-02-loop-light.svg" alt="Verify, act, confirm, with the unresolved branch back into act" width="100%">
   </picture>
 </p>
 
@@ -94,17 +94,17 @@ Three ideas carry the whole model.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/features-dark.png">
-    <img src="docs/readme/assets/features-light.png" alt="The Voni dashboard — a single agent's configuration in front, with phone numbers and the agent list behind it" width="100%">
+    <img src="docs/readme/assets/features-light.png" alt="The Voni dashboard: a single agent's configuration in front, with phone numbers and the agent list behind it" width="100%">
   </picture>
 </p>
 
-**Agent workspace.** Identity, voice, mission, greeting, and the exact fields the agent listens for before it books. Everything the agent is allowed to do is visible and editable on one page — no prompt buried in a config file.
+**Agent workspace.** Identity, voice, mission, greeting, and the exact fields the agent listens for before it books. Everything the agent is allowed to do is visible and editable on one page, not a prompt buried in a config file.
 
 **Agents as reusable workers.** A list of every agent in the workspace with its deployed state, tool count, and channels. One agent can answer inbound, another can chase renewals; the workflow decides which one runs.
 
-**Phone numbers.** Inbound lines, each mapped to the voice that picks up — or left on the main reception agent so an unassigned line still gets answered.
+**Phone numbers.** Inbound lines, each mapped to the voice that picks up, or left on the main reception agent so an unassigned line still gets answered.
 
-**Durable jobs.** Anything that outlives a call becomes a job with a row in Postgres: visible in the dashboard, retryable, and survivable across worker eviction.
+**Durable jobs.** Anything that outlives a call becomes a job with a row in Postgres: visible in the dashboard, retryable, and still there after a worker eviction.
 
 <br>
 
@@ -114,10 +114,10 @@ Three ideas carry the whole model.
 
 A number in Voni is an inbound destination bound to one agent. Callers dial it, the agent answers, and the call becomes a session with its own record.
 
-- **Buy and rent numbers in-product** — search a country, pick a local or toll-free number, and assign it to an agent without leaving the dashboard
-- **Worldwide coverage** — numbers from many countries, with each prefix's own per-minute rate shown before you commit
-- **Credits instead of invoices** — top up a balance once, and calls, numbers, and monthly line rental draw from it, with every charge itemised on the number it belongs to
-- **Every line has an owner** — bind a number to a specific agent, or leave it on the main reception agent so unassigned inbound still gets answered
+- **Buy and rent numbers in-product.** Search a country, pick a local or toll-free number, and assign it to an agent without leaving the dashboard
+- **Worldwide coverage.** Numbers from many countries, with each prefix's own per-minute rate shown before you commit
+- **Credits instead of invoices.** Top up a balance once. Calls, numbers, and monthly line rental draw from it, and every charge is itemised on the number it belongs to
+- **Every line has an owner.** Bind a number to a specific agent, or leave it on the main reception agent so unassigned inbound still gets answered
 
 <br>
 
@@ -135,7 +135,7 @@ A number in Voni is an inbound destination bound to one agent. Callers dial it, 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-03-durable-dark.svg">
-    <img src="docs/readme/assets/figures/fig-03-durable-light.svg" alt="Durable row in Neon, Cloudflare Queues, worker, delivered — surviving worker eviction" width="100%">
+    <img src="docs/readme/assets/figures/fig-03-durable-light.svg" alt="Durable row in Neon, Cloudflare Queues, worker, delivered, surviving worker eviction" width="100%">
   </picture>
 </p>
 
@@ -145,9 +145,7 @@ A number in Voni is an inbound destination bound to one agent. Callers dial it, 
 
 <br>
 
-The app is a Next.js App Router deployment on Cloudflare Workers via OpenNext. Postgres (Neon, over HTTP) is the system of record for everything durable — sessions, jobs, leads, calls. Cloudflare Queues carries background work with an R2 bucket for staging and a cron trigger for recovery. Telephony media streams terminate in a small Python bridge that republishes audio into the voice pipeline.
-
-Nothing important lives in process memory. A worker can be evicted mid-call and the session survives; that is a design constraint, not a nice-to-have.
+The app is a Next.js App Router deployment on Cloudflare Workers via OpenNext. Postgres (Neon, over HTTP) is the system of record for everything durable: sessions, jobs, leads, calls. Cloudflare Queues carries background work with an R2 bucket for staging and a cron trigger for recovery. Telephony media streams terminate in a small Python bridge that republishes audio into the voice pipeline.
 
 <br>
 
@@ -158,7 +156,7 @@ Nothing important lives in process memory. A worker can be evicted mid-call and 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-05-anatomy-dark.svg">
-    <img src="docs/readme/assets/figures/fig-05-anatomy-light.svg" alt="Anatomy of an agent — identity, mission, detect, rules, tools compiling to a voice agent" width="100%">
+    <img src="docs/readme/assets/figures/fig-05-anatomy-light.svg" alt="Anatomy of an agent: identity, mission, detect, rules, tools compiling to a voice agent" width="100%">
   </picture>
 </p>
 
@@ -234,7 +232,7 @@ The full variable list, including Worker-runtime overrides, is in `voni/ENVIRONM
 | `npm run db:studio` | Drizzle Studio |
 | `npm run db:seed` | Seed deterministic development data |
 
-`npm run typecheck` is not the same as `tsc --noEmit`. Route types (`PageProps`, `LayoutProps`, `RouteContext`) are generated into `.next/types` by `next typegen`, and a fresh checkout does not have them.
+`npm run typecheck` is not the same as `tsc --noEmit`. `next typegen` generates route types (`PageProps`, `LayoutProps`, `RouteContext`) into `.next/types`, and a fresh checkout does not have them.
 
 <br>
 
@@ -244,7 +242,7 @@ The full variable list, including Worker-runtime overrides, is in `voni/ENVIRONM
 
 ```
 voni/
-  src/app/           routes — public landing, auth, and the (dashboard) group
+  src/app/           routes: public landing, auth, and the (dashboard) group
   src/lib/agents/    agent wizard, compile, provision, voices
   src/lib/voice/     session cascade, playout, barge-in, call marks, judges
   src/lib/jobs/      queue producer, processor, store, sweep
@@ -262,7 +260,7 @@ docs/                specs, ADRs, plans
 
 <br>
 
-Unit tests use `node:test` and are auto-discovered — add a `*.test.ts` file next to the code, not an entry in a config. Playwright covers the browser paths in `tests/e2e/`.
+Unit tests use `node:test` and are auto-discovered. Add a `*.test.ts` file next to the code, not an entry in a config. Playwright covers the browser paths in `tests/e2e/`.
 
 ```bash
 npm test                       # unit
@@ -278,7 +276,7 @@ Some integration scripts require a live database and provider keys; they run fro
 
 <br>
 
-`AGENTS.md` is the contract, not a suggestion. It defines the async-work protocol (anything over three seconds is a durable job, not a spinner), the visual-feedback protocol (every async trigger shows pending, success, and failure), and the page conventions for loading and error boundaries.
+`AGENTS.md` is the contract, not a suggestion. It sets the async-work rule: anything that may take over three seconds is a durable job, not a spinner. It sets the visual-feedback rule: every async trigger shows pending, success, and failure. It also sets the page conventions for loading and error boundaries.
 
 Before opening a pull request:
 
@@ -294,7 +292,7 @@ CI runs typecheck and lint on every push and pull request; keep the tree green.
 
 <br>
 
-Source-available. All rights reserved — the source is published for reference, and no license is granted to use, copy, modify, or redistribute it. Contact the maintainers for terms.
+Source-available. All rights reserved. The source is published for reference, and no license is granted to use, copy, modify, or redistribute it. Contact the maintainers for terms.
 
 <br>
 
