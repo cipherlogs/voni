@@ -1,72 +1,303 @@
-# Voni
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/b-banner-dark.svg">
+    <img src="docs/readme/assets/b-banner.svg" alt="Voni — voice agents that finish the job" width="100%">
+  </picture>
+</p>
 
-Voice-first agent platform for B2B. Deploy agents that resolve real work over calls, video, voice notes, and text — in one persistent session from trigger until resolved.
+<br>
 
-## Vision
+<h3 align="center">A platform for voice agents that run real business workflows over the phone —<br>and stay attached to the case until it closes.</h3>
 
-Voni is where a company designs a workflow once and serves customers everywhere they already talk:
+<br>
 
-- **Any trigger** — phone call, video call, voice note, WhatsApp, Instagram DMs/calls, social messaging. The trigger only starts the session.
-- **One session until resolved** — live + background in the same case. Hang up doesn't kill it. If a task takes 3 minutes, the customer goes on with their day; the agent follows up with a callback or voice note (voice preferred, feels personal) per what was agreed on-call.
-- **Voice in any form** — live calls, video, voice notes. Text welcome too. 24/7 instant pickup, no queue. Example: accident panic video call — understand damage live, plate, type, dispatch ambulance, keep following up for days in the same session.
-- **Customer-designed workflows** — non-technical ops build with a cold-email-builder-like canvas: do this, if success do X else Y, escalate, wait, hand off to human, request callback, close session. Technical builders can do anything with code.
-- **Any tool** — BYO APIs, MCPs, LLMs during the call and across the whole session. Prebuilt connectors ship over time.
-- **Single or group** — one voice talking + silent specialists, or handoffs between voices. Client's design choice.
+<p align="center">
+  <a href="https://github.com/cipherlogs/voni/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/cipherlogs/voni/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0a0a0a" alt="CI status"></a>
+  <a href="#architecture"><img src="https://img.shields.io/badge/read-architecture-0a0a0a?style=flat-square&logo=readme&logoColor=white" alt="Architecture"></a>
+  <a href="https://voni.cc"><img src="https://img.shields.io/badge/website-voni.cc-0a0a0a?style=flat-square&logo=safari&logoColor=white" alt="Website"></a>
+</p>
 
-Bank-freeze and accident are the same loop: `verify → act → confirm`, live if possible, background if better, always smooth.
+<br>
 
-## What exists now (current slice)
+<p align="center">
+  <a href="docs/readme/assets/demo-call.mp4"><picture>
+    <source type="image/webp" srcset="docs/readme/assets/demo-call.webp">
+    <img src="docs/readme/assets/demo-call.gif" alt="A real Voni demo call — the agent greeting, the caller replying, and the live transcript" width="420">
+  </picture></a>
+</p>
 
-The repo currently proves a narrow slice of this: phone + WhatsApp voice agents for qualification/booking/follow-up, agent wizard, campaigns + Telnyx dialer, leads/numbers/calls, in-app voice copilot, durable background jobs. The vision above is the target; the slice is the starting point.
+<p align="center">
+  <sub><b>A real call, recorded from the landing page.</b> Voni picks up, says hello, listens, and transcribes the caller — in the browser, no app install.</sub>
+</p>
 
-## Stack
+<br>
 
-- App: Next.js 16 (App Router) + React 19, shadcn/ui on Base UI, Tailwind — in `voni/`
-- Voice: AssemblyAI voice agents · Telephony: Telnyx via the Python bridge in `telephony-bot/`
-- Data: Neon Postgres via Drizzle ORM (`voni/drizzle/`, `voni/src/lib/db/`)
-- Auth: Better Auth, Google-only sign-in with organizations
-- Hosting: Cloudflare Workers via OpenNext (`npm run deploy` in `voni/`)
+Most voice agents answer questions. Voni agents execute: verify the caller, call the company's own APIs and MCP servers, branch on the outcome, and keep working after the call ends if that's what the job needs.
 
-## Layout
+**Design once. Trigger from anywhere. One session until resolved.**
 
-```
-voni/            # Next.js app (source of truth for product work)
-telephony-bot/   # Telnyx media-stream bridge + campaign runner (Python)
-docs/            # design specs + implementation plans
-PROGRESS.md     # current progress + frontier
-```
+<br>
 
-## Quickstart
+## How it works
+
+<br>
+
+Three ideas carry the whole model.
+
+<br>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-04-tools-dark.svg">
+    <img src="docs/readme/assets/figures/fig-04-tools-light.svg" alt="The agent at the centre calling company APIs, MCP servers, custom tools, LLMs and human handoff" width="100%">
+  </picture>
+</p>
+
+**The trigger is not the workflow.** A phone call, a video call, a voice note, or a text message all open the same kind of session. Channels are transports, not separate products — nothing in the workflow has to know how it was reached.
+
+**A session is a durable object, not a call.** Calls end. Sessions don't. When the conversation goes quiet, the session's remaining work moves to a durable job queue: Neon holds the row, Cloudflare Queues carries the work, a one-minute cron sweep catches stragglers. When there's something to say, the agent calls back or leaves a voice note on the same record.
+
+**Execution is the point.** The agent has the company's tool surface — REST APIs, MCP servers, custom functions, LLM calls — available mid-conversation and after it. The loop is `verify → act → confirm`, and the confirm step writes an attributable record of what changed.
+
+<br>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-01-session-dark.svg">
+    <img src="docs/readme/assets/figures/fig-01-session-light.svg" alt="A session opens on trigger and stays open past hang-up, through background work and follow-up" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <sub>The call is a window inside the session. Hanging up is not the same as closing the case.</sub>
+</p>
+
+<br>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-02-loop-dark.svg">
+    <img src="docs/readme/assets/figures/fig-02-loop-light.svg" alt="Verify, act, confirm — with the unresolved branch back into act" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <sub>The same loop for freezing a card and for dispatching a unit. Only the tools differ.</sub>
+</p>
+
+<br>
+
+## Features
+
+<br>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/features-dark.png">
+    <img src="docs/readme/assets/features-light.png" alt="The Voni dashboard — a single agent's configuration in front, with phone numbers and the agent list behind it" width="100%">
+  </picture>
+</p>
+
+**Agent workspace.** Identity, voice, mission, greeting, and the exact fields the agent listens for before it books. Everything the agent is allowed to do is visible and editable on one page — no prompt buried in a config file.
+
+**Agents as reusable workers.** A list of every agent in the workspace with its deployed state, tool count, and channels. One agent can answer inbound, another can chase renewals; the workflow decides which one runs.
+
+**Phone numbers.** Inbound lines, each mapped to the voice that picks up — or left on the main reception agent so an unassigned line still gets answered.
+
+**Durable jobs.** Anything that outlives a call becomes a job with a row in Postgres: visible in the dashboard, retryable, and survivable across worker eviction.
+
+<br>
+
+## Phone numbers
+
+<br>
+
+A number in Voni is an inbound destination bound to one agent. Callers dial it, the agent answers, and the call becomes a session with its own record.
+
+- **Buy and rent numbers in-product** — search a country, pick a local or toll-free number, and assign it to an agent without leaving the dashboard
+- **Worldwide coverage** — numbers from many countries, with each prefix's own per-minute rate shown before you commit
+- **Credits instead of invoices** — top up a balance once, and calls, numbers, and monthly line rental draw from it, with every charge itemised on the number it belongs to
+- **Every line has an owner** — bind a number to a specific agent, or leave it on the main reception agent so unassigned inbound still gets answered
+
+<br>
+
+## Architecture
+
+<br>
+
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/built-on-dark.svg">
+    <img src="docs/readme/assets/built-on-light.svg" alt="Cloudflare, Neon, AssemblyAI, Telnyx, Next.js, Drizzle, TypeScript, Tailwind CSS" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-03-durable-dark.svg">
+    <img src="docs/readme/assets/figures/fig-03-durable-light.svg" alt="Durable row in Neon, Cloudflare Queues, worker, delivered — surviving worker eviction" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <sub>Nothing important lives in process memory. A worker can be evicted mid-call and the session survives.</sub>
+</p>
+
+<br>
+
+The app is a Next.js App Router deployment on Cloudflare Workers via OpenNext. Postgres (Neon, over HTTP) is the system of record for everything durable — sessions, jobs, leads, calls. Cloudflare Queues carries background work with an R2 bucket for staging and a cron trigger for recovery. Telephony media streams terminate in a small Python bridge that republishes audio into the voice pipeline.
+
+Nothing important lives in process memory. A worker can be evicted mid-call and the session survives; that is a design constraint, not a nice-to-have.
+
+<br>
+
+### Anatomy and scope
+
+<br>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-05-anatomy-dark.svg">
+    <img src="docs/readme/assets/figures/fig-05-anatomy-light.svg" alt="Anatomy of an agent — identity, mission, detect, rules, tools compiling to a voice agent" width="100%">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-06-scope-dark.svg">
+    <img src="docs/readme/assets/figures/fig-06-scope-light.svg" alt="Shipped today versus modelled but not shipped" width="100%">
+  </picture>
+</p>
+
+<br>
+
+## Getting started
+
+<br>
 
 ```bash
-cd voni
+git clone git@github.com:cipherlogs/voni.git
+cd voni/voni      # the app lives in a subdirectory
 npm install
-npm run dev        # http://localhost:3000
+npm run dev
 ```
 
-Environment (never committed — see `voni/ENVIRONMENT.md` for the full list):
+Open <http://localhost:3000>.
 
-- `voni/.env.local` — every local value: provider keys, auth secrets, `DATABASE_URL`
-- `voni/.dev.vars` — Worker-runtime overrides only: `NEXTJS_ENV`, `LANDING_HOST=`
+<br>
 
-Database:
+## Environment
+
+<br>
+
+`DATABASE_URL` is not optional. The root layout resolves a session on every request, so without a database the landing page and dashboard both fail rather than degrade.
+
+Minimum to boot and reach the dashboard:
 
 ```bash
-npm run db:generate
-npm run db:migrate
-npm run db:seed     # 12 deterministic dev property listings (explicit org only)
+DATABASE_URL=postgres://...
+BETTER_AUTH_SECRET=...
+BETTER_AUTH_URL=http://localhost:3000
 ```
 
-Checks:
+Google OAuth (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) is required for real sign-in. Access is gated by an allowlist; for local work set `DEV_BYPASS_AUTH=true` in a non-production build to get a synthetic session.
+
+Voice and telephony degrade silently rather than crash when their keys are absent:
 
 ```bash
-npm test            # unit suite
-npm run lint
-npx tsc --noEmit
+ASSEMBLYAI_API_KEY=       # voice agents and streaming STT
+TELNYX_API_KEY=           # numbers and outbound dialing
+AI_GATEWAY_API_KEY=       # LLM judge, falls back to heuristics
 ```
 
-Before writing frontend code, read `AGENTS.md` — it defines the async-work protocol, visual-feedback protocol, and the `next-dev-loop` runtime verification step.
+The full variable list, including Worker-runtime overrides, is in `voni/ENVIRONMENT.md`. Nothing in `.env.local`, `.dev.vars`, or `certificates/` is ever committed.
+
+<br>
+
+## Commands
+
+<br>
+
+| Command | Description |
+|---|---|
+| `npm run dev` | Development server on :3000 |
+| `npm run dev:phone` | HTTPS dev server for testing mic access from a phone |
+| `npm run build` | Production build |
+| `npm run preview` | OpenNext build, then local Workers preview |
+| `npm run deploy` | OpenNext build, then `wrangler deploy` |
+| `npm run typecheck` | `next typegen`, then `tsc --noEmit` |
+| `npm run lint` | ESLint |
+| `npm test` | App manifest check plus every `*.test.ts(x)` under `src/` and `scripts/` |
+| `npm run test:e2e` | Full Playwright suite |
+| `npm run db:generate` | Generate Drizzle migration |
+| `npm run db:migrate` | Apply migrations |
+| `npm run db:studio` | Drizzle Studio |
+| `npm run db:seed` | Seed deterministic development data |
+
+`npm run typecheck` is not the same as `tsc --noEmit`. Route types (`PageProps`, `LayoutProps`, `RouteContext`) are generated into `.next/types` by `next typegen`, and a fresh checkout does not have them.
+
+<br>
+
+## Project layout
+
+<br>
+
+```
+voni/
+  src/app/           routes — public landing, auth, and the (dashboard) group
+  src/lib/agents/    agent wizard, compile, provision, voices
+  src/lib/voice/     session cascade, playout, barge-in, call marks, judges
+  src/lib/jobs/      queue producer, processor, store, sweep
+  src/lib/tools/     tool definitions and execution
+  src/lib/copilot/   manifest, UI actuation, record tools
+  drizzle/           SQL migrations (drizzle-kit)
+telephony-bot/       Telnyx media-stream bridge and campaign runner (Python)
+voice-pipeline/      streaming voice service
+docs/                specs, ADRs, plans
+```
+
+<br>
+
+## Testing
+
+<br>
+
+Unit tests use `node:test` and are auto-discovered — add a `*.test.ts` file next to the code, not an entry in a config. Playwright covers the browser paths in `tests/e2e/`.
+
+```bash
+npm test                       # unit
+npm run test:e2e               # all e2e
+npm run test:e2e:instant       # instant-navigation contract only
+```
+
+Some integration scripts require a live database and provider keys; they run from `.env.local` via `node --env-file=.env.local`.
+
+<br>
+
+## Contributing
+
+<br>
+
+`AGENTS.md` is the contract, not a suggestion. It defines the async-work protocol (anything over three seconds is a durable job, not a spinner), the visual-feedback protocol (every async trigger shows pending, success, and failure), and the page conventions for loading and error boundaries.
+
+Before opening a pull request:
+
+```bash
+npm run typecheck && npm test && npm run lint
+```
+
+CI runs typecheck and lint on every push and pull request; keep the tree green.
+
+<br>
 
 ## License
 
-Private. All rights reserved.
+<br>
+
+Source-available. All rights reserved — the source is published for reference, and no license is granted to use, copy, modify, or redistribute it. Contact the maintainers for terms.
+
+<br>
+
+<p align="center">
+  <sub>Built by <a href="https://pilotxstudio.com">PilotX Studio</a> · <a href="https://voni.cc">voni.cc</a></sub>
+</p>
