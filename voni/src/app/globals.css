@@ -117,7 +117,10 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.52 0 0);
+  /* Secondary text. Was oklch(0.52) (5.49:1 on white), which measured fine but
+     read as soft grey in the UI. oklch(0.38) is 10.05:1 and holds its weight
+     at the 12-13px sizes this token is used at. */
+  --muted-foreground: oklch(0.38 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -738,7 +741,10 @@
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
+  /* Dark-mode secondary text. Was oklch(0.708), 7.66:1 on the dark canvas;
+     raised to match the light-mode change so both themes carry the same
+     weight. */
+  --muted-foreground: oklch(0.8 0 0);
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);

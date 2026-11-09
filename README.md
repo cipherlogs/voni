@@ -94,7 +94,7 @@ Every agent runs on the same three rules.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/features-dark.png">
-    <img src="docs/readme/assets/features-light.png" alt="The Voni dashboard: a single agent's configuration in front, with phone numbers and the agent list behind it" width="100%">
+    <img src="docs/readme/assets/features-light.png" alt="The Voni dashboard: a campaign with its dialer and lead queue in front, with the agent list and phone numbers behind it" width="100%">
   </picture>
 </p>
 

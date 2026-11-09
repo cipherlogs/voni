@@ -11,19 +11,17 @@ Voni's accent is the Tailwind green used by the product's logo arc
 
 | Role | Token | Hex | Where |
 |---|---|---|---|
-| Accent ink on light | green-700 | `#008236` | Light-mode diagram accent text, arrows, emphasis |
-| Accent ink on dark | green-500 | `#00c950` | Dark-mode diagram accent text, arrows, emphasis |
-| Accent mark | green-600 | `#00a63e` | Logo arc, single-colour accent that works on both |
+| Accent ink on light | green-800 | `#016630` | Light-mode diagram accent text, arrows, emphasis |
+| Accent ink on dark | green-400 | `#05df72` | Dark-mode diagram accent text, arrows, emphasis |
 
 Contrast, measured:
 
-- `#008236` on white 4.95:1 (AA for text)
-- `#00c950` on `#0a0a0a` 8.93:1
-- `#00a63e` on white 3.22:1 (not used for text at small sizes)
+- `#016630` on white 7.13:1, and 6.49:1 on the pale green fill
+- `#05df72` on `#0d1117` 10.64:1, and 8.38:1 on the deep green fill
 
-Do not use green-600 for accent text in light mode. It fails AA at diagram
-label sizes. green-700 is the light-mode accent; green-500 is the dark-mode
-accent. green-600 is only for shapes (the logo arc, a dot, a rule).
+Nothing uses green-600 `#00a63e` or green-700 `#008236` any more. green-700
+cleared AA at 4.95:1, but on thin 12px handwriting strokes it still read as
+soft, which is what the two darker steps fix.
 
 ## Neutral ink
 
@@ -31,14 +29,16 @@ There is one ink scale, and light mode uses real black.
 
 | Role | Light | Dark |
 |---|---|---|
-| Ink (headings, primary strokes) | `#0a0a0a` | `#f5f5f5` |
-| Dim (secondary text, thin strokes) | `#4a4a4a` | `#a3a3a3` |
+| Ink (headings, primary strokes) | `#0a0a0a` | `#fafafa` |
+| Dim (secondary text, thin strokes) | `#1f1f1f` | `#d4d4d4` |
 | Rule / hairline | `#0a0a0a` at 0.14 alpha | `#f5f5f5` at 0.14 alpha |
 | Grid | `#0a0a0a` at 0.05 / 0.09 | `#f5f5f5` at 0.05 / 0.09 |
 
-The previous light ink was `#1e1e1e` with `#6b6b6b` dim, which read as faded
-grey. `#0a0a0a` with `#4a4a4a` is the fix: dim measures 8.86:1 on white, up
-from 5.33:1.
+The dim tier went through three values and stopped here. `#6b6b6b` read as
+faded grey. `#4a4a4a` measured 8.86:1 on white and still read soft, because
+these labels are 12 to 13px and drawn with a thin pen stroke. `#1f1f1f` is
+16.48:1 and holds its weight at that size. Dark mode moved the same way, from
+`#a3a3a3` to `#d4d4d4` (12.77:1 on `#0d1117`).
 
 ## Fills
 
@@ -53,6 +53,19 @@ Contrast: `#0a0a0a` on `#dcfce7` is 18.03:1. `#f5f5f5` on `#052e16` is 13.67:1.
 
 The dark fill sits 1.33:1 against the `#0a0a0a` page, so it reads as a panel
 without competing with the accent.
+
+## The app's own text
+
+The same weight problem applied to the product, so two tokens in
+`voni/src/app/globals.css` moved with it:
+
+| Token | Was | Now | Contrast on its background |
+|---|---|---|---|
+| light `--muted-foreground` | `oklch(0.52)` | `oklch(0.38)` | 10.05:1, was 5.49:1 |
+| dark `--muted-foreground` | `oklch(0.708)` | `oklch(0.8)` | 10.65:1, was 7.66:1 |
+
+The screenshots in `assets/shots/` are captured after that change. Recapture
+them if the token moves again.
 
 ## Shadows
 
