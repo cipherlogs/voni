@@ -22,7 +22,7 @@
 <p align="center">
   <a href="docs/readme/assets/demo-call.mp4"><picture>
     <source type="image/webp" srcset="docs/readme/assets/demo-call.webp">
-    <img src="docs/readme/assets/demo-call.gif" alt="A real Voni demo call: the agent greets, the caller replies, and the live transcript" width="420">
+    <img src="docs/readme/assets/demo-call.gif" alt="A real Voni demo call: the agent greets, the caller replies, and the live transcript" width="400">
   </picture></a>
 </p>
 
