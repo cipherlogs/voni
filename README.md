@@ -42,14 +42,14 @@ Most voice agents answer questions. Voni agents verify the caller, call the comp
 
 <br>
 
-Three ideas carry the whole model.
+Every agent runs on the same three rules.
 
 <br>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-04-tools-dark.svg">
-    <img src="docs/readme/assets/figures/fig-04-tools-light.svg" alt="The agent at the centre calling company APIs, MCP servers, custom tools, LLMs and human handoff" width="100%">
+    <img src="docs/readme/assets/figures/fig-04-tools-light.svg" alt="The agent in the middle, reaching company APIs, MCP servers, custom tools, LLM calls, and human handoff" width="100%">
   </picture>
 </p>
 
@@ -64,7 +64,7 @@ Three ideas carry the whole model.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-01-session-dark.svg">
-    <img src="docs/readme/assets/figures/fig-01-session-light.svg" alt="A session opens on trigger and stays open past hang-up, through background work and follow-up" width="100%">
+    <img src="docs/readme/assets/figures/fig-01-session-light.svg" alt="A session opens on trigger and stays open past hang-up, through background work and the follow-up" width="100%">
   </picture>
 </p>
 
@@ -105,6 +105,59 @@ Three ideas carry the whole model.
 **Phone numbers.** Inbound lines, each mapped to the voice that picks up, or left on the main reception agent so an unassigned line still gets answered.
 
 **Durable jobs.** Anything that outlives a call becomes a job with a row in Postgres: visible in the dashboard, retryable, and still there after a worker eviction.
+
+<br>
+
+<table>
+<tr>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/shots/agents-dark.png">
+  <img src="docs/readme/assets/shots/agents.png" alt="The agent list, showing each agent's deployed state, tool count, and captured fields" width="100%">
+</picture>
+<sub><b>Agents.</b> Deployed state, tool count, and captured fields per worker.</sub>
+</td>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/shots/campaign-dark.png">
+  <img src="docs/readme/assets/shots/campaign.png" alt="A campaign showing its dialer window, the import drop zone, and a queue of leads waiting to be called" width="100%">
+</picture>
+<sub><b>Campaigns.</b> A dialer window, a CSV import, and the queue it fills.</sub>
+</td>
+</tr>
+<tr>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/shots/leads-dark.png">
+  <img src="docs/readme/assets/shots/leads.png" alt="The leads table with names, phone numbers, consent state, pipeline stage, and call counts" width="100%">
+</picture>
+<sub><b>Leads.</b> One record per person, reachable on phone and WhatsApp.</sub>
+</td>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/shots/numbers-dark.png">
+  <img src="docs/readme/assets/shots/numbers.png" alt="Phone numbers, each assigned to the agent that answers it" width="100%">
+</picture>
+<sub><b>Numbers.</b> Which agent answers each line, and how it is billed.</sub>
+</td>
+</tr>
+<tr>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/shots/jobs-dark.png">
+  <img src="docs/readme/assets/shots/jobs.png" alt="The job center, listing background runs with their elapsed time and outcome" width="100%">
+</picture>
+<sub><b>Jobs.</b> Every background run keeps its elapsed time and outcome for 30 days.</sub>
+</td>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/shots/settings-dark.png">
+  <img src="docs/readme/assets/shots/settings.png" alt="Voice copilot settings, choosing the voice and language the copilot replies in" width="100%">
+</picture>
+<sub><b>Settings.</b> The copilot voice and language, plus workspace and services.</sub>
+</td>
+</tr>
+</table>
 
 <br>
 
@@ -156,14 +209,14 @@ The app is a Next.js App Router deployment on Cloudflare Workers via OpenNext. P
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-05-anatomy-dark.svg">
-    <img src="docs/readme/assets/figures/fig-05-anatomy-light.svg" alt="Anatomy of an agent: identity, mission, detect, rules, tools compiling to a voice agent" width="100%">
+    <img src="docs/readme/assets/figures/fig-05-anatomy-light.svg" alt="An agent is five settings groups: identity, mission, detect, rules, and tools, compiled into one voice agent on a number" width="100%">
   </picture>
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/assets/figures/fig-06-scope-dark.svg">
-    <img src="docs/readme/assets/figures/fig-06-scope-light.svg" alt="Shipped today versus modelled but not shipped" width="100%">
+    <img src="docs/readme/assets/figures/fig-06-scope-light.svg" alt="Two columns: what ships today, and what the model implies but does not ship yet" width="100%">
   </picture>
 </p>
 
@@ -200,7 +253,7 @@ BETTER_AUTH_URL=http://localhost:3000
 
 Google OAuth (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) is required for real sign-in. Access is gated by an allowlist; for local work set `DEV_BYPASS_AUTH=true` in a non-production build to get a synthetic session.
 
-Voice and telephony degrade silently rather than crash when their keys are absent:
+Voice and telephony need their keys only when you use them. Without an AssemblyAI key the voice preview returns a 503 naming the missing key; the settings page shows each provider as unconfigured.
 
 ```bash
 ASSEMBLYAI_API_KEY=       # voice agents and streaming STT

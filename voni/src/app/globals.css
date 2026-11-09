@@ -68,7 +68,21 @@
   --text-display-sm--line-height: 1.08;
   --text-display: 3.5rem;
   --text-display--line-height: 1.06;
-  --shadow-landing: 0 1px 3px rgb(0 0 0 / 0.06), 0 24px 48px -24px rgb(0 0 0 / 0.18);
+  /* No drop shadows anywhere, in either theme. Depth comes from borders and
+     background steps instead: a soft shadow on a white card reads as a smudge
+     rather than elevation. Every step of the default scale collapses to none,
+     so the existing `shadow-sm` / `shadow-md` / `shadow-lg` call sites become
+     no-ops without an edit. Ring-substitutes written as arbitrary values
+     (`shadow-[0_0_0_1px_...]`) are untouched: those draw a border, not a
+     shadow. */
+  --shadow-2xs: none;
+  --shadow-xs: none;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-xl: none;
+  --shadow-2xl: none;
+  --shadow-landing: none;
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
