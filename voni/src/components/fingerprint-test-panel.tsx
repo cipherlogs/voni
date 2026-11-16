@@ -209,6 +209,17 @@ export function FingerprintTestPanel() {
                     code: {errorCode}
                   </span>
                 ) : null}
+                {errorCode === "script_load_fail" ? (
+                  <span className="mt-2 block text-xs">
+                    The agent script never loaded, so no identification was
+                    attempted. This is almost always a content blocker (ad
+                    blocker, Brave Shields, Firefox Enhanced Tracking
+                    Protection) or a DNS/VPN filter stopping
+                    fpnpmcdn.net, fpjscdn.net, or api.fpjs.io. Try an
+                    incognito window with extensions off or allow-list those
+                    hosts, then press Reload data.
+                  </span>
+                ) : null}
               </AlertDescription>
             </Alert>
           ) : null}
