@@ -28,6 +28,8 @@ const dryRun = passthrough.includes("--dry-run");
 const base = readBaseConfig();
 const configDir = join(projectRoot, ".wrangler", "deploy-config");
 
+console.log(`[email-pool] wrangler: ${bin}`);
+
 if (!process.env.CLOUDFLARE_API_TOKEN && !dryRun) {
   console.warn(
     "[email-pool] CLOUDFLARE_API_TOKEN is not set; relying on an existing `wrangler login` session.",

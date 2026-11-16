@@ -369,12 +369,27 @@ overview page. Check with `npx wrangler whoami`.
 `docs/agents/email-pool.md`. Two sets of values, and they are not the same
 credential:
 
-| Variable | Local (`voni/.env.local` / pool `.dev.vars`) | Production |
+| Variable | Local dev (`voni/.dev.vars`) | Production |
 | --- | --- | --- |
-| `POOL_SECRET` | any string, shared with the pool's local dev (`dev-pool-secret` by default) | `wrangler secret put POOL_SECRET` on **each** `email-pool-0N` **and** on `voni` |
-| `POOL_WORKER_URLS` | `http://127.0.0.1:8787,http://127.0.0.1:8788,http://127.0.0.1:8789` | `https://email-pool-01.<subdomain>.workers.dev,...` |
+| `POOL_SECRET` | `dev-pool-secret` (matches `workers/email-pool/scripts/dev.mjs`) | `wrangler secret put POOL_SECRET` on **each** `email-pool-0N` **and** on `voni` |
+| `POOL_WORKER_URLS` | `http://127.0.0.1:8787,http://127.0.0.1:8788,http://127.0.0.1:8789` | `https://email-pool-01.vonii.workers.dev,...` |
 | `ALLOWED_TARGET_HOSTS` (pool) | `voni.cc,www.voni.cc,localhost:3000,127.0.0.1:3000,cipherlogs.github.io` | `voni.cc,www.voni.cc,cipherlogs.github.io` |
 | `ALLOW_PRIVATE_TARGETS` (pool) | `true` (localhost only) | unset |
+
+Local values go in **`.dev.vars`, not `.env.local`.** `secret()` checks
+`process.env` first, and OpenNext bakes `.env.local` into the Worker at build
+time — so a `POOL_SECRET` there would ride into a local `npm run deploy` and
+disagree with the Worker secret. `.dev.vars` reaches the route through the
+Cloudflare context and is never baked.
+
+The production secret has one reference copy in `.env.local` as
+`POOL_SECRET_PROD` (gitignored). The Worker secret remains the source of truth;
+that copy is only so the value is recoverable.
+
+The target list is a data file, not code: **`voni/src/lib/email/targets.json`**.
+Edit the array there; `src/lib/email/pool.ts` imports it and validates that
+every entry is an absolute `https://` URL with a host. A bad entry throws at
+module load and fails the test suite before any deploy.
 
 Without `POOL_SECRET` or `POOL_WORKER_URLS` the route answers
 `503 {reason:"not_configured"}` and the page shows that, rather than a silent

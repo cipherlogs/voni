@@ -33,13 +33,14 @@ stripping; no `tsx` needed).
 
 ```sh
 cd workers/email-pool
-npm install            # typescript + @cloudflare/workers-types only
+npm install            # typescript, @cloudflare/workers-types, wrangler
 npm run dev            # 3 wrangler dev instances on 8787, 8788, 8789
 ```
 
 `EMAIL_POOL_SIZE` sets the count, `EMAIL_POOL_PORT` the base port. `wrangler` is
 resolved from `node_modules/.bin` if present, otherwise from
-`../../voni/node_modules/.bin/wrangler`. The dev script prints each instance's
+`../../voni/node_modules/.bin/wrangler` (legacy fallback; CI installs the local
+copy). The dev script prints each instance's
 URL and the local secret (`dev-pool-secret` unless `EMAIL_POOL_SECRET` is set).
 
 Dev config allows `localhost:3000` and `127.0.0.1:3000` and sets
@@ -101,9 +102,10 @@ https://email-pool-01.<your-subdomain>.workers.dev
 Set the shared secret on every instance (secrets are per-worker, not in vars):
 
 ```sh
+# Run from workers/email-pool after `npm install` (local wrangler).
 for n in 01 02 03; do
   printf '%s' "$POOL_SECRET" | \
-    ../../voni/node_modules/.bin/wrangler secret put POOL_SECRET \
+    ./node_modules/.bin/wrangler secret put POOL_SECRET \
       --config ".wrangler/deploy-config/email-pool-$n.json"
 done
 ```

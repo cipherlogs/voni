@@ -109,4 +109,15 @@ fan-out in local dev fetches the two production URLs, not your dev server.
   with a timeout, shapes failures per worker.
 - `voni/src/lib/email/pool.ts` — target/source bags, worker URL parsing, fan-out
   with injectable `fetch`.
-- Env: `POOL_SECRET`, `POOL_WORKER_URLS` (comma-separated).
+- `voni/src/lib/email/targets.json` — **the editable target list.** Data, not
+  code: add or remove URLs here. `pool.ts` imports it and throws on a
+  non-absolute `https://` entry, so a bad edit fails the suite before a deploy.
+  A URL on a host the pool already allows is a one-file change. A **new host**
+  also needs adding to `ALLOWED_TARGET_HOSTS` in
+  `workers/email-pool/wrangler.jsonc` — that is the fetch allowlist, and the
+  pool answers `400 bad_target` for anything outside it.
+- `.github/workflows/deploy-pool.yml` — deploys all N pool Workers on a push
+  that touches `workers/email-pool/**`. Secrets stay on the Workers; the
+  workflow only carries the Cloudflare token.
+- Env: `POOL_SECRET`, `POOL_WORKER_URLS` (comma-separated). Locally they belong
+  in `voni/.dev.vars`, never `.env.local` (that file is baked into local builds).

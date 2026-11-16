@@ -10,12 +10,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { POST } from "@/app/api/email-pool/route";
+import TARGETS_JSON from "./targets.json";
 import {
+  assertEmailTargets,
   EMAIL_CAMPAIGN,
   EMAIL_MEDIUM,
   EMAIL_PROVIDERS,
   EMAIL_SOURCE_PARAM,
   EMAIL_TARGETS,
+  EMAIL_TARGETS_FILE,
   fanOutToWorkers,
   nextEmailProvider,
   nextEmailTarget,
@@ -68,6 +71,36 @@ test("bags: two targets, both absolute URLs", () => {
     paths.includes("https://cipherlogs.github.io/print/"),
     "GitHub Pages 301s /print to /print/, so the trailing slash stays",
   );
+});
+
+test("targets: the bag is exactly the operator-edited JSON file", () => {
+  assert.deepEqual([...EMAIL_TARGETS], TARGETS_JSON);
+  assert.deepEqual(TARGETS_JSON, [
+    "https://cipherlogs.github.io/print/",
+    "https://voni.cc/test",
+  ]);
+});
+
+test("targets: every entry is an absolute https URL with a host", () => {
+  for (const entry of EMAIL_TARGETS) {
+    const url = new URL(entry);
+    assert.equal(url.protocol, "https:", `${entry} must be https`);
+    assert.ok(url.hostname, `${entry} must have a host`);
+    assert.equal(url.toString(), entry, `${entry} is already absolute, never resolved`);
+  }
+});
+
+test("targets guard: a path-only, http or non-URL entry throws by name and file", () => {
+  for (const bad of ["/print/", "http://voni.cc/test", "not a url"]) {
+    assert.throws(
+      () => assertEmailTargets([bad]),
+      (error: Error) =>
+        error.message.includes(JSON.stringify(bad)) &&
+        error.message.includes(EMAIL_TARGETS_FILE),
+      `${bad} must be rejected`,
+    );
+  }
+  assert.equal(assertEmailTargets(EMAIL_TARGETS), EMAIL_TARGETS, "the real bag passes");
 });
 
 test("shuffle bag: every pass is a permutation, pinned random keeps a stable order", () => {

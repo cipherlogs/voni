@@ -9,6 +9,12 @@
  * already-resolved absolute URL.
  */
 
+/** Targets are edited here, never in this file: `src/lib/email/targets.json`. */
+import TARGETS_JSON from "./targets.json";
+
+/** Named in the guard's error so a bad edit points straight at the file. */
+export const EMAIL_TARGETS_FILE = "src/lib/email/targets.json";
+
 /**
  * What a Worker may be asked to fetch. Every entry is an absolute URL: the bag
  * carries no paths, so there is no origin to resolve against and no second
@@ -18,11 +24,32 @@
  * Pages 301s `/print` to `/print/`, and the pool fetches with
  * `redirect: "manual"`, so a slashless target would be reported as a redirect
  * instead of a page.
+ *
+ * A path-only, `http` or non-URL entry would otherwise be fetched as something
+ * else (or silently fetch nothing), so the guard below throws by name and by
+ * file at module load: a bad edit fails loudly.
  */
-export const EMAIL_TARGETS = [
-  "https://cipherlogs.github.io/print/",
-  "https://voni.cc/test",
-] as const;
+export function assertEmailTargets(
+  entries: readonly string[],
+): readonly string[] {
+  for (const entry of entries) {
+    let url: URL | null = null;
+    try {
+      url = new URL(entry);
+    } catch {
+      url = null;
+    }
+    if (!url || url.protocol !== "https:" || !url.hostname) {
+      throw new Error(
+        `Invalid email target ${JSON.stringify(entry)} in ${EMAIL_TARGETS_FILE}: ` +
+          "every entry must be an absolute https:// URL with a host.",
+      );
+    }
+  }
+  return entries;
+}
+
+export const EMAIL_TARGETS: readonly string[] = assertEmailTargets(TARGETS_JSON);
 
 /** The claimed source of the visit, used only as `utm_source`. */
 export const EMAIL_PROVIDERS = [
