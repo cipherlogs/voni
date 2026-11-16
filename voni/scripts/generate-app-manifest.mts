@@ -240,11 +240,17 @@ function routeOf(pageFile: string): string | null {
   const rel = pageFile.slice(join(SRC, "app").length);
   const parts = rel.split("/").slice(0, -1).filter((p) => p !== "" && !/^\(.*\)$/.test(p));
 
-  // Local design prototypes and disposable press-specimen raster routes are
-  // outside tool-enabled product navigation. `/e2e/*` is the browser E2E
-  // harness (ticket 149): it exists only in the isolated test build and is
-  // never a voice destination.
-  if (parts[0] === "prototypes" || parts[0] === "press-specimen" || parts[0] === "e2e") return null;
+  // Local design prototypes, disposable press-specimen raster routes, and the
+  // public scratch pages (`/test`) are outside tool-enabled product
+  // navigation. `/e2e/*` is the browser E2E harness (ticket 149): it exists
+  // only in the isolated test build and is never a voice destination.
+  if (
+    parts[0] === "prototypes" ||
+    parts[0] === "press-specimen" ||
+    parts[0] === "e2e" ||
+    parts[0] === "test"
+  )
+    return null;
   return `/${parts.join("/")}`;
 }
 
