@@ -373,7 +373,7 @@ credential:
 | --- | --- | --- |
 | `POOL_SECRET` | `dev-pool-secret` (matches `workers/email-pool/scripts/dev.mjs`) | `wrangler secret put POOL_SECRET` on **each** `email-pool-0N` **and** on `voni` |
 | `POOL_WORKER_URLS` | `http://127.0.0.1:8787,http://127.0.0.1:8788,http://127.0.0.1:8789` | `https://email-pool-01.vonii.workers.dev,...` |
-| `ALLOWED_TARGET_HOSTS` (pool) | `voni.cc,www.voni.cc,localhost:3000,127.0.0.1:3000,cipherlogs.github.io` | `voni.cc,www.voni.cc,cipherlogs.github.io` |
+| `ALLOWED_TARGET_HOSTS` (pool) | derived from `targets.json`, plus `localhost:3000,127.0.0.1:3000` | derived from `targets.json` (`voni.cc,www.voni.cc,cipherlogs.github.io` today) |
 | `ALLOW_PRIVATE_TARGETS` (pool) | `true` (localhost only) | unset |
 
 Local values go in **`.dev.vars`, not `.env.local`.** `secret()` checks
@@ -389,7 +389,10 @@ that copy is only so the value is recoverable.
 The target list is a data file, not code: **`voni/src/lib/email/targets.json`**.
 Edit the array there; `src/lib/email/pool.ts` imports it and validates that
 every entry is an absolute `https://` URL with a host. A bad entry throws at
-module load and fails the test suite before any deploy.
+module load and fails the test suite before any deploy. The pool's fetch
+allowlist is derived from that same file when the pool deploys
+(`workers/email-pool/scripts/allowlist.mjs`), so adding a new host needs no
+second edit — push and `deploy-pool.yml` redeploys with the matching allowlist.
 
 Without `POOL_SECRET` or `POOL_WORKER_URLS` the route answers
 `503 {reason:"not_configured"}` and the page shows that, rather than a silent

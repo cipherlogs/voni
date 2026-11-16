@@ -4,12 +4,15 @@
  * config (name + POOL_INDEX), inspector port, and local persistence dir so the
  * sessions do not collide.
  *
- * Dev allowlist adds localhost/127.0.0.1 on port 3000 so a pool worker can be
- * pointed at the local voni app.
+ * Dev allowlist is the production list derived from
+ * voni/src/lib/email/targets.json plus localhost/127.0.0.1 on port 3000, so a
+ * pool worker can be pointed at the local voni app. The
+ * EMAIL_POOL_DEV_TARGET_HOSTS override replaces the whole list.
  */
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 
+import { allowlistFromTargetsFile } from "./allowlist.mjs";
 import {
   instanceName,
   poolSize,
@@ -27,9 +30,14 @@ if (!Number.isFinite(basePort)) {
   );
 }
 
+const localDevHosts = ["localhost:3000", "127.0.0.1:3000"];
+const derivedDevHosts = [
+  ...allowlistFromTargetsFile().split(","),
+  ...localDevHosts,
+].filter((host, index, all) => host.length > 0 && all.indexOf(host) === index);
+
 const devHosts =
-  process.env.EMAIL_POOL_DEV_TARGET_HOSTS ??
-  "voni.cc,www.voni.cc,localhost:3000,127.0.0.1:3000,cipherlogs.github.io";
+  process.env.EMAIL_POOL_DEV_TARGET_HOSTS ?? derivedDevHosts.join(",");
 
 // Local-only shared secret so the curl examples work out of the box. Prod
 // sets POOL_SECRET with `wrangler secret put`, never as a var.

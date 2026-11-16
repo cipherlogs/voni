@@ -21,7 +21,7 @@ src/index.ts    fetch handler: routes, auth, JSON shapes
 src/target.ts   pure validateTarget(url, { allowedHosts, allowPrivate })
 src/click.ts    buildTargetHeaders + runClick (manual redirect, 8s timeout)
 src/auth.ts     constant-time secret compare
-scripts/        dev.mjs / deploy.mjs / wrangler-bin.mjs
+scripts/        dev.mjs / deploy.mjs / allowlist.mjs / wrangler-bin.mjs
 test/           node:test suites
 wrangler.jsonc  base config; deploy and dev generate per-instance copies
 ```
@@ -43,8 +43,10 @@ resolved from `node_modules/.bin` if present, otherwise from
 copy). The dev script prints each instance's
 URL and the local secret (`dev-pool-secret` unless `EMAIL_POOL_SECRET` is set).
 
-Dev config allows `localhost:3000` and `127.0.0.1:3000` and sets
-`ALLOW_PRIVATE_TARGETS=true`; production config does neither.
+Dev config takes the production hosts from `voni/src/lib/email/targets.json`, adds
+`localhost:3000` and `127.0.0.1:3000`, and sets `ALLOW_PRIVATE_TARGETS=true`;
+production config does neither. `EMAIL_POOL_DEV_TARGET_HOSTS` replaces the whole
+dev list.
 
 ```sh
 # health
@@ -89,8 +91,14 @@ EMAIL_POOL_SIZE=3 npm run deploy -- --dry-run   # bundle only, no upload
 ```
 
 `scripts/deploy.mjs` copies `wrangler.jsonc` into
-`.wrangler/deploy-config/email-pool-NN.json` (gitignored), overriding `name`
-and `POOL_INDEX`, then runs `wrangler deploy --config <file>` per instance.
+`.wrangler/deploy-config/email-pool-NN.json` (gitignored), overriding `name`,
+`POOL_INDEX`, and `ALLOWED_TARGET_HOSTS`, then runs
+`wrangler deploy --config <file>` per instance.
+
+The allowlist is not configured in `wrangler.jsonc`. Both scripts derive it from
+`voni/src/lib/email/targets.json` (the same file voni's `/email` fan-out uses),
+so editing that file is the only step needed to allow a new target host — and a
+push that touches it redeploys the pool.
 
 Naming scheme: `email-pool-01`, `email-pool-02`, …, `email-pool-NN`, where the
 worker id is derived from `POOL_INDEX` (`0` → `01`). Each instance answers at:
@@ -123,7 +131,7 @@ EMAIL_TARGET_ORIGIN=https://voni.cc
 | Name | Kind | Default | Meaning |
 | --- | --- | --- | --- |
 | `POOL_SECRET` | secret | — | Required. Unset means every `/click` is `401`. |
-| `ALLOWED_TARGET_HOSTS` | var | `voni.cc,www.voni.cc,cipherlogs.github.io` | Exact `hostname[:port]` allowlist, comma-separated. |
+| `ALLOWED_TARGET_HOSTS` | var | derived from `voni/src/lib/email/targets.json` | Exact `hostname[:port]` allowlist, comma-separated. Injected by `dev.mjs` / `deploy.mjs`; not set in `wrangler.jsonc`. |
 | `POOL_USER_AGENT` | var | Chrome 131 desktop UA | Outbound `user-agent`. |
 | `POOL_INDEX` | var | `0` | Instance index; determines `worker` / logs (`0` → `email-pool-01`). |
 | `ALLOW_PRIVATE_TARGETS` | var | unset | Dev only. `true` allows loopback/private IP literals. |

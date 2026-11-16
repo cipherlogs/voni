@@ -15,6 +15,10 @@ interface ClickBody {
   visitId?: unknown;
 }
 
+// Conservative fallback for a Worker deployed with no ALLOWED_TARGET_HOSTS.
+// deploy.mjs and dev.mjs always inject the real list derived from
+// voni/src/lib/email/targets.json, so this must never grow beyond the three
+// production hosts it protects.
 const DEFAULT_ALLOWED_HOSTS = ["voni.cc", "www.voni.cc", "cipherlogs.github.io"];
 
 function coloOf(request: Request): string {

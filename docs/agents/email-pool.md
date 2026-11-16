@@ -89,8 +89,14 @@ fan-out in local dev fetches the two production URLs, not your dev server.
 - The endpoint is a fetch proxy. It MUST require `POOL_SECRET` and MUST reject
   any target outside `ALLOWED_TARGET_HOSTS` (host **and** port), with
   `redirect: "manual"` so a redirect cannot leave the allowlist.
-- `ALLOWED_TARGET_HOSTS` is `voni.cc,www.voni.cc,cipherlogs.github.io`. Dev adds
-  `localhost:3000,127.0.0.1:3000`.
+- `ALLOWED_TARGET_HOSTS` is **derived, not maintained by hand**:
+  `workers/email-pool/scripts/allowlist.mjs` reads
+  `voni/src/lib/email/targets.json`, takes each entry's host, and
+  `deploy.mjs` / `dev.mjs` inject the result. Editing the targets file is the
+  whole job. Dev appends `localhost:3000,127.0.0.1:3000`.
+- `src/index.ts` keeps a conservative fallback (`voni.cc`, `www.voni.cc`,
+  `cipherlogs.github.io`) for a Worker started without the env var; the scripts
+  always override it, so the fallback never widens what ships.
 - Private/loopback IP literals are rejected unless `ALLOW_PRIVATE_TARGETS=true`
   (dev only).
 - Every pool request to a target carries `x-pool-worker`, so analytics can tell
@@ -112,10 +118,10 @@ fan-out in local dev fetches the two production URLs, not your dev server.
 - `voni/src/lib/email/targets.json` — **the editable target list.** Data, not
   code: add or remove URLs here. `pool.ts` imports it and throws on a
   non-absolute `https://` entry, so a bad edit fails the suite before a deploy.
-  A URL on a host the pool already allows is a one-file change. A **new host**
-  also needs adding to `ALLOWED_TARGET_HOSTS` in
-  `workers/email-pool/wrangler.jsonc` — that is the fetch allowlist, and the
-  pool answers `400 bad_target` for anything outside it.
+- The pool's fetch allowlist is derived from that same file at deploy time
+  (`workers/email-pool/scripts/allowlist.mjs`), so a new host is still a
+  one-file change: edit `targets.json`, push, and `deploy-pool.yml` redeploys
+  the Workers with the matching allowlist.
 - `.github/workflows/deploy-pool.yml` — deploys all N pool Workers on a push
   that touches `workers/email-pool/**`. Secrets stay on the Workers; the
   workflow only carries the Cloudflare token.
