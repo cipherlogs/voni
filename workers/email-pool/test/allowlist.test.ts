@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,9 +68,15 @@ test("hostsFromTargets rejects a non-array payload", () => {
 });
 
 test("allowlistFromTargetsFile derives the allowlist from the real voni file", () => {
-  // Order of appearance in voni/src/lib/email/targets.json:
-  // https://cipherlogs.github.io/print/ then https://voni.cc/test.
-  assert.equal(allowlistFromTargetsFile(), "cipherlogs.github.io,voni.cc");
+  // The targets file is data: adding a target is a one-file edit (see
+  // docs/agents/email-pool.md), so this test must not snapshot today's entries.
+  // What it proves is that the default argument resolves the real voni file and
+  // that every host in it reaches the allowlist.
+  const entries = JSON.parse(readFileSync(TARGETS_FILE, "utf8")) as string[];
+  const expected = hostsFromTargets(entries).join(",");
+
+  assert.ok(expected.length > 0, "the real targets file must yield a host");
+  assert.equal(allowlistFromTargetsFile(), expected);
   assert.match(TARGETS_FILE, /voni[\\/]src[\\/]lib[\\/]email[\\/]targets\.json$/);
 });
 

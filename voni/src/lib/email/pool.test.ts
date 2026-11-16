@@ -57,28 +57,26 @@ test("bags: a run of draws covers every target and every provider", () => {
   assert.deepEqual([...providers].sort(), [...EMAIL_PROVIDERS].sort());
 });
 
-test("bags: two targets, both absolute URLs", () => {
-  assert.equal(EMAIL_TARGETS.length, 2);
-  assert.deepEqual([...EMAIL_TARGETS], [
-    "https://cipherlogs.github.io/print/",
-    "https://voni.cc/test",
-  ]);
-  const paths: readonly string[] = EMAIL_TARGETS;
-  for (const entry of paths) {
+test("bags: every target is an absolute URL and the GitHub Pages slash stays", () => {
+  // The bag is the operator-edited JSON file (docs/agents/email-pool.md), so its
+  // size and contents are data, not invariants here. The invariants that hold
+  // for any entry are shape (absolute) and the GitHub Pages trailing slash.
+  assert.ok(EMAIL_TARGETS.length > 0, "the bag must not be empty");
+  for (const entry of EMAIL_TARGETS) {
     assert.match(entry, /^https?:\/\//i, "every target is absolute; the bag carries no paths");
   }
-  assert.ok(
-    paths.includes("https://cipherlogs.github.io/print/"),
-    "GitHub Pages 301s /print to /print/, so the trailing slash stays",
-  );
+  if (EMAIL_TARGETS.some((entry) => new URL(entry).hostname === "cipherlogs.github.io")) {
+    assert.ok(
+      EMAIL_TARGETS.includes("https://cipherlogs.github.io/print/"),
+      "GitHub Pages 301s /print to /print/, and the pool uses redirect: manual, so the trailing slash stays",
+    );
+  }
 });
 
 test("targets: the bag is exactly the operator-edited JSON file", () => {
+  // Proves the module ships the file's contents unfiltered — not what the
+  // operator has in it today.
   assert.deepEqual([...EMAIL_TARGETS], TARGETS_JSON);
-  assert.deepEqual(TARGETS_JSON, [
-    "https://cipherlogs.github.io/print/",
-    "https://voni.cc/test",
-  ]);
 });
 
 test("targets: every entry is an absolute https URL with a host", () => {

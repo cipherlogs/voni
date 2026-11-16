@@ -54,7 +54,7 @@ POST /api/email-pool        (no body trusted from the browser)
 
 One target and one source per visit, drawn without replacement from shuffle
 bags in `voni/src/lib/email/pool.ts` (moved out of `proxy.ts`). Every entry is
-an **absolute URL** — there is no path/origin indirection:
+an **absolute URL** — there is no path/origin indirection, for example:
 
 ```
 https://cipherlogs.github.io/print/
@@ -65,7 +65,9 @@ https://voni.cc/test
 GitHub Pages 301s it to `/print/`, and the pool fetches with
 `redirect: "manual"`, so a Worker would report the redirect instead of the
 page. `/demo` and the other voni paths used to be here; they were removed on
-request, so this bag is only the two URLs.
+request. The bag is whatever `targets.json` holds — it is data, not an
+invariant, and the tests assert its shape rather than a snapshot of its
+entries.
 
 Absolute targets keep whatever query they ship with; the pool only *adds* keys
 (`URLSearchParams.set`), so an existing `?creative_id=` survives. Three params

@@ -373,7 +373,7 @@ credential:
 | --- | --- | --- |
 | `POOL_SECRET` | `dev-pool-secret` (matches `workers/email-pool/scripts/dev.mjs`) | `wrangler secret put POOL_SECRET` on **each** `email-pool-0N` **and** on `voni` |
 | `POOL_WORKER_URLS` | `http://127.0.0.1:8787,http://127.0.0.1:8788,http://127.0.0.1:8789` | `https://email-pool-01.vonii.workers.dev,...` |
-| `ALLOWED_TARGET_HOSTS` (pool) | derived from `targets.json`, plus `localhost:3000,127.0.0.1:3000` | derived from `targets.json` (`voni.cc,www.voni.cc,cipherlogs.github.io` today) |
+| `ALLOWED_TARGET_HOSTS` (pool) | derived from `targets.json`, plus `localhost:3000,127.0.0.1:3000` | derived from `targets.json` (never edited by hand; the file is the whole source) |
 | `ALLOW_PRIVATE_TARGETS` (pool) | `true` (localhost only) | unset |
 
 Local values go in **`.dev.vars`, not `.env.local`.** `secret()` checks
