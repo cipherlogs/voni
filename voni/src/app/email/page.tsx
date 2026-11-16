@@ -8,14 +8,14 @@ import { VoniLogo } from "@/components/voni-logo";
 
 /**
  * The public `/email` link. It used to 307 to an affiliate; it is a page now:
- * one voni.cc path and one claimed source per visit, fetched by every Worker in
+ * one drawn target and one claimed source per visit, fetched by every Worker in
  * the pool, with the report rendered here. Public on purpose — no login, no
  * data stored — and noindex so it never shows up in search.
  */
 export const metadata: Metadata = {
   title: "Email pool · Voni",
   description:
-    "Fans out one voni.cc path to every Cloudflare edge Worker in the pool and shows what each one saw.",
+    "Fans out one drawn target to every Cloudflare edge Worker in the pool and shows what each one saw.",
   robots: { index: false, follow: false },
 };
 
@@ -40,11 +40,12 @@ export default function EmailPoolPage() {
             Email pool
           </h1>
           <p className="text-muted-foreground text-sm">
-            Opening this link draws one target path and one source, then asks
-            every Worker in the pool to fetch that target from its own edge
-            location. It only ever fetches paths on voni.cc — the target is
-            chosen server-side, never by the browser — and nothing is stored
-            beyond the visit id shown below. Run it again for a new draw.
+            Opening this link draws one target and one source, then asks every
+            Worker in the pool to fetch that target from its own edge location,
+            following redirects wherever they lead. Targets are pages on voni.cc
+            or off-site affiliate links — chosen server-side, never by the
+            browser — and nothing is stored beyond the visit id shown below. Run
+            it again for a new draw.
           </p>
         </div>
 

@@ -4,15 +4,12 @@
  * config (name + POOL_INDEX), inspector port, and local persistence dir so the
  * sessions do not collide.
  *
- * Dev allowlist is the production list derived from
- * voni/src/lib/email/targets.json plus localhost/127.0.0.1 on port 3000, so a
- * pool worker can be pointed at the local voni app. The
- * EMAIL_POOL_DEV_TARGET_HOSTS override replaces the whole list.
+ * No target list is injected: the worker fetches any absolute http(s) URL, so
+ * a pool instance can be pointed at the local voni app or any public site.
  */
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 
-import { allowlistFromTargetsFile } from "./allowlist.mjs";
 import {
   instanceName,
   poolSize,
@@ -30,15 +27,6 @@ if (!Number.isFinite(basePort)) {
   );
 }
 
-const localDevHosts = ["localhost:3000", "127.0.0.1:3000"];
-const derivedDevHosts = [
-  ...allowlistFromTargetsFile().split(","),
-  ...localDevHosts,
-].filter((host, index, all) => host.length > 0 && all.indexOf(host) === index);
-
-const devHosts =
-  process.env.EMAIL_POOL_DEV_TARGET_HOSTS ?? derivedDevHosts.join(",");
-
 // Local-only shared secret so the curl examples work out of the box. Prod
 // sets POOL_SECRET with `wrangler secret put`, never as a var.
 const devSecret = process.env.EMAIL_POOL_SECRET ?? "dev-pool-secret";
@@ -53,7 +41,7 @@ console.log(`email-pool dev: ${size} instance(s), wrangler ${bin}`);
 for (let i = 0; i < size; i += 1) {
   console.log(`  ${instanceName("email-pool", i)}  http://localhost:${basePort + i}`);
 }
-console.log(`  allowlist: ${devHosts} (ALLOW_PRIVATE_TARGETS=true)`);
+console.log(`  targets: any absolute http(s) URL, redirects followed`);
 console.log(`  x-pool-secret: ${devSecret}\n`);
 
 function shutdown(code) {
@@ -76,8 +64,6 @@ for (let i = 0; i < size; i += 1) {
     name,
     index: i,
     vars: {
-      ALLOWED_TARGET_HOSTS: devHosts,
-      ALLOW_PRIVATE_TARGETS: "true",
       POOL_SECRET: devSecret,
     },
   });

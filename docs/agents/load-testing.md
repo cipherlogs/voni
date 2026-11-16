@@ -68,9 +68,10 @@ curl -sS -X POST -H 'accept: application/json' https://voni.cc/api/email-pool | 
 
 A check that means something asserts, per response:
 
-1. `ok` is `true`, and `target` is one of the two bag URLs
-   (`https://cipherlogs.github.io/print/`, `https://voni.cc/test`) with the
-   three params appended — never an affiliate host.
+1. `ok` is `true`, and `target` is one of the entries in
+   `voni/src/lib/email/targets.json` with the three params appended. The bag
+   mixes voni-hosted pages with affiliate links (`www.glizzitrium.com`), so
+   match against the file, not a hardcoded pair.
 2. `source` is one of `EMAIL_PROVIDERS` and matches the target's
    `utm_source`.
 3. `workers.length` equals the pool size (`POOL_WORKER_URLS` entries), and every

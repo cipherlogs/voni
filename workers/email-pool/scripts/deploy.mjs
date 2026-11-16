@@ -3,15 +3,13 @@
  * Deploy N instances (email-pool-01..NN) of the same worker source.
  *
  * Per-instance config is generated from wrangler.jsonc into a gitignored temp
- * dir (.wrangler/deploy-config/) with `name`, `POOL_INDEX`, and the
- * ALLOWED_TARGET_HOSTS allowlist (derived from voni/src/lib/email/targets.json)
- * overridden, then `wrangler deploy --config <file>` runs for each. Extra CLI
- * args (for example --dry-run) pass straight through to wrangler.
+ * dir (.wrangler/deploy-config/) with `name` and `POOL_INDEX` overridden, then
+ * `wrangler deploy --config <file>` runs for each. Extra CLI args (for example
+ * --dry-run) pass straight through to wrangler.
  */
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-import { allowlistFromTargetsFile, TARGETS_FILE } from "./allowlist.mjs";
 import {
   instanceName,
   poolSize,
@@ -29,11 +27,9 @@ const dryRun = passthrough.includes("--dry-run");
 
 const base = readBaseConfig();
 const configDir = join(projectRoot, ".wrangler", "deploy-config");
-const allowedHosts = allowlistFromTargetsFile();
 
 console.log(`[email-pool] wrangler: ${bin}`);
-console.log(`[email-pool] targets: ${TARGETS_FILE}`);
-console.log(`[email-pool] ALLOWED_TARGET_HOSTS: ${allowedHosts}`);
+console.log(`[email-pool] targets: any absolute http(s) URL, redirects followed`);
 
 if (!process.env.CLOUDFLARE_API_TOKEN && !dryRun) {
   console.warn(
@@ -53,7 +49,6 @@ for (let i = 0; i < size; i += 1) {
   const configPath = writeInstanceConfig(configDir, base, {
     name,
     index: i,
-    vars: { ALLOWED_TARGET_HOSTS: allowedHosts },
   });
   console.log(`\n[email-pool] ${name} (POOL_INDEX=${i}) -> ${configPath}`);
 

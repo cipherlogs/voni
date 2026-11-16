@@ -8,7 +8,6 @@ on:
     branches: [main]
     paths:
       - "workers/email-pool/**"
-      - "voni/src/lib/email/targets.json"
       - ".github/workflows/deploy-pool.yml"
   workflow_dispatch:
 

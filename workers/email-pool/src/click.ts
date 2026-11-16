@@ -1,12 +1,11 @@
 /**
- * Outbound click: build the pool request headers and perform one manual-
- * redirect fetch against an already-validated target.
+ * Outbound click: build the pool request headers and perform one fetch against
+ * an already-validated target, following the whole redirect chain so the
+ * report describes where the click actually landed.
  */
 
 export interface PoolEnv {
   POOL_SECRET?: string;
-  ALLOWED_TARGET_HOSTS?: string;
-  ALLOW_PRIVATE_TARGETS?: string;
   POOL_USER_AGENT?: string;
   POOL_INDEX?: string;
   /** Optional explicit override; deploy sets the instance name, index is enough. */
@@ -19,18 +18,31 @@ export const CLICK_TIMEOUT_MS = 8_000;
 export const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-export interface ClickResult {
+interface ClickBase {
   worker: string;
   colo: string;
-  ok: boolean;
-  status: number | null;
   ms: number;
   target: string;
-  location: string | null;
-  reason: string | null;
-  /** Only present on failure; the 200 contract shape has no detail field. */
-  detail?: string;
 }
+
+/** The target answered. `finalUrl` is where the redirect chain ended. */
+export interface ClickObservation extends ClickBase {
+  ok: boolean;
+  status: number;
+  finalUrl: string;
+  redirected: boolean;
+  reason: string | null;
+}
+
+/** The fetch never produced a response, so there is no finalUrl to report. */
+export interface ClickFailure extends ClickBase {
+  ok: false;
+  status: null;
+  reason: "timeout" | "fetch_failed";
+  detail: string;
+}
+
+export type ClickResult = ClickObservation | ClickFailure;
 
 export interface RunClickOptions {
   fetch: typeof fetch;
@@ -100,7 +112,9 @@ export async function runClick(
   try {
     response = await options.fetch(target, {
       method: "GET",
-      redirect: "manual",
+      // follow the chain so status/finalUrl describe the landing page, not hop
+      // one; the timeout signal covers the whole chain.
+      redirect: "follow",
       headers: buildTargetHeaders(worker, env),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -112,7 +126,6 @@ export async function runClick(
       status: null,
       ms: Date.now() - started,
       target,
-      location: null,
       reason: isTimeoutError(error) ? "timeout" : "fetch_failed",
       detail: errorDetail(error),
     };
@@ -120,8 +133,10 @@ export async function runClick(
 
   const ms = Date.now() - started;
   const ok = response.status >= 200 && response.status < 400;
+  // A followed landing page may be huge and we only want its status, so drop
+  // the body without buffering it.
+  const finalUrl = response.url !== "" ? response.url : target;
 
-  // We only need status and headers; drop the body without buffering it.
   try {
     await response.body?.cancel();
   } catch {
@@ -135,7 +150,8 @@ export async function runClick(
     status: response.status,
     ms,
     target,
-    location: response.headers.get("location"),
+    finalUrl,
+    redirected: response.redirected,
     reason: ok ? null : "http_error",
   };
 }

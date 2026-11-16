@@ -9,19 +9,23 @@ The shared contract lives in
 is the worker half of it.
 
 ```
-GET  /health   -> { worker, colo, allowlist }                       (public)
-POST /click    -> { worker, colo, ok, status, ms, target, location, reason }
+GET  /health   -> { worker, colo, redirects, targets }              (public)
+POST /click    -> { worker, colo, ok, status, ms, target, finalUrl,
+                    redirected, reason }
                   requires x-pool-secret: $POOL_SECRET
 ```
+
+The pool follows redirect chains: `status` and `finalUrl` describe where the
+click landed, not hop one.
 
 ## Layout
 
 ```
 src/index.ts    fetch handler: routes, auth, JSON shapes
-src/target.ts   pure validateTarget(url, { allowedHosts, allowPrivate })
-src/click.ts    buildTargetHeaders + runClick (manual redirect, 8s timeout)
+src/target.ts   pure validateTarget(url): absolute http(s) only, no host policy
+src/click.ts    buildTargetHeaders + runClick (follows redirects, 8s timeout)
 src/auth.ts     constant-time secret compare
-scripts/        dev.mjs / deploy.mjs / allowlist.mjs / wrangler-bin.mjs
+scripts/        dev.mjs / deploy.mjs / wrangler-bin.mjs
 test/           node:test suites
 wrangler.jsonc  base config; deploy and dev generate per-instance copies
 ```
@@ -43,10 +47,9 @@ resolved from `node_modules/.bin` if present, otherwise from
 copy). The dev script prints each instance's
 URL and the local secret (`dev-pool-secret` unless `EMAIL_POOL_SECRET` is set).
 
-Dev config takes the production hosts from `voni/src/lib/email/targets.json`, adds
-`localhost:3000` and `127.0.0.1:3000`, and sets `ALLOW_PRIVATE_TARGETS=true`;
-production config does neither. `EMAIL_POOL_DEV_TARGET_HOSTS` replaces the whole
-dev list.
+Dev and deploy both inject nothing but `POOL_INDEX` (and the dev secret): the
+worker accepts any absolute http(s) URL, so a dev instance can be pointed at
+`http://localhost:3000/...` just as easily as at `https://voni.cc/...`.
 
 ```sh
 # health
@@ -91,14 +94,11 @@ EMAIL_POOL_SIZE=3 npm run deploy -- --dry-run   # bundle only, no upload
 ```
 
 `scripts/deploy.mjs` copies `wrangler.jsonc` into
-`.wrangler/deploy-config/email-pool-NN.json` (gitignored), overriding `name`,
-`POOL_INDEX`, and `ALLOWED_TARGET_HOSTS`, then runs
-`wrangler deploy --config <file>` per instance.
+`.wrangler/deploy-config/email-pool-NN.json` (gitignored), overriding `name` and
+`POOL_INDEX`, then runs `wrangler deploy --config <file>` per instance.
 
-The allowlist is not configured in `wrangler.jsonc`. Both scripts derive it from
-`voni/src/lib/email/targets.json` (the same file voni's `/email` fan-out uses),
-so editing that file is the only step needed to allow a new target host — and a
-push that touches it redeploys the pool.
+There is no target list to configure: any absolute http(s) URL is fair game, so
+adding a target is a voni-only change.
 
 Naming scheme: `email-pool-01`, `email-pool-02`, …, `email-pool-NN`, where the
 worker id is derived from `POOL_INDEX` (`0` → `01`). Each instance answers at:
@@ -131,10 +131,8 @@ EMAIL_TARGET_ORIGIN=https://voni.cc
 | Name | Kind | Default | Meaning |
 | --- | --- | --- | --- |
 | `POOL_SECRET` | secret | — | Required. Unset means every `/click` is `401`. |
-| `ALLOWED_TARGET_HOSTS` | var | derived from `voni/src/lib/email/targets.json` | Exact `hostname[:port]` allowlist, comma-separated. Injected by `dev.mjs` / `deploy.mjs`; not set in `wrangler.jsonc`. |
 | `POOL_USER_AGENT` | var | Chrome 131 desktop UA | Outbound `user-agent`. |
 | `POOL_INDEX` | var | `0` | Instance index; determines `worker` / logs (`0` → `email-pool-01`). |
-| `ALLOW_PRIVATE_TARGETS` | var | unset | Dev only. `true` allows loopback/private IP literals. |
 | `POOL_WORKER_ID` | var | unset | Optional explicit `worker` label override. |
 
 `wrangler.jsonc` deliberately does **not** set `global_fetch_strictly_public`,
@@ -142,18 +140,16 @@ so dev can reach `localhost:3000`.
 
 ## Safety rules (restated)
 
-- Endpoint is a fetch proxy: it requires `POOL_SECRET` and rejects any target
-  whose `host:port` is outside `ALLOWED_TARGET_HOSTS`.
-- `redirect: "manual"` — a 3xx can never carry the fetch off the allowlist; the
-  `location` is reported back, not followed.
-- Private/loopback IP literals (and `localhost`) are rejected unless
-  `ALLOW_PRIVATE_TARGETS=true`.
-- `https` is required except for loopback dev hosts on the allowlist.
+- Endpoint is a fetch proxy: it requires `POOL_SECRET`, and that secret is the
+  only gate. Any absolute http(s) URL is accepted, including loopback and
+  private addresses.
+- `redirect: "follow"` — the chain is followed and the report describes the
+  landing response (`status`, `finalUrl`, `redirected`). The landed body is
+  cancelled, never buffered.
 - Embedded credentials (`https://user:pass@…`) are rejected.
 - Every target request carries `x-pool-worker`, so analytics can separate pool
   traffic from humans.
-- The browser never supplies the URL; voni chooses it server-side, so this is
-  not an open proxy.
+- The browser never supplies the URL; voni chooses it server-side.
 
 ## Notes
 

@@ -33,7 +33,8 @@ type PoolWorker = {
   ms?: number | null;
   colo?: string | null;
   target?: string | null;
-  location?: string | null;
+  finalUrl?: string | null;
+  redirected?: boolean;
 };
 
 type PoolSuccess = {
@@ -91,9 +92,9 @@ function WorkerRow({ worker }: { worker: PoolWorker }) {
           <Server className="text-muted-foreground size-3.5" />
           <span className="font-mono text-sm font-medium">{worker.worker}</span>
         </div>
-        {worker.ok && worker.location ? (
+        {worker.ok && worker.redirected && worker.finalUrl ? (
           <span className="text-muted-foreground font-mono text-xs break-all">
-            redirect → {worker.location}
+            redirected to {worker.finalUrl}
           </span>
         ) : null}
       </div>
@@ -121,7 +122,7 @@ function WorkerRow({ worker }: { worker: PoolWorker }) {
 }
 
 /**
- * `/email`: one target on voni.cc, one claimed source, and a report from every
+ * `/email`: one drawn target, one claimed source, and a report from every
  * Worker in the pool. Runs once on mount because that is the whole point of the
  * page; the button re-runs it after a config change or a bad draw.
  *
@@ -171,7 +172,7 @@ export function EmailPoolPanel() {
   const running = state.status === "loading";
   const payload = state.status === "done" ? state.payload : null;
   const workers = payload?.ok ? payload.workers : [];
-  const reached = workers.filter((worker) => worker.ok).length;
+  const answered = workers.filter((worker) => worker.ok).length;
 
   return (
     <div className="grid gap-6" data-testid="email-pool-panel">
@@ -182,9 +183,11 @@ export function EmailPoolPanel() {
             Edge-worker pool
           </CardTitle>
           <CardDescription>
-            Each Worker below fetches the chosen voni.cc path from its own edge
-            location with a real outbound request. Results run once on load; the
-            button draws a new target and source.
+            Each Worker below fetches the drawn target from its own Cloudflare
+            edge location with a real outbound request, following redirects
+            wherever they lead. Targets are pages on voni.cc or off-site
+            affiliate links, chosen server-side and never by the browser. Results
+            run once on load; the button draws a new target and source.
           </CardDescription>
           <CardAction>
             {running ? (
@@ -201,7 +204,7 @@ export function EmailPoolPanel() {
               </Badge>
             ) : payload ? (
               <Badge data-testid="email-pool-status">
-                {reached} of {workers.length}
+                {answered} of {workers.length}
               </Badge>
             ) : (
               <Badge variant="outline" data-testid="email-pool-status">
@@ -258,16 +261,16 @@ export function EmailPoolPanel() {
               </dl>
 
               <p className="text-sm font-medium" data-testid="email-pool-summary">
-                {reached} of {workers.length} workers reached the target
+                {answered} of {workers.length} workers answered
               </p>
 
-              {reached < workers.length ? (
+              {answered < workers.length ? (
                 <Alert variant="destructive">
                   <AlertCircle />
                   <AlertTitle>
-                    {workers.length - reached} worker
-                    {workers.length - reached === 1 ? "" : "s"} did not answer
-                    with a page
+                    {workers.length - answered} worker
+                    {workers.length - answered === 1 ? "" : "s"} did not come
+                    back ok
                   </AlertTitle>
                   <AlertDescription>
                     The pool still reported every member separately, so the rows
@@ -278,10 +281,12 @@ export function EmailPoolPanel() {
               ) : (
                 <Alert>
                   <CheckCircle2 />
-                  <AlertTitle>Every worker fetched the target</AlertTitle>
+                  <AlertTitle>Every worker answered</AlertTitle>
                   <AlertDescription>
-                    Each Worker reported the status it saw on{" "}
-                    <span className="font-mono">{payload.target}</span>.
+                    Each Worker reported the status it saw for{" "}
+                    <span className="font-mono">{payload.target}</span> and,
+                    where the chain moved, the URL it ended on. A followed
+                    redirect can land outside voni.cc.
                   </AlertDescription>
                 </Alert>
               )}

@@ -68,7 +68,7 @@ test("bags: every target is an absolute URL and the GitHub Pages slash stays", (
   if (EMAIL_TARGETS.some((entry) => new URL(entry).hostname === "cipherlogs.github.io")) {
     assert.ok(
       EMAIL_TARGETS.includes("https://cipherlogs.github.io/print/"),
-      "GitHub Pages 301s /print to /print/, and the pool uses redirect: manual, so the trailing slash stays",
+      "GitHub Pages 301s /print to /print/, so the trailing slash keeps the draw on the page",
     );
   }
 });
@@ -197,7 +197,8 @@ test("fan-out: every worker reported in the contract 200 shape, secret and body 
       status: 200,
       ms: 187,
       target: TARGET,
-      location: null,
+      finalUrl: TARGET,
+      redirected: false,
       reason: null,
     });
   }) as typeof globalThis.fetch;
@@ -220,8 +221,11 @@ test("fan-out: every worker reported in the contract 200 shape, secret and body 
     assert.equal(worker.status, 200);
     assert.equal(worker.ms, 187);
     assert.equal(worker.colo, "FRA");
-    assert.equal(worker.location, null);
+    assert.equal(worker.target, TARGET, "target stays what was requested");
+    assert.equal(worker.finalUrl, TARGET, "a direct 200 ends on the target itself");
+    assert.equal(worker.redirected, false, "nothing moved");
     assert.equal(worker.reason, null);
+    assert.ok(!("location" in worker), "location is gone from the contract");
   }
 
   assert.equal(calls.length, 3);
@@ -236,6 +240,79 @@ test("fan-out: every worker reported in the contract 200 shape, secret and body 
     visitId: "visit-1",
   });
   assert.ok(calls[0].init?.signal instanceof AbortSignal, "a timeout signal is always attached");
+});
+
+test("fan-out: a redirected worker reports where the chain ended, off the target", async () => {
+  const landed =
+    "https://www.glizzitrium.com/BCMPW39K/CZ562T2/?utm_source=gmail.com&utm_medium=email&utm_campaign=voni-email";
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    const worker = nameOf(String(input));
+    return jsonResponse({
+      worker,
+      colo: "FRA",
+      ok: true,
+      status: 200,
+      ms: 240,
+      target: TARGET,
+      finalUrl: landed,
+      redirected: true,
+      reason: null,
+    });
+  }) as typeof globalThis.fetch;
+
+  const result = await fanOutToWorkers({
+    urls: URLS,
+    secret: "dev-pool-secret",
+    target: TARGET,
+    visitId: "visit-redirect",
+    fetch: fetchImpl,
+  });
+
+  const [row] = result.workers;
+  assert.ok(row.ok);
+  if (!row.ok) return;
+  assert.equal(row.redirected, true, "the chain moved");
+  assert.equal(row.finalUrl, landed, "finalUrl is where it ended, not where it started");
+  assert.equal(row.target, TARGET, "target stays the URL that was requested");
+  assert.equal(row.status, 200, "ok and status are the verdict on the final response");
+});
+
+test("fan-out: a failure row keeps its reason and is not dressed up as a fetched page", async () => {
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    const worker = nameOf(String(input));
+    if (worker === "email-pool-02") {
+      return jsonResponse({ worker, ok: false, reason: "upstream_503" }, 502);
+    }
+    return jsonResponse({
+      worker,
+      colo: "FRA",
+      ok: true,
+      status: 200,
+      ms: 100,
+      target: TARGET,
+      finalUrl: TARGET,
+      redirected: false,
+      reason: null,
+    });
+  }) as typeof globalThis.fetch;
+
+  const result = await fanOutToWorkers({
+    urls: URLS,
+    secret: "dev-pool-secret",
+    target: TARGET,
+    visitId: "visit-failure-row",
+    fetch: fetchImpl,
+  });
+
+  const failed = result.workers.find((worker) => worker.worker === "email-pool-02");
+  assert.deepEqual(failed, {
+    worker: "email-pool-02",
+    ok: false,
+    reason: "upstream_503",
+  });
+  assert.ok(failed && !failed.ok);
+  assert.ok(!("status" in (failed as object)), "no status on a failure row");
+  assert.ok(!("finalUrl" in (failed as object)), "no finalUrl on a failure row");
 });
 
 test("fan-out: one worker answers 401 and the rest still land", async () => {
@@ -333,6 +410,13 @@ test("fan-out: a worker with an unusable body still gets a name from its URL", a
     result.workers.find((worker) => worker.worker === "email-pool-02"),
     { worker: "email-pool-02", ok: false, reason: "fetch_failed" },
   );
+
+  // A 200 body that omits the new fields parses to "no chain", not to a guess.
+  const answered = result.workers.find((worker) => worker.worker === "email-pool-01");
+  assert.ok(answered?.ok);
+  if (!answered?.ok) return;
+  assert.equal(answered.finalUrl, null);
+  assert.equal(answered.redirected, false);
 });
 
 test("route: takes no request at all, so the browser cannot choose the target", () => {

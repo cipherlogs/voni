@@ -21,9 +21,8 @@ export const EMAIL_TARGETS_FILE = "src/lib/email/targets.json";
  * source of truth for where a target lives.
  *
  * `https://cipherlogs.github.io/print/` keeps its trailing slash because GitHub
- * Pages 301s `/print` to `/print/`, and the pool fetches with
- * `redirect: "manual"`, so a slashless target would be reported as a redirect
- * instead of a page.
+ * Pages 301s `/print` to `/print/`; the slashless form would arrive as a
+ * followed redirect rather than the page that was asked for.
  *
  * A path-only, `http` or non-URL entry would otherwise be fetched as something
  * else (or silently fetch nothing), so the guard below throws by name and by
@@ -148,7 +147,14 @@ export function parseWorkerUrls(raw: string | undefined | null): string[] {
   return urls;
 }
 
-/** Contract 200 body from one Worker. */
+/**
+ * Contract 200 body from one Worker.
+ *
+ * The Worker follows the redirect chain and reports where it ended: `target` is
+ * what was asked for, `finalUrl` is where the chain stopped, and `redirected`
+ * says whether those two differ. `status` and `ok` are the Worker's verdict on
+ * that final response.
+ */
 export type WorkerReport = {
   worker: string;
   ok: true;
@@ -156,7 +162,8 @@ export type WorkerReport = {
   ms: number;
   colo: string | null;
   target: string;
-  location: string | null;
+  finalUrl: string | null;
+  redirected: boolean;
   reason: null;
 };
 
@@ -288,7 +295,8 @@ async function callOneWorker(
     ms: asNumber(body?.ms) ?? elapsed,
     colo: asString(body?.colo),
     target: asString(body?.target) ?? input.target,
-    location: asString(body?.location),
+    finalUrl: asString(body?.finalUrl),
+    redirected: body?.redirected === true,
     reason: null,
   };
 }
