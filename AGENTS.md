@@ -11,6 +11,7 @@
 - For per-run vendor usage reconciliation (`npm run demo:usage`, the Meta/AssemblyAI ledger), read the vendor usage ledger row in `docs/agents/demo-verification.md`.
 - For the remaining Meta cascade human gates (feasibility, German, audition, readiness, rollback, signatures, decommission), read `docs/agents/meta-cascade-human-gates.md`.
 - For the turn-window latency experiment, read `docs/demo-latency-ladder.md`.
+- For load-testing the public `/email` link (and why loader.io never reaches the destination), read `docs/agents/load-testing.md` and use `npm run loadtest:email`.
 - For multi-worktree implementation, run `scripts/worktree-create.sh <name>` (disk-backed root; `WORKTREE_ROOT` overrides). Use `scripts/worktree-setup.sh` only to repair an existing worktree.
 - For ticket-graph work, use `python scripts/tickets.py frontier|validate|close --effort <name>`; do not re-parse `Blocked by` by hand.
 - Before declaring a feature done, run `bash scripts/review-gate.sh`; `--update` only after a real review of that SHA.

@@ -3,6 +3,7 @@
     "typescript": "^7.0.2"
   },
   "scripts": {
-    "worktree:setup": "bash scripts/worktree-setup.sh"
+    "worktree:setup": "bash scripts/worktree-setup.sh",
+    "loadtest:email": "k6 run scripts/loadtest-email.js"
   }
 }
