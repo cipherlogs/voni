@@ -20,62 +20,6 @@ const DEMO_PATHS = new Set(["/demo", "/demo/"]);
 const DEMO_FALLBACK_URL = "https://www.google.com";
 const DEMO_NO_STORE = "no-store, no-cache, must-revalidate, max-age=0";
 
-const EMAIL_PATHS = new Set(["/email", "/email/"]);
-export const EMAIL_TARGETS = [
-  "https://www.glizzitrium.com/BCMPW39K/CZ562T2/",
-  "https://www.glizzitrium.com/BCMPW39K/9SQWKW9/?creative_id=86784",
-  "https://www.glizzitrium.com/BCMPW39K/J345SSD/?creative_id=691100",
-  "https://www.glizzitrium.com/BCMPW39K/JJRFMXZ/?creative_id=709876",
-  "https://www.glizzitrium.com/BCMPW39K/946KZGB/?creative_id=710986",
-];
-
-/**
- * Who the click should appear to come from: five broadband ISPs and five email
- * providers in one bag. A redirect cannot set the browser's `Referer`, so the
- * source rides as a query key the destination's tracker already reads.
- */
-export const EMAIL_PROVIDERS = [
-  "xfinity.com",
-  "spectrum.com",
-  "att.com",
-  "verizon.com",
-  "cox.com",
-  "gmail.com",
-  "outlook.com",
-  "yahoo.com",
-  "icloud.com",
-  "proton.me",
-];
-export const EMAIL_SOURCE_PARAM = "utm_source";
-
-/**
- * Draw without replacement: every entry appears once per pass, in its own
- * shuffled order, then the bag refills. `random` is injectable so a test can
- * pin the order. Instances live as long as the Edge isolate serving the proxy,
- * so a cold start simply begins a new shuffle.
- */
-export function shuffleBag<T>(
-  items: readonly T[],
-  random: () => number = Math.random,
-): () => T {
-  let order: T[] = [];
-  let cursor = 0;
-  return () => {
-    if (cursor >= order.length) {
-      order = [...items];
-      for (let i = order.length - 1; i > 0; i--) {
-        const j = Math.floor(random() * (i + 1));
-        [order[i], order[j]] = [order[j], order[i]];
-      }
-      cursor = 0;
-    }
-    return order[cursor++];
-  };
-}
-
-const nextEmailTarget = shuffleBag(EMAIL_TARGETS);
-const nextEmailProvider = shuffleBag(EMAIL_PROVIDERS);
-
 /**
  * Stable public link voni.cc/demo -> DEMO_REDIRECT_URL (307, never cached).
  * Target lives in the env so it can be re-pointed without a code edit.
@@ -124,35 +68,6 @@ function demoRedirect(request: NextRequest): NextResponse | null {
   return response;
 }
 
-/**
- * Stable public link voni.cc/email -> random EMAIL_TARGETS entry (307, never cached).
- * Each hit draws a target and a provider from their own no-repeat bag, and the
- * provider travels as `utm_source`. Exact URLs, incoming query dropped.
- * Landing host only, same host gate as demoRedirect.
- * Server-side 307, so it works with JS disabled.
- */
-function emailRedirect(request: NextRequest): NextResponse | null {
-  const { host, pathname } = request.nextUrl;
-  if (!EMAIL_PATHS.has(pathname)) return null;
-
-  const landingHost = process.env.LANDING_HOST;
-  if (landingHost) {
-    const appHost = safeAppHost();
-    if (host !== landingHost && host !== `www.${landingHost}`) {
-      // App host (or unknown host): not the public email link.
-      if (!appHost || host === appHost) return null;
-    }
-  }
-
-  const destination = new URL(nextEmailTarget());
-  destination.searchParams.set(EMAIL_SOURCE_PARAM, nextEmailProvider());
-  const emailResponse = NextResponse.redirect(destination, 307);
-  emailResponse.headers.set("Cache-Control", DEMO_NO_STORE);
-  emailResponse.headers.set("Pragma", "no-cache");
-  emailResponse.headers.set("Expires", "0");
-  return emailResponse;
-}
-
 function safeAppHost(): string | null {
   try {
     const appUrl = process.env.BETTER_AUTH_URL;
@@ -190,8 +105,6 @@ function hostRedirect(request: NextRequest): NextResponse | null {
 export function proxy(request: NextRequest) {
   const demo = demoRedirect(request);
   if (demo) return demo;
-  const email = emailRedirect(request);
-  if (email) return email;
   const redirect = hostRedirect(request);
   if (redirect) return redirect;
   const path = request.nextUrl.pathname;
@@ -213,8 +126,6 @@ export const config = {
     "/",
     "/demo",
     "/demo/",
-    "/email",
-    "/email/",
     "/login",
     "/signup",
     "/dashboard/:path*",

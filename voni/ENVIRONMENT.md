@@ -350,6 +350,37 @@ One-time setup:
 ## Cloudflare (deploy target + R2 storage)
 - `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` — only needed for `npm run deploy` / R2 access, not local dev.
 
+`CLOUDFLARE_API_TOKEN` is a **deploy credential**, never a Worker secret. Three
+places it can live, none of them a Worker binding:
+
+| Where | What it is for |
+| --- | --- |
+| `voni/.env.local` | Local deploys. The repo-root `.envrc` loads this file with direnv, so `wrangler` sees it without an export. Gitignored (`.env*`). |
+| GitHub repo secret `CLOUDFLARE_API_TOKEN` | CI. `.github/workflows/deploy.yml` already maps it into the deploy job. |
+| Shell `export` | One-off session, when you don't use direnv. |
+
+Token scope: Cloudflare's **"Edit Cloudflare Workers"** template (Workers
+Scripts:Edit) covers `workers.dev` deploys; add the account id from the Workers
+overview page. Check with `npx wrangler whoami`.
+
+## Email pool (`/email`)
+
+`voni.cc/email` runs the edge-worker pool described in
+`docs/agents/email-pool.md`. Two sets of values, and they are not the same
+credential:
+
+| Variable | Local (`voni/.env.local` / pool `.dev.vars`) | Production |
+| --- | --- | --- |
+| `POOL_SECRET` | any string, shared with the pool's local dev (`dev-pool-secret` by default) | `wrangler secret put POOL_SECRET` on **each** `email-pool-0N` **and** on `voni` |
+| `POOL_WORKER_URLS` | `http://127.0.0.1:8787,http://127.0.0.1:8788,http://127.0.0.1:8789` | `https://email-pool-01.<subdomain>.workers.dev,...` |
+| `ALLOWED_TARGET_HOSTS` (pool) | `voni.cc,www.voni.cc,localhost:3000,127.0.0.1:3000,cipherlogs.github.io` | `voni.cc,www.voni.cc,cipherlogs.github.io` |
+| `ALLOW_PRIVATE_TARGETS` (pool) | `true` (localhost only) | unset |
+
+Without `POOL_SECRET` or `POOL_WORKER_URLS` the route answers
+`503 {reason:"not_configured"}` and the page shows that, rather than a silent
+empty result. The pool's `POOL_SECRET` unset means the Worker rejects every
+`/click` — closed by default, not open.
+
 ## Background jobs (Cloudflare Queues + R2 staging + cron)
 
 Slow work (agent generation, agent deployment, connection tests, CSV

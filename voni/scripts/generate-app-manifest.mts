@@ -241,14 +241,15 @@ function routeOf(pageFile: string): string | null {
   const parts = rel.split("/").slice(0, -1).filter((p) => p !== "" && !/^\(.*\)$/.test(p));
 
   // Local design prototypes, disposable press-specimen raster routes, and the
-  // public scratch pages (`/test`) are outside tool-enabled product
+  // public scratch pages (`/test`, `/email`) are outside tool-enabled product
   // navigation. `/e2e/*` is the browser E2E harness (ticket 149): it exists
   // only in the isolated test build and is never a voice destination.
   if (
     parts[0] === "prototypes" ||
     parts[0] === "press-specimen" ||
     parts[0] === "e2e" ||
-    parts[0] === "test"
+    parts[0] === "test" ||
+    parts[0] === "email"
   )
     return null;
   return `/${parts.join("/")}`;

@@ -1,64 +1,101 @@
-# Load-testing the public `/email` link
+# Load-testing `/email` and its edge-worker pool
 
-`voni.cc/email` answers with a 307 to one of the five `glizzitrium.com` targets,
-plus a randomized `utm_source` (see `voni/src/proxy.ts`). Two different things
-get called "load testing" here, and they need different tools.
+`voni.cc/email` is a **page**, not a redirect. It draws one voni.cc path and one
+`utm_source` from the bags in `voni/src/lib/email/pool.ts`, `POST`s
+`/api/email-pool`, and that route asks every Worker in the pool to fetch the
+target with a real outbound `fetch()`. The visitor never leaves `/email`; the
+report is rendered in place. Contract: `docs/agents/email-pool.md`.
 
-## loader.io cannot see the destination
+The old 307 to `www.glizzitrium.com` is gone. Anything that measured that hop
+measures nothing now.
+
+## `scripts/loadtest-email.js` is stale
+
+`scripts/loadtest-email.js` (repo root, not `voni/scripts/`) still encodes the
+redirect contract. Do not read a run of it as a pass or a failure of the current
+page. Specifically:
+
+| Part of the script | Why it is stale |
+| --- | --- |
+| `GET <TARGET_URL>` must return **307** | `/email` returns 200 HTML now. Every iteration fails the first check and `return`s. |
+| `EXPECT_HOST=www.glizzitrium.com` and `utm_source` on the `Location` | There is no `Location`, no affiliate host, and the source now rides on a URL the Workers fetch, not on a redirect header. |
+| Hop 2: fetch the `Location`, require a `uniqueClick_*` / `transaction_id` cookie | The tracker is no longer the destination, so there is no click cookie to find. |
+| `FOLLOW_DEEPER`, the cookie-jar clearing | Same reason: no tracker chain, no growing cookie. |
+| `email_edge_ok` / `email_click_ok` counters | They measure the redirect and the affiliate click. Both are meaningless here. |
+
+The script was left in place rather than deleted because its loader.io
+explanation is still the correct one (below). Treat its thresholds as history.
+
+## loader.io cannot see a pool fan-out
 
 loader.io follows a redirect **only when the target host is verified in your
 loader.io account** — a `loaderio-<token>` file at the host root, or a
 `loaderio=<token>` TXT record ([Test Results][results], [Verifying a Target
-Host][verify]). `www.glizzitrium.com` is a third-party affiliate tracker, so
-there is no way to verify it. A loader.io run therefore reports the 307 as a
-success and files the hop under **Redirects → Invalid**, and the tracker never
-receives a request.
+Host][verify]). That mattered when the destination was a third-party tracker.
 
-Decisive check: on a loader.io result, `Redirects / Invalid > 0` with
-`Redirects / Valid = 0` is this, not a bug in `/email`.
+It matters differently now: `/email` does not redirect at all, and the fan-out
+happens in a `POST` issued by client JS after hydration. loader.io does not run
+that JS, so a run only measures the static HTML shell — it can tell you the page
+is served, never that the pool answered.
 
-The chain has a second unverified hop as well: the tracker 302s to
-`homesafety.adt.com`, which loader.io would also refuse. That is why
-`scripts/loadtest-email.js` stops at the tracker instead of chasing the offer.
+Decisive check: on a loader.io result for `/email`, `Redirects / Invalid > 0` can
+only come from a stale run against the old contract, not from the page.
 
-## Use the k6 script instead
+## What a valid check looks like
+
+Two things worth measuring, with different tools.
+
+**The page itself** — `GET /email` must be 200 HTML, no `Location`, `noindex`,
+and it must not be cached as a redirect. A small k6 or `curl` loop is enough:
 
 ```bash
-k6 run scripts/loadtest-email.js                        # 50 VUs, ~2m
-VUS=200 DURATION=3m k6 run scripts/loadtest-email.js
-TARGET_URL=http://localhost:3000/email k6 run scripts/loadtest-email.js
-docker run --rm -i -v "$PWD:/src" -w /src grafana/k6 run scripts/loadtest-email.js
+curl -sS -D - -o /dev/null https://voni.cc/email | head -20
+# expect: HTTP/2 200, content-type: text/html, no location
 ```
 
-Each iteration is one visitor, in two hops:
+**The fan-out** — `POST /api/email-pool` is the real work, and it is reachable
+without a browser:
 
-1. `GET <TARGET_URL>` with `redirects: 0` — must be a 307 with a `Location` on
-   `EXPECT_HOST` (`www.glizzitrium.com` by default) carrying `utm_source`.
-2. `GET <Location>` with `redirects: 0` — must be 2xx/3xx **and** set a
-   `uniqueClick_*` or `transaction_id` cookie. That cookie is the click id the
-   tracker records, so it is the proof the click registered; a bare 200 is not.
+```bash
+curl -sS -X POST -H 'accept: application/json' https://voni.cc/api/email-pool | jq
+# { ok: true, visitId,
+#   target: "https://cipherlogs.github.io/print/?utm_source=<provider>&utm_medium=email&utm_campaign=voni-email",
+#   source: "<provider>", workers: [ { worker, ok, status, ms, colo, ... } ] }
+#
+# with the env vars missing:
+# HTTP 503 { ok: false, reason: "not_configured", message: "...POOL_SECRET..." }
+```
 
-The script clears those cookies after every iteration. Without that, each VU
-keeps appending ids to its `transaction_id` cookie (the tracker chains one id
-per repeat visit) and the request header grows without bound.
+A check that means something asserts, per response:
 
-Read the result as: `email_click_ok` ≈ `email_edge_ok` ≈ `iterations`, all
-`checks` green, and `http_req_failed` at 0. `email_click_ok` short of
-`email_edge_ok` means the tracker rejected a hop, not that voni dropped it.
+1. `ok` is `true`, and `target` is one of the two bag URLs
+   (`https://cipherlogs.github.io/print/`, `https://voni.cc/test`) with the
+   three params appended — never an affiliate host.
+2. `source` is one of `EMAIL_PROVIDERS` and matches the target's
+   `utm_source`.
+3. `workers.length` equals the pool size (`POOL_WORKER_URLS` entries), and every
+   entry is either `ok: true` with a numeric `status` / `ms`, or `ok: false`
+   with a `reason` — a single dead Worker must not shrink the array.
+4. A mixed result (`ok: true` with some failed workers) is a *successful* route
+   response: the page is supposed to show partial reach, not fail.
 
-`FOLLOW_DEEPER=1` continues the chain to the offer. Leave it off for click
-volume: the tracker has already recorded the click by then, and the extra hops
-only add third-party traffic.
+Volume: one `POST` is `N` Worker invocations **plus `N` requests back to
+voni.cc itself**. A load test of `/api/email-pool` therefore multiplies traffic
+onto the same origin it is measuring, and the route is public with no rate limit
+of its own. Keep runs small and ramp gently (`VUS=5`, short duration) until a
+limit exists, and never run one against production during a demo or a billing
+window.
 
 ## Caveats
 
-- A redirect cannot set `Referer`, the client IP, or a browser fingerprint.
-  `utm_source` is the whole of the claimed source.
-- Every VU in one run shares the load generator's egress IPs. That is fine for
-  validating the redirect and the click registration, but it is not "traffic
-  from many providers" to the affiliate network. For source-IP spread, run from
-  k6 Cloud or several machines — not from the Worker, which would only add
-  datacenter IPs you never sent a human to.
+- The `utm_source` is a query key only. A Worker sets its own `x-pool-worker`
+  header, `referer: https://voni.cc/email`, and user agent — see the contract —
+  but the claimed source is still just the query string.
+- Every request to a target comes from the Worker's egress, not the visitor's.
+  That is the point of the pool; it is not "a human from gmail.com" and should
+  not be reported as one.
+- Latency per worker is bounded by the route's 8s abort. A pool member that
+  answers slower shows up as `reason: "timeout"`, not as a slow page.
 
 [results]: https://support.loader.io/article/19-test-results
 [verify]: https://support.loader.io/article/20-verifying-an-app
