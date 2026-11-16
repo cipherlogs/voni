@@ -44,6 +44,23 @@ Saved Voni agents are created or updated in AssemblyAI after the local row is
 written. If this key is missing or AssemblyAI is unavailable, the app keeps the
 local save and shows a retryable deployment warning on the agent page.
 
+## Fingerprint test page (`/test`)
+
+Two different credentials, and mixing them up is the usual failure: the public
+key identifies browsers, the secret key only reads events server-side.
+
+- `FINGERPRINT_SECRET_API_KEY` — Fingerprint dashboard → **API keys** →
+  *secret* key. Server-only; read through `secret()` in the `/api/test/fingerprint`
+  route. Without it that route answers 503 `not_configured` and the page still
+  shows the browser half. Never commit it, never rename it `NEXT_PUBLIC_*`.
+- The public key (`QVTz4PvJUUtPvQEm9fmo`) is hardcoded in
+  `src/components/fingerprint-test-provider.tsx` on purpose — it is browser-safe
+  by design. **Global region**: an EU/AP key needs `region="eu" | "ap"` in that
+  provider *and* `eu.api.fpjs.io` / `ap.api.fpjs.io` in the route's
+  `FP_EVENTS_URL`, or identification works while every lookup 404s.
+- Both keys must come from the same workspace and region. `/test` is public and
+  `noindex`; each load costs one identification plus one Server API lookup.
+
 ## Telnyx (telephony bridge)
 
 - `TELNYX_API_KEY` — environment fallback for the operator-managed Telnyx
