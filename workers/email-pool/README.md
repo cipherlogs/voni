@@ -10,14 +10,18 @@ is the worker half of it.
 
 ```
 GET  /health   -> { worker, colo, redirects, targets }              (public)
-POST /click    -> { worker, colo, ok, status, ms, target, finalUrl,
-                    redirected, reason }
+POST /click    -> { worker, colo, region, ok, status, ms, target,
+                    finalUrl, redirected, reason }
                   requires x-pool-secret: $POOL_SECRET
 GET  /probe-region -> { worker, colo, hint, durableObject }          requires x-pool-secret
 ```
 
 The pool follows redirect chains: `status` and `finalUrl` describe where the
 click landed, not hop one.
+
+`POST /click` runs inside a Durable Object pinned to the instance's region hint,
+so `colo` is the object's own colo (or `null` when the runtime supplied none)
+and `region` is the hint the object was created with.
 
 ## Layout
 
@@ -26,7 +30,8 @@ src/index.ts    fetch handler: routes, auth, JSON shapes
 src/target.ts   pure validateTarget(url): absolute http(s) only, no host policy
 src/click.ts    buildTargetHeaders + runClick (follows redirects, 8s timeout)
 src/auth.ts     constant-time secret compare
-src/region-probe.ts  RegionProbe Durable Object + pure probeRegion
+src/region-probe.ts  RegionProbe Durable Object + pure probeRegion (the probe)
+src/pinned-click.ts  PinnedClick Durable Object: the /click fetch path
 scripts/        dev.mjs / deploy.mjs / probe-region.mjs / wrangler-bin.mjs
 test/           node:test suites
 wrangler.jsonc  base config; deploy and dev generate per-instance copies
@@ -46,12 +51,14 @@ npm run dev            # 3 wrangler dev instances on 8787, 8788, 8789
 `EMAIL_POOL_SIZE` sets the count, `EMAIL_POOL_PORT` the base port. `wrangler` is
 resolved from `node_modules/.bin` if present, otherwise from
 `../../voni/node_modules/.bin/wrangler` (legacy fallback; CI installs the local
-copy). The dev script prints each instance's
-URL and the local secret (`dev-pool-secret` unless `EMAIL_POOL_SECRET` is set).
+copy). The dev script prints each instance's URL, its `POOL_REGION_HINT` and the
+local secret (`dev-pool-secret` unless `EMAIL_POOL_SECRET` is set).
 
-Dev and deploy both inject nothing but `POOL_INDEX` (and the dev secret): the
-worker accepts any absolute http(s) URL, so a dev instance can be pointed at
-`http://localhost:3000/...` just as easily as at `https://voni.cc/...`.
+Dev and deploy both inject `POOL_INDEX` and the per-instance
+`POOL_REGION_HINT` (plus the dev secret in dev): the worker accepts any absolute
+http(s) URL, so a dev instance can be pointed at `http://localhost:3000/...`
+just as easily as at `https://voni.cc/...`. Miniflare ignores placement, so a
+local hint is recorded but not honoured.
 
 ```sh
 # health
@@ -96,8 +103,17 @@ EMAIL_POOL_SIZE=3 npm run deploy -- --dry-run   # bundle only, no upload
 ```
 
 `scripts/deploy.mjs` copies `wrangler.jsonc` into
-`.wrangler/deploy-config/email-pool-NN.json` (gitignored), overriding `name` and
-`POOL_INDEX`, then runs `wrangler deploy --config <file>` per instance.
+`.wrangler/deploy-config/email-pool-NN.json` (gitignored), overriding `name`,
+`POOL_INDEX` and `POOL_REGION_HINT`, then runs `wrangler deploy --config <file>`
+per instance. Both Durable Object bindings (`POOL_REGION`, `POOL_CLICK`) and
+both migrations (`v1` RegionProbe, `v2` PinnedClick) are copied into every
+generated config unchanged.
+
+Region hints cycle across instances: instance `i` gets
+`EMAIL_POOL_REGION_HINTS[i % length]`, comma-separated, default `enam,wnam,weur`.
+The script logs the mapping before deploying, and an unknown hint fails the run
+by name (`EMAIL_POOL_REGION_HINTS has unknown hint(s): north`) instead of
+deploying a pool pinned somewhere nobody asked for.
 
 There is no target list to configure: any absolute http(s) URL is fair game, so
 adding a target is a voni-only change.
@@ -136,9 +152,60 @@ EMAIL_TARGET_ORIGIN=https://voni.cc
 | `POOL_USER_AGENT` | var | Chrome 131 desktop UA | Outbound `user-agent`. |
 | `POOL_INDEX` | var | `0` | Instance index; determines `worker` / logs (`0` → `email-pool-01`). |
 | `POOL_WORKER_ID` | var | unset | Optional explicit `worker` label override. |
+| `POOL_REGION_HINT` | var | `enam` | Location hint the instance's `PinnedClick` object is created with; set per instance by deploy/dev. |
+| `EMAIL_POOL_REGION_HINTS` | script env | `enam,wnam,weur` | Hints deploy/dev cycle across instances; not a worker var. |
+
+An unknown `POOL_REGION_HINT` is `500 bad_region_hint` on `/click`, never a
+silent fallback to another region.
 
 `wrangler.jsonc` deliberately does **not** set `global_fetch_strictly_public`,
 so dev can reach `localhost:3000`.
+
+## Pinned click — where the click egresses
+
+`POST /click` does not fetch from the Worker that received it. The route hands
+the work to a `PinnedClick` Durable Object created with this instance's
+`POOL_REGION_HINT`:
+
+```json
+{
+  "worker": "email-pool-01",
+  "colo": "IAD",
+  "region": "enam",
+  "ok": true,
+  "status": 200,
+  "ms": 431,
+  "target": "https://voni.cc/test",
+  "finalUrl": "https://voni.cc/demo?ref=mail",
+  "redirected": true,
+  "reason": null
+}
+```
+
+Measured against production: a Worker in Madrid that invokes an object created
+with `locationHint: "enam"` sees the object run in IAD/ATL/EWR and its `fetch()`
+egress from those colos. So `region` is the lever and `colo` is the evidence —
+`colo` comes from the request the object received (`cf.colo`) and is `null` when
+the runtime supplied none. Do not read `region` as proof: a location hint is
+best-effort, and Cloudflare only applies it when it creates the object.
+
+Object ids are per instance *and* per hint (`email-pool-01-enam`), because a
+shared id could let an object created for one hint answer for another. The hint
+rides the request (`{ url, region }`), so the object keeps no state.
+
+Two costs of the hop, both deliberate:
+
+- One extra round trip. That is why voni's caller budget is 10s while the
+  object keeps `runClick`'s 8s timeout.
+- **A Durable Object is serialized per id, so concurrent clicks on one instance
+  queue behind each other.** Per-instance throughput is capped by click latency;
+  scale the pool rather than expecting parallelism inside one object.
+
+Local dev has no `PinnedClick` class until the migration is applied, so without
+the `POOL_CLICK` binding `/click` falls back to fetching inline from the Worker.
+The body shape is unchanged — `region` is still the configured hint — but `colo`
+is the Worker's own (or `null`), so a dev click is never mistaken for a pinned
+one.
 
 ## Region probe — where the object runs, and where it egresses
 
@@ -220,6 +287,8 @@ the two observations. `node scripts/probe-region.mjs --help` lists the flags.
 - `redirect: "follow"` — the chain is followed and the report describes the
   landing response (`status`, `finalUrl`, `redirected`). The landed body is
   cancelled, never buffered.
+- Each target fetch runs in the instance's pinned object, so the egress region
+  is a deployment property (`POOL_REGION_HINT`), never a caller choice.
 - `GET /probe-region` is gated by the same secret and fetches exactly two fixed
   URLs (`cdn-cgi/trace`, `ipinfo.io/json`); it accepts no caller-supplied
   target.
@@ -235,6 +304,14 @@ the two observations. `node scripts/probe-region.mjs --help` lists the flags.
 - Beyond the contract's failure reasons, the worker reports `http_error` (an
   observed 4xx/5xx status, returned in the 200 shape) and `bad_request`
   (unparseable JSON body). `detail` appears only on failures.
+- `/click` adds its own wrapper failures: `bad_region_hint` (500, the
+  instance's `POOL_REGION_HINT` is not a supported hint) and
+  `click_bad_response` (502, the object's body was not JSON). A throwing object
+  stub is `502 fetch_failed` with `detail`.
+- The object's failure body carries `worker`, `colo`, `region`, `target` and
+  `ms`. The route maps it to the contract's `{ ok, reason, detail }` 502 so the
+  existing failure shape is unchanged — which means a caller learns the reason
+  but not the region on a transport failure.
 - `/probe-region` adds its own wrapper failures: `bad_hint` (400),
   `probe_not_configured` (503, missing binding), `probe_unavailable` (502, the
   stub threw) and `probe_bad_response` (502, the stub's body was not JSON).

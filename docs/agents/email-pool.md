@@ -17,7 +17,7 @@ POST {WORKER_URL}/click
   x-pool-secret: <POOL_SECRET>
   { "url": "https://voni.cc/test?utm_source=gmail.com", "visitId": "abc" }
 
-200 { "worker": "email-pool-01", "colo": "FRA", "ok": true,
+200 { "worker": "email-pool-01", "colo": "IAD", "region": "enam", "ok": true,
       "status": 200, "ms": 187, "target": "<url>",
       "finalUrl": "<url the chain ended on>", "redirected": false,
       "reason": null }
@@ -29,6 +29,10 @@ GET {WORKER_URL}/health
 200 { "worker": "email-pool-01", "colo": "FRA", "redirects": "follow",
       "targets": "any absolute http(s) URL" }
 ```
+
+The fetch itself runs inside a Durable Object pinned by `region`, so `region` is
+the placement hint we asked for and `colo` is the object's own colo when the
+runtime reports one — `null` is normal, never a stand-in for the caller's colo.
 
 `ok` is the verdict on the **final** status, so 2xx and 3xx are a pass. A chain
 that ends on a 404 is `ok: false` with `reason: "http_error"`, and
@@ -109,7 +113,8 @@ fan-out in local dev fetches the production URLs, not your dev server.
   (`/api/email-pool` takes no request body and draws server-side); Cloudflare
   refuses private, loopback and link-local addresses at the platform level; the
   response body is cancelled without buffering, so no page is held in memory;
-  the 8 s timeout bounds the whole chain.
+  the object gives up after 8 s and the caller at 10 s, so the object's verdict
+  always wins over the caller's abort.
 - Every pool request to a target carries `x-pool-worker`, so analytics can tell
   pool traffic from a human.
 
@@ -149,11 +154,43 @@ npm run probe:region            # in workers/email-pool, needs POOL_SECRET
 
 `locationHint` is a **hint, best effort, decided at first `get()`** — objects
 never relocate, and `sam`, `afr`, `me` currently spawn nothing (they land in a
-neighbouring region). Treat a non-US verdict as "this does not give me a US
-vantage point"; the honest alternative is a real US egress (VPS or proxy) as an
-extra pool member. The target also sees a Cloudflare datacenter IP either way,
+neighbouring region). The target also sees a Cloudflare datacenter IP either way,
 which is the distortion that matters most for affiliate pages with bot
 filtering.
+
+### What the probe measured
+
+Run on 2026-11-17 against the three production instances, all with `hint=enam`,
+each invoked from Madrid:
+
+| instance | invoking colo | object colo | egress | verdict |
+| --- | --- | --- | --- | --- |
+| `email-pool-01` | MAD | IAD | 104.23.209.78 · Ashburn, Virginia, US · AS13335 | US |
+| `email-pool-02` | MAD | ATL | 104.22.1.46 · Atlanta, Georgia, US · AS13335 | US |
+| `email-pool-03` | MAD | EWR | 104.23.187.4 · Newark, New Jersey, US · AS13335 | US |
+
+Three things this settles: the hint does move execution out of the caller's
+colo; the egress follows the object; and it is a **hint**, not a pin — one hint
+produced three different colos. It also shows the limit: the egress is still a
+Cloudflare address (`AS13335`), so geography moved and IP reputation did not.
+
+### Which region each instance uses
+
+`/click` runs its fetch inside an object created with the instance's hint, so
+the region is deployment config, not code:
+
+```
+EMAIL_POOL_REGION_HINTS=enam,wnam,weur   # default; cycled across instances
+```
+
+Instance *i* gets `hints[i % hints.length]`. Changing the mapping is an env
+change plus a redeploy; `deploy.mjs` logs what each instance received. An
+invalid hint fails the deploy by name rather than silently falling back.
+
+One throughput note: a Durable Object is single-threaded, and every instance
+reuses one object per hint, so concurrent clicks to the same instance queue
+behind each other. That is fine for a QA draw; it is not a load-testing
+architecture.
 
 [placement]: https://developers.cloudflare.com/workers/configuration/placement/
 [egress]: https://developers.cloudflare.com/smart-shield/configuration/dedicated-egress-ips/

@@ -32,6 +32,7 @@ type PoolWorker = {
   status?: number | null;
   ms?: number | null;
   colo?: string | null;
+  region?: string | null;
   target?: string | null;
   finalUrl?: string | null;
   redirected?: boolean;
@@ -113,9 +114,20 @@ function WorkerRow({ worker }: { worker: PoolWorker }) {
         <span className="text-muted-foreground font-mono text-xs">
           {worker.ok && typeof worker.ms === "number" ? `${worker.ms} ms` : "— ms"}
         </span>
-        <span className="text-muted-foreground font-mono text-xs">
-          colo {worker.ok ? (worker.colo ?? "—") : "—"}
+        <span
+          className="text-muted-foreground font-mono text-xs"
+          data-testid="email-pool-worker-region"
+        >
+          region {worker.ok ? (worker.region ?? "—") : "—"}
         </span>
+        {worker.ok && worker.colo ? (
+          <span
+            className="text-muted-foreground font-mono text-xs"
+            data-testid="email-pool-worker-colo"
+          >
+            colo {worker.colo}
+          </span>
+        ) : null}
       </div>
     </li>
   );
@@ -187,7 +199,10 @@ export function EmailPoolPanel() {
             edge location with a real outbound request, following redirects
             wherever they lead. Targets are pages on voni.cc or off-site
             affiliate links, chosen server-side and never by the browser. Results
-            run once on load; the button draws a new target and source.
+            run once on load; the button draws a new target and source. Each row
+            shows the region the object was created with and, when the runtime
+            reports one, the colo it actually ran in; the region is a
+            best-effort hint.
           </CardDescription>
           <CardAction>
             {running ? (

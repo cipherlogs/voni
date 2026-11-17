@@ -12,6 +12,13 @@ export interface PoolEnv {
   POOL_WORKER_ID?: string;
   /** `RegionProbe` Durable Object namespace, used only by GET /probe-region. */
   POOL_REGION?: DurableObjectNamespace;
+  /** `PinnedClick` Durable Object namespace, used by POST /click. */
+  POOL_CLICK?: DurableObjectNamespace;
+  /**
+   * Location hint this instance's `PinnedClick` object is created with.
+   * Deploy/dev cycle it per instance; unset means `enam`.
+   */
+  POOL_REGION_HINT?: string;
   [key: string]: unknown;
 }
 
@@ -22,7 +29,10 @@ export const DEFAULT_USER_AGENT =
 
 interface ClickBase {
   worker: string;
-  colo: string;
+  /** The colo the fetch actually ran in; null when the runtime supplied none. */
+  colo: string | null;
+  /** The location hint the fetch was pinned to, so a failure still says where. */
+  region: string;
   ms: number;
   target: string;
 }
@@ -48,8 +58,10 @@ export type ClickResult = ClickObservation | ClickFailure;
 
 export interface RunClickOptions {
   fetch: typeof fetch;
-  /** Cloudflare colo code for this worker instance. */
-  colo?: string;
+  /** Cloudflare colo code for wherever this runs; null when none was supplied. */
+  colo?: string | null;
+  /** Location hint this call is pinned to ("unknown" when nothing pinned it). */
+  region: string;
   timeoutMs?: number;
 }
 
@@ -105,7 +117,10 @@ export async function runClick(
   options: RunClickOptions,
 ): Promise<ClickResult> {
   const worker = poolWorkerId(env);
-  const colo = options.colo ?? "UNKNOWN";
+  // A missing colo stays null: reporting "UNKNOWN" as if it were a colo code
+  // would make a locally-served dev click look like a real placement.
+  const colo = options.colo ?? null;
+  const { region } = options;
   const target = url.toString();
   const timeoutMs = options.timeoutMs ?? CLICK_TIMEOUT_MS;
   const started = Date.now();
@@ -124,6 +139,7 @@ export async function runClick(
     return {
       worker,
       colo,
+      region,
       ok: false,
       status: null,
       ms: Date.now() - started,
@@ -148,6 +164,7 @@ export async function runClick(
   return {
     worker,
     colo,
+    region,
     ok,
     status: response.status,
     ms,

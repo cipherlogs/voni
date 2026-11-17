@@ -13,6 +13,7 @@ import { POST } from "@/app/api/email-pool/route";
 import TARGETS_JSON from "./targets.json";
 import {
   assertEmailTargets,
+  DEFAULT_TIMEOUT_MS,
   EMAIL_CAMPAIGN,
   EMAIL_MEDIUM,
   EMAIL_PROVIDERS,
@@ -193,6 +194,7 @@ test("fan-out: every worker reported in the contract 200 shape, secret and body 
     return jsonResponse({
       worker,
       colo: "FRA",
+      region: "weur",
       ok: true,
       status: 200,
       ms: 187,
@@ -221,6 +223,7 @@ test("fan-out: every worker reported in the contract 200 shape, secret and body 
     assert.equal(worker.status, 200);
     assert.equal(worker.ms, 187);
     assert.equal(worker.colo, "FRA");
+    assert.equal(worker.region, "weur", "the placement hint the object was created with");
     assert.equal(worker.target, TARGET, "target stays what was requested");
     assert.equal(worker.finalUrl, TARGET, "a direct 200 ends on the target itself");
     assert.equal(worker.redirected, false, "nothing moved");
@@ -240,6 +243,65 @@ test("fan-out: every worker reported in the contract 200 shape, secret and body 
     visitId: "visit-1",
   });
   assert.ok(calls[0].init?.signal instanceof AbortSignal, "a timeout signal is always attached");
+});
+
+test("fan-out: the default budget outlives the object's own 8s so its verdict wins", () => {
+  // The click crosses a DO hop in another region before the fetch starts, so the
+  // object's 8s budget must expire first and its verdict must be the one
+  // reported; a shorter fan-out timeout would turn that verdict into "timeout".
+  assert.ok(DEFAULT_TIMEOUT_MS > 8_000, "must outlast the object's own budget");
+  assert.equal(DEFAULT_TIMEOUT_MS, 10_000);
+});
+
+test("fan-out: region parses with a null colo, and a missing region stays null", async () => {
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    const worker = nameOf(String(input));
+    if (worker === "email-pool-01") {
+      // The object runs where the hint put it but the runtime reports no colo,
+      // which is normal now: the region alone has to stand on its own.
+      return jsonResponse({
+        worker,
+        colo: null,
+        region: "wnam",
+        ok: true,
+        status: 200,
+        ms: 160,
+        target: TARGET,
+        finalUrl: TARGET,
+        redirected: false,
+        reason: null,
+      });
+    }
+    // A Worker that does not report a region at all.
+    return jsonResponse({
+      worker,
+      colo: "IAD",
+      ok: true,
+      status: 200,
+      ms: 140,
+      target: TARGET,
+    });
+  }) as typeof globalThis.fetch;
+
+  const result = await fanOutToWorkers({
+    urls: URLS,
+    secret: "dev-pool-secret",
+    target: TARGET,
+    visitId: "visit-region",
+    fetch: fetchImpl,
+  });
+
+  const hinted = result.workers.find((worker) => worker.worker === "email-pool-01");
+  assert.ok(hinted?.ok);
+  if (!hinted?.ok) return;
+  assert.equal(hinted.region, "wnam", "the placement hint is parsed as sent");
+  assert.equal(hinted.colo, null, "a null colo is a value, not a missing field");
+
+  const quiet = result.workers.find((worker) => worker.worker === "email-pool-02");
+  assert.ok(quiet?.ok);
+  if (!quiet?.ok) return;
+  assert.equal(quiet.region, null, "an absent region parses to null, never a guess");
+  assert.equal(quiet.colo, "IAD");
 });
 
 test("fan-out: a redirected worker reports where the chain ended, off the target", async () => {

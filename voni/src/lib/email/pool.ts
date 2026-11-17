@@ -154,6 +154,11 @@ export function parseWorkerUrls(raw: string | undefined | null): string[] {
  * what was asked for, `finalUrl` is where the chain stopped, and `redirected`
  * says whether those two differ. `status` and `ok` are the Worker's verdict on
  * that final response.
+ *
+ * The fetch runs inside a Durable Object pinned by `region` (the placement hint
+ * the object was created with, best-effort) and `colo` is the object's own colo
+ * when the runtime reports one, so `null` is normal there and never a
+ * stand-in for the caller's colo.
  */
 export type WorkerReport = {
   worker: string;
@@ -161,6 +166,7 @@ export type WorkerReport = {
   status: number | null;
   ms: number;
   colo: string | null;
+  region: string | null;
   target: string;
   finalUrl: string | null;
   redirected: boolean;
@@ -193,7 +199,8 @@ export type FanOutResult = {
   workers: WorkerResult[];
 };
 
-const DEFAULT_TIMEOUT_MS = 8_000;
+// 10s, not 8s: the click now crosses a DO hop in another region before the fetch starts, so the object's own 8s budget must expire first and its verdict must win.
+export const DEFAULT_TIMEOUT_MS = 10_000;
 
 function sourceOf(target: string): string | null {
   try {
@@ -294,6 +301,7 @@ async function callOneWorker(
     status: asNumber(body?.status),
     ms: asNumber(body?.ms) ?? elapsed,
     colo: asString(body?.colo),
+    region: asString(body?.region),
     target: asString(body?.target) ?? input.target,
     finalUrl: asString(body?.finalUrl),
     redirected: body?.redirected === true,

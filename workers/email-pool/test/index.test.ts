@@ -174,12 +174,15 @@ test("POST /click returns exactly the 200 shape on success", async () => {
     "ok",
     "reason",
     "redirected",
+    "region",
     "status",
     "target",
     "worker",
   ]);
   assert.equal(body.worker, "email-pool-01");
-  assert.equal(body.colo, "UNKNOWN");
+  // no cf in this runtime, so no colo: null, not a made-up code
+  assert.equal(body.colo, null);
+  assert.equal(body.region, "enam");
   assert.equal(body.ok, true);
   assert.equal(body.status, 200);
   assert.equal(body.finalUrl, "https://voni.cc/test");
@@ -285,6 +288,222 @@ test("other methods and paths are rejected", async () => {
   );
   assert.equal(unknown.status, 404);
   assert.equal(((await unknown.json()) as { reason: string }).reason, "not_found");
+});
+
+// --- POST /click through PinnedClick ---------------------------------------
+
+const OBSERVATION = {
+  worker: "email-pool-01",
+  colo: "IAD",
+  region: "enam",
+  ok: true,
+  status: 200,
+  ms: 231,
+  target: "https://voni.cc/test",
+  finalUrl: "https://voni.cc/demo",
+  redirected: true,
+  reason: null,
+};
+
+interface ClickCalls {
+  ids: string[];
+  options: unknown[];
+  requests: { url: string; method: string; body: unknown }[];
+}
+
+/** A `PinnedClick` namespace stand-in; records id, hint and the request sent. */
+function stubClick(
+  body: unknown,
+  status = 200,
+): { namespace: DurableObjectNamespace; calls: ClickCalls } {
+  const calls: ClickCalls = { ids: [], options: [], requests: [] };
+
+  const namespace = {
+    idFromName(name: string) {
+      calls.ids.push(name);
+      return { toString: () => name, name };
+    },
+    get(_id: unknown, options?: unknown) {
+      calls.options.push(options);
+      return {
+        async fetch(request: Request): Promise<Response> {
+          const text = await request.text();
+          let parsed: unknown = null;
+          try {
+            parsed = text === "" ? null : JSON.parse(text);
+          } catch {
+            parsed = text;
+          }
+          calls.requests.push({
+            url: request.url,
+            method: request.method,
+            body: parsed,
+          });
+          return new Response(JSON.stringify(body), {
+            status,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      };
+    },
+  } as unknown as DurableObjectNamespace;
+
+  return { namespace, calls };
+}
+
+function clickEnv(
+  namespace?: DurableObjectNamespace,
+  extra: Record<string, unknown> = {},
+): typeof ENV & Record<string, unknown> {
+  return namespace === undefined
+    ? { ...ENV, ...extra }
+    : { ...ENV, POOL_CLICK: namespace, ...extra };
+}
+
+test("POST /click dispatches to POOL_CLICK instead of fetching inline", async () => {
+  const inline = stubFetch(() => landed("https://inline.example/"));
+  const { namespace, calls } = stubClick(OBSERVATION);
+
+  const response = await worker.fetch(clickRequest(), clickEnv(namespace));
+
+  assert.equal(response.status, 200);
+  // the object's observation is the body, verbatim
+  assert.deepEqual(await response.json(), OBSERVATION);
+  // the worker never fetched the target itself
+  assert.deepEqual(inline, []);
+  assert.equal(calls.requests.length, 1);
+  assert.equal(calls.requests[0].method, "POST");
+  assert.deepEqual(calls.requests[0].body, {
+    url: "https://voni.cc/test",
+    region: "enam",
+  });
+});
+
+test("POST /click pins one object per instance and per hint", async () => {
+  const { namespace, calls } = stubClick(OBSERVATION);
+
+  await worker.fetch(
+    clickRequest(),
+    clickEnv(namespace, { POOL_INDEX: "2", POOL_REGION_HINT: "weur" }),
+  );
+
+  assert.deepEqual(calls.ids, ["email-pool-03-weur"]);
+  assert.deepEqual(calls.options, [{ locationHint: "weur" }]);
+});
+
+test("POST /click defaults the hint to enam when POOL_REGION_HINT is unset", async () => {
+  const { namespace, calls } = stubClick(OBSERVATION);
+
+  await worker.fetch(clickRequest(), clickEnv(namespace));
+
+  assert.deepEqual(calls.ids, ["email-pool-01-enam"]);
+  assert.deepEqual(calls.options, [{ locationHint: "enam" }]);
+});
+
+test("POST /click rejects an unknown POOL_REGION_HINT by name", async () => {
+  const inline = stubFetch(() => landed("https://inline.example/"));
+  const { namespace, calls } = stubClick(OBSERVATION);
+
+  const response = await worker.fetch(
+    clickRequest(),
+    clickEnv(namespace, { POOL_REGION_HINT: "north" }),
+  );
+
+  assert.equal(response.status, 500);
+  const body = (await response.json()) as { ok: boolean; reason: string; detail: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.reason, "bad_region_hint");
+  assert.match(body.detail, /north/);
+  // nothing ran: no object hop, no inline fetch
+  assert.equal(calls.requests.length, 0);
+  assert.deepEqual(inline, []);
+});
+
+test("POST /click maps a DO transport failure to the 502 shape", async () => {
+  const failure = {
+    worker: "email-pool-01",
+    colo: "IAD",
+    region: "enam",
+    ok: false,
+    status: null,
+    ms: 8001,
+    target: "https://voni.cc/test",
+    reason: "timeout",
+    detail: "The operation was aborted due to timeout",
+  };
+  const { namespace } = stubClick(failure, 502);
+
+  const response = await worker.fetch(clickRequest(), clickEnv(namespace));
+
+  assert.equal(response.status, 502);
+  const body = (await response.json()) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body).sort(), ["detail", "ok", "reason"]);
+  assert.equal(body.ok, false);
+  assert.equal(body.reason, "timeout");
+  assert.match(String(body.detail), /aborted/);
+});
+
+test("POST /click maps a throwing stub to 502 fetch_failed", async () => {
+  const namespace = {
+    idFromName: (name: string) => ({ toString: () => name, name }),
+    get: () => ({
+      async fetch(): Promise<Response> {
+        throw new Error("object unavailable in this namespace");
+      },
+    }),
+  } as unknown as DurableObjectNamespace;
+
+  const response = await worker.fetch(clickRequest(), clickEnv(namespace));
+
+  assert.equal(response.status, 502);
+  const body = (await response.json()) as { reason: string; detail: string };
+  assert.equal(body.reason, "fetch_failed");
+  assert.match(body.detail, /object unavailable/);
+});
+
+test("POST /click maps a non-JSON DO body to 502 click_bad_response", async () => {
+  const namespace = {
+    idFromName: (name: string) => ({ toString: () => name, name }),
+    get: () => ({
+      async fetch(): Promise<Response> {
+        return new Response("<html>not the contract</html>", { status: 200 });
+      },
+    }),
+  } as unknown as DurableObjectNamespace;
+
+  const response = await worker.fetch(clickRequest(), clickEnv(namespace));
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    reason: "click_bad_response",
+  });
+});
+
+test("POST /click falls back to an inline fetch without POOL_CLICK (local dev)", async () => {
+  const seen = stubFetch(() => landed("https://voni.cc/test", 200, false));
+
+  const response = await worker.fetch(clickRequest(), ENV);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(seen, ["https://voni.cc/test"]);
+
+  const body = (await response.json()) as Record<string, unknown>;
+  assert.equal(body.ok, true);
+  assert.equal(body.region, "enam");
+  assert.equal(body.colo, null);
+});
+
+test("POST /click checks the secret before it reaches the object", async () => {
+  const { namespace, calls } = stubClick(OBSERVATION);
+
+  const response = await worker.fetch(
+    clickRequest(undefined, { "x-pool-secret": "nope" }),
+    clickEnv(namespace),
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal(calls.requests.length, 0);
 });
 
 // --- GET /probe-region -----------------------------------------------------

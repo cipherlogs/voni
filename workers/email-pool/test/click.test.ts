@@ -91,7 +91,7 @@ test("runClick follows redirects and reports the landing response", async () => 
     landed(TARGET.toString(), 200, false),
   );
 
-  const result = observed(await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA" }));
+  const result = observed(await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA", region: "enam" }));
 
   assert.equal(result.worker, "email-pool-01");
   assert.equal(result.colo, "FRA");
@@ -114,7 +114,7 @@ test("runClick follows redirects and reports the landing response", async () => 
 test("runClick sends the contract headers on the wire", async () => {
   const { calls, fetchImpl } = recordingFetch(landed("https://voni.cc/test"));
 
-  await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA" });
+  await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA", region: "enam" });
 
   const headers = new Headers(calls[0].init?.headers);
   assert.equal(headers.get("referer"), "https://voni.cc/email");
@@ -126,7 +126,7 @@ test("runClick sends the contract headers on the wire", async () => {
 test("runClick reports the final status and finalUrl of a followed 302", async () => {
   const { fetchImpl } = recordingFetch(landed("https://voni.cc/demo?ref=mail", 200, true));
 
-  const result = observed(await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA" }));
+  const result = observed(await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA", region: "enam" }));
 
   assert.equal(result.ok, true);
   assert.equal(result.status, 200);
@@ -141,6 +141,7 @@ test("runClick reports the final status and finalUrl of a followed 302", async (
     "ok",
     "reason",
     "redirected",
+    "region",
     "status",
     "target",
     "worker",
@@ -150,7 +151,7 @@ test("runClick reports the final status and finalUrl of a followed 302", async (
 test("runClick falls back to the requested target when response.url is empty", async () => {
   const { fetchImpl } = recordingFetch(new Response(null, { status: 204 }));
 
-  const result = observed(await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA" }));
+  const result = observed(await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA", region: "enam" }));
 
   assert.equal(result.ok, true);
   assert.equal(result.status, 204);
@@ -168,7 +169,7 @@ test("runClick cancels the landed body instead of reading it", async () => {
   });
   const { fetchImpl } = recordingFetch(new Response(stream, { status: 200 }));
 
-  await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA" });
+  await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA", region: "enam" });
 
   assert.equal(cancelled, true);
 });
@@ -177,11 +178,15 @@ test("runClick maps a thrown fetch error to fetch_failed", async () => {
   const result = await runClick(TARGET, ENV, {
     fetch: throwingFetch(new Error("connection reset")),
     colo: "FRA",
+    region: "enam",
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.status, null);
   assert.equal(result.reason, "fetch_failed");
+  // a failure still says where the click was pinned
+  assert.equal(result.region, "enam");
+  assert.equal(result.colo, "FRA");
   assert.equal("finalUrl" in result, false);
   assert.match(result.detail ?? "", /connection reset/);
 });
@@ -193,19 +198,32 @@ test("runClick maps a timeout abort to timeout", async () => {
   const result = await runClick(TARGET, ENV, {
     fetch: throwingFetch(timeout),
     colo: "FRA",
+    region: "enam",
     timeoutMs: 5,
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "timeout");
   assert.equal(result.status, null);
+  assert.equal(result.region, "enam");
   assert.equal("finalUrl" in result, false);
+});
+
+test("runClick reports a null colo when the runtime supplied none", async () => {
+  const { fetchImpl } = recordingFetch(landed(TARGET.toString(), 200, false));
+
+  const result = observed(
+    await runClick(TARGET, ENV, { fetch: fetchImpl, region: "unknown" }),
+  );
+
+  assert.equal(result.colo, null);
+  assert.equal(result.region, "unknown");
 });
 
 test("runClick reports a 404 at the end of a chain as http_error", async () => {
   const { fetchImpl } = recordingFetch(landed("https://voni.cc/missing", 404, true));
 
-  const result = observed(await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA" }));
+  const result = observed(await runClick(TARGET, ENV, { fetch: fetchImpl, colo: "FRA", region: "enam" }));
 
   assert.equal(result.ok, false);
   assert.equal(result.status, 404);
