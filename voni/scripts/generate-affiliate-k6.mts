@@ -27,6 +27,7 @@ import {
 } from "../src/lib/email/pool";
 import {
   REPORT_BODY_SOURCE,
+  REPORT_FINAL_URL_SOURCE,
   REPORT_SECRET_PLACEHOLDER,
 } from "./lib/affiliate-check";
 
@@ -95,11 +96,17 @@ function build(): string {
  * the client hints a Chromium-family profile sends — following up to ten
  * redirects. Each click logs one JSON line, then reports it back to voni.
  *
+ * Two run rules live in \`options\` below: DNS resolves IPv4 only, so the same
+ * target is not measured over a different address family each run, and one
+ * failed report fails the run, so a rotated secret cannot hide behind a green
+ * check.
+ *
  * Three fields mean one thing here and in the panel's one-off click, so the click
  * table has one meaning per column:
  *   target — the stamped URL that was actually visited, not the bare bag entry.
- *   finalUrl — null when the fetch never produced a response; k6's response.url
- *            would otherwise echo the request URL as if it had landed.
+ *   finalUrl — null when the fetch never produced a response or when the URL is
+ *            too long to store; k6's response.url would otherwise echo the
+ *            request URL as if it had landed.
  *   status — null when the fetch never produced a response. k6 reports 0 for a
  *            transport failure, and the report schema stores that as null, so a
  *            failed click is recorded instead of rejected.
@@ -126,6 +133,25 @@ function build(): string {
 import http from "k6/http";
 import { check } from "k6";
 import { Counter } from "k6/metrics";
+
+/**
+ * The run's own rules, both of which a green run depends on:
+ *
+ *   dns.policy "onlyIPv4" — every lookup answers A records only. The check
+ *     exists to measure one landing page, and k6's default policy takes
+ *     whichever address the agent's resolver returns first: the same target
+ *     would then be IPv4 in one run and IPv6 in the next, and the two numbers
+ *     would describe different servers.
+ *   thresholds.report_failed "count==0" — not one failed report is allowed.
+ *     Reporting is a side channel for the click, but the secret is a side
+ *     channel for the data: with a rotated secret every POST answers 401 and,
+ *     without this threshold, the run still finishes green. A run with
+ *     reporting disabled never increments the counter, so this stays green.
+ */
+export const options = {
+  dns: { policy: "onlyIPv4" },
+  thresholds: { report_failed: ["count==0"] },
+};
 
 /** Same headers the app's click simulator sends (src/lib/email/click-simulator.ts). */
 const ACCEPT =
@@ -179,7 +205,7 @@ const REPORT_SECRET = "${REPORT_SECRET_PLACEHOLDER}";
 const REPORTING_ENABLED =
   REPORT_SECRET !== "" && REPORT_SECRET !== "${REPORT_SECRET_PLACEHOLDER}";
 
-/** A broken endpoint must be visible in the run, not silent. */
+/** A broken endpoint must be visible in the run, not silent: see options. */
 const reportOk = new Counter("report_ok");
 const reportFailed = new Counter("report_failed");
 
@@ -280,14 +306,18 @@ function withUtm(target, source) {
 }
 
 /**
- * The one JSON row one click reports. Its source lives in
- * scripts/lib/affiliate-check.ts so the test can hand the same text to the
- * real parser; inlined here because k6 cannot import TypeScript.
+ * The landing-URL rule and the one JSON row one click reports. Their source
+ * lives in scripts/lib/affiliate-check.ts so the test can evaluate the same
+ * text and hand it to the real parser; inlined here because k6 cannot import
+ * TypeScript.
  *
  * Every value fits the parser's bounds by construction: target, source and the
- * browser strings come from the generated data, and a click slower than the
- * parser's 120 s ceiling is outside what this check can observe.
+ * browser strings come from the generated data, a click slower than the
+ * parser's 120 s ceiling is outside what this check can observe, and a landing
+ * URL longer than the parser accepts is reported as null instead.
  */
+${REPORT_FINAL_URL_SOURCE}
+
 ${REPORT_BODY_SOURCE}
 
 export default function affiliateClickCheck() {
@@ -313,13 +343,18 @@ export default function affiliateClickCheck() {
     "status is 200-399": (result) => result.status >= 200 && result.status < 400,
   });
 
+  // Stamp the visit, not the report: the row describes when the click
+  // happened, so a slow report endpoint must not age it.
+  const ranAt = new Date().toISOString();
+
   const record = {
     // The stamped URL, matching the one-off click's target field.
     target: url,
     source: source,
     // No answer means no landing page: response.url falls back to the request
-    // URL even when nothing replied. Same null the simulator records.
-    finalUrl: response.status === 0 ? null : response.url || url,
+    // URL even when nothing replied, and an oversized one is not storable.
+    // Same null the simulator records.
+    finalUrl: reportFinalUrl(response.status, response.url),
     // k6 reports 0 when no response arrived; the schema's null is that case.
     status: response.status === 0 ? null : response.status,
     ms: Math.round(response.timings.duration),
@@ -330,20 +365,26 @@ export default function affiliateClickCheck() {
   console.log(JSON.stringify(record));
 
   // Reporting is a side channel: the click above already happened, so nothing
-  // here may fail the iteration. A rejection is counted and logged; report_ok
-  // and report_failed are the run's own verdict on the endpoint.
+  // here may throw out of the iteration. The counters are still the verdict on
+  // the endpoint — options.thresholds fails the run once report_failed is not
+  // zero, which is what makes a rotated secret visible.
   if (REPORTING_ENABLED) {
     try {
       const report = http.post(
         REPORT_URL,
-        JSON.stringify(buildReportBody(record, new Date().toISOString())),
+        JSON.stringify(buildReportBody(record, ranAt)),
         {
           headers: {
             "content-type": "application/json",
             "x-voni-click-secret": REPORT_SECRET,
           },
           tags: { phase: "report" },
-          timeout: "10s",
+          // No redirects: a 3xx would re-send the body and the secret header
+          // to a host nobody reviewed. It counts as a failed report instead.
+          redirects: 0,
+          // Short on purpose: a healthy click must not turn red because the
+          // report endpoint is slow, and a lost row is cheaper than a timeout.
+          timeout: "2s",
         },
       );
       if (report.status >= 200 && report.status < 300) {

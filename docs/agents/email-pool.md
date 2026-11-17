@@ -155,7 +155,14 @@ Getting the secret into the script is a build step, not an edit:
    whole check body back, then re-reads the check and compares the script hash
    and every other setting before reporting success. It refuses a script that
    has no placeholder — that refusal is what keeps an already-injected script
-   from being committed or re-uploaded blindly.
+   from being committed or re-uploaded blindly — and it refuses four other
+   things before writing: a secret outside the URL-safe alphabet (a quote or a
+   backslash would break the stored string literal or silently `401` every
+   report), an `EMAIL_CLICK_CHECK_ID` that is set but not a positive integer, a
+   fetched check whose `job`/`target` is not the affiliate click check, and a
+   check whose `enabled` flag is missing or not boolean (Grafana reads an absent
+   flag as on). A failed write or read-back gets one more read, and the abort
+   text says whether the stored hash matches and that re-running is safe.
 3. The stored script now carries the real secret; the file in git still does
    not.
 
@@ -168,10 +175,24 @@ else, and never put a Grafana token in the script — `GRAFANA_SM_URL` /
 `GRAFANA_SM_TOKEN` can read and modify the check, which is a much larger grant.
 
 Reporting failures never fail a click: the POST is wrapped, `report_failed` and
-`report_ok` are counters in the k6 run, and a run whose endpoint is broken still
-clicks and still logs its JSON line. Run the committed script locally and it
-reports nothing at all — it logs one line saying so — because the placeholder is
-still in place.
+`report_ok` are counters in the k6 run, and a click whose report fails still
+happens and still logs its JSON line. The run's verdict is separate and
+stricter: `export const options` carries
+`thresholds: { report_failed: ["count==0"] }`, so one failed report fails the
+run. That threshold is what makes a rotated secret visible — without it, a run
+where every report answered `401` still finished green. A run with reporting
+disabled never increments the counter, so it stays green. The same `options`
+pins `dns: { policy: "onlyIPv4" }`: k6 would otherwise take whichever address
+the agent's resolver returns first, so one target could be IPv4 in one run and
+IPv6 in the next and the two numbers would describe different servers.
+
+The report POST follows no redirects (`redirects: 0`) and times out at 2 s. A
+3xx counts as a failed report instead of re-sending the body and
+`x-voni-click-secret` to a host nobody reviewed, and a slow endpoint costs one
+lost row instead of turning a healthy click red. `ranAt` is stamped when the
+click completes, not after the report, so the row describes the visit. The
+committed script carries the placeholder, which is why a local run reports
+nothing at all — it logs one line saying so.
 
 ## Safety rules
 
