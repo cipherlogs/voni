@@ -12,6 +12,7 @@ import {
   BROWSER_VALUES,
   DEVICE_VALUES,
   PROFILE_FAMILIES,
+  clientHintsFor,
   pickBrowserProfile,
   refererForProvider,
   type ProfileFamily,
@@ -216,4 +217,74 @@ test("an unknown or missing provider sends no Referer", () => {
   assert.equal(refererForProvider("example.invalid"), null);
   assert.equal(refererForProvider(null), null);
   assert.equal(refererForProvider(""), null);
+});
+
+test("a Chrome desktop profile sends Chromium client hints for its own major", () => {
+  const profile = BROWSER_PROFILES.find(
+    (entry) => entry.id === "chrome-desktop-win11-150",
+  )!;
+  const hints = clientHintsFor(profile);
+
+  assert.match(hints["sec-ch-ua"] ?? "", /"Google Chrome";v="150"/);
+  assert.match(hints["sec-ch-ua"] ?? "", /"Chromium";v="150"/);
+  assert.equal(hints["sec-ch-ua-platform"], '"Windows"');
+  assert.equal(hints["sec-ch-ua-mobile"], "?0");
+  assert.equal(hints["sec-fetch-site"], "cross-site");
+  assert.equal(hints["sec-fetch-mode"], "navigate");
+  assert.equal(hints["sec-fetch-dest"], "document");
+  assert.equal(hints["sec-fetch-user"], "?1");
+});
+
+test("Safari sends no client hints, on any device", () => {
+  const safari = BROWSER_PROFILES.filter((entry) => entry.browser === "Safari");
+  assert.ok(safari.length > 0);
+  for (const profile of safari) {
+    assert.deepEqual(clientHintsFor(profile), {}, `${profile.id}: sent hints`);
+  }
+});
+
+test("Firefox sends no client hints", () => {
+  for (const profile of BROWSER_PROFILES.filter(
+    (entry) => entry.browser === "Firefox",
+  )) {
+    assert.deepEqual(clientHintsFor(profile), {}, `${profile.id}: sent hints`);
+  }
+});
+
+test("every Chromium profile's hints match its own UA and device", () => {
+  const chromium = BROWSER_PROFILES.filter(
+    (entry) => entry.browser !== "Safari" && entry.browser !== "Firefox",
+  );
+  assert.ok(chromium.length > 0);
+
+  for (const profile of chromium) {
+    const major = /Chrome\/(\d+)/.exec(profile.userAgent)?.[1];
+    assert.ok(major, `${profile.id}: no Chromium major in the UA`);
+    const hints = clientHintsFor(profile);
+
+    assert.match(
+      hints["sec-ch-ua"] ?? "",
+      new RegExp(`"Chromium";v="${major}"`),
+      `${profile.id}: hint contradicts the UA`,
+    );
+    assert.match(
+      hints["sec-ch-ua-platform"] ?? "",
+      /^"(Windows|macOS|Android)"$/,
+      `${profile.id}: ${hints["sec-ch-ua-platform"]}`,
+    );
+    assert.equal(
+      hints["sec-ch-ua-mobile"],
+      profile.device === "mobile" ? "?1" : "?0",
+      `${profile.id}: mobile hint disagrees with the device`,
+    );
+  }
+});
+
+test("Chrome on Android reports Android and the mobile hint", () => {
+  const profile = BROWSER_PROFILES.find(
+    (entry) => entry.family === "chrome-android",
+  )!;
+  const hints = clientHintsFor(profile);
+  assert.equal(hints["sec-ch-ua-platform"], '"Android"');
+  assert.equal(hints["sec-ch-ua-mobile"], "?1");
 });

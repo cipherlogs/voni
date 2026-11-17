@@ -11,7 +11,13 @@
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BROWSER_FAMILIES, BROWSER_PROFILES, refererForProvider } from "../src/lib/email/user-agents";
+import {
+  BROWSER_FAMILIES,
+  BROWSER_PROFILES,
+  clientHintsFor,
+  refererForProvider,
+  type BrowserProfile,
+} from "../src/lib/email/user-agents";
 import TARGETS_JSON from "../src/lib/email/targets.json";
 import {
   EMAIL_CAMPAIGN,
@@ -30,11 +36,18 @@ function round(value: number, digits: number): number {
   return Number(value.toFixed(digits));
 }
 
+function renderClientHints(profile: BrowserProfile): string {
+  const entries = Object.entries(clientHintsFor(profile)).map(
+    ([name, value]) => `${quote(name)}: ${quote(value)}`,
+  );
+  return entries.length === 0 ? "{}" : `{ ${entries.join(", ")} }`;
+}
+
 function renderFamilies(): string {
   return BROWSER_FAMILIES.map((group) => {
     const members = group.members.map(
       (profile) =>
-        `      { id: ${quote(profile.id)}, userAgent: ${quote(profile.userAgent)}, device: ${quote(profile.device)}, browser: ${quote(profile.browser)}, weight: ${round(profile.weight, 6)} },`,
+        `      { id: ${quote(profile.id)}, userAgent: ${quote(profile.userAgent)}, device: ${quote(profile.device)}, browser: ${quote(profile.browser)}, weight: ${round(profile.weight, 6)}, clientHints: ${renderClientHints(profile)} },`,
     );
     return [
       "  {",
@@ -74,8 +87,16 @@ function build(): string {
  * What it does: each iteration draws a browser profile from a weighted matrix
  * (family by weight, member uniformly), draws a target and a source from
  * no-repeat bags, stamps the three utm params on the target (keeping its own
- * query params), and fetches it with a browser-shaped header set, following up
- * to ten redirects. Each click logs one JSON line.
+ * query params), and fetches it with a browser-shaped header set — including
+ * the client hints a Chromium-family profile sends — following up to ten
+ * redirects. Each click logs one JSON line.
+ *
+ * Two fields mean one thing here and in the panel's one-off click, so the click
+ * table has one meaning per column:
+ *   target — the stamped URL that was actually visited, not the bare bag entry.
+ *   status — null when the fetch never produced a response. k6 reports 0 for a
+ *            transport failure, and the report schema stores that as null, so a
+ *            failed click is recorded instead of rejected.
  *
  * This generates REAL affiliate clicks: every iteration sends production
  * traffic to the targets in src/lib/email/targets.json. It is a live load
@@ -231,11 +252,15 @@ export default function affiliateClickCheck() {
   const source = nextProvider();
   const url = withUtm(target, source);
 
-  const headers = {
-    "user-agent": profile.userAgent,
-    accept: ACCEPT,
-    "accept-language": ACCEPT_LANGUAGE,
-  };
+  const headers = Object.assign(
+    {
+      "user-agent": profile.userAgent,
+      accept: ACCEPT,
+      "accept-language": ACCEPT_LANGUAGE,
+    },
+    // Empty for Safari/Firefox, which send none of these headers.
+    profile.clientHints,
+  );
   const referer = REFERERS[source];
   if (referer) headers.referer = referer;
 
@@ -245,10 +270,12 @@ export default function affiliateClickCheck() {
   });
 
   const record = {
-    target: target,
+    // The stamped URL, matching the one-off click's target field.
+    target: url,
     source: source,
     finalUrl: response.url || url,
-    status: response.status,
+    // k6 reports 0 when no response arrived; the schema's null is that case.
+    status: response.status === 0 ? null : response.status,
     ms: Math.round(response.timings.duration),
     userAgent: profile.userAgent,
     device: profile.device,

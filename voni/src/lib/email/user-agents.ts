@@ -390,6 +390,61 @@ export function pickBrowserProfile(
 }
 
 /**
+ * The `sec-ch-ua*` / `sec-fetch-*` headers a Chromium-family browser adds to a
+ * top-level navigation, or `{}` for a browser that sends none.
+ *
+ * Chrome and Edge stopped sending them only when the site opts out; a request
+ * carrying a Chromium User-Agent but no `sec-ch-ua` is therefore a
+ * header-completeness tell, which is exactly the kind of thing a bot filter
+ * checks first. The values are derived from the profile rather than typed
+ * again, so a new major in the pool cannot ship a hint that contradicts its own
+ * User-Agent.
+ *
+ * Safari and Firefox send none of these headers — Firefox has refused client
+ * hints outright — so they must stay absent there rather than be invented.
+ *
+ * `sec-fetch-site` is `cross-site` because the click starts in a webmail tab;
+ * `sec-fetch-user: ?1` is present because this is a user-initiated navigation.
+ */
+export function clientHintsFor(
+  profile: BrowserProfile,
+): Record<string, string> {
+  if (profile.browser === "Safari" || profile.browser === "Firefox") return {};
+
+  const chromium = /Chrome\/(\d+)/.exec(profile.userAgent)?.[1];
+  if (!chromium) return {};
+
+  let brand = `"Google Chrome";v="${chromium}"`;
+  if (profile.browser === "Edge") {
+    const edge = /Edg\/(\d+)/.exec(profile.userAgent)?.[1] ?? chromium;
+    brand = `"Microsoft Edge";v="${edge}"`;
+  } else if (profile.browser === "Samsung Internet") {
+    const samsung = /SamsungBrowser\/(\d+)/.exec(profile.userAgent)?.[1];
+    if (samsung) brand = `"Samsung Internet";v="${samsung}"`;
+  }
+
+  // Only Chromium's own desktop platforms and Android reach this branch; the
+  // Apple families above returned early. The fallback keeps a future Chromium
+  // tablet honest instead of claiming a desktop.
+  const platform =
+    profile.platform === "Windows"
+      ? "Windows"
+      : profile.platform === "macOS"
+        ? "macOS"
+        : "Android";
+
+  return {
+    "sec-ch-ua": `${brand}, "Chromium";v="${chromium}", "Not?A_Brand";v="24"`,
+    "sec-ch-ua-mobile": profile.device === "mobile" ? "?1" : "?0",
+    "sec-ch-ua-platform": `"${platform}"`,
+    "sec-fetch-site": "cross-site",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+}
+
+/**
  * The Referer a visitor clicking a link inside their webmail would send.
  *
  * Only the big webmail providers get one: that is where a link in an email is
