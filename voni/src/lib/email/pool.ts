@@ -148,39 +148,62 @@ export function parseWorkerUrls(raw: string | undefined | null): string[] {
 }
 
 /**
- * Contract 200 body from one Worker.
+ * What a Worker observed about one fetch, whatever its verdict on it.
  *
  * The Worker follows the redirect chain and reports where it ended: `target` is
  * what was asked for, `finalUrl` is where the chain stopped, and `redirected`
- * says whether those two differ. `status` and `ok` are the Worker's verdict on
- * that final response.
+ * says whether those two differ.
  *
  * The fetch runs inside a Durable Object pinned by `region` (the placement hint
  * the object was created with, best-effort) and `colo` is the object's own colo
  * when the runtime reports one, so `null` is normal there and never a
  * stand-in for the caller's colo.
  */
-export type WorkerReport = {
+type WorkerObservation = {
   worker: string;
-  ok: true;
-  status: number | null;
   ms: number;
   colo: string | null;
   region: string | null;
   target: string;
   finalUrl: string | null;
   redirected: boolean;
+};
+
+/**
+ * Contract 200 body from one Worker that accepted the final response: `status`
+ * and `ok` are the Worker's verdict on it.
+ */
+export type WorkerReport = WorkerObservation & {
+  ok: true;
+  status: number | null;
   reason: null;
 };
 
-/** Contract failure body from one Worker: the minimum both halves agreed on. */
+/**
+ * Contract 200 body from one Worker that observed a status it did not accept.
+ * The Worker still answers 200 for this on purpose, so the caller learns the
+ * status; `status` is numeric here because a row only reaches this variant by
+ * reporting one. Kept apart from `WorkerFailure` so "a row that reports a
+ * status always has one" is a type fact rather than a comment.
+ */
+export type WorkerStatusFailure = WorkerObservation & {
+  ok: false;
+  status: number;
+  reason: string;
+};
+
+/**
+ * Failure row with no observed status at all: the secret was refused, the
+ * request timed out or died, or the body was unusable. Contract failure body
+ * from one Worker: the minimum both halves agreed on.
+ */
 export type WorkerFailure = {
   worker: string;
   ok: false;
   reason: string;
 };
 
-export type WorkerResult = WorkerReport | WorkerFailure;
+export type WorkerResult = WorkerReport | WorkerStatusFailure | WorkerFailure;
 
 export type FanOutInput = {
   urls: string[];
@@ -295,18 +318,30 @@ async function callOneWorker(
     };
   }
 
-  return {
+  // The Worker answers 200 for a fetch it rejected too, so the body's verdict —
+  // never the transport status — decides the row. Only an explicit `ok: true`
+  // is success; a body that omits `ok` is not.
+  const status = asNumber(body?.status);
+  const observation = {
     worker,
-    ok: true,
-    status: asNumber(body?.status),
     ms: asNumber(body?.ms) ?? elapsed,
     colo: asString(body?.colo),
     region: asString(body?.region),
     target: asString(body?.target) ?? input.target,
     finalUrl: asString(body?.finalUrl),
     redirected: body?.redirected === true,
-    reason: null,
   };
+
+  if (body?.ok !== true) {
+    const reason = asString(body?.reason) ?? "http_error";
+    // Without a reported status there is nothing to attach a status to; keep
+    // the row honest as a plain failure rather than inventing "HTTP null".
+    return status === null
+      ? { worker, ok: false, reason }
+      : { ...observation, ok: false, status, reason };
+  }
+
+  return { ...observation, ok: true, status, reason: null };
 }
 
 /**

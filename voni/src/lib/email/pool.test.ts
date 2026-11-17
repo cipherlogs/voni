@@ -481,6 +481,158 @@ test("fan-out: a worker with an unusable body still gets a name from its URL", a
   assert.equal(answered.redirected, false);
 });
 
+test("fan-out: a 404 the Worker observed is a failing row, never an answered page", async () => {
+  // The Worker answers 200 on purpose when the page it landed on was a 404, so
+  // the caller learns the status; the body's verdict, not the transport's, is
+  // what decides the row.
+  const landed = "https://voni.cc/missing?utm_source=gmail.com";
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    const worker = nameOf(String(input));
+    if (worker === "email-pool-01") {
+      return jsonResponse({
+        worker,
+        ok: false,
+        reason: "http_error",
+        status: 404,
+        ms: 210,
+        colo: "FRA",
+        region: "weur",
+        target: TARGET,
+        finalUrl: landed,
+        redirected: true,
+      });
+    }
+    return jsonResponse({
+      worker,
+      colo: "IAD",
+      region: "wnam",
+      ok: true,
+      status: 200,
+      ms: 120,
+      target: TARGET,
+      finalUrl: TARGET,
+      redirected: false,
+      reason: null,
+    });
+  }) as typeof globalThis.fetch;
+
+  const result = await fanOutToWorkers({
+    urls: URLS,
+    secret: "dev-pool-secret",
+    target: TARGET,
+    visitId: "visit-404",
+    fetch: fetchImpl,
+  });
+
+  const row = result.workers.find((worker) => worker.worker === "email-pool-01");
+  assert.ok(row && !row.ok, "a 404 landing page is not a worker that answered");
+  if (!row || row.ok) return;
+  assert.ok("status" in row, "the row keeps the status the Worker reported");
+  if (!("status" in row)) return;
+  assert.equal(row.status, 404, "the observed 404, not the transport's 200");
+  assert.equal(row.reason, "http_error");
+  assert.equal(row.finalUrl, landed, "the row keeps where the chain ended");
+  assert.equal(row.redirected, true);
+  assert.equal(row.region, "weur", "the observation survives the failing verdict");
+  assert.equal(row.ms, 210);
+
+  assert.equal(
+    result.workers.filter((worker) => worker.ok).length,
+    2,
+    "only the two 200 bodies that say ok count as answered",
+  );
+});
+
+test("fan-out: an ok body is still the success path with a null reason", async () => {
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    const worker = nameOf(String(input));
+    return jsonResponse({
+      worker,
+      colo: "FRA",
+      region: "weur",
+      ok: true,
+      status: 200,
+      ms: 180,
+      target: TARGET,
+      finalUrl: TARGET,
+      redirected: false,
+      reason: null,
+    });
+  }) as typeof globalThis.fetch;
+
+  const result = await fanOutToWorkers({
+    urls: URLS,
+    secret: "dev-pool-secret",
+    target: TARGET,
+    visitId: "visit-ok",
+    fetch: fetchImpl,
+  });
+
+  const [row] = result.workers;
+  assert.ok(row.ok, "an explicit ok: true is the only success path");
+  if (!row.ok) return;
+  assert.equal(row.status, 200);
+  assert.equal(row.reason, null);
+  assert.equal(result.workers.filter((worker) => worker.ok).length, 3);
+});
+
+test("fan-out: a 200 body with no ok field is not success", async () => {
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    const worker = nameOf(String(input));
+    if (worker === "email-pool-01") {
+      // Status reported, verdict missing: the status is kept, the row is not ok.
+      return jsonResponse({
+        worker,
+        status: 200,
+        ms: 150,
+        colo: "FRA",
+        region: "weur",
+        target: TARGET,
+        finalUrl: TARGET,
+        redirected: false,
+      });
+    }
+    if (worker === "email-pool-02") {
+      // Neither verdict nor status: nothing to attach a status to.
+      return jsonResponse({ worker, ms: 140 });
+    }
+    return jsonResponse({
+      worker,
+      ok: true,
+      status: 200,
+      ms: 120,
+      target: TARGET,
+      finalUrl: TARGET,
+      redirected: false,
+      reason: null,
+    });
+  }) as typeof globalThis.fetch;
+
+  const result = await fanOutToWorkers({
+    urls: URLS,
+    secret: "dev-pool-secret",
+    target: TARGET,
+    visitId: "visit-no-ok",
+    fetch: fetchImpl,
+  });
+
+  const underscored = result.workers.find((worker) => worker.worker === "email-pool-01");
+  assert.ok(underscored && !underscored.ok, "a 200 body that never says ok is not success");
+  if (!underscored || underscored.ok) return;
+  assert.ok("status" in underscored);
+  if (!("status" in underscored)) return;
+  assert.equal(underscored.status, 200);
+  assert.equal(underscored.reason, "http_error", "a failing verdict defaults to http_error");
+  assert.equal(underscored.finalUrl, TARGET, "the observation is kept");
+
+  assert.deepEqual(
+    result.workers.find((worker) => worker.worker === "email-pool-02"),
+    { worker: "email-pool-02", ok: false, reason: "http_error" },
+    "no reported status means no status field, never a fabricated one",
+  );
+  assert.equal(result.workers.filter((worker) => worker.ok).length, 1);
+});
+
 test("route: takes no request at all, so the browser cannot choose the target", () => {
   const source = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "../../app/api/email-pool/route.ts"),

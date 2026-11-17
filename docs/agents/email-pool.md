@@ -38,6 +38,11 @@ runtime reports one — `null` is normal, never a stand-in for the caller's colo
 that ends on a 404 is `ok: false` with `reason: "http_error"`, and
 `finalUrl`/`status` still describe where it ended.
 
+The Worker answers HTTP **200** for that observation on purpose, so the caller
+still learns the status. The route therefore reads `body.ok` and never derives
+the verdict from the transport status: a row that reported a status always has
+one, and a 404 landing page is a failed row, not a green one.
+
 Worker → target request:
 
 ```

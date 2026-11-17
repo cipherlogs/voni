@@ -93,7 +93,7 @@ function WorkerRow({ worker }: { worker: PoolWorker }) {
           <Server className="text-muted-foreground size-3.5" />
           <span className="font-mono text-sm font-medium">{worker.worker}</span>
         </div>
-        {worker.ok && worker.redirected && worker.finalUrl ? (
+        {worker.redirected && worker.finalUrl ? (
           <span className="text-muted-foreground font-mono text-xs break-all">
             redirected to {worker.finalUrl}
           </span>
@@ -109,18 +109,18 @@ function WorkerRow({ worker }: { worker: PoolWorker }) {
           {statusLabel(worker)}
         </Badge>
         <span className="text-muted-foreground font-mono text-xs">
-          HTTP {worker.ok ? (worker.status ?? "—") : "—"}
+          HTTP {worker.status ?? "—"}
         </span>
         <span className="text-muted-foreground font-mono text-xs">
-          {worker.ok && typeof worker.ms === "number" ? `${worker.ms} ms` : "— ms"}
+          {typeof worker.ms === "number" ? `${worker.ms} ms` : "— ms"}
         </span>
         <span
           className="text-muted-foreground font-mono text-xs"
           data-testid="email-pool-worker-region"
         >
-          region {worker.ok ? (worker.region ?? "—") : "—"}
+          region {worker.region ?? "—"}
         </span>
-        {worker.ok && worker.colo ? (
+        {worker.colo ? (
           <span
             className="text-muted-foreground font-mono text-xs"
             data-testid="email-pool-worker-colo"
@@ -184,7 +184,7 @@ export function EmailPoolPanel() {
   const running = state.status === "loading";
   const payload = state.status === "done" ? state.payload : null;
   const workers = payload?.ok ? payload.workers : [];
-  const answered = workers.filter((worker) => worker.ok).length;
+  const passed = workers.filter((worker) => worker.ok).length;
 
   return (
     <div className="grid gap-6" data-testid="email-pool-panel">
@@ -219,7 +219,7 @@ export function EmailPoolPanel() {
               </Badge>
             ) : payload ? (
               <Badge data-testid="email-pool-status">
-                {answered} of {workers.length}
+                {passed} of {workers.length}
               </Badge>
             ) : (
               <Badge variant="outline" data-testid="email-pool-status">
@@ -276,15 +276,15 @@ export function EmailPoolPanel() {
               </dl>
 
               <p className="text-sm font-medium" data-testid="email-pool-summary">
-                {answered} of {workers.length} workers answered
+                {passed} of {workers.length} workers came back ok
               </p>
 
-              {answered < workers.length ? (
+              {passed < workers.length ? (
                 <Alert variant="destructive">
                   <AlertCircle />
                   <AlertTitle>
-                    {workers.length - answered} worker
-                    {workers.length - answered === 1 ? "" : "s"} did not come
+                    {workers.length - passed} worker
+                    {workers.length - passed === 1 ? "" : "s"} did not come
                     back ok
                   </AlertTitle>
                   <AlertDescription>
@@ -296,7 +296,7 @@ export function EmailPoolPanel() {
               ) : (
                 <Alert>
                   <CheckCircle2 />
-                  <AlertTitle>Every worker answered</AlertTitle>
+                  <AlertTitle>Every worker came back ok</AlertTitle>
                   <AlertDescription>
                     Each Worker reported the status it saw for{" "}
                     <span className="font-mono">{payload.target}</span> and,
