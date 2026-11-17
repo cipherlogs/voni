@@ -161,7 +161,9 @@ export async function spendUnlockAttempt(
   } catch {
     // Fail closed, but visibly: the form can render this, which a rejected
     // action could not. A database outage must not read as a wrong password and
-    // must not read as nothing at all.
+    // must not read as nothing at all. The trace is one fixed line — the
+    // attempt's identity is not worth leaking into logs to explain an outage.
+    console.error("email unlock: attempt ledger unavailable");
     return {
       allowed: false,
       reason: "unavailable",

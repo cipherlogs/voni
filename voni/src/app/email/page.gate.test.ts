@@ -341,6 +341,16 @@ test("EmailControlData is rendered exactly once, inside the unlocked branch", ()
     gate.start + unlockedAt < renderAt,
     "the panel render sits after the gate check, in the unlocked branch",
   );
+
+  // The single highest-consequence property of this file: a locked visitor
+  // gets the gate screen and nothing else. Removing this assertion was a real
+  // regression — replacing the locked branch with `if (!unlocked) {}` renders
+  // the whole panel to every locked visitor and passed every other test here.
+  assert.match(
+    gate.body.slice(unlockedAt),
+    /if \(!unlocked\) return <EmailGateScreen \/>;/,
+    "the locked branch returns the gate screen",
+  );
 });
 
 test("every panel read happens only inside EmailControlData", () => {

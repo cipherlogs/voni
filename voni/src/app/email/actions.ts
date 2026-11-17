@@ -280,6 +280,7 @@ export async function lockPage(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.delete({ name: PAGE_COOKIE, path: "/email" });
   cookieStore.delete({ name: EMAIL_CONTROL_COOKIE, path: "/email" });
+  revalidatePath("/email");
   redirect("/email");
 }
 
