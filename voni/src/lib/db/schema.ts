@@ -765,3 +765,47 @@ export const backgroundJobs = pgTable(
     ),
   ],
 );
+
+/**
+ * One affiliate click the `/email` control panel recorded: the target that was
+ * drawn, the claimed source, where the redirect chain ended, the status the
+ * edge saw and how long it took.
+ *
+ * Append-only evidence. The row keeps the target as the value that was visited
+ * rather than a pointer into today's target bag, so editing the bag never
+ * rewrites history. `ran_at` (when the visit happened) is separate from
+ * `created_at` (when the row was written) because a retried write must not move
+ * a click into a later stats window.
+ */
+export const affiliateClicks = pgTable(
+  "affiliate_clicks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    target: text("target").notNull(),
+    /** `utm_source` the visit claimed, absent when the draw had none. */
+    source: text("source"),
+    /**
+     * The identity the visit presented. `user_agent` is what the target was
+     * told, and `device`/`browser` are this pool's own classification of it —
+     * columns rather than a parser at read time, so a UA string that ages out
+     * of the parse table still reports the device it was sent as. All three
+     * are null for rows written before the pool sent a profile at all.
+     */
+    userAgent: text("user_agent"),
+    device: text("device"),
+    browser: text("browser"),
+    /** Where the redirect chain stopped; equal to `target` when nothing moved. */
+    finalUrl: text("final_url"),
+    /** Observed HTTP status; null when the visit never produced a response. */
+    status: integer("status"),
+    /** Wall time of the edge fetch; null when nothing was measured. */
+    ms: integer("ms"),
+    ranAt: timestamp("ran_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Every read is "newest first" and every stat is "since some hour", so one
+    // descending index serves both without a second sort.
+    index("affiliate_clicks_ran_at_idx").on(table.ranAt.desc()),
+  ],
+);
