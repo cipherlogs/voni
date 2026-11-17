@@ -67,6 +67,7 @@
     "demo:certify:browser": "node --env-file-if-exists=.env.local --import tsx scripts/browser-verify.mts",
     "demo:diagnose:protocol": "node --env-file-if-exists=.env.local --import tsx scripts/protocol-diagnose.mts",
     "corpus:takes": "node --env-file-if-exists=.env.local --import tsx scripts/generate-caller-takes.mts",
+    "affiliate:check": "node --import tsx scripts/generate-affiliate-k6.mts",
     "demo:inbox:probe": "node --env-file-if-exists=.env.local --import tsx scripts/demo-inbox-probe.mts"
   },
   "dependencies": {
