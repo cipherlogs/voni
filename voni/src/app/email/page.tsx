@@ -11,10 +11,10 @@ import {
   type ProbeView,
 } from "@/components/affiliate-control-panel";
 import { EmailGateForm } from "@/components/email-gate-form";
+import { GateFrame, GateSkeleton } from "@/components/email-gate-skeleton";
 import { CardListSkeleton, TableSkeleton } from "@/components/page-skeletons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import { PUBLIC_CONTAINER } from "@/lib/public-container";
 import { VoniLogo } from "@/components/voni-logo";
 import { affiliateClickStats, listAffiliateClicks } from "@/lib/email/clicks";
@@ -28,6 +28,7 @@ import { secret } from "@/lib/env";
 import {
   getCheck,
   listProbes,
+  resolveCheckId,
   type Probe,
   type SyntheticCheck,
 } from "@/lib/grafana/synthetic";
@@ -55,15 +56,8 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-const DEFAULT_CHECK_ID = 68584;
 const PAGE_CLICK_LIMIT = 20;
 const STATS_WINDOW_HOURS = 24;
-
-async function pageCheckId(): Promise<number> {
-  const raw = await secret("EMAIL_CLICK_CHECK_ID");
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_CHECK_ID;
-}
 
 function toCheckView(check: SyntheticCheck): CheckView {
   return {
@@ -144,46 +138,18 @@ function noticeCopy(value: string | undefined): string | null {
 /** Title, one line of copy, the password form. Nothing else is rendered. */
 function EmailGateScreen() {
   return (
-    <main className="flex min-h-svh flex-1 flex-col">
-      <div className={`${PUBLIC_CONTAINER} flex flex-1 items-center py-16`}>
-        <div className="mx-auto grid w-full max-w-md gap-6">
-          <div className="flex flex-col gap-2">
-            <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-              <LockKeyhole className="size-5" />
-              Email pool
-            </h1>
-            <p className="text-muted-foreground text-sm">
-              This page is private. Enter the password to continue.
-            </p>
-          </div>
-          <EmailGateForm />
-        </div>
+    <GateFrame>
+      <div className="flex flex-col gap-2">
+        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+          <LockKeyhole className="size-5" />
+          Email pool
+        </h1>
+        <p className="text-muted-foreground text-sm">
+          This page is private. Enter the password to continue.
+        </p>
       </div>
-    </main>
-  );
-}
-
-/**
- * The gate-shaped stand-in for the static shell. Deliberately not the panel
- * skeleton: a visitor who is not unlocked should never be shown panel chrome.
- */
-function GateSkeleton() {
-  return (
-    <main className="flex min-h-svh flex-1 flex-col">
-      <div className={`${PUBLIC_CONTAINER} flex flex-1 items-center py-16`}>
-        <div
-          role="status"
-          aria-label="Loading email page"
-          className="mx-auto grid w-full max-w-md gap-6"
-        >
-          <div className="grid gap-2">
-            <Skeleton className="h-7 w-40" />
-            <Skeleton className="h-4 w-full max-w-sm" />
-          </div>
-          <Skeleton className="h-10 w-full" />
-        </div>
-      </div>
-    </main>
+      <EmailGateForm />
+    </GateFrame>
   );
 }
 
@@ -196,8 +162,9 @@ function GateSkeleton() {
  *
  * `cookies()` needs a request, and Cache Components requires request-time
  * access to sit inside a `<Suspense>` boundary, so the gate is the boundary's
- * child rather than the page's top-level body. The static shell is the
- * gate-shaped skeleton above.
+ * child rather than the page's top-level body. That boundary's fallback is the
+ * shared gate skeleton (`@/components/email-gate-skeleton`), which the route's
+ * `loading.tsx` renders too: a locked visitor must never see panel chrome.
  */
 async function EmailPageGate({
   searchParams,
@@ -296,7 +263,7 @@ async function EmailControlData({
     expected,
   );
 
-  const id = await pageCheckId();
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
   // The click window is measured from the request, so the boundary comes from
   // here rather than from a clock read inside the query helper.
   const now = new Date();

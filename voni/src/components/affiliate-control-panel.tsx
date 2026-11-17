@@ -513,7 +513,7 @@ function ControlsForm({
             pendingText="Locking…"
             icon={<LockKeyhole />}
             onClick={() => {
-              void handleLock();
+              void handleLock().catch(() => {});
             }}
           >
             Lock panel

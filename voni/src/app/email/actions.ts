@@ -1,12 +1,19 @@
 "use server";
 
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { bumpRateBucket, clientIp } from "@/lib/demo/rate-limit";
 import { secret } from "@/lib/env";
 import { recordAffiliateClick } from "@/lib/email/clicks";
 import { simulateOneClick } from "@/lib/email/click-simulator";
+import {
+  EMAIL_CONTROL_COOKIE,
+  controlCookieMatches,
+  controlCookieValue,
+  safeSecretEqual,
+} from "@/lib/email/control";
 import {
   PAGE_COOKIE,
   isPageUnlocked,
@@ -21,6 +28,7 @@ import {
 import { clicksPerDay, validateVolume } from "@/lib/email/volume";
 import {
   getCheck,
+  resolveCheckId,
   updateCheck,
   type SyntheticResult,
 } from "@/lib/grafana/synthetic";
@@ -34,38 +42,116 @@ import {
  * `saveVolume` without the control cookie gets the same refusal as one that
  * never rendered the panel at all.
  *
+ * The two password forms are the only paths that run before any cookie exists,
+ * so they are the only ones a stranger can hammer; both spend a DB-backed
+ * attempt budget *before* comparing anything (see `throttleUnlocks`).
+ *
+ * The control cookie is minted and verified through `@/lib/email/control`, the
+ * same module the page reads with. A local copy of the digest here could drift
+ * from the page's and render the panel unlocked while every write refuses.
+ *
  * What is deliberately absent: the submitted secret is never logged, a failed
  * unlock never says whether `EMAIL_CONTROL_SECRET` is set, and no Grafana or
  * target response body is read into a result. The panel shows curated messages,
  * not upstream text that may quote a token or an arbitrary URL.
  */
 
-const COOKIE = "voni_email_control";
-const DEFAULT_CHECK_ID = 68584;
+const WRONG_SECRET = "Wrong secret.";
+const WRONG_PASSWORD = "Wrong password.";
 
-function digest(value: string): Buffer {
-  return createHash("sha256").update(value, "utf8").digest();
+/**
+ * Ten attempts per 15 minutes per IP, plus a ceiling on the whole deployment.
+ *
+ * The per-IP ceiling stops one guesser; the global one stops a distributed
+ * guess. Neither can tell a correct password from a wrong one because both are
+ * spent before the comparison, and both answer with the same sentence a wrong
+ * password gets, so being throttled is not evidence about the password.
+ *
+ * The 15-minute window is a fixed time slice rather than a rolling window: the
+ * bucket key carries the slice, so an expired bucket is simply never read
+ * again and no sweeper is needed. `retryAfterSeconds` therefore reports the
+ * whole window — an upper bound on the real wait, never a way to shorten it.
+ *
+ * The budget is fail-closed: if the database cannot answer, `bumpRateBucket`
+ * throws and the action returns nothing at all. A form that cannot count its
+ * attempts refuses; it never falls through to the comparison.
+ */
+const UNLOCK_WINDOW_SECONDS = 15 * 60;
+const UNLOCK_MAX_PER_IP = 10;
+const UNLOCK_MAX_GLOBAL = 100;
+
+type UnlockScope = "page" | "control";
+
+type ThrottleVerdict =
+  | { allowed: true }
+  | { allowed: false; retryAfterSeconds: number };
+
+/**
+ * The IP as a bucket key, hashed first for the same reason
+ * `@/lib/demo/rate-limit` hashes its own: a table of attempt counts is not a
+ * log of who visited. The deployment secret means the hashes are not
+ * reversible by rainbow table — a bare hash of an IPv4 address is trivial to
+ * enumerate — and the bucket prefix keeps these keys out of the demo's
+ * namespace.
+ */
+function ipBucketKey(ip: string): string {
+  const salt = process.env.BETTER_AUTH_SECRET ?? "voni-email-unlock";
+  return createHash("sha256")
+    .update(`${salt}:email-unlock:${ip}`, "utf8")
+    .digest("hex")
+    .slice(0, 16);
 }
 
 /**
- * Constant-time equality over SHA-256 digests. Hashing both sides first fixes
- * the buffer length, so `timingSafeEqual` cannot throw on a short or malformed
- * cookie and the number of matching leading characters never leaks.
+ * Spend one attempt against both ceilings.
+ *
+ * The header order belongs to `clientIp` (Cloudflare's `cf-connecting-ip`
+ * first), not to this file — one reader for every public form.
  */
-function constantTimeEqual(a: string, b: string): boolean {
-  return timingSafeEqual(digest(a), digest(b));
+async function throttleUnlocks(scope: UnlockScope): Promise<ThrottleVerdict> {
+  const window = Math.floor(Date.now() / (UNLOCK_WINDOW_SECONDS * 1000));
+  const retryAfterSeconds = UNLOCK_WINDOW_SECONDS;
+  const key = ipBucketKey(clientIp(await headers()));
+
+  const global = await bumpRateBucket(
+    `email-unlock:${scope}:global:${window}`,
+    UNLOCK_MAX_GLOBAL,
+    UNLOCK_WINDOW_SECONDS,
+  );
+  if (!global.ok) return { allowed: false, retryAfterSeconds };
+
+  const perIp = await bumpRateBucket(
+    `email-unlock:${scope}:ip:${key}:${window}`,
+    UNLOCK_MAX_PER_IP,
+    UNLOCK_WINDOW_SECONDS,
+  );
+  if (!perIp.ok) return { allowed: false, retryAfterSeconds };
+
+  return { allowed: true };
 }
 
-/** The cookie value: `sha256(secret)` in hex, never the secret itself. */
-function controlCookieValue(expected: string): string {
-  return digest(expected).toString("hex");
-}
-
+/**
+ * The result shape every action returns to its form.
+ */
 export type ControlState = {
   ok: boolean;
   message?: string;
   error?: string;
 };
+
+/**
+ * A refusal that looks like a wrong password and adds only the wait.
+ *
+ * It deliberately opens with the action's own wrong-password sentence: a
+ * throttled request that happens to carry the right password must be
+ * indistinguishable from a throttled wrong one.
+ */
+function throttled(wrongPassword: string, retryAfterSeconds: number): ControlState {
+  return {
+    ok: false,
+    error: `${wrongPassword} Too many attempts; try again in ${retryAfterSeconds} seconds.`,
+  };
+}
 
 const LOCKED: ControlState = {
   ok: false,
@@ -81,23 +167,19 @@ function locked(): ControlState {
  * between fixed-length digests and the secret itself never travels back to the
  * browser. An unset env secret is indistinguishable from a wrong cookie: both
  * mean "locked", and neither is logged.
+ *
+ * The predicate is `controlCookieMatches`, the same one the page renders the
+ * lock state with — not a second copy of the rule.
  */
 async function requireControl(): Promise<boolean> {
   const expected = await secret("EMAIL_CONTROL_SECRET");
   if (!expected) return false;
 
   const cookieStore = await cookies();
-  const provided = cookieStore.get(COOKIE)?.value;
-  if (!provided) return false;
-
-  return constantTimeEqual(provided, controlCookieValue(expected));
-}
-
-/** `EMAIL_CLICK_CHECK_ID` when it is a positive integer, else the known check. */
-async function checkId(): Promise<number> {
-  const raw = await secret("EMAIL_CLICK_CHECK_ID");
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_CHECK_ID;
+  return controlCookieMatches(
+    cookieStore.get(EMAIL_CONTROL_COOKIE)?.value,
+    expected,
+  );
 }
 
 /**
@@ -118,6 +200,14 @@ export async function unlockControl(
   _previous: ControlState,
   formData: FormData,
 ): Promise<ControlState> {
+  // Before the comparison, never after: a locked-out attacker must not learn
+  // anything — by answer or by timing — from a request that then has its
+  // secret compared anyway.
+  const throttle = await throttleUnlocks("control");
+  if (!throttle.allowed) {
+    return throttled(WRONG_SECRET, throttle.retryAfterSeconds);
+  }
+
   const submitted = String(formData.get("secret") ?? "");
   const expected = await secret("EMAIL_CONTROL_SECRET");
 
@@ -126,18 +216,17 @@ export async function unlockControl(
   // deployment's configuration. Both sides are hashed first, so the compared
   // buffers are always 32 bytes and the timing does not depend on the input.
   if (!expected) {
-    return { ok: false, error: "Wrong secret." };
+    return { ok: false, error: WRONG_SECRET };
   }
   const matches =
-    submitted.length > 0 &&
-    timingSafeEqual(digest(submitted), digest(expected));
+    submitted.length > 0 && safeSecretEqual(submitted, expected);
   if (!matches) {
-    return { ok: false, error: "Wrong secret." };
+    return { ok: false, error: WRONG_SECRET };
   }
 
   const cookieStore = await cookies();
   cookieStore.set({
-    name: COOKIE,
+    name: EMAIL_CONTROL_COOKIE,
     value: controlCookieValue(expected),
     httpOnly: true,
     sameSite: "lax",
@@ -152,9 +241,18 @@ export async function unlockControl(
   redirect("/email?notice=unlocked");
 }
 
+/**
+ * Drop the control cookie and return to the panel read-only.
+ *
+ * This function never returns normally: `redirect` rejects by design, because
+ * that rejection is how Next unwinds the action into a navigation. Callers must
+ * therefore tolerate a rejected promise — an un-caught `void lockControl()`
+ * surfaces as an unhandled rejection — and must not render that rejection as a
+ * failed lock.
+ */
 export async function lockControl(): Promise<ControlState> {
   const cookieStore = await cookies();
-  cookieStore.delete({ name: COOKIE, path: "/email" });
+  cookieStore.delete({ name: EMAIL_CONTROL_COOKIE, path: "/email" });
   revalidatePath("/email");
   redirect("/email?notice=locked");
 }
@@ -168,12 +266,24 @@ export async function lockControl(): Promise<ControlState> {
  * naming the variable, and a wrong password is one fixed sentence. Nothing the
  * visitor typed is ever echoed back, and the cookie holds the digest, not the
  * password.
+ *
+ * The attempt budget is spent first, so a throttled request gets the
+ * wrong-password refusal plus the wait even when the page is unconfigured —
+ * the throttle must not become a way to ask whether the password would have
+ * been right, or whether there is one at all.
  */
 export async function unlockPage(
   _previous: ControlState,
   formData: FormData,
 ): Promise<ControlState> {
   void _previous;
+  // Same order as the control form: budget first, comparison second.
+  const throttle = await throttleUnlocks("page");
+  if (!throttle.allowed) {
+    revalidatePath("/email");
+    return throttled(WRONG_PASSWORD, throttle.retryAfterSeconds);
+  }
+
   const submitted = String(formData.get("password") ?? "");
   const expected = await secret("EMAIL_PAGE_PASSWORD");
 
@@ -188,7 +298,7 @@ export async function unlockPage(
   }
   if (!isPageUnlocked(pagePasswordDigest(submitted), expected)) {
     revalidatePath("/email");
-    return { ok: false, error: "Wrong password." };
+    return { ok: false, error: WRONG_PASSWORD };
   }
 
   const cookieStore = await cookies();
@@ -200,10 +310,18 @@ export async function unlockPage(
   redirect("/email");
 }
 
-/** Drop the gate cookie and send the visitor back to the gate screen. */
+/**
+ * Lock the page: drop both grants, not just the visible one.
+ *
+ * The page cookie decides whether the panel renders, and the control cookie
+ * decides whether it writes. Deleting only the view cookie would leave a
+ * "locked" screen that anyone who re-enters the page password could still
+ * write with — a lock that only hides the keypad.
+ */
 export async function lockPage(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.delete({ name: PAGE_COOKIE, path: "/email" });
+  cookieStore.delete({ name: EMAIL_CONTROL_COOKIE, path: "/email" });
   redirect("/email");
 }
 
@@ -221,7 +339,7 @@ export async function saveVolume(
   });
   if (!volume.ok) return { ok: false, error: volume.reason };
 
-  const id = await checkId();
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
   const updated = await updateCheck(id, {
     frequencyMs: volume.value.frequencyMs,
     probeIds: volume.value.probeIds,
@@ -251,7 +369,7 @@ export async function toggleCheck(
   void _formData;
   if (!(await requireControl())) return locked();
 
-  const id = await checkId();
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
   const current = await getCheck(id);
   if (!current.ok) {
     return { ok: false, error: describeSyntheticFailure(current) };
@@ -290,8 +408,8 @@ export async function runOneOffClick(
 
   // The identity, headers and redirect behaviour live in one place so this
   // button and the Grafana check cannot drift apart.
-  const { status, finalUrl, ms, userAgent, device, browser } =
-    await simulateOneClick({ target, source });
+  const click = await simulateOneClick({ target, source });
+  const { status, finalUrl, ms, userAgent, device, browser } = click;
   const transportError = status === null;
 
   try {
@@ -324,10 +442,14 @@ export async function runOneOffClick(
     };
   }
 
-  if (status !== null && status >= 400) {
+  // A refused redirect hop is a failure even though the last status was a
+  // redirect, so the simulator's verdict — not the status code — decides.
+  if (!click.ok) {
     return {
       ok: false,
-      error: `The click ran from voni's server, not Grafana, but the target answered HTTP ${status}. The attempt is recorded.`,
+      error:
+        `The click ran from voni's server, not Grafana, but it was stopped: ${click.message} ` +
+        "The attempt is recorded.",
     };
   }
 

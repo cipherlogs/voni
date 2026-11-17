@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   clicksPerDay,
   FREQUENCY_MINUTES,
+  MAX_PROBES_PER_SAVE,
   US_PROBES,
   validateVolume,
 } from "./volume";
@@ -97,7 +98,10 @@ test("validateVolume rejects duplicate and non-integer probe ids", () => {
     probeIds: [7, 7],
   });
   assert.equal(duplicate.ok, false);
-  if (!duplicate.ok) assert.match(duplicate.reason, /once/);
+  if (!duplicate.ok) {
+    assert.equal(duplicate.code, "duplicate_probe");
+    assert.match(duplicate.reason, /once/);
+  }
 
   for (const bad of [1.5, Number.NaN, 0, -3]) {
     const result = validateVolume({
@@ -105,6 +109,40 @@ test("validateVolume rejects duplicate and non-integer probe ids", () => {
       probeIds: [7, bad],
     });
     assert.equal(result.ok, false, `${bad} must be rejected`);
-    if (!result.ok) assert.match(result.reason, /positive integers/);
+    if (!result.ok) {
+      assert.equal(result.code, "invalid_probe_id");
+      assert.match(result.reason, /positive integers/);
+    }
   }
+});
+
+test("validateVolume caps one save at ten probes", () => {
+  assert.equal(MAX_PROBES_PER_SAVE, 10);
+
+  const atCap = Array.from({ length: MAX_PROBES_PER_SAVE }, (_, i) => i + 1);
+  const accepted = validateVolume({
+    frequencyMs: 5 * MINUTE,
+    probeIds: atCap,
+  });
+  assert.equal(accepted.ok, true, "exactly ten probes is still allowed");
+
+  const overCap = [...atCap, MAX_PROBES_PER_SAVE + 1];
+  const refused = validateVolume({
+    frequencyMs: 5 * MINUTE,
+    probeIds: overCap,
+  });
+  assert.equal(refused.ok, false);
+  if (!refused.ok) {
+    assert.equal(refused.code, "too_many_probes");
+    assert.match(refused.reason, /at most 10 probes/);
+  }
+
+  // Duplicates do not smuggle a bigger set past the cap: the array length is
+  // the cost, and a repeated id is still a requested probe.
+  const flooded = validateVolume({
+    frequencyMs: 5 * MINUTE,
+    probeIds: Array.from({ length: 1_000 }, (_, i) => (i % 10) + 1),
+  });
+  assert.equal(flooded.ok, false);
+  if (!flooded.ok) assert.equal(flooded.code, "too_many_probes");
 });

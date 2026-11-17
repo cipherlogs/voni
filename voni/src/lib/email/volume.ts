@@ -65,12 +65,36 @@ export type VolumeInput = {
 
 export type VolumeValidation =
   | { ok: true; value: VolumeInput }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; code: VolumeReason };
+
+/**
+ * Why a volume was refused. The `reason` stays the operator-facing sentence;
+ * the `code` is what a caller or a test can switch on without matching prose.
+ */
+export type VolumeReason =
+  | "unsupported_frequency"
+  | "no_probes"
+  | "too_many_probes"
+  | "invalid_probe_id"
+  | "duplicate_probe";
+
+/**
+ * The most probes one save may request.
+ *
+ * Grafana runs every selected probe on every run, so this is the multiplier on
+ * both the bill and the traffic the target sees: ten probes at the fastest
+ * interval is already 2,880 clicks/day. The cap exists so a crafted form body
+ * cannot make one save order an unbounded amount of traffic — the panel offers
+ * four probes, and the ceiling leaves room for a wider stack without turning
+ * this action into a load generator.
+ */
+export const MAX_PROBES_PER_SAVE = 10;
 
 /**
  * The one gate both the form and the action go through. It rejects anything
  * Grafana would either refuse or reinterpret: an interval outside the five the
- * panel offers, an empty probe set, or a duplicate/non-integer probe id.
+ * panel offers, an empty probe set, more probes than one save may request, or a
+ * duplicate/non-integer probe id.
  *
  * Success returns a copy of the arrays so a caller cannot mutate the value it
  * validated after the fact.
@@ -81,21 +105,44 @@ export function validateVolume(input: VolumeInput): VolumeValidation {
   if (!FREQUENCY_MS.includes(frequencyMs)) {
     return {
       ok: false,
+      code: "unsupported_frequency",
       reason: "Frequency must be 5, 10, 15, 30 or 60 minutes.",
     };
   }
 
   if (!Array.isArray(probeIds) || probeIds.length === 0) {
-    return { ok: false, reason: "Pick at least one probe." };
+    return {
+      ok: false,
+      code: "no_probes",
+      reason: "Pick at least one probe.",
+    };
+  }
+
+  // Before the per-id walk: the cap is about the size of the request, and a
+  // flood of ids should be refused without hashing all of them first.
+  if (probeIds.length > MAX_PROBES_PER_SAVE) {
+    return {
+      ok: false,
+      code: "too_many_probes",
+      reason: `One save can select at most ${MAX_PROBES_PER_SAVE} probes.`,
+    };
   }
 
   const seen = new Set<number>();
   for (const id of probeIds) {
     if (!Number.isInteger(id) || id <= 0) {
-      return { ok: false, reason: "Probe ids must be positive integers." };
+      return {
+        ok: false,
+        code: "invalid_probe_id",
+        reason: "Probe ids must be positive integers.",
+      };
     }
     if (seen.has(id)) {
-      return { ok: false, reason: "Each probe can only be picked once." };
+      return {
+        ok: false,
+        code: "duplicate_probe",
+        reason: "Each probe can only be picked once.",
+      };
     }
     seen.add(id);
   }

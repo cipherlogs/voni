@@ -426,3 +426,26 @@ export async function updateCheck(
   if (!confirmed.ok) return confirmed;
   return { ok: true, data: toSyntheticCheck(confirmed.data) };
 }
+
+/**
+ * The check this deployment edits when `EMAIL_CLICK_CHECK_ID` is unset.
+ *
+ * It is a constant, not a discovery step: the panel and the actions must agree
+ * on which check they are talking about, and a resolver that guessed would
+ * let the page render one check while the save wrote another.
+ */
+export const DEFAULT_CHECK_ID = 68584;
+
+/**
+ * `EMAIL_CLICK_CHECK_ID` when it is a positive integer, else the known check.
+ *
+ * Accepts the raw secret (or `undefined`) rather than reading env itself, so
+ * the page and every action share one parse instead of keeping a copy each.
+ * Anything that is not a positive integer — `""`, `"0"`, `"68584.5"`, a
+ * missing variable — is the default rather than an error: the panel has one
+ * check to show, and refusing to render is worse than showing the known one.
+ */
+export function resolveCheckId(raw: string | undefined): number {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_CHECK_ID;
+}

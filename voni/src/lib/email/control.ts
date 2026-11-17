@@ -13,9 +13,11 @@ import { createHash, timingSafeEqual } from "node:crypto";
 export const EMAIL_CONTROL_COOKIE = "voni_email_control";
 
 /**
- * The writer is `src/app/email/actions.ts`. Both sides must hash the same way:
- * a change to the cookie format here without the matching change there shows
- * the panel unlocked while every action refuses.
+ * The writer is `src/app/email/actions.ts`; the reader is `src/app/email/page.tsx`.
+ * Both go through this module — mint with `controlCookieValue`, refuse with
+ * `controlCookieMatches` — so the panel's lock state and the actions' refusals
+ * cannot disagree. Nothing hashes inline: a second copy of the format here
+ * showed the panel unlocked while every write refused.
  */
 
 function digest(value: string): Buffer {

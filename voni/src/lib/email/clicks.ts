@@ -58,8 +58,10 @@ export function assertClickTarget(target: string): string {
 
 /**
  * A page size an operator may ask for, bounded to what one request can carry.
- * Non-numeric and negative input falls back to the page the panel asks for by
- * default rather than becoming an unbounded query.
+ * A non-finite value (`NaN`, either infinity) falls back to the default page
+ * rather than becoming an unbounded query; a negative, zero or fractional
+ * value clamps into `1..AFFILIATE_CLICK_MAX_LIMIT` with the fraction truncated,
+ * so a floor of one row is the only outcome below the default.
  */
 export function clampClickLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) {
@@ -120,7 +122,6 @@ export async function affiliateClickStats(
   now: Date = new Date(),
 ): Promise<{
   total: number;
-  byTarget: { target: string; count: number }[];
   byStatus: { status: number | null; count: number }[];
   byDevice: { device: string | null; count: number }[];
   avgMs: number | null;
@@ -137,13 +138,6 @@ export async function affiliateClickStats(
     .select({ total: count(), avgMs: avg(affiliateClicks.ms) })
     .from(affiliateClicks)
     .where(gte(affiliateClicks.ranAt, since));
-
-  const byTarget = await db
-    .select({ target: affiliateClicks.target, count: count() })
-    .from(affiliateClicks)
-    .where(gte(affiliateClicks.ranAt, since))
-    .groupBy(affiliateClicks.target)
-    .orderBy(desc(count()));
 
   // `status` is nullable, so a grouped row is "no status observed", never 0.
   const byStatus = await db
@@ -167,10 +161,6 @@ export async function affiliateClickStats(
 
   return {
     total,
-    byTarget: byTarget.map((row) => ({
-      target: row.target,
-      count: Number(row.count),
-    })),
     byStatus: byStatus.map((row) => ({
       status: row.status,
       count: Number(row.count),
