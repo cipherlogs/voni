@@ -1,10 +1,9 @@
 # Load-testing `/email` and its edge-worker pool
 
 `voni.cc/email` is a **page**, not a redirect. It draws one voni.cc path and one
-`utm_source` from the bags in `voni/src/lib/email/pool.ts`, `POST`s
-`/api/email-pool`, and that route asks every Worker in the pool to fetch the
-target with a real outbound `fetch()`. The visitor never leaves `/email`; the
-report is rendered in place. Contract: `docs/agents/email-pool.md`.
+`utm_source` from the bags in `voni/src/lib/email/pool.ts`, and a one-off click
+runs from voni's own server. The visitor never leaves `/email`; the report is
+rendered in place. Contract: `docs/agents/email-pool.md`.
 
 The old 307 to `www.glizzitrium.com` is gone. Anything that measured that hop
 measures nothing now.
@@ -33,9 +32,9 @@ loader.io account** — a `loaderio-<token>` file at the host root, or a
 `loaderio=<token>` TXT record ([Test Results][results], [Verifying a Target
 Host][verify]). That mattered when the destination was a third-party tracker.
 
-It matters differently now: `/email` does not redirect at all, and the fan-out
-happens in a `POST` issued by client JS after hydration. loader.io does not run
-that JS, so a run only measures the static HTML shell — it can tell you the page
+It matters differently now: `/email` does not redirect at all, and its only
+click is a one-off server action behind the control cookie. loader.io runs
+neither, so a run only measures the static HTML shell — it can tell you the page
 is served, never that the pool answered.
 
 Decisive check: on a loader.io result for `/email`, `Redirects / Invalid > 0` can
@@ -43,7 +42,7 @@ only come from a stale run against the old contract, not from the page.
 
 ## What a valid check looks like
 
-Two things worth measuring, with different tools.
+What is still worth measuring, and what is not.
 
 **The page itself** — `GET /email` must be 200 HTML, no `Location`, `noindex`,
 and it must not be cached as a redirect. A small k6 or `curl` loop is enough:
@@ -53,39 +52,17 @@ curl -sS -D - -o /dev/null https://voni.cc/email | head -20
 # expect: HTTP/2 200, content-type: text/html, no location
 ```
 
-**The fan-out** — `POST /api/email-pool` is the real work, and it is reachable
-without a browser:
+**The pool fan-out is not a public route any more.** `POST /api/email-pool` was
+retired: it had no caller left once the old panel was deleted, and an
+unauthenticated request to it drew a target and fired it from every pool Worker,
+so anyone could generate production affiliate clicks. The pool is exercised by
+the Grafana check job `voni-affiliate-click-us` instead — run that, and do not
+re-expose the route.
 
-```bash
-curl -sS -X POST -H 'accept: application/json' https://voni.cc/api/email-pool | jq
-# { ok: true, visitId,
-#   target: "https://cipherlogs.github.io/print/?utm_source=<provider>&utm_medium=email&utm_campaign=voni-email",
-#   source: "<provider>", workers: [ { worker, ok, status, ms, colo, ... } ] }
-#
-# with the env vars missing:
-# HTTP 503 { ok: false, reason: "not_configured", message: "...POOL_SECRET..." }
-```
-
-A check that means something asserts, per response:
-
-1. `ok` is `true`, and `target` is one of the entries in
-   `voni/src/lib/email/targets.json` with the three params appended. The bag
-   mixes voni-hosted pages with affiliate links (`www.glizzitrium.com`), so
-   match against the file, not a hardcoded pair.
-2. `source` is one of `EMAIL_PROVIDERS` and matches the target's
-   `utm_source`.
-3. `workers.length` equals the pool size (`POOL_WORKER_URLS` entries), and every
-   entry is either `ok: true` with a numeric `status` / `ms`, or `ok: false`
-   with a `reason` — a single dead Worker must not shrink the array.
-4. A mixed result (`ok: true` with some failed workers) is a *successful* route
-   response: the page is supposed to show partial reach, not fail.
-
-Volume: one `POST` is `N` Worker invocations **plus `N` requests back to
-voni.cc itself**. A load test of `/api/email-pool` therefore multiplies traffic
-onto the same origin it is measuring, and the route is public with no rate limit
-of its own. Keep runs small and ramp gently (`VUS=5`, short duration) until a
-limit exists, and never run one against production during a demo or a billing
-window.
+Volume: there is no public fan-out entry point left to load-test. Anything that
+puts the pool under load has to come through the Grafana check (job
+`voni-affiliate-click-us`) or the authenticated panel, and should still be
+ramped gently.
 
 ## Caveats
 
@@ -95,7 +72,7 @@ window.
 - Every request to a target comes from the Worker's egress, not the visitor's.
   That is the point of the pool; it is not "a human from gmail.com" and should
   not be reported as one.
-- Latency per worker is bounded by the route's 8s abort. A pool member that
+- Latency per worker is bounded by the Worker's 8s abort. A pool member that
   answers slower shows up as `reason: "timeout"`, not as a slow page.
 
 [results]: https://support.loader.io/article/19-test-results

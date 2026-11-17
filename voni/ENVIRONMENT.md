@@ -363,43 +363,54 @@ Token scope: Cloudflare's **"Edit Cloudflare Workers"** template (Workers
 Scripts:Edit) covers `workers.dev` deploys; add the account id from the Workers
 overview page. Check with `npx wrangler whoami`.
 
-## Email pool (`/email`)
+## Email clicks (`/email`)
 
-`voni.cc/email` runs the edge-worker pool described in
-`docs/agents/email-pool.md`. Two sets of values, and they are not the same
-credential:
+`voni.cc/email` is a password-gated control page over the Grafana synthetic
+check that sends the affiliate clicks; the click path, the three locks and the
+retired Cloudflare Worker pool are described in `docs/agents/email-pool.md`.
 
-| Variable | Local dev (`voni/.dev.vars`) | Production |
+| Variable | Purpose |
+| --- | --- |
+| `EMAIL_PAGE_PASSWORD` | Password for the page gate. Any long random string. The cookie holds `sha256("voni:email-page:" + password)`, never the password, and expires after 12 h. Unset = the page answers "This page is not configured" to everyone. |
+| `EMAIL_CONTROL_SECRET` | Unlocks the panel's mutations (save interval/probes, pause/resume the check, run one click now). A different value from the page password; the two cookies are domain-separated so one can never open the other's lock. Unset = the panel stays read-only. |
+| `EMAIL_CLICK_REPORT_SECRET` | Shared secret the check script sends as `x-voni-click-secret` on `POST /api/email/clicks/report`. Low privilege: it may append one click row and nothing else. Unset = that route answers `503 not_configured`. |
+| `EMAIL_CLICK_CHECK_ID` | Grafana Synthetic Monitoring check id the panel reads and edits. Defaults to `68584` when unset or not a positive integer. |
+| `GRAFANA_SM_URL` | Synthetic Monitoring API base for the stack: a host with an optional path, scheme optional (`https://` is assumed). A bare word or `localhost` is refused as malformed. Without it the panel still renders click history; check reads and edits report "not configured". |
+| `GRAFANA_SM_TOKEN` | Service-account token for that SM API, with read/write on checks. Higher privilege than the report secret — it can change the check — so it stays in the app environment and never inside the check script. |
+
+`EMAIL_CLICK_REPORT_SECRET` lives in two places by design: the app environment
+and the check script's `REPORT_SECRET`. Rotate them together — set the new value
+here, deploy, then update the script — or every report answers `401`. It is
+treatable as low-privilege precisely because the script is readable to anyone
+who can open the check.
+
+The target list is a data file, not code: **`voni/src/lib/email/targets.json`**.
+Edit the array there; `src/lib/email/pool.ts` imports it and validates that
+every entry is an absolute `https://` URL with a host, and
+`src/lib/email/click-simulator.ts` reads the same file as the approved-host list
+for redirect hops, so adding an entry also approves that host. A bad entry
+throws at module load and fails the test suite before any deploy. The k6 check
+script is generated from these sources (`npm run affiliate:check`), so a new
+target reaches Grafana on the next regeneration and script upload.
+
+Retired, still deployed: `POOL_SECRET` and `POOL_WORKER_URLS` configure the
+`email-pool-0N` Workers. They are no longer in the click path and
+`POST /api/email-pool` has been removed; `/email` does not call them.
+
+| Variable | Where | Value |
 | --- | --- | --- |
-| `POOL_SECRET` | `dev-pool-secret` (matches `workers/email-pool/scripts/dev.mjs`) | `wrangler secret put POOL_SECRET` on **each** `email-pool-0N` **and** on `voni` |
-| `POOL_WORKER_URLS` | `http://127.0.0.1:8787,http://127.0.0.1:8788,http://127.0.0.1:8789` | `https://email-pool-01.vonii.workers.dev,...` |
+| `POOL_SECRET` | `.dev.vars` locally; `wrangler secret put` on each `email-pool-0N` **and** on `voni` | `dev-pool-secret` locally (matches `workers/email-pool/scripts/dev.mjs`) |
+| `POOL_WORKER_URLS` | `.dev.vars` locally | `http://127.0.0.1:8787,http://127.0.0.1:8788,http://127.0.0.1:8789` |
 
-The pool enforces no host allowlist and has no private-target switch: it accepts
-any absolute `http(s)` URL and follows redirects. `POOL_SECRET` is the only
-thing gating `/click`.
-
-Local values go in **`.dev.vars`, not `.env.local`.** `secret()` checks
+Local pool values go in **`.dev.vars`, not `.env.local`.** `secret()` checks
 `process.env` first, and OpenNext bakes `.env.local` into the Worker at build
 time — so a `POOL_SECRET` there would ride into a local `npm run deploy` and
 disagree with the Worker secret. `.dev.vars` reaches the route through the
 Cloudflare context and is never baked.
 
-The production secret has one reference copy in `.env.local` as
+The production pool secret has one reference copy in `.env.local` as
 `POOL_SECRET_PROD` (gitignored). The Worker secret remains the source of truth;
 that copy is only so the value is recoverable.
-
-The target list is a data file, not code: **`voni/src/lib/email/targets.json`**.
-Edit the array there; `src/lib/email/pool.ts` imports it and validates that
-every entry is an absolute `https://` URL with a host. A bad entry throws at
-module load and fails the test suite before any deploy. Nothing is derived from
-that file at deploy time any more — the Worker validates URL shape only and
-follows redirects — so a new host needs no second edit and no Worker redeploy.
-The `Deploy` workflow ships the bag because the file lives under `voni/`.
-
-Without `POOL_SECRET` or `POOL_WORKER_URLS` the route answers
-`503 {reason:"not_configured"}` and the page shows that, rather than a silent
-empty result. The pool's `POOL_SECRET` unset means the Worker rejects every
-`/click` — closed by default, not open.
 
 ## Background jobs (Cloudflare Queues + R2 staging + cron)
 
