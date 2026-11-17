@@ -286,3 +286,221 @@ test("other methods and paths are rejected", async () => {
   assert.equal(unknown.status, 404);
   assert.equal(((await unknown.json()) as { reason: string }).reason, "not_found");
 });
+
+// --- GET /probe-region -----------------------------------------------------
+
+const PROBE_RESULT = {
+  ok: true,
+  trace: { colo: "IAD", ip: "203.0.113.7" },
+  egress: {
+    ip: "198.51.100.24",
+    city: "Ashburn",
+    region: "Virginia",
+    country: "US",
+    org: "AS14618 Amazon.com, Inc.",
+  },
+  ms: 412,
+  errors: {},
+};
+
+interface ProbeCalls {
+  ids: string[];
+  options: unknown[];
+  fetches: string[];
+}
+
+/** A Durable Object namespace stand-in; records the id and location hint used. */
+function stubRegion(body: unknown, status = 200): {
+  namespace: DurableObjectNamespace;
+  calls: ProbeCalls;
+} {
+  const calls: ProbeCalls = { ids: [], options: [], fetches: [] };
+
+  const namespace = {
+    idFromName(name: string) {
+      calls.ids.push(name);
+      return { toString: () => name, name };
+    },
+    get(_id: unknown, options?: unknown) {
+      calls.options.push(options);
+      return {
+        async fetch(request: Request): Promise<Response> {
+          calls.fetches.push(request.url);
+          return new Response(JSON.stringify(body), {
+            status,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      };
+    },
+  } as unknown as DurableObjectNamespace;
+
+  return { namespace, calls };
+}
+
+function probeRequest(
+  query = "",
+  headers: Record<string, string> = { "x-pool-secret": SECRET },
+  method = "GET",
+): Request {
+  return new Request(`https://pool.example/probe-region${query}`, {
+    method,
+    headers,
+  });
+}
+
+function probeEnv(namespace?: DurableObjectNamespace) {
+  return namespace === undefined ? ENV : { ...ENV, POOL_REGION: namespace };
+}
+
+test("GET /probe-region without the secret is 401 unauthorized", async () => {
+  const { namespace, calls } = stubRegion(PROBE_RESULT);
+
+  const response = await worker.fetch(probeRequest("", {}), probeEnv(namespace));
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { ok: false, reason: "unauthorized" });
+  assert.equal(calls.fetches.length, 0);
+});
+
+test("GET /probe-region with a wrong secret is 401 unauthorized", async () => {
+  const { namespace } = stubRegion(PROBE_RESULT);
+
+  const response = await worker.fetch(
+    probeRequest("", { "x-pool-secret": "nope" }),
+    probeEnv(namespace),
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { ok: false, reason: "unauthorized" });
+});
+
+test("GET /probe-region rejects an unknown hint with 400 bad_hint", async () => {
+  const { namespace, calls } = stubRegion(PROBE_RESULT);
+
+  const response = await worker.fetch(
+    probeRequest("?hint=moon"),
+    probeEnv(namespace),
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { ok: false, reason: "bad_hint" });
+  assert.equal(calls.fetches.length, 0);
+});
+
+test("GET /probe-region is 503 probe_not_configured without the binding", async () => {
+  const response = await worker.fetch(probeRequest("?hint=enam"), ENV);
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    reason: "probe_not_configured",
+  });
+});
+
+test("GET /probe-region defaults to enam on a per-hint object id", async () => {
+  const { namespace, calls } = stubRegion(PROBE_RESULT);
+
+  const response = await worker.fetch(probeRequest(), probeEnv(namespace));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.ids, ["region-probe-enam"]);
+  assert.deepEqual(calls.options, [{ locationHint: "enam" }]);
+  assert.equal(calls.fetches.length, 1);
+});
+
+test("GET /probe-region passes the DO result through under a per-worker envelope", async () => {
+  const { namespace } = stubRegion(PROBE_RESULT);
+
+  const response = await worker.fetch(
+    probeRequest("?hint=enam"),
+    probeEnv(namespace),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+
+  const body = (await response.json()) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body).sort(), [
+    "colo",
+    "durableObject",
+    "hint",
+    "worker",
+  ]);
+  assert.equal(body.worker, "email-pool-01");
+  assert.equal(body.colo, "UNKNOWN");
+  assert.equal(body.hint, "enam");
+  assert.deepEqual(body.durableObject, PROBE_RESULT);
+});
+
+test("GET /probe-region uses a distinct object id and hint per hint", async () => {
+  const { namespace, calls } = stubRegion(PROBE_RESULT);
+
+  await worker.fetch(probeRequest("?hint=weur"), probeEnv(namespace));
+  await worker.fetch(probeRequest("?hint=apac"), probeEnv(namespace));
+
+  assert.deepEqual(calls.ids, ["region-probe-weur", "region-probe-apac"]);
+  assert.deepEqual(calls.options, [
+    { locationHint: "weur" },
+    { locationHint: "apac" },
+  ]);
+});
+
+test("GET /probe-region mirrors a total DO failure as 502 with the result attached", async () => {
+  const failed = {
+    ok: false,
+    trace: null,
+    egress: null,
+    ms: 5001,
+    errors: { trace: "timeout", egress: "timeout" },
+    reason: "both_sources_failed",
+  };
+  const { namespace } = stubRegion(failed, 502);
+
+  const response = await worker.fetch(
+    probeRequest("?hint=enam"),
+    probeEnv(namespace),
+  );
+
+  assert.equal(response.status, 502);
+  const body = (await response.json()) as {
+    hint: string;
+    durableObject: { ok: boolean; reason: string };
+  };
+  assert.equal(body.hint, "enam");
+  assert.equal(body.durableObject.ok, false);
+  assert.equal(body.durableObject.reason, "both_sources_failed");
+});
+
+test("GET /probe-region maps a throwing stub to 502 probe_unavailable", async () => {
+  const namespace = {
+    idFromName: (name: string) => ({ toString: () => name, name }),
+    get: () => ({
+      async fetch(): Promise<Response> {
+        throw new Error("object not found in this namespace");
+      },
+    }),
+  } as unknown as DurableObjectNamespace;
+
+  const response = await worker.fetch(
+    probeRequest("?hint=enam"),
+    probeEnv(namespace),
+  );
+
+  assert.equal(response.status, 502);
+  const body = (await response.json()) as { reason: string; detail: string };
+  assert.equal(body.reason, "probe_unavailable");
+  assert.match(body.detail, /object not found/);
+});
+
+test("POST /probe-region is 405 method_not_allowed", async () => {
+  const { namespace } = stubRegion(PROBE_RESULT);
+
+  const response = await worker.fetch(
+    probeRequest("?hint=enam", { "x-pool-secret": SECRET }, "POST"),
+    probeEnv(namespace),
+  );
+
+  assert.equal(response.status, 405);
+  assert.deepEqual(await response.json(), { ok: false, reason: "method_not_allowed" });
+});

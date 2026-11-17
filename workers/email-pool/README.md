@@ -13,6 +13,7 @@ GET  /health   -> { worker, colo, redirects, targets }              (public)
 POST /click    -> { worker, colo, ok, status, ms, target, finalUrl,
                     redirected, reason }
                   requires x-pool-secret: $POOL_SECRET
+GET  /probe-region -> { worker, colo, hint, durableObject }          requires x-pool-secret
 ```
 
 The pool follows redirect chains: `status` and `finalUrl` describe where the
@@ -25,7 +26,8 @@ src/index.ts    fetch handler: routes, auth, JSON shapes
 src/target.ts   pure validateTarget(url): absolute http(s) only, no host policy
 src/click.ts    buildTargetHeaders + runClick (follows redirects, 8s timeout)
 src/auth.ts     constant-time secret compare
-scripts/        dev.mjs / deploy.mjs / wrangler-bin.mjs
+src/region-probe.ts  RegionProbe Durable Object + pure probeRegion
+scripts/        dev.mjs / deploy.mjs / probe-region.mjs / wrangler-bin.mjs
 test/           node:test suites
 wrangler.jsonc  base config; deploy and dev generate per-instance copies
 ```
@@ -138,6 +140,78 @@ EMAIL_TARGET_ORIGIN=https://voni.cc
 `wrangler.jsonc` deliberately does **not** set `global_fetch_strictly_public`,
 so dev can reach `localhost:3000`.
 
+## Region probe — where the object runs, and where it egresses
+
+`GET /probe-region` (secret-gated, same `x-pool-secret` as `/click`) asks the
+`RegionProbe` Durable Object two questions and reports the answers:
+
+1. `https://www.cloudflare.com/cdn-cgi/trace` — the `colo` that handled the
+   request from inside the object. That is our best evidence of where the
+   object itself ran (`durableObject.trace.colo`).
+2. `https://ipinfo.io/json` — the egress IP and its city / region / country /
+   org, i.e. what a normal site sees when this object fetches it
+   (`durableObject.egress`).
+
+```sh
+curl -s "https://email-pool-01.<sub>.workers.dev/probe-region?hint=enam" \
+  -H "x-pool-secret: $POOL_SECRET"
+```
+
+```json
+{
+  "worker": "email-pool-01",
+  "colo": "FRA",
+  "hint": "enam",
+  "durableObject": {
+    "ok": true,
+    "trace": { "colo": "IAD", "ip": "203.0.113.7" },
+    "egress": {
+      "ip": "198.51.100.24",
+      "city": "Ashburn",
+      "region": "Virginia",
+      "country": "US",
+      "org": "AS14618 Amazon.com, Inc."
+    },
+    "ms": 412,
+    "errors": {}
+  }
+}
+```
+
+`hint` is one of `wnam`, `enam`, `sam`, `apac`, `weur`, `eeur`, `oc`, `afr`, `me`
+(default `enam`); anything else is `400 bad_hint`. Each hint gets its own object
+id (`region-probe-<hint>`), because a location hint only applies when the object
+is first created — a shared id would let an existing object answer for a
+different hint.
+
+**`locationHint` is a best-effort hint, not a guarantee.** Read the result, not
+the request: `colo` at the top level is the worker instance that served the
+call, `durableObject.trace.colo` is where the object ran, and
+`durableObject.egress` is where its outbound traffic appeared from. If those
+disagree, the hint did not do what you asked.
+
+A single source failing degrades to `null` plus a named error code
+(`durableObject.errors.trace` / `.egress`: `timeout`, `fetch_failed`,
+`unreadable_body`, `parse_failed`, `http_<status>`) and still returns 200 with
+the other observation. Both failing is `502` with
+`durableObject.reason: "both_sources_failed"`. Without the binding (local dev
+before the migration) the route is `503 probe_not_configured`.
+
+### One-shot check across the pool
+
+```sh
+cd workers/email-pool
+POOL_SECRET=... POOL_WORKER_URLS=https://email-pool-01.<sub>.workers.dev,... \
+  npm run probe:region -- --hint enam
+```
+
+Odds and ends: the script probes every URL in `POOL_WORKER_URLS` (or each
+`--url`), prints one block per worker with the invoking colo, the hint, the DO
+trace colo, the egress place, `ms` and a verdict — `US` when the egress country
+is US, `NOT US (<cc>)` otherwise, `UNKNOWN` when the probe degraded — and never
+prints the secret. It exits 0 only when every worker returned at least one of
+the two observations. `node scripts/probe-region.mjs --help` lists the flags.
+
 ## Safety rules (restated)
 
 - Endpoint is a fetch proxy: it requires `POOL_SECRET`, and that secret is the
@@ -146,6 +220,9 @@ so dev can reach `localhost:3000`.
 - `redirect: "follow"` — the chain is followed and the report describes the
   landing response (`status`, `finalUrl`, `redirected`). The landed body is
   cancelled, never buffered.
+- `GET /probe-region` is gated by the same secret and fetches exactly two fixed
+  URLs (`cdn-cgi/trace`, `ipinfo.io/json`); it accepts no caller-supplied
+  target.
 - Embedded credentials (`https://user:pass@…`) are rejected.
 - Every target request carries `x-pool-worker`, so analytics can separate pool
   traffic from humans.
@@ -158,3 +235,6 @@ so dev can reach `localhost:3000`.
 - Beyond the contract's failure reasons, the worker reports `http_error` (an
   observed 4xx/5xx status, returned in the 200 shape) and `bad_request`
   (unparseable JSON body). `detail` appears only on failures.
+- `/probe-region` adds its own wrapper failures: `bad_hint` (400),
+  `probe_not_configured` (503, missing binding), `probe_unavailable` (502, the
+  stub threw) and `probe_bad_response` (502, the stub's body was not JSON).

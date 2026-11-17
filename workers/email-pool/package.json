@@ -8,6 +8,7 @@
     "dev": "node scripts/dev.mjs",
     "test": "node --test test/*.test.ts",
     "deploy": "node scripts/deploy.mjs",
+    "probe:region": "node scripts/probe-region.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

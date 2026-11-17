@@ -113,6 +113,52 @@ fan-out in local dev fetches the production URLs, not your dev server.
 - Every pool request to a target carries `x-pool-worker`, so analytics can tell
   pool traffic from a human.
 
+## Region: where the pool actually runs
+
+`colo` in a report is the data center that **received the request**, not one the
+deploy picked. Workers run in the colo nearest the requester, and voni calls
+every pool instance from its own colo, so all N instances answer from the same
+place — three deployments buy three URLs and three independent fetches, never
+three regions. Checking `/health` on each instance is the fast way to see it.
+
+What the platform does and does not let you choose
+([placement][placement], [egress][egress], [fetch][fetch]):
+
+| Want | Available |
+| --- | --- |
+| Pin a Worker to a named colo | **No.** Placement is proximity-based: Smart Placement (all plans, optimises toward a backend) or Placement Hints (`placement.region`/`host`, best effort, still "nearest colo"). |
+| Guaranteed in-region processing | Regional Services / Data Localization Suite, **Enterprise**, configured per hostname. |
+| Stable egress IP | Dedicated CDN Egress IPs (Smart Shield Advanced), **Enterprise**. Default egress is Cloudflare's shared pool. |
+| Force IPv4 vs IPv6 | **No.** The destination's A/AAAA records decide, and a subrequest must be a URL, not an IP literal. |
+
+### The `locationHint` probe
+
+`GET /probe-region?hint=enam` on any pool Worker (secret-gated, same
+`x-pool-secret` as `/click`) asks a Durable Object created with that
+`locationHint` to fetch two endpoints: `cloudflare.com/cdn-cgi/trace` (which
+colo handled the request) and `ipinfo.io/json` (the egress IP and its
+geography). It answers "would a pool member in this region see a different IP
+than Madrid does?" — the only in-Cloudflare lever that can plausibly move the
+vantage point.
+
+Read it with the CLI, which probes every URL in `POOL_WORKER_URLS`:
+
+```bash
+npm run probe:region            # in workers/email-pool, needs POOL_SECRET
+```
+
+`locationHint` is a **hint, best effort, decided at first `get()`** — objects
+never relocate, and `sam`, `afr`, `me` currently spawn nothing (they land in a
+neighbouring region). Treat a non-US verdict as "this does not give me a US
+vantage point"; the honest alternative is a real US egress (VPS or proxy) as an
+extra pool member. The target also sees a Cloudflare datacenter IP either way,
+which is the distortion that matters most for affiliate pages with bot
+filtering.
+
+[placement]: https://developers.cloudflare.com/workers/configuration/placement/
+[egress]: https://developers.cloudflare.com/smart-shield/configuration/dedicated-egress-ips/
+[fetch]: https://developers.cloudflare.com/workers/runtime-apis/fetch/
+
 ## Layout
 
 - `workers/email-pool/` — standalone Worker project (own `package.json`,

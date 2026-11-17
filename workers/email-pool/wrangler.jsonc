@@ -5,6 +5,13 @@
   "observability": {
     "enabled": true
   },
+  // RegionProbe is used only by GET /probe-region: does an object created with
+  // this location hint run there, and does its fetch() egress from there?
+  // SQLite-backed so no separate storage product is needed for a stateless probe.
+  "durable_objects": {
+    "bindings": [{ "name": "POOL_REGION", "class_name": "RegionProbe" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegionProbe"] }],
   "vars": {
     "POOL_USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "POOL_INDEX": "0"

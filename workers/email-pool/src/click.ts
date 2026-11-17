@@ -10,6 +10,8 @@ export interface PoolEnv {
   POOL_INDEX?: string;
   /** Optional explicit override; deploy sets the instance name, index is enough. */
   POOL_WORKER_ID?: string;
+  /** `RegionProbe` Durable Object namespace, used only by GET /probe-region. */
+  POOL_REGION?: DurableObjectNamespace;
   [key: string]: unknown;
 }
 
