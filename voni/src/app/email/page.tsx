@@ -1,25 +1,217 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { MailIcon } from "lucide-react";
-import { EmailPoolPanel } from "@/components/email-pool-panel";
+import { Suspense } from "react";
+import { cookies } from "next/headers";
+import { connection } from "next/server";
+import { CheckCircle2, LockKeyhole, MailIcon } from "lucide-react";
+import {
+  AffiliateControlPanel,
+  type CheckView,
+  type ClickRowView,
+  type ProbeView,
+} from "@/components/affiliate-control-panel";
+import { EmailGateForm } from "@/components/email-gate-form";
+import { CardListSkeleton, TableSkeleton } from "@/components/page-skeletons";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { PUBLIC_CONTAINER } from "@/lib/public-container";
 import { VoniLogo } from "@/components/voni-logo";
+import { affiliateClickStats, listAffiliateClicks } from "@/lib/email/clicks";
+import {
+  EMAIL_CONTROL_COOKIE,
+  controlCookieMatches,
+} from "@/lib/email/control";
+import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
+import { US_PROBES } from "@/lib/email/volume";
+import { secret } from "@/lib/env";
+import {
+  getCheck,
+  listProbes,
+  type Probe,
+  type SyntheticCheck,
+} from "@/lib/grafana/synthetic";
 
 /**
- * The public `/email` link. It used to 307 to an affiliate; it is a page now:
- * one drawn target and one claimed source per visit, fetched by every Worker in
- * the pool, with the report rendered here. Public on purpose — no login, no
- * data stored — and noindex so it never shows up in search.
+ * The `/email` affiliate-click control panel. It used to fan out a drawn target
+ * from every edge Worker on load; it now shows and edits the Grafana synthetic
+ * check that sends the clicks, plus the click history that check produces.
+ *
+ * Two locks, in this order:
+ *
+ *   1. the page password (`EMAIL_PAGE_PASSWORD`) decides whether the page
+ *      renders at all. Until it is satisfied the response contains the gate
+ *      screen and nothing else — no check, no probes, no click history;
+ *   2. the control secret (`EMAIL_CONTROL_SECRET`) only decides whether the
+ *      panel it renders is read-only.
+ *
+ * `noindex` so it never shows up in search, and nothing on load sends a click.
  */
+
 export const metadata: Metadata = {
   title: "Email pool · Voni",
   description:
-    "Fans out one drawn target to every Cloudflare edge Worker in the pool and shows what each one saw.",
+    "Control the Grafana synthetic check that sends affiliate clicks and review the clicks it recorded.",
   robots: { index: false, follow: false },
 };
 
-export default function EmailPoolPage() {
+const DEFAULT_CHECK_ID = 68584;
+const PAGE_CLICK_LIMIT = 20;
+const STATS_WINDOW_HOURS = 24;
+
+async function pageCheckId(): Promise<number> {
+  const raw = await secret("EMAIL_CLICK_CHECK_ID");
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_CHECK_ID;
+}
+
+function toCheckView(check: SyntheticCheck): CheckView {
+  return {
+    id: check.id,
+    job: check.job,
+    target: check.target,
+    enabled: check.enabled,
+    frequencyMs: check.frequencyMs,
+    probeIds: [...check.probeIds],
+    // The SM API reports `modified` as epoch seconds, not milliseconds.
+    modified:
+      check.modified === null
+        ? null
+        : new Date(check.modified * 1000).toISOString(),
+  };
+}
+
+/** US probes first, then the rest in Grafana's order; never drops a probe. */
+const US_PROBE_RANK = new Map<number, number>(
+  US_PROBES.map((probe, index) => [probe.id, index]),
+);
+
+function toProbeViews(probes: Probe[]): ProbeView[] {
+  return [...probes]
+    .sort(
+      (a, b) =>
+        (US_PROBE_RANK.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+        (US_PROBE_RANK.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+    )
+    .map((probe) => ({
+      id: probe.id,
+      name: probe.name,
+      region: probe.region,
+    }));
+}
+
+function toClickRow(row: {
+  id: string;
+  ranAt: Date;
+  target: string;
+  source: string | null;
+  status: number | null;
+  ms: number | null;
+  finalUrl: string | null;
+  userAgent: string | null;
+  device: string | null;
+  browser: string | null;
+}): ClickRowView {
+  return {
+    id: row.id,
+    ranAt: row.ranAt.toISOString(),
+    target: row.target,
+    source: row.source,
+    status: row.status,
+    ms: row.ms,
+    finalUrl: row.finalUrl,
+    userAgent: row.userAgent,
+    device: row.device,
+    browser: row.browser,
+  };
+}
+
+/**
+ * The query string only selects one of two fixed sentences. Nothing from the
+ * URL is echoed, so `?notice=<anything>` cannot put attacker copy on the page.
+ */
+function noticeCopy(value: string | undefined): string | null {
+  switch (value) {
+    case "unlocked":
+      return "Controls unlocked for 12 hours.";
+    case "locked":
+      return "Controls locked. This panel is read-only again.";
+    default:
+      return null;
+  }
+}
+
+/** Title, one line of copy, the password form. Nothing else is rendered. */
+function EmailGateScreen() {
+  return (
+    <main className="flex min-h-svh flex-1 flex-col">
+      <div className={`${PUBLIC_CONTAINER} flex flex-1 items-center py-16`}>
+        <div className="mx-auto grid w-full max-w-md gap-6">
+          <div className="flex flex-col gap-2">
+            <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+              <LockKeyhole className="size-5" />
+              Email pool
+            </h1>
+            <p className="text-muted-foreground text-sm">
+              This page is private. Enter the password to continue.
+            </p>
+          </div>
+          <EmailGateForm />
+        </div>
+      </div>
+    </main>
+  );
+}
+
+/**
+ * The gate-shaped stand-in for the static shell. Deliberately not the panel
+ * skeleton: a visitor who is not unlocked should never be shown panel chrome.
+ */
+function GateSkeleton() {
+  return (
+    <main className="flex min-h-svh flex-1 flex-col">
+      <div className={`${PUBLIC_CONTAINER} flex flex-1 items-center py-16`}>
+        <div
+          role="status"
+          aria-label="Loading email page"
+          className="mx-auto grid w-full max-w-md gap-6"
+        >
+          <div className="grid gap-2">
+            <Skeleton className="h-7 w-40" />
+            <Skeleton className="h-4 w-full max-w-sm" />
+          </div>
+          <Skeleton className="h-10 w-full" />
+        </div>
+      </div>
+    </main>
+  );
+}
+
+/**
+ * The page gate runs here, before any read of the check, the probes or the
+ * click history — those live in `EmailControlData`, which is only reached when
+ * this returns the panel. Keep the order: the tripwire in
+ * `page.gate.test.ts` compares source positions and fails if a data call
+ * moves above this check.
+ *
+ * `cookies()` needs a request, and Cache Components requires request-time
+ * access to sit inside a `<Suspense>` boundary, so the gate is the boundary's
+ * child rather than the page's top-level body. The static shell is the
+ * gate-shaped skeleton above.
+ */
+async function EmailPageGate({
+  searchParams,
+}: {
+  searchParams: Promise<{ notice?: string }>;
+}) {
+  const jar = await cookies();
+  const unlocked = isPageUnlocked(
+    jar.get(PAGE_COOKIE)?.value,
+    await secret("EMAIL_PAGE_PASSWORD"),
+  );
+
+  if (!unlocked) return <EmailGateScreen />;
+
   return (
     <main className="flex min-h-svh flex-1 flex-col">
       <header className="border-b">
@@ -40,17 +232,105 @@ export default function EmailPoolPage() {
             Email pool
           </h1>
           <p className="text-muted-foreground text-sm">
-            Opening this link draws one target and one source, then asks every
-            Worker in the pool to fetch that target from its own edge location,
-            following redirects wherever they lead. Targets are pages on voni.cc
-            or off-site affiliate links — chosen server-side, never by the
-            browser — and nothing is stored beyond the visit id shown below. Run
-            it again for a new draw.
+            The Grafana synthetic check behind the email click campaign: its
+            interval, probes and state, plus the clicks it recorded. Changes
+            apply on the check&apos;s next run. The one-off button is the
+            exception — it runs from voni&apos;s server, not Grafana, and the
+            result says so.
           </p>
         </div>
 
-        <EmailPoolPanel />
+        <Suspense fallback={<PanelSkeleton />}>
+          <EmailControlData searchParams={searchParams} />
+        </Suspense>
       </div>
     </main>
+  );
+}
+
+export default async function EmailControlPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ notice?: string }>;
+}) {
+  return (
+    <Suspense fallback={<GateSkeleton />}>
+      <EmailPageGate searchParams={searchParams} />
+    </Suspense>
+  );
+}
+
+function PanelSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-label="Loading email control panel"
+      className="grid gap-6"
+    >
+      <CardListSkeleton rows={2} />
+      <TableSkeleton rows={6} columns={8} />
+    </div>
+  );
+}
+
+/**
+ * The lock state and the four reads share the same boundary. Cookies make this
+ * subtree dynamic, so it streams behind the static shell instead of blocking
+ * the page's first paint (and `cacheComponents` requires the boundary).
+ *
+ * `connection()` is what makes that true for the clock too: without it the
+ * subtree is still attempted at prerender time, and the `new Date()` below is
+ * the unstable value that fails the route.
+ */
+async function EmailControlData({
+  searchParams,
+}: {
+  searchParams: Promise<{ notice?: string }>;
+}) {
+  await connection();
+  const params = await searchParams;
+  const cookieStore = await cookies();
+  const expected = await secret("EMAIL_CONTROL_SECRET");
+  const locked = !controlCookieMatches(
+    cookieStore.get(EMAIL_CONTROL_COOKIE)?.value,
+    expected,
+  );
+
+  const id = await pageCheckId();
+  // The click window is measured from the request, so the boundary comes from
+  // here rather than from a clock read inside the query helper.
+  const now = new Date();
+  const [checkResult, probesResult, stats, clicks] = await Promise.all([
+    getCheck(id),
+    listProbes(),
+    affiliateClickStats(STATS_WINDOW_HOURS, now),
+    listAffiliateClicks(PAGE_CLICK_LIMIT),
+  ]);
+
+  const notice = noticeCopy(params.notice);
+
+  return (
+    <div className="grid gap-6">
+      {notice ? (
+        <Alert className="status-enter">
+          <CheckCircle2 />
+          <AlertTitle>Done</AlertTitle>
+          <AlertDescription>{notice}</AlertDescription>
+        </Alert>
+      ) : null}
+      <AffiliateControlPanel
+        locked={locked}
+        check={checkResult.ok ? toCheckView(checkResult.data) : null}
+        checkError={checkResult.ok ? null : checkResult.message}
+        probes={probesResult.ok ? toProbeViews(probesResult.data) : []}
+        stats={{
+          total: stats.total,
+          byStatus: stats.byStatus,
+          avgMs: stats.avgMs,
+          byDevice: stats.byDevice,
+        }}
+        clicks={clicks.map(toClickRow)}
+      />
+    </div>
   );
 }
