@@ -22,7 +22,7 @@ the table a row means "the check sent this".
 ```
 check voni-affiliate-click-us (Grafana, scripted k6)
   → GET <target with utm>            http.get, redirects: 10
-  → POST /api/email/clicks/report    x-voni-click-secret: $EMAIL_CLICK_REPORT_SECRET
+  → POST /api/email/clicks/report    x-voni-click-secret: REPORT_SECRET (constant in the uploaded script)
       { target, source, finalUrl, status, ms, userAgent, device, browser, ranAt }
   → affiliate_clicks                 one append-only row
 
@@ -138,14 +138,40 @@ not configured" without naming the variable, the control panel stays locked, and
 the report route answers `503 not_configured`. A wrong password and a missing
 one are deliberately indistinguishable to the caller.
 
-The report secret is **low privilege by design**. It lives in plain sight inside
-the Grafana check script, where any operator who can read the check can read it,
-so it may only append one click row — no read, no update, no other table. It is
-rotatable: set a new value in the app's environment, deploy, then update
-`REPORT_SECRET` in the check script. Rotate both sides together, or every report
-answers `401`. Never reuse it for anything else, and never put a Grafana token
-in the script — `GRAFANA_SM_URL` / `GRAFANA_SM_TOKEN` can read and modify the
-check, which is a much larger grant.
+The report secret is **low privilege by design**. It is stored inside the
+Grafana check script, where any operator who can read the check can read it, so
+it may only append one click row — no read, no update, no other table. The
+endpoint itself is unauthenticated-but-secret-gated: anyone can POST to it, and
+the only thing standing between the internet and an append is the shared
+secret. It never updates or deletes a row.
+
+Getting the secret into the script is a build step, not an edit:
+
+1. `scripts/generate-affiliate-k6.mts` writes the committed script with
+   `const REPORT_SECRET = "__REPORT_SECRET__";`, so the repository never holds
+   the real value.
+2. `npm run affiliate:upload` reads `.env.local`, replaces that placeholder with
+   `EMAIL_CLICK_REPORT_SECRET` **in memory**, base64s the result, posts the
+   whole check body back, then re-reads the check and compares the script hash
+   and every other setting before reporting success. It refuses a script that
+   has no placeholder — that refusal is what keeps an already-injected script
+   from being committed or re-uploaded blindly.
+3. The stored script now carries the real secret; the file in git still does
+   not.
+
+Rotation is therefore: set the new value in the deployment environment (the
+Worker secret), deploy, change `.env.local` to match, and run
+`npm run affiliate:upload` again. Re-running upload after a rotation is the
+whole update path — there is no separate "edit the script" procedure. Rotate
+both sides together, or every report answers `401`. Never reuse it for anything
+else, and never put a Grafana token in the script — `GRAFANA_SM_URL` /
+`GRAFANA_SM_TOKEN` can read and modify the check, which is a much larger grant.
+
+Reporting failures never fail a click: the POST is wrapped, `report_failed` and
+`report_ok` are counters in the k6 run, and a run whose endpoint is broken still
+clicks and still logs its JSON line. Run the committed script locally and it
+reports nothing at all — it logs one line saying so — because the placeholder is
+still in place.
 
 ## Safety rules
 
@@ -358,6 +384,11 @@ Live:
   check, list probes, change enabled/frequency/probes.
 - `voni/scripts/generate-affiliate-k6.mts` →
   `voni/scripts/affiliate-click-check.k6.js` — the generated check script.
+- `voni/scripts/upload-affiliate-check.mts` — `npm run affiliate:upload`:
+  injects `EMAIL_CLICK_REPORT_SECRET` into the script in memory, posts it to
+  the check, reads it back and verifies the hash and every untouched field.
+  Helpers in `voni/scripts/lib/affiliate-check.ts`; tested by
+  `voni/scripts/upload-affiliate-check.test.ts`.
 
 Retired but still deployed:
 

@@ -373,16 +373,21 @@ retired Cloudflare Worker pool are described in `docs/agents/email-pool.md`.
 | --- | --- |
 | `EMAIL_PAGE_PASSWORD` | Password for the page gate. Any long random string. The cookie holds `sha256("voni:email-page:" + password)`, never the password, and expires after 12 h. Unset = the page answers "This page is not configured" to everyone. |
 | `EMAIL_CONTROL_SECRET` | Unlocks the panel's mutations (save interval/probes, pause/resume the check, run one click now). A different value from the page password; the two cookies are domain-separated so one can never open the other's lock. Unset = the panel stays read-only. |
-| `EMAIL_CLICK_REPORT_SECRET` | Shared secret the check script sends as `x-voni-click-secret` on `POST /api/email/clicks/report`. Low privilege: it may append one click row and nothing else. Unset = that route answers `503 not_configured`. |
+| `EMAIL_CLICK_REPORT_SECRET` | Shared secret the check script sends as `x-voni-click-secret` on `POST /api/email/clicks/report`. Low privilege: it may append one click row and nothing else. Unset = that route answers `503 not_configured`. It must match the value injected into the uploaded check script — see below. |
 | `EMAIL_CLICK_CHECK_ID` | Grafana Synthetic Monitoring check id the panel reads and edits. Defaults to `68584` when unset or not a positive integer. |
 | `GRAFANA_SM_URL` | Synthetic Monitoring API base for the stack: a host with an optional path, scheme optional (`https://` is assumed). A bare word or `localhost` is refused as malformed. Without it the panel still renders click history; check reads and edits report "not configured". |
 | `GRAFANA_SM_TOKEN` | Service-account token for that SM API, with read/write on checks. Higher privilege than the report secret — it can change the check — so it stays in the app environment and never inside the check script. |
 
-`EMAIL_CLICK_REPORT_SECRET` lives in two places by design: the app environment
-and the check script's `REPORT_SECRET`. Rotate them together — set the new value
-here, deploy, then update the script — or every report answers `401`. It is
-treatable as low-privilege precisely because the script is readable to anyone
-who can open the check.
+`EMAIL_CLICK_REPORT_SECRET` lives in two places by design: the deployment
+environment (the Worker secret the report route reads) and the Grafana check
+script's `REPORT_SECRET` constant. They must be the same value. The committed
+script only carries `"__REPORT_SECRET__"`; `npm run affiliate:upload` injects
+this variable in memory and posts the result, so no build here writes the
+secret to disk. Rotate them together — set the new value here, deploy a Worker
+secret with it, put it in `.env.local`, then run `npm run affiliate:upload`
+again — or every report answers `401`. The secret is treatable as
+low-privilege precisely because the stored script is readable to anyone who can
+open the check.
 
 The target list is a data file, not code: **`voni/src/lib/email/targets.json`**.
 Edit the array there; `src/lib/email/pool.ts` imports it and validates that
@@ -391,7 +396,7 @@ every entry is an absolute `https://` URL with a host, and
 for redirect hops, so adding an entry also approves that host. A bad entry
 throws at module load and fails the test suite before any deploy. The k6 check
 script is generated from these sources (`npm run affiliate:check`), so a new
-target reaches Grafana on the next regeneration and script upload.
+target reaches Grafana on the next regeneration and `npm run affiliate:upload`.
 
 Retired, still deployed: `POOL_SECRET` and `POOL_WORKER_URLS` configure the
 `email-pool-0N` Workers. They are no longer in the click path and

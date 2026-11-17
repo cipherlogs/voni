@@ -7,7 +7,7 @@
  * no-repeat bags, stamps the three utm params on the target (keeping its own
  * query params), and fetches it with a browser-shaped header set — including
  * the client hints a Chromium-family profile sends — following up to ten
- * redirects. Each click logs one JSON line.
+ * redirects. Each click logs one JSON line, then reports it back to voni.
  *
  * Three fields mean one thing here and in the panel's one-off click, so the click
  * table has one meaning per column:
@@ -25,19 +25,21 @@
  * Matrix: 62 profiles across 8 families, mirrored inline from
  * src/lib/email/user-agents.ts (k6 cannot import TypeScript).
  *
+ * Report-back: ON only in the script uploaded to Grafana. Grafana's scripted
+ * checks have no way to set __ENV__, so REPORT_URL and REPORT_SECRET are
+ * constants here — and this committed file deliberately carries the
+ * placeholder, not the secret. `npm run affiliate:upload` swaps the placeholder
+ * for EMAIL_CLICK_REPORT_SECRET in memory and posts the result; nothing in the
+ * repository ever holds the real value. Run this file locally and it clicks
+ * without reporting, and says so once.
+ *
  * Usage:
  *   k6 run --vus 1 --iterations 1 scripts/affiliate-click-check.k6.js
  *   k6 run --vus 10 --iterations 200 scripts/affiliate-click-check.k6.js
- *
- * Optional report-back: set REPORT_URL and REPORT_SECRET in the environment to
- * POST one JSON row per click, with header x-voni-click-secret. When either is
- * unset the POST is skipped silently, so enabling it later needs no
- * regeneration:
- *   REPORT_URL=https://... REPORT_SECRET=... \
- *     k6 run --vus 1 --iterations 1 scripts/affiliate-click-check.k6.js
  */
 import http from "k6/http";
 import { check } from "k6";
+import { Counter } from "k6/metrics";
 
 /** Same headers the app's click simulator sends (src/lib/email/click-simulator.ts). */
 const ACCEPT =
@@ -204,8 +206,33 @@ const FAMILIES = [
   },
 ];
 
-const REPORT_URL = __ENV.REPORT_URL || "";
-const REPORT_SECRET = __ENV.REPORT_SECRET || "";
+/**
+ * Report target and secret. Constants, not __ENV: Grafana's scripted checks
+ * give the script no environment to read, and a value read at run time could
+ * not be injected without editing the check by hand.
+ */
+const REPORT_URL = "https://voni.cc/api/email/clicks/report";
+/**
+ * The committed file carries the placeholder on purpose. Reporting is enabled
+ * only in the copy `npm run affiliate:upload` posts, where the placeholder is
+ * replaced with EMAIL_CLICK_REPORT_SECRET in memory.
+ */
+const REPORT_SECRET = "__REPORT_SECRET__";
+const REPORTING_ENABLED =
+  REPORT_SECRET !== "" && REPORT_SECRET !== "__REPORT_SECRET__";
+
+/** A broken endpoint must be visible in the run, not silent. */
+const reportOk = new Counter("report_ok");
+const reportFailed = new Counter("report_failed");
+
+/** One line per run, not per click: the click still happens. */
+export function setup() {
+  if (!REPORTING_ENABLED) {
+    console.log(
+      "report-back disabled: REPORT_SECRET is the placeholder (run npm run affiliate:upload to enable it)",
+    );
+  }
+}
 
 /**
  * One weighted draw. Weights are relative shares; the fallback returns the last
@@ -294,6 +321,29 @@ function withUtm(target, source) {
   return origin + "?" + query + hash;
 }
 
+/**
+ * The one JSON row one click reports. Its source lives in
+ * scripts/lib/affiliate-check.ts so the test can hand the same text to the
+ * real parser; inlined here because k6 cannot import TypeScript.
+ *
+ * Every value fits the parser's bounds by construction: target, source and the
+ * browser strings come from the generated data, and a click slower than the
+ * parser's 120 s ceiling is outside what this check can observe.
+ */
+function buildReportBody(record, ranAt) {
+  return {
+    target: record.target,
+    source: record.source,
+    finalUrl: record.finalUrl,
+    status: record.status,
+    ms: record.ms,
+    userAgent: record.userAgent,
+    device: record.device,
+    browser: record.browser,
+    ranAt: ranAt,
+  };
+}
+
 export default function affiliateClickCheck() {
   const profile = pickProfile();
   const target = nextTarget();
@@ -333,18 +383,35 @@ export default function affiliateClickCheck() {
   };
   console.log(JSON.stringify(record));
 
-  if (REPORT_URL && REPORT_SECRET) {
-    record.ranAt = new Date().toISOString();
-    const report = http.post(REPORT_URL, JSON.stringify(record), {
-      headers: {
-        "content-type": "application/json",
-        "x-voni-click-secret": REPORT_SECRET,
-      },
-      timeout: "10s",
-    });
-    if (report.status < 200 || report.status >= 300) {
+  // Reporting is a side channel: the click above already happened, so nothing
+  // here may fail the iteration. A rejection is counted and logged; report_ok
+  // and report_failed are the run's own verdict on the endpoint.
+  if (REPORTING_ENABLED) {
+    try {
+      const report = http.post(
+        REPORT_URL,
+        JSON.stringify(buildReportBody(record, new Date().toISOString())),
+        {
+          headers: {
+            "content-type": "application/json",
+            "x-voni-click-secret": REPORT_SECRET,
+          },
+          tags: { phase: "report" },
+          timeout: "10s",
+        },
+      );
+      if (report.status >= 200 && report.status < 300) {
+        reportOk.add(1);
+      } else {
+        reportFailed.add(1);
+        console.warn(
+          "report-back failed: HTTP " + report.status + " from " + REPORT_URL,
+        );
+      }
+    } catch (error) {
+      reportFailed.add(1);
       console.warn(
-        "report-back failed: HTTP " + report.status + " from " + REPORT_URL,
+        "report-back threw: " + (error && error.message ? error.message : error),
       );
     }
   }
