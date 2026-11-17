@@ -3,9 +3,9 @@
  * `POST` with a constructed `Request` and stubs only the database write, so the
  * auth gate, the body cap and the error mapping are the real code paths.
  *
- * One source-text assertion survives on purpose: the ordering of the auth call
- * against the write cannot be observed from a stubbed writer that is never
- * reached.
+ * Three source-text assertions survive on purpose: exports and route segment
+ * config are module shape, and the ordering of the auth call against the write
+ * cannot be observed from a stubbed writer that is never reached.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -19,6 +19,46 @@ import { setClickReportWriter } from "./writer";
 const SECRET = "test-report-secret";
 const ENDPOINT = "https://voni.cc/api/email/clicks/report";
 const MAX_BODY_BYTES = 4096;
+
+const RAW_SOURCE = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "route.ts"),
+  "utf8",
+);
+
+/** Comments blanked out, lengths kept, so prose about an export is not code. */
+function stripComments(src: string): string {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === "/" && src[i + 1] === "/") {
+      const newline = src.indexOf("\n", i);
+      const stop = newline < 0 ? src.length : newline;
+      out += " ".repeat(stop - i);
+      i = stop;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "*") {
+      const close = src.indexOf("*/", i + 2);
+      const stop = close < 0 ? src.length : close + 2;
+      out += " ".repeat(stop - i);
+      i = stop;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1;
+      while (j < src.length && src[j] !== ch) j += src[j] === "\\" ? 2 : 1;
+      out += src.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+const SOURCE = stripComments(RAW_SOURCE);
 
 const RAN_AT = new Date().toISOString();
 const VALID = {
@@ -140,12 +180,62 @@ test("a declared oversize body is refused before it is read", async () => {
   assert.equal(calls.length, 0);
 });
 
+test("a chunked body over the cap is a 413 and is never fully buffered", async () => {
+  const calls = recordWrites();
+  const chunk = new Uint8Array(1024).fill(0x20);
+  const totalChunks = 64;
+  let pulled = 0;
+  let cancelled = false;
+
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled >= totalChunks) {
+        controller.close();
+        return;
+      }
+      pulled += 1;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  const response = await POST(
+    new Request(ENDPOINT, {
+      method: "POST",
+      body,
+      // No content-length: the declared-length fast path cannot see this one.
+      headers: {
+        "content-type": "application/json",
+        "x-voni-click-secret": SECRET,
+      },
+      duplex: "half",
+    } as RequestInit),
+  );
+
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), { ok: false, reason: "too_large" });
+  assert.equal(calls.length, 0);
+  assert.equal(cancelled, true, "the read is cancelled at the cap");
+  assert.ok(
+    pulled < totalChunks,
+    `the handler stopped reading (pulled ${pulled} of ${totalChunks} chunks)`,
+  );
+  // One chunk may already be prefetched by the runtime before the first read.
+  assert.ok(
+    pulled <= MAX_BODY_BYTES / chunk.byteLength + 2,
+    `the handler read ${pulled} chunks: the cap is a memory bound, not a check after the fact`,
+  );
+});
+
 test("a valid report is stored once, in the shape the parser produced", async () => {
   const calls = recordWrites();
   const response = await POST(postRequest());
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
+  assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0], PARSED);
 });
@@ -177,13 +267,36 @@ test("a failed write is a 502 and logs a fixed string, never the error message",
   );
 });
 
-test("the auth check runs before the write in the route source", () => {
-  const source = readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "route.ts"),
-    "utf8",
+test("the route exports POST and nothing else", () => {
+  const exported = [
+    ...SOURCE.matchAll(
+      /\bexport\s+(?:async\s+)?(?:function|const|let|var|class)\s+([A-Za-z0-9_$]+)/g,
+    ),
+  ].map((match) => match[1]);
+
+  assert.deepEqual(
+    exported,
+    ["POST"],
+    "a second export (a GET, a helper) would widen the surface this route was reviewed for",
   );
-  const authorized = source.indexOf("isClickReportAuthorized(");
-  const written = source.indexOf("persistClickReport(");
+  assert.doesNotMatch(SOURCE, /\bexport\s+default\b/);
+  assert.doesNotMatch(SOURCE, /\bexport\s*\{/);
+  assert.doesNotMatch(SOURCE, /\bexport\s*\*/);
+});
+
+test("the route carries no route segment config", () => {
+  for (const name of ["dynamic", "revalidate", "fetchCache", "runtime"]) {
+    assert.doesNotMatch(
+      SOURCE,
+      new RegExp(`\\bexport\\s+(?:const|let|var)\\s+${name}\\b`),
+      `exporting ${name} would be rejected under cacheComponents, or change the runtime`,
+    );
+  }
+});
+
+test("the auth check runs before the write in the route source", () => {
+  const authorized = SOURCE.indexOf("isClickReportAuthorized(");
+  const written = SOURCE.indexOf("persistClickReport(");
 
   assert.ok(authorized >= 0, "the route calls the shared auth check");
   assert.ok(written >= 0, "the route calls the writer");

@@ -1,10 +1,9 @@
 "use server";
 
-import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { bumpRateBucket, clientIp } from "@/lib/demo/rate-limit";
+import { clientIp } from "@/lib/demo/rate-limit";
 import { secret } from "@/lib/env";
 import { recordAffiliateClick } from "@/lib/email/clicks";
 import { simulateOneClick } from "@/lib/email/click-simulator";
@@ -25,6 +24,11 @@ import {
   nextEmailTarget,
   resolveTarget,
 } from "@/lib/email/pool";
+import {
+  spendUnlockAttempt,
+  type ThrottleVerdict,
+  type UnlockScope,
+} from "@/lib/email/unlock-throttle";
 import { clicksPerDay, validateVolume } from "@/lib/email/volume";
 import {
   getCheck,
@@ -60,74 +64,18 @@ const WRONG_SECRET = "Wrong secret.";
 const WRONG_PASSWORD = "Wrong password.";
 
 /**
- * Ten attempts per 15 minutes per IP, plus a ceiling on the whole deployment.
+ * Spend one attempt against the shared budget.
  *
- * The per-IP ceiling stops one guesser; the global one stops a distributed
- * guess. Neither can tell a correct password from a wrong one because both are
- * spent before the comparison, and both answer with the same sentence a wrong
- * password gets, so being throttled is not evidence about the password.
- *
- * The 15-minute window is a fixed time slice rather than a rolling window: the
- * bucket key carries the slice, so an expired bucket is simply never read
- * again and no sweeper is needed. `retryAfterSeconds` therefore reports the
- * whole window — an upper bound on the real wait, never a way to shorten it.
- *
- * The budget is fail-closed: if the database cannot answer, `bumpRateBucket`
- * throws and the action returns nothing at all. A form that cannot count its
- * attempts refuses; it never falls through to the comparison.
- */
-const UNLOCK_WINDOW_SECONDS = 15 * 60;
-const UNLOCK_MAX_PER_IP = 10;
-const UNLOCK_MAX_GLOBAL = 100;
-
-type UnlockScope = "page" | "control";
-
-type ThrottleVerdict =
-  | { allowed: true }
-  | { allowed: false; retryAfterSeconds: number };
-
-/**
- * The IP as a bucket key, hashed first for the same reason
- * `@/lib/demo/rate-limit` hashes its own: a table of attempt counts is not a
- * log of who visited. The deployment secret means the hashes are not
- * reversible by rainbow table — a bare hash of an IPv4 address is trivial to
- * enumerate — and the bucket prefix keeps these keys out of the demo's
- * namespace.
- */
-function ipBucketKey(ip: string): string {
-  const salt = process.env.BETTER_AUTH_SECRET ?? "voni-email-unlock";
-  return createHash("sha256")
-    .update(`${salt}:email-unlock:${ip}`, "utf8")
-    .digest("hex")
-    .slice(0, 16);
-}
-
-/**
- * Spend one attempt against both ceilings.
+ * The policy (order, limits, window, fail-closed verdict) lives in
+ * `@/lib/email/unlock-throttle` so a test can drive it with a fake store; this
+ * wrapper only supplies the two things it cannot know: which form is asking,
+ * and the caller's IP.
  *
  * The header order belongs to `clientIp` (Cloudflare's `cf-connecting-ip`
  * first), not to this file — one reader for every public form.
  */
 async function throttleUnlocks(scope: UnlockScope): Promise<ThrottleVerdict> {
-  const window = Math.floor(Date.now() / (UNLOCK_WINDOW_SECONDS * 1000));
-  const retryAfterSeconds = UNLOCK_WINDOW_SECONDS;
-  const key = ipBucketKey(clientIp(await headers()));
-
-  const global = await bumpRateBucket(
-    `email-unlock:${scope}:global:${window}`,
-    UNLOCK_MAX_GLOBAL,
-    UNLOCK_WINDOW_SECONDS,
-  );
-  if (!global.ok) return { allowed: false, retryAfterSeconds };
-
-  const perIp = await bumpRateBucket(
-    `email-unlock:${scope}:ip:${key}:${window}`,
-    UNLOCK_MAX_PER_IP,
-    UNLOCK_WINDOW_SECONDS,
-  );
-  if (!perIp.ok) return { allowed: false, retryAfterSeconds };
-
-  return { allowed: true };
+  return spendUnlockAttempt({ scope, ip: clientIp(await headers()) });
 }
 
 /**
@@ -202,9 +150,13 @@ export async function unlockControl(
 ): Promise<ControlState> {
   // Before the comparison, never after: a locked-out attacker must not learn
   // anything — by answer or by timing — from a request that then has its
-  // secret compared anyway.
+  // secret compared anyway. An unavailable limiter refuses too, but with a
+  // message that says so rather than a rejection the form cannot render.
   const throttle = await throttleUnlocks("control");
   if (!throttle.allowed) {
+    if (throttle.reason === "unavailable") {
+      return { ok: false, error: throttle.error };
+    }
     return throttled(WRONG_SECRET, throttle.retryAfterSeconds);
   }
 
@@ -277,10 +229,16 @@ export async function unlockPage(
   formData: FormData,
 ): Promise<ControlState> {
   void _previous;
-  // Same order as the control form: budget first, comparison second.
+  // Same order as the control form: budget first, comparison second. A limiter
+  // that cannot answer still refuses — visibly, so the gate can say why.
   const throttle = await throttleUnlocks("page");
   if (!throttle.allowed) {
+    // `revalidatePath` is what moves the action response into the render phase;
+    // see the "not configured" branch below for why a refusal needs it.
     revalidatePath("/email");
+    if (throttle.reason === "unavailable") {
+      return { ok: false, error: throttle.error };
+    }
     return throttled(WRONG_PASSWORD, throttle.retryAfterSeconds);
   }
 
@@ -443,12 +401,24 @@ export async function runOneOffClick(
   }
 
   // A refused redirect hop is a failure even though the last status was a
-  // redirect, so the simulator's verdict — not the status code — decides.
+  // redirect, so the simulator's verdict — not the status code — decides. Two
+  // different events, two different sentences: a target that answered non-2xx
+  // is a fact about the target and worth quoting; a hop or scheme refusal is a
+  // fact about the chain, and it must not quote the address it tried to reach.
   if (!click.ok) {
+    const answered = status !== null && (status < 200 || status >= 400);
+    if (answered) {
+      return {
+        ok: false,
+        error:
+          `The click ran from voni's server, not Grafana, but the target answered HTTP ${status}. ` +
+          "The attempt is recorded.",
+      };
+    }
     return {
       ok: false,
       error:
-        `The click ran from voni's server, not Grafana, but it was stopped: ${click.message} ` +
+        "The click ran from voni's server, not Grafana, but the visit was stopped before the chain finished. " +
         "The attempt is recorded.",
     };
   }

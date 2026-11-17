@@ -16,6 +16,13 @@ import { Input } from "@/components/ui/input";
  *
  * No reveal toggle on purpose — a password field that can be switched to plain
  * text is one shoulder-surf away from being a plain text field.
+ *
+ * Why there is no `catch` here: `useActionState` hands the result of the action
+ * to this component as state, and a *rejected* action never reaches it — React
+ * surfaces that as a route error instead, with the pending state reset and the
+ * visitor shown nothing. That is why `unlockPage` returns a state for every
+ * refusal it can have, including an unavailable attempt limiter, rather than
+ * letting the rejection escape. Any new refusal must do the same.
  */
 
 const INITIAL: ControlState = { ok: false };

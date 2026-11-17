@@ -9,10 +9,10 @@
  * behind.
  *
  * `target` is not validated by the caller, so the first thing this module does
- * is check it against the approved hosts. The one invariant (an absolute http(s)
- * URL) lives in `assertClickTarget`; this module adds the host policy because
- * the click table stores where a visit landed, and a URL that reached an
- * internal address must never be written as one.
+ * is check it against the approved hosts. The one invariant (an absolute https
+ * URL) lives in `assertClickTarget`; this module adds the scheme, port and host
+ * policy because the click table stores where a visit landed, and a URL that
+ * reached an internal address must never be written as one.
  *
  * ## Why the redirects are followed by hand
  *
@@ -46,6 +46,13 @@ export const CLICK_SIMULATOR_ACCEPT_LANGUAGE = "en-US,en;q=0.9";
 export const CLICK_SIMULATOR_REJECTED_HOP =
   "The redirect chain left the approved hosts; the visit was stopped.";
 
+/**
+ * A 3xx that carries no `Location` sends a browser nowhere. It is a refusal,
+ * not a visit: `status < 400` alone would otherwise record it as a success.
+ */
+export const CLICK_SIMULATOR_REDIRECT_WITHOUT_DESTINATION =
+  "Redirected without a destination; the visit was stopped.";
+
 /** The caller drew something `targets.json` does not name, so nothing was sent. */
 export const CLICK_SIMULATOR_REJECTED_TARGET =
   "The target is not on the approved host list; nothing was fetched.";
@@ -73,12 +80,22 @@ export type SimulateOneClickInput = {
 };
 
 /**
+ * `www.example.com.` and `WWW.example.com` name the same host: the trailing dot
+ * is the legal "root" form. Dropping exactly one keeps `example.com..` — which
+ * is not the approved host — refused.
+ */
+function normaliseHostname(hostname: string): string {
+  const lower = hostname.toLowerCase();
+  return lower.endsWith(".") ? lower.slice(0, -1) : lower;
+}
+
+/**
  * The hosts a hop may land on, read from the same file the target bag comes
  * from. A second hardcoded list would be a second thing to edit, and the one
  * that gets forgotten is the one that is wrong.
  */
 const APPROVED_HOSTS: ReadonlySet<string> = new Set(
-  TARGETS_JSON.map((target) => new URL(target).hostname.toLowerCase()),
+  TARGETS_JSON.map((target) => normaliseHostname(new URL(target).hostname)),
 );
 
 function ipv4Octets(hostname: string): number[] | null {
@@ -157,10 +174,13 @@ function isPrivateIpLiteral(hostname: string): boolean {
 }
 
 /**
- * Accept a URL only when it is http(s), its host is one already in
- * `targets.json`, and that host is not a private IP literal. A relative
- * `Location` is resolved against the URL that sent it, which is what a browser
- * does.
+ * Accept a URL only when it is https on the default port, its host is one
+ * already in `targets.json`, and that host is not a private IP literal. A
+ * relative `Location` is resolved against the URL that sent it, which is what a
+ * browser does.
+ *
+ * Every entry in `targets.json` is `https:` on 443, so plaintext and an extra
+ * port are surface with no caller and no reason to keep.
  */
 function approvedUrl(value: string, base?: string): URL | null {
   let url: URL;
@@ -169,8 +189,9 @@ function approvedUrl(value: string, base?: string): URL | null {
   } catch {
     return null;
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  const hostname = url.hostname.toLowerCase();
+  if (url.protocol !== "https:") return null;
+  if (url.port !== "" && url.port !== "443") return null;
+  const hostname = normaliseHostname(url.hostname);
   if (!APPROVED_HOSTS.has(hostname)) return null;
   if (isPrivateIpLiteral(hostname)) return null;
   return url;
@@ -241,8 +262,8 @@ export async function simulateOneClick(
         cache: "no-store",
       });
       status = response.status;
-      const location = response.headers.get("location");
-      const redirects = status >= 300 && status < 400 && status !== 304 && location !== null;
+      const isRedirect = status >= 300 && status < 400 && status !== 304;
+      const location = isRedirect ? response.headers.get("location") : null;
 
       try {
         await response.body?.cancel();
@@ -250,7 +271,15 @@ export async function simulateOneClick(
         // Best effort only; the click is reported either way.
       }
 
-      if (!redirects) {
+      // A 3xx with no `Location` names no destination, so nothing was visited.
+      // `status < 400` on its own would record this as a success.
+      if (isRedirect && location === null) {
+        finalUrl = current;
+        message = CLICK_SIMULATOR_REDIRECT_WITHOUT_DESTINATION;
+        break;
+      }
+
+      if (!isRedirect) {
         finalUrl = current;
         ok = status >= 200 && status < 400;
         message = ok
@@ -268,7 +297,7 @@ export async function simulateOneClick(
         break;
       }
 
-      const next = approvedUrl(location, current);
+      const next = location === null ? null : approvedUrl(location, current);
       if (!next) {
         finalUrl = current;
         message = CLICK_SIMULATOR_REJECTED_HOP;

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   lockControl,
+  lockPage,
   runOneOffClick,
   saveVolume,
   toggleCheck,
@@ -297,6 +298,46 @@ function UnlockForm() {
   );
 }
 
+/**
+ * Drop both grants and return to the password screen.
+ *
+ * `lockPage` — not `lockControl` — because the two cookies protect different
+ * things: leaving the page cookie behind would keep the panel visible to
+ * whoever re-enters the page password, and leaving the control cookie behind
+ * would keep it writable. Success redirects, and that redirect rejects this
+ * call on purpose, so the rejection is swallowed exactly as it already is for
+ * `lockControl`; a real failure still surfaces through the route's error
+ * boundary rather than being reported as a locked page.
+ */
+function LockPageButton() {
+  const [locking, setLocking] = useState(false);
+
+  async function handleLockPage() {
+    setLocking(true);
+    try {
+      await lockPage();
+    } finally {
+      setLocking(false);
+    }
+  }
+
+  return (
+    <LoadingButton
+      type="button"
+      variant="outline"
+      pending={locking}
+      pendingText="Locking…"
+      icon={<LockKeyhole />}
+      data-testid="email-lock-page"
+      onClick={() => {
+        void handleLockPage().catch(() => {});
+      }}
+    >
+      Lock page
+    </LoadingButton>
+  );
+}
+
 function SaveSubmitButton({ disabled = false }: { disabled?: boolean }) {
   const { pending } = useFormStatus();
   return (
@@ -518,8 +559,10 @@ function ControlsForm({
           >
             Lock panel
           </LoadingButton>
+          <LockPageButton />
           <span className="text-muted-foreground text-sm">
-            Clears the control cookie on this browser.
+            Lock panel clears the control cookie only; lock page clears both and
+            returns to the password screen.
           </span>
         </div>
       </div>
@@ -688,7 +731,19 @@ export function AffiliateControlPanel({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {locked ? <UnlockForm /> : <ControlsForm check={check} probes={probes} />}
+          {locked ? (
+            <div className="grid gap-5">
+              <UnlockForm />
+              <div className="flex flex-wrap items-center gap-3 border-t pt-4">
+                <LockPageButton />
+                <span className="text-muted-foreground text-sm">
+                  Clears both cookies and returns to the password screen.
+                </span>
+              </div>
+            </div>
+          ) : (
+            <ControlsForm check={check} probes={probes} />
+          )}
         </CardContent>
       </Card>
 

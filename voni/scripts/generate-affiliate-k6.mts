@@ -91,9 +91,11 @@ function build(): string {
  * the client hints a Chromium-family profile sends — following up to ten
  * redirects. Each click logs one JSON line.
  *
- * Two fields mean one thing here and in the panel's one-off click, so the click
+ * Three fields mean one thing here and in the panel's one-off click, so the click
  * table has one meaning per column:
  *   target — the stamped URL that was actually visited, not the bare bag entry.
+ *   finalUrl — null when the fetch never produced a response; k6's response.url
+ *            would otherwise echo the request URL as if it had landed.
  *   status — null when the fetch never produced a response. k6 reports 0 for a
  *            transport failure, and the report schema stores that as null, so a
  *            failed click is recorded instead of rejected.
@@ -273,7 +275,9 @@ export default function affiliateClickCheck() {
     // The stamped URL, matching the one-off click's target field.
     target: url,
     source: source,
-    finalUrl: response.url || url,
+    // No answer means no landing page: response.url falls back to the request
+    // URL even when nothing replied. Same null the simulator records.
+    finalUrl: response.status === 0 ? null : response.url || url,
     // k6 reports 0 when no response arrived; the schema's null is that case.
     status: response.status === 0 ? null : response.status,
     ms: Math.round(response.timings.duration),

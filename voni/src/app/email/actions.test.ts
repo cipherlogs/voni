@@ -15,9 +15,24 @@ import {
   controlCookieMatches,
   controlCookieValue,
 } from "@/lib/email/control";
+import {
+  UNLOCK_MAX_GLOBAL,
+  UNLOCK_MAX_PER_IP,
+  UNLOCK_UNAVAILABLE_MESSAGE,
+  UNLOCK_WINDOW_SECONDS,
+  spendUnlockAttempt,
+} from "@/lib/email/unlock-throttle";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, "actions.ts"), "utf8");
+const throttleSource = readFileSync(
+  join(here, "../../lib/email/unlock-throttle.ts"),
+  "utf8",
+);
+const rateLimitSource = readFileSync(
+  join(here, "../../lib/demo/rate-limit.ts"),
+  "utf8",
+);
 const syntheticSource = readFileSync(
   join(here, "../../lib/grafana/synthetic.ts"),
   "utf8",
@@ -134,17 +149,27 @@ test("both password forms spend the attempt budget before comparing anything", (
 test("the unlock limiter is DB-backed, per-IP and global, 10 per 15 minutes", () => {
   assert.match(
     source,
-    /import \{ bumpRateBucket, clientIp \} from "@\/lib\/demo\/rate-limit"/,
+    /import \{ clientIp \} from "@\/lib\/demo\/rate-limit"/,
     "the same limiter the public demo uses, not a process-local counter",
   );
-  assert.match(source, /const UNLOCK_MAX_PER_IP = 10;/);
-  assert.match(source, /const UNLOCK_WINDOW_SECONDS = 15 \* 60;/);
+  assert.match(
+    source,
+    /spendUnlockAttempt\(\{ scope, ip: clientIp\(await headers\(\)\) \}\)/,
+    "the policy is shared; the action supplies the form's scope and the caller's IP",
+  );
+  assert.match(
+    throttleSource,
+    /from "@\/lib\/demo\/rate-limit"/,
+    "the store is the demo's Postgres-backed bucket, not a process-local map",
+  );
+  assert.equal(UNLOCK_MAX_PER_IP, 10);
+  assert.equal(UNLOCK_WINDOW_SECONDS, 15 * 60);
   assert.ok(
-    source.includes("email-unlock:${scope}:global:${window}"),
+    throttleSource.includes("email-unlock:${scope}:global:${window}"),
     "a global ceiling stops a distributed guess",
   );
   assert.ok(
-    source.includes("email-unlock:${scope}:ip:${key}:${window}"),
+    throttleSource.includes("email-unlock:${scope}:ip:${key}:${window}"),
     "a per-IP ceiling stops one guesser",
   );
   assert.match(
@@ -156,6 +181,205 @@ test("the unlock limiter is DB-backed, per-IP and global, 10 per 15 minutes", ()
     source,
     /headers\(\)\.get\(/,
     "no second opinion on which header names the client",
+  );
+  assert.ok(
+    UNLOCK_MAX_GLOBAL >= 20 * UNLOCK_MAX_PER_IP,
+    "the ceiling is out of reach for one IP's whole budget",
+  );
+});
+
+/** A fake bucket store: the same atomic-increment contract, no database. */
+function memoryBuckets() {
+  const counts = new Map<string, number>();
+  return {
+    counts,
+    bump: async (bucket: string, limit: number) => {
+      const count = (counts.get(bucket) ?? 0) + 1;
+      counts.set(bucket, count);
+      return { ok: count <= limit, count };
+    },
+  };
+}
+
+const NOW = 1_700_000_000_000;
+const WINDOW = Math.floor(NOW / (UNLOCK_WINDOW_SECONDS * 1000));
+
+test("one IP's flood cannot spend the global ceiling or lock another IP out", async () => {
+  const store = memoryBuckets();
+  let allowedFromFlood = 0;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const verdict = await spendUnlockAttempt({
+      scope: "page",
+      ip: "203.0.113.10",
+      now: NOW,
+      bump: store.bump,
+    });
+    if (verdict.allowed) allowedFromFlood += 1;
+  }
+
+  assert.equal(
+    allowedFromFlood,
+    UNLOCK_MAX_PER_IP,
+    "the flood spends its own ten attempts and no more",
+  );
+  assert.equal(
+    store.counts.get(`email-unlock:page:global:${WINDOW}`),
+    UNLOCK_MAX_PER_IP,
+    "200 requests from one IP reach the global bucket only as often as that IP was allowed",
+  );
+
+  const operator = await spendUnlockAttempt({
+    scope: "page",
+    ip: "198.51.100.7",
+    now: NOW,
+    bump: store.bump,
+  });
+  assert.deepEqual(
+    operator,
+    { allowed: true },
+    "the correct password from a different address must still be able to unlock",
+  );
+});
+
+test("a refused per-IP attempt never touches the global bucket", async () => {
+  const calls: string[] = [];
+  const bump = async (bucket: string) => {
+    calls.push(bucket);
+    return { ok: !bucket.includes(":ip:"), count: 999 };
+  };
+
+  const verdict = await spendUnlockAttempt({
+    scope: "control",
+    ip: "203.0.113.10",
+    now: NOW,
+    bump,
+  });
+
+  assert.equal(verdict.allowed, false);
+  assert.equal(calls.length, 1, "the per-IP bucket is consulted first and alone");
+  assert.match(calls[0]!, /:ip:/);
+});
+
+test("an allowed attempt spends the per-IP bucket before the global one", async () => {
+  const calls: string[] = [];
+  const bump = async (bucket: string) => {
+    calls.push(bucket);
+    return { ok: true, count: 1 };
+  };
+
+  await spendUnlockAttempt({
+    scope: "page",
+    ip: "203.0.113.10",
+    now: NOW,
+    bump,
+  });
+
+  assert.equal(calls.length, 2);
+  assert.match(calls[0]!, /:ip:/);
+  assert.match(calls[1]!, /:global:/);
+});
+
+test("an unresolved IP spends only the global bucket, not a fake per-IP one", async () => {
+  const store = memoryBuckets();
+
+  const verdict = await spendUnlockAttempt({
+    scope: "control",
+    ip: "unknown",
+    now: NOW,
+    bump: store.bump,
+  });
+
+  assert.deepEqual(verdict, { allowed: true });
+  assert.deepEqual([...store.counts.keys()], [
+    `email-unlock:control:global:${WINDOW}`,
+  ]);
+});
+
+test("a limiter outage is a visible refusal, not a rejected action", async () => {
+  const verdict = await spendUnlockAttempt({
+    scope: "page",
+    ip: "203.0.113.10",
+    now: NOW,
+    bump: async () => {
+      throw new Error("the database is down");
+    },
+  });
+
+  assert.deepEqual(verdict, {
+    allowed: false,
+    reason: "unavailable",
+    error: "Could not check attempts right now. Try again in a moment.",
+  });
+  assert.equal(
+    UNLOCK_UNAVAILABLE_MESSAGE,
+    "Could not check attempts right now. Try again in a moment.",
+  );
+});
+
+test("both password forms return the outage message instead of throwing", () => {
+  for (const [name, wrong] of [
+    ["unlockControl", "throttled(WRONG_SECRET, throttle.retryAfterSeconds)"],
+    ["unlockPage", "throttled(WRONG_PASSWORD, throttle.retryAfterSeconds)"],
+  ] as const) {
+    const body = fnBody(name);
+    assert.match(
+      body,
+      /if \(throttle\.reason === "unavailable"\)[\s\S]*return \{ ok: false, error: throttle\.error \}/,
+      `${name} must render a limiter outage, not reject`,
+    );
+    assert.ok(body.includes(wrong), `${name} still answers a real throttle as a wrong secret`);
+    assert.match(
+      body,
+      /if \(!throttle\.allowed\)/,
+      `${name} decides from the verdict before anything else`,
+    );
+  }
+});
+
+test("the bucket salt comes from the deployment secret, not a public literal alone", () => {
+  assert.match(
+    throttleSource,
+    /const salt = \(await secret\("BETTER_AUTH_SECRET"\)\) \?\? "voni-email-unlock";/,
+    "the Worker binding is read through secret(); process.env alone can be empty",
+  );
+  assert.match(
+    rateLimitSource,
+    /const salt = \(await secret\("BETTER_AUTH_SECRET"\)\) \?\? "voni-demo";/,
+    "the demo's IP key has the same flaw and the same fix",
+  );
+  for (const [label, text] of [
+    ["actions.ts", throttleSource],
+    ["rate-limit.ts", rateLimitSource],
+  ] as const) {
+    assert.doesNotMatch(
+      text,
+      /process\.env\.BETTER_AUTH_SECRET/,
+      `${label} must not read the secret from process.env only`,
+    );
+  }
+  assert.match(
+    throttleSource,
+    /the fallback \*is\* what runs/,
+    "the comment says the fallback is reachable in production rather than pretending",
+  );
+});
+
+test("a target that answered non-2xx is a different sentence from a refused hop", () => {
+  const click = fnBody("runOneOffClick");
+  assert.match(
+    click,
+    /the target answered HTTP \$\{status\}/,
+    "a 404 is a fact about the target and quotes its status",
+  );
+  assert.match(
+    click,
+    /the visit was stopped before the chain finished/,
+    "a refused hop keeps the stopping language",
+  );
+  assert.doesNotMatch(
+    click,
+    /click\.message/,
+    "neither sentence quotes the simulator's address-bearing message",
   );
 });
 

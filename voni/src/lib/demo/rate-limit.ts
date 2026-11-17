@@ -69,9 +69,16 @@ export function clientIp(headers: Headers): string {
  * A rate-limit table does not need to know who anyone is, and storing raw
  * addresses turns an abuse counter into a log of who visited the site. A
  * per-deployment secret means the hashes are not reversible by rainbow table.
+ *
+ * Read through `secret()` because this deployment keeps values in the
+ * Cloudflare binding as well as `.env.local`; `process.env` alone can be empty
+ * on the Worker. The fallback is a public literal and exists only for local dev
+ * and the unit tests: if `BETTER_AUTH_SECRET` is unset in production, the
+ * fallback is what runs and a hash of `voni-demo:<ipv4>` is enumerable in a few
+ * minutes.
  */
 async function ipKey(ip: string): Promise<string> {
-  const salt = process.env.BETTER_AUTH_SECRET ?? "voni-demo";
+  const salt = (await secret("BETTER_AUTH_SECRET")) ?? "voni-demo";
   const data = new TextEncoder().encode(`${salt}:${ip}`);
   const digest = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(digest).slice(0, 8))

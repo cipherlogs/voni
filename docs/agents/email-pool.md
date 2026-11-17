@@ -115,6 +115,17 @@ same value.
 | Page password | `EMAIL_PAGE_PASSWORD` | cookie `voni_email_view`, value `sha256("voni:email-page:" + password)` in hex | 12 h; `path=/email`, `httpOnly`, `SameSite=Lax`, `Secure` in production | Whether the page renders at all. Until it is satisfied the response carries the gate screen and nothing else — no check, no probes, no click history. |
 | Control secret | `EMAIL_CONTROL_SECRET` | cookie `voni_email_control`, value `sha256(secret)` in hex | 12 h; `path=/email`, `httpOnly`, `SameSite=Lax`, `Secure` in production | The mutations: save interval/probes, pause/resume the check, run one click now. A locked panel still renders its data; it is read-only. |
 | Click-report secret | `EMAIL_CLICK_REPORT_SECRET` | request header `x-voni-click-secret` on `POST /api/email/clicks/report` | per request; no cookie | One append to `affiliate_clicks`, and nothing else. |
+| Unlock throttle | (none — no secret to send) | Postgres bucket per hashed IP plus one deployment-wide bucket, via `bumpRateBucket` | fixed 15-minute window | Both password forms: 10 attempts per IP per window and 300 per deployment per window, spent **before** the comparison. Per-IP is bumped first and alone decides whether the attempt may spend global budget, so one anonymous address can burn only its own ten and never the ceiling the operator needs. Fail-closed: if Postgres cannot answer the form refuses with `Could not check attempts right now. Try again in a moment.` instead of rejecting the action, so a database outage is visible and never reads as a wrong password. An unresolved client IP (`"unknown"`) spends the global bucket only. The policy lives in `voni/src/lib/email/unlock-throttle.ts`. |
+
+Two controls mirror the first two rows: **Lock panel** drops only the control
+cookie (the panel stays visible, read-only), and **Lock page** — `lockPage` —
+drops both and returns to the gate screen. A page lock that kept the control
+cookie would still accept writes from anyone who re-entered the page password,
+so the two are never dropped separately.
+
+`EMAIL_CLICK_CHECK_ID` is *not* a lock: it names the Grafana check the panel
+edits and defaults to `68584` through `resolveCheckId()`, so an unset value
+edits the default check rather than refusing.
 
 The page digest is domain-separated (`voni:email-page:` prefix) so it can never
 equal the control digest: a control cookie cannot open the page gate, and a page
@@ -318,9 +329,11 @@ Live:
 
 - `voni/src/app/email/page.tsx` — page gate, panel shell, and the four reads
   (check, probes, 24 h stats, recent clicks). Nothing on load sends a click.
-- `voni/src/app/email/actions.ts` — page unlock/lock, control unlock/lock,
-  `saveVolume`, `toggleCheck`, `runOneOffClick`. Every exported action
-  authorises inside its own body; the client's locked rendering is never a gate.
+- `voni/src/app/email/actions.ts` — page unlock, page lock (`lockPage`, drops
+  both cookies), control unlock/lock, `saveVolume`, `toggleCheck`,
+  `runOneOffClick`. Every exported action authorises inside its own body; the
+  client's locked rendering is never a gate. The unlock throttle's policy lives
+  in `voni/src/lib/email/unlock-throttle.ts`.
 - `voni/src/app/api/email/clicks/report/route.ts` — machine intake for the
   check. One shared secret, append-only.
 - `voni/src/lib/email/click-simulator.ts` — one click's request shape and its
@@ -333,6 +346,9 @@ Live:
   panel renders; schema in `src/lib/db/schema`.
 - `voni/src/lib/email/page-gate.ts`, `control.ts` — the two cookies and their
   comparisons.
+- `voni/src/lib/email/unlock-throttle.ts` — the attempt budget both password
+  forms spend: per-IP first, then the global ceiling, 15-minute fixed window,
+  fail-closed with a message the form can render.
 - `voni/src/lib/email/pool.ts` — target/source bags, `resolveTarget()` utm
   stamping, and the `targets.json` guard.
 - `voni/src/lib/email/targets.json` — **the editable target list**, and the

@@ -66,9 +66,10 @@ ramped gently.
 
 ## Caveats
 
-- The `utm_source` is a query key only. A Worker sets its own `x-pool-worker`
-  header, `referer: https://voni.cc/email`, and user agent — see the contract —
-  but the claimed source is still just the query string.
+- The `utm_source` is a query key only. The live path sends the drawn profile's
+  user agent and client hints, and a Referer only when the drawn provider maps
+  to one (`refererForProvider` in `user-agents.ts`) — otherwise no Referer
+  header at all. The claimed source is still just the query string.
 - Every request to a target comes from the Worker's egress, not the visitor's.
   That is the point of the pool; it is not "a human from gmail.com" and should
   not be reported as one.

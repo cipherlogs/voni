@@ -268,3 +268,112 @@ test("a target outside the approved hosts is never fetched", async () => {
   assert.match(result.message, /approved host/);
   assert.equal(result.message.includes("evil.example"), false);
 });
+
+test("a 3xx with no Location is a refusal, not a visit", async () => {
+  for (const status of [301, 302, 307]) {
+    const target = `https://voni.cc/no-destination-${status}`;
+    const seen: string[] = [];
+    const result = await simulateOneClick({
+      target,
+      source: null,
+      random: () => 0,
+      fetcher: scriptedFetcher({ [target]: { status } }, seen),
+    });
+
+    assert.equal(result.ok, false, `HTTP ${status} with no Location is not a visit`);
+    assert.equal(result.status, status);
+    assert.equal(
+      result.finalUrl,
+      target,
+      "the last accepted URL is recorded, not a destination that never existed",
+    );
+    assert.match(result.message, /Redirected without a destination/);
+  }
+});
+
+test("an approved host with a trailing dot is accepted, not called a foreign host", async () => {
+  const target = "https://www.glizzitrium.com./BCMPW39K/CZ562T2/";
+  const recorded: Recorded[] = [];
+  const result = await simulateOneClick({
+    target,
+    source: null,
+    random: () => 0,
+    fetcher: recordingFetcher(recorded),
+  });
+
+  assert.deepEqual(
+    recorded.map((entry) => entry.url),
+    [target],
+    "the legal root form of an approved host is dialled",
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.finalUrl, target);
+});
+
+test("a host with two trailing dots is still refused", async () => {
+  const recorded: Recorded[] = [];
+  const result = await simulateOneClick({
+    target: "https://www.glizzitrium.com../BCMPW39K/CZ562T2/",
+    source: null,
+    random: () => 0,
+    fetcher: recordingFetcher(recorded),
+  });
+
+  assert.equal(recorded.length, 0);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /approved host/);
+});
+
+test("a plaintext hop on an approved host is never fetched", async () => {
+  const recorded: Recorded[] = [];
+  const result = await simulateOneClick({
+    target: "http://www.glizzitrium.com/BCMPW39K/CZ562T2/",
+    source: null,
+    random: () => 0,
+    fetcher: recordingFetcher(recorded),
+  });
+
+  assert.equal(recorded.length, 0);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, null);
+  assert.match(result.message, /approved host/);
+});
+
+test("a non-default port on an approved host is never fetched", async () => {
+  const recorded: Recorded[] = [];
+  const result = await simulateOneClick({
+    target: "https://www.glizzitrium.com:8443/BCMPW39K/CZ562T2/",
+    source: null,
+    random: () => 0,
+    fetcher: recordingFetcher(recorded),
+  });
+
+  assert.equal(recorded.length, 0);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, null);
+  assert.match(result.message, /approved host/);
+});
+
+test("a redirect to a plaintext or extra-port URL is refused before it is dialled", async () => {
+  for (const location of [
+    "http://www.glizzitrium.com/BCMPW39K/CZ562T2/",
+    "https://www.glizzitrium.com:8443/BCMPW39K/CZ562T2/",
+  ]) {
+    const seen: string[] = [];
+    const result = await simulateOneClick({
+      target: "https://voni.cc/test",
+      source: null,
+      random: () => 0,
+      fetcher: scriptedFetcher(
+        { "https://voni.cc/test": { status: 302, location } },
+        seen,
+      ),
+    });
+
+    assert.deepEqual(seen, ["https://voni.cc/test"], `${location} is not dialled`);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 302);
+    assert.equal(result.finalUrl, "https://voni.cc/test");
+    assert.match(result.message, /left the approved hosts/);
+  }
+});
