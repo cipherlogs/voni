@@ -102,6 +102,22 @@ export function isPrivateIpLiteral(hostname: string): boolean {
 }
 
 /**
+ * Whether the host is an IP address at all.
+ *
+ * A target must be a domain name, not an address: the operator pastes the URL
+ * a click should open, and that URL is a site. Refusing every literal is also
+ * stricter than refusing private ranges, so a mistyped CIDR-looking paste is
+ * caught here rather than becoming a host that `click-simulator` would later
+ * accept only because it happened to be public.
+ */
+function isIpLiteral(hostname: string): boolean {
+  return (
+    (hostname.startsWith("[") && hostname.endsWith("]")) ||
+    ipv4Octets(hostname) !== null
+  );
+}
+
+/**
  * What is wrong with this entry, as a sentence for the operator, or `null`
  * when it may be a target.
  *
@@ -134,11 +150,11 @@ export function targetUrlProblem(entry: string): string | null {
   }
 
   const hostname = normaliseHostname(url.hostname);
-  // The literal check comes first so an address gets the accurate sentence:
+  // A literal is refused before the dot check for the accurate sentence:
   // `[::1]` carries no dot either, and "not a public domain name" would send
   // the operator looking for the wrong mistake.
-  if (isPrivateIpLiteral(hostname)) {
-    return "the host is a private, loopback or otherwise non-public address.";
+  if (isIpLiteral(hostname)) {
+    return "the host is an IP address; use the domain name the click should open.";
   }
   // `https://localhost/` and `https://intranet/` are single-label names: they
   // resolve only inside a network, never to a public site a click can land on.
@@ -147,6 +163,32 @@ export function targetUrlProblem(entry: string): string | null {
   }
 
   return null;
+}
+
+/**
+ * The one identity a target has in the database.
+ *
+ * `new URL()` resolves the free-form differences a paste can carry — a trailing
+ * `/`, a default `:443`, a mixed-case host — so re-adding `https://x.com` after
+ * `https://x.com/` is the same target, not a duplicate row competing in the bag.
+ * Validation runs first, so this never sees a non-https or credentialed URL.
+ */
+export function canonicalTargetUrl(entry: string): string {
+  return new URL(entry.trim()).toString();
+}
+
+/** The host a panel row shows; the URL is too long to scan for it. */
+export function targetHost(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+/** The sentence the add form shows for a `targetUrlProblem` result. */
+export function invalidTargetMessage(problem: string): string {
+  return `That URL cannot be a target: ${problem}`;
 }
 
 /** Throwing form, for the seed at module load and for `addTarget`'s backstop. */

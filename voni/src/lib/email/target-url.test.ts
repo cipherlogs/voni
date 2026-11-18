@@ -8,8 +8,10 @@ import test from "node:test";
 import {
   TARGET_URL_MAX_LENGTH,
   assertEmailTargetUrl,
+  canonicalTargetUrl,
   isPrivateIpLiteral,
   normaliseHostname,
+  targetHost,
   targetUrlProblem,
 } from "./target-url";
 
@@ -56,15 +58,44 @@ test("a private address is refused as a host, in either literal form", () => {
     "https://[::1]/",
     "https://[fd00::1]/",
   ]) {
-    assert.match(String(targetUrlProblem(entry)), /private|non-public/, entry);
+    assert.match(String(targetUrlProblem(entry)), /IP address/, entry);
     assert.throws(() => assertEmailTargetUrl(entry), /Invalid click target/);
   }
 });
 
-test("a public literal is still a literal, but not a private one", () => {
-  // Not encouraged, but not an SSRF: the rule refuses ranges, not syntax.
+test("every IP literal is refused, private or not: the target is a site", () => {
+  // The panel takes the URL a click opens, and that is a domain. Refusing all
+  // literals is also stricter than refusing ranges, so a pasted address cannot
+  // become a host the redirect guard would later accept.
   assert.equal(isPrivateIpLiteral("93.184.216.34"), false);
-  assert.equal(targetUrlProblem("https://93.184.216.34/"), null);
+  assert.match(
+    String(targetUrlProblem("https://93.184.216.34/")),
+    /IP address/,
+  );
+  assert.match(
+    String(targetUrlProblem("https://[2606:4700::1111]/")),
+    /IP address/,
+  );
+});
+
+test("the canonical form makes one target out of a paste's spelling", () => {
+  // `https://x.com` and `https://x.com/` were two rows competing in the bag.
+  assert.equal(canonicalTargetUrl("https://x.com"), "https://x.com/");
+  assert.equal(canonicalTargetUrl(" https://X.COM:443/a "), "https://x.com/a");
+  assert.equal(
+    canonicalTargetUrl("https://www.glizzitrium.com/BCMPW39K/946KZGB/?creative_id=710986&utm_source=gmail.com"),
+    "https://www.glizzitrium.com/BCMPW39K/946KZGB/?creative_id=710986&utm_source=gmail.com",
+  );
+  // Query order is preserved, not sorted: the same URL twice is the same row.
+  assert.equal(
+    canonicalTargetUrl("https://x.com/?b=2&a=1"),
+    canonicalTargetUrl("https://x.com/?b=2&a=1"),
+  );
+});
+
+test("the shared host helper is what the panel row shows", () => {
+  assert.equal(targetHost("https://www.example.com:443/a"), "www.example.com");
+  assert.equal(targetHost("not a url"), "not a url");
 });
 
 test("the root-dot host form is normalised, a double dot is not", () => {

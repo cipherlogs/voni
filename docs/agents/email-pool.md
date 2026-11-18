@@ -112,10 +112,13 @@ traffic:
 
 - **The check is rebuilt and re-uploaded on every change.** The target list is
   inlined in the script Grafana runs, so writing `affiliate_targets` alone would
-  leave the probes clicking the old set. `pushTargetsToCheck()` in
+  leave the probes clicking the old set. `applyTargetChange()` in
   `src/app/email/actions.ts` uploads the rebuilt script *before* the row
-  changes: a Grafana refusal leaves both unchanged and says so, instead of
-  showing a change that never reached the probes.
+  changes; a Grafana refusal leaves both unchanged and says so. If the row write
+  fails after a successful upload, the previous list is pushed back, so the
+  probes never keep clicking a URL the table no longer has. `saveVolume()`
+  rebuilds through the same path and reads the live list too — a volume save
+  must not resurrect a paused target by falling back to the seed.
 - **Pause is not delete.** A paused row stays in the table and is not drawn by
   either producer — the lever for investigating one creative while the rest keep
   clicking. The last active target cannot be paused, and the last row cannot be
@@ -124,11 +127,13 @@ traffic:
   so removing a target never rewrites what was sent.
 - **The add rule is one function.** `targetUrlProblem()` in
   `voni/src/lib/email/target-url.ts` requires an absolute `https://` URL on port
-  443 with a public hostname, no credentials, no private/loopback/link-local IP
-  literal, at most 2048 characters. `addTarget` re-runs it server-side (a server
+  443 with a public domain name, no credentials, no IP literal (private or
+  public), at most 2048 characters. `addTarget` re-runs it server-side (a server
   action is a public endpoint), the builder re-runs it before upload, and
   `pool.assertEmailTargets` applies it to the seed at module load — a hand edit
-  cannot be looser than the panel.
+  cannot be looser than the panel. The stored value is the canonical URL
+  (`canonicalTargetUrl`), so `https://x.com` and `https://x.com/` are one row,
+  not two entries competing in the bag.
 
 A burst dispatched from the card carries the active list as the workflow's
 `targets` input, and `burst.yml` proves each URL reached the generated script.

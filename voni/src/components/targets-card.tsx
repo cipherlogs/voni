@@ -31,6 +31,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import type { TargetState, TargetView } from "@/lib/email/target-state";
+import { targetHost } from "@/lib/email/target-url";
 
 /**
  * The `/email` targets card: the live list the Grafana check and the one-off
@@ -60,14 +61,6 @@ export type TargetsCardProps = {
 };
 
 const INITIAL: TargetState = { ok: false };
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
 
 function FeedbackAlert({ state }: { state: TargetState }) {
   if (!state.error && !state.message) return null;
@@ -191,7 +184,7 @@ function TargetRow({
             {target.url}
           </span>
           <span className="text-muted-foreground font-mono text-xs">
-            {hostOf(target.url)}
+            {targetHost(target.url)}
           </span>
         </div>
         <Badge variant={target.enabled ? "secondary" : "outline"}>

@@ -492,7 +492,7 @@ test("saveVolume clamps through validateVolume before writing", () => {
   assert.match(save, /frequencyMs: frequencyMinutes \* 60_000/);
   assert.match(save, /clicksPerDay\(/);
   assert.ok(
-    save.indexOf("if (!volume.ok)") < save.indexOf("uploadCheckScript("),
+    save.indexOf("if (!volume.ok)") < save.indexOf("uploadRebuiltCheck("),
     "an invalid volume never reaches Grafana",
   );
 });
@@ -506,7 +506,7 @@ test("saveVolume validates the clicks the form sent", () => {
     "the click count goes through the same gate as the interval and probes",
   );
   assert.ok(
-    save.indexOf("clicksPerRun,") < save.indexOf("uploadCheckScript("),
+    save.indexOf("clicksPerRun,") < save.indexOf("uploadRebuiltCheck("),
     "a refused click count never builds or uploads a script",
   );
   assert.match(
@@ -531,30 +531,46 @@ test("saveVolume refuses when the report secret is unconfigured", () => {
     "the action must never fall back to the placeholder: that writes a script that clicks silently",
   );
   assert.ok(
-    save.indexOf("if (!reportSecret)") < save.indexOf("buildCheckScript("),
+    save.indexOf("if (!reportSecret)") < save.indexOf("uploadRebuiltCheck("),
     "an unset secret is refused before the script is built",
   );
 });
 
-test("saveVolume uploads the rebuilt script before it moves the interval", () => {
+test("saveVolume rebuilds with the live target list, not the seed", () => {
+  // The bug this covers: `buildCheckScript` defaults to `targets.json`, so a
+  // volume save after pausing a creative silently resumed every paused target.
   const save = fnBody("saveVolume");
+  assert.match(save, /await activeTargetUrls\(\)/);
   assert.match(
     save,
-    /buildCheckScript\(\{ clicksPerRun: volume\.value\.clicksPerRun, reportSecret \}\)/,
-    "the script comes from the one builder `npm run affiliate:check` uses",
+    /uploadRebuiltCheck\(\{\s*clicksPerRun: volume\.value\.clicksPerRun,\s*targets,?\s*\}\)/,
+    "the count and the live list go to the one upload path",
   );
+  const upload = save.indexOf("uploadRebuiltCheck(");
+  const update = save.indexOf("updateCheck(");
+  assert.ok(upload >= 0 && update > upload, "script first, then frequency");
+});
+
+test("one upload path serves both the volume form and target changes", () => {
+  const upload = source.slice(
+    source.indexOf("async function uploadRebuiltCheck("),
+    source.indexOf("async function pushTargetsToCheck("),
+  );
+  assert.match(upload, /buildCheckScript\(\{/, "one builder");
   assert.match(
-    save,
+    upload,
     /uploadCheckScript\(\s*id,\s*Buffer\.from\(script, "utf8"\)\.toString\("base64"\),\s*AFFILIATE_CHECK_JOB,?\s*\)/,
     "the stored script is base64 of the built text, aimed at the affiliate job",
   );
-  const upload = save.indexOf("uploadCheckScript(");
-  const update = save.indexOf("updateCheck(");
-  assert.ok(upload >= 0 && update > upload, "script first, then frequency");
   assert.match(
-    save,
+    upload,
     /if \(!uploaded\.ok\)[\s\S]*?describeSyntheticFailure\(uploaded\)/,
     "an upload failure is reported, not swallowed",
+  );
+  assert.match(
+    source,
+    /async function pushTargetsToCheck\([\s\S]*?return uploadRebuiltCheck\(/,
+    "a target change reuses the same upload",
   );
 });
 
@@ -667,7 +683,7 @@ test("the burst form's field names match what the card renders", () => {
   assert.match(burst, /formData\.get\("duration"\)/);
 });
 
-test("every target mutation gates first and rebuilds the check before the table", () => {
+test("every target mutation gates first, then changes both sides through one path", () => {
   const mutations: Array<[string, string]> = [
     ["addTarget", "addAffiliateTarget("],
     ["toggleTarget", "setAffiliateTargetEnabled("],
@@ -678,16 +694,20 @@ test("every target mutation gates first and rebuilds the check before the table"
     const body = fnBody(name);
     assert.match(body, /requireControl\(\)/, `${name} must gate`);
     assert.ok(
-      body.indexOf("requireControl()") < body.indexOf("targetUrlProblem(") ||
-        body.indexOf("requireControl()") < body.indexOf("listAffiliateTargets("),
-      `${name} gates before reading the form or the list`,
+      body.indexOf("return targetLocked()") < body.indexOf("listAffiliateTargets()"),
+      `${name} refuses before reading the list`,
     );
-    // The list is inlined in Grafana's script, so a table write alone would
-    // leave the live check clicking the old set until someone remembered the
-    // upload. Script first, then the row — the order saveVolume already uses.
+    // Both sides move in `applyTargetChange`, which uploads before the row and
+    // rolls the upload back if the row refuses. Asserting the name here keeps
+    // the call from silently bypassing that path.
+    assert.match(
+      body,
+      /applyTargetChange\(/,
+      `${name} must go through the upload-then-write path`,
+    );
     assert.ok(
-      body.indexOf("pushTargetsToCheck(") < body.indexOf(write),
-      `${name} uploads the rebuilt script before writing the row`,
+      body.indexOf("applyTargetChange(") < body.indexOf(write),
+      `${name} hands the write to applyTargetChange rather than calling it first`,
     );
   }
 });
@@ -710,7 +730,7 @@ test("a target change re-reads the click count instead of resetting it", () => {
     /clicksPerRun: current\.data\.clicksPerRun/,
     "the count lives in Grafana's stored script; a target edit must keep it",
   );
-  assert.match(sync, /uploadCheckScript\(/, "the change must reach the probes");
+  assert.match(sync, /uploadRebuiltCheck\(/, "the change must reach the probes");
 });
 
 test("the one-off click draws from the live list and can refuse an all-paused list", () => {
@@ -741,5 +761,37 @@ test("adding a target uploads the active list, not the paused rows too", () => {
     /filter\(\(target\) => target\.enabled\)/,
     "a paused target must not start clicking because a sibling was added",
   );
-  assert.match(body, /pushTargetsToCheck\(\[\.\.\.active, url\]\)/);
+  assert.match(body, /next: \[\.\.\.active, url\]/);
+  assert.match(body, /canonicalTargetUrl\(raw\)/, "the row identity is canonical");
+});
+
+test("a failed row write puts the probes back to the previous list", () => {
+  const change = source.slice(
+    source.indexOf("async function applyTargetChange("),
+    source.indexOf("const NO_ACTIVE_TARGETS"),
+  );
+  assert.match(
+    change,
+    /pushTargetsToCheck\(change\.next\)[\s\S]*?await write\(\)[\s\S]*?pushTargetsToCheck\(change\.previous\)/,
+    "script, row, then a rollback upload when the row refused",
+  );
+  assert.match(change, /may still click the new list/, "a failed rollback is admitted");
+});
+
+test("pause and remove share one empty-list refusal", () => {
+  assert.match(source, /const NO_ACTIVE_TARGETS =/);
+  for (const name of ["toggleTarget", "removeTarget"]) {
+    assert.match(fnBody(name), /next\.length === 0\) return \{ ok: false, error: NO_ACTIVE_TARGETS \}/);
+  }
+  // One owner for the rule; the data layer is the backstop, not a second gate
+  // with its own sentence in the action.
+  assert.doesNotMatch(fnBody("removeTarget"), /targets\.length <= 1/);
+});
+
+test("a burst refuses an empty active list instead of falling back to the seed", () => {
+  const burst = fnBody("runBurst");
+  assert.ok(
+    burst.indexOf("targets.length === 0") < burst.indexOf("dispatchBurst("),
+    "an all-paused list must not dispatch the committed seed",
+  );
 });

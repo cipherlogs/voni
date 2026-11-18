@@ -22,13 +22,16 @@
 import { asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { affiliateTargets } from "@/lib/db/schema";
-import TARGETS_JSON from "./targets.json";
-import { assertEmailTargets } from "./pool";
+import { EMAIL_TARGETS } from "./pool";
 import type { TargetView } from "./target-state";
-import { targetUrlProblem } from "./target-url";
+import {
+  canonicalTargetUrl,
+  invalidTargetMessage,
+  targetUrlProblem,
+} from "./target-url";
 
-/** The list a database-less process (CI, tests) falls back to. */
-export const SEED_TARGETS: readonly string[] = assertEmailTargets(TARGETS_JSON);
+/** The seed bag, validated once in `pool.ts`; not a second copy of the list. */
+const SEED_TARGETS = EMAIL_TARGETS;
 
 /**
  * Write the seed once, into an empty table.
@@ -63,6 +66,18 @@ export async function listAffiliateTargets(): Promise<TargetView[]> {
   return rows;
 }
 
+/**
+ * One URL drawn uniformly from an already-filtered active list.
+ *
+ * Each click is its own event, so "without replacement" has nothing to span:
+ * the provider bag still rotates within a process, but a target draw is one
+ * pick from today's list. Callers refuse an empty list before calling, which
+ * is why the non-null assertion is safe.
+ */
+export function pickActiveTarget(urls: readonly string[]): string {
+  return urls[Math.floor(Math.random() * urls.length)]!;
+}
+
 /** What a click producer may draw from: enabled targets only. */
 export async function activeTargetUrls(): Promise<string[]> {
   const targets = await listAffiliateTargets();
@@ -85,11 +100,13 @@ export type AddTargetResult =
  * endpoint: the form's `type="url"` is a convenience, not a check.
  */
 export async function addAffiliateTarget(raw: string): Promise<AddTargetResult> {
-  const url = raw.trim();
-  const problem = targetUrlProblem(url);
+  const problem = targetUrlProblem(raw);
   if (problem !== null) {
-    return { ok: false, error: `That URL cannot be a target: ${problem}` };
+    return { ok: false, error: invalidTargetMessage(problem) };
   }
+  // Canonical, not the pasted text: `https://x.com` and `https://x.com/` are
+  // one target, and the unique index must see one value.
+  const url = canonicalTargetUrl(raw);
 
   const inserted = await db
     .insert(affiliateTargets)

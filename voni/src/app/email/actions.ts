@@ -23,15 +23,21 @@ import {
   pageGateCookieOptions,
   pagePasswordDigest,
 } from "@/lib/email/page-gate";
-import { nextEmailProvider, resolveTarget, shuffleBag } from "@/lib/email/pool";
+import { nextEmailProvider, resolveTarget } from "@/lib/email/pool";
 import {
   activeTargetUrls,
   addAffiliateTarget,
   listAffiliateTargets,
+  pickActiveTarget,
   removeAffiliateTarget,
   setAffiliateTargetEnabled,
 } from "@/lib/email/targets";
-import { targetUrlProblem } from "@/lib/email/target-url";
+import {
+  canonicalTargetUrl,
+  invalidTargetMessage,
+  targetHost,
+  targetUrlProblem,
+} from "@/lib/email/target-url";
 import {
   spendUnlockAttempt,
   type ThrottleVerdict,
@@ -335,30 +341,19 @@ export async function saveVolume(
   const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
 
   // The script is rebuilt here from the same builder `npm run affiliate:check`
-  // uses, so the uploaded copy and the committed one cannot drift. A bad count
-  // is already refused by validateVolume above; the builder's own bound is the
-  // backstop that keeps a hand-crafted request from writing a second source.
-  let script: string;
-  try {
-    script = buildCheckScript({ clicksPerRun: volume.value.clicksPerRun, reportSecret });
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : "The check script could not be built.",
-    };
-  }
+  // uses, so the uploaded copy and the committed one cannot drift. The target
+  // list is read fresh: the same script inlines it, and defaulting to the seed
+  // here would resurrect every paused or removed target on a volume save.
+  const targets = await activeTargetUrls();
+  const uploadError = await uploadRebuiltCheck({
+    clicksPerRun: volume.value.clicksPerRun,
+    targets,
+  });
+  if (uploadError !== null) return { ok: false, error: uploadError };
 
   // Script first, then the frequency: the stored script is what describes how
   // many clicks one run sends, so a failure between the two leaves a check that
   // still runs and reports, just at the old interval.
-  const uploaded = await uploadCheckScript(
-    id,
-    Buffer.from(script, "utf8").toString("base64"),
-    AFFILIATE_CHECK_JOB,
-  );
-  if (!uploaded.ok) {
-    return { ok: false, error: describeSyntheticFailure(uploaded) };
-  }
 
   const updated = await updateCheck(id, {
     frequencyMs: volume.value.frequencyMs,
@@ -411,41 +406,35 @@ export async function toggleCheck(
 }
 
 /**
- * Re-upload the check's script with a new target list.
+ * Rebuild and upload the check's script.
  *
- * Every add, remove and pause lands here, because the list is inlined in the
- * script Grafana runs: writing the table alone would leave the live check
- * clicking the old set until someone remembered `npm run affiliate:upload`.
- *
- * The script goes up *before* the row changes — the same order `saveVolume`
- * uses — so a Grafana refusal leaves both sides unchanged and the operator
- * retries a change that never reached the probes, instead of believing one that
- * did not.
+ * Both the volume form and every target change land here, because the same
+ * text carries both facts: the target list is inlined and `CLICKS_PER_RUN` is
+ * read back from Grafana's stored copy. One path means a target edit cannot
+ * reset the count and a volume save cannot resurrect a paused URL.
  *
  * Returns `null` on success, or the sentence to show instead.
  */
-async function pushTargetsToCheck(
-  targets: readonly string[],
-): Promise<string | null> {
+async function uploadRebuiltCheck(change: {
+  clicksPerRun: number;
+  targets: readonly string[];
+}): Promise<string | null> {
   const reportSecret = await secret("EMAIL_CLICK_REPORT_SECRET");
   if (!reportSecret) {
     return (
       "EMAIL_CLICK_REPORT_SECRET is not configured on this deployment, so the " +
-      "check's script could not be rebuilt. The target list is unchanged."
+      "check's script could not be rebuilt. Nothing was changed."
     );
   }
 
   const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
-  const current = await getCheck(id);
-  if (!current.ok) return describeSyntheticFailure(current);
 
   let script: string;
   try {
     script = buildCheckScript({
-      // The count lives in the stored script; a target change must not reset it.
-      clicksPerRun: current.data.clicksPerRun,
+      clicksPerRun: change.clicksPerRun,
       reportSecret,
-      targets,
+      targets: change.targets,
     });
   } catch (error) {
     return error instanceof Error
@@ -462,18 +451,61 @@ async function pushTargetsToCheck(
   return null;
 }
 
-/** The host is shorter than the URL and is what the operator recognises. */
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url;
-  }
+/** Push a target list using the click count Grafana already has stored. */
+async function pushTargetsToCheck(
+  targets: readonly string[],
+): Promise<string | null> {
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+  const current = await getCheck(id);
+  if (!current.ok) return describeSyntheticFailure(current);
+  return uploadRebuiltCheck({
+    clicksPerRun: current.data.clicksPerRun,
+    targets,
+  });
 }
 
 /**
- * Add a target from the panel. The URL is the row's identity, so adding one
- * twice is a no-op with a confirmation rather than a duplicate in the bag.
+ * Apply one target change to both sides.
+ *
+ * The script goes first — a Grafana refusal then leaves both sides untouched —
+ * and if the row write fails afterwards the previous list is pushed back, so
+ * the probes never keep clicking a URL the table no longer has. `saveVolume`
+ * has the same order because it only changes the count.
+ */
+async function applyTargetChange(
+  change: { previous: readonly string[]; next: readonly string[] },
+  write: () => Promise<{ ok: true } | { ok: false; error: string }>,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const uploadError = await pushTargetsToCheck(change.next);
+  if (uploadError !== null) return { ok: false, error: uploadError };
+
+  let result: { ok: true } | { ok: false; error: string };
+  try {
+    result = await write();
+  } catch {
+    result = { ok: false, error: "The target list could not be saved." };
+  }
+  if (result.ok) return { ok: true };
+
+  const rollback = await pushTargetsToCheck(change.previous);
+  return {
+    ok: false,
+    error:
+      result.error +
+      (rollback === null
+        ? " Nothing was changed: the check was put back to the previous list."
+        : " The check may still click the new list until the next change."),
+  };
+}
+
+/** One refusal for both pause and remove, so the rule reads the same twice. */
+const NO_ACTIVE_TARGETS =
+  "That would leave no active target, so the check would click nothing. " +
+  "Add another target, or keep this one active.";
+
+/**
+ * Add a target from the panel. The canonical URL is the row's identity, so
+ * adding one twice is a confirmation rather than a duplicate in the bag.
  */
 export async function addTarget(
   _previous: TargetState,
@@ -482,45 +514,39 @@ export async function addTarget(
   void _previous;
   if (!(await requireControl())) return targetLocked();
 
-  const url = String(formData.get("url") ?? "").trim();
-  const problem = targetUrlProblem(url);
+  const raw = String(formData.get("url") ?? "");
+  const problem = targetUrlProblem(raw);
   if (problem !== null) {
-    return { ok: false, error: `That URL cannot be a target: ${problem}` };
+    return { ok: false, error: invalidTargetMessage(problem) };
   }
+  const url = canonicalTargetUrl(raw);
 
   const targets = await listAffiliateTargets();
-  if (targets.some((target) => target.url === url)) {
-    return { ok: true, message: `${hostOf(url)} is already in the list.` };
+  const existing = targets.find((target) => target.url === url);
+  if (existing) {
+    return {
+      ok: true,
+      message: existing.enabled
+        ? `${targetHost(url)} is already in the list.`
+        : `${targetHost(url)} is in the list but paused. Resume it on its row ` +
+          "to start clicking it again.",
+    };
   }
 
-  // Only active rows plus the new one: the script must not start clicking a
-  // target the operator paused. The paused rows stay in the table untouched.
   const active = targets
     .filter((target) => target.enabled)
     .map((target) => target.url);
-  const uploadError = await pushTargetsToCheck([...active, url]);
-  if (uploadError !== null) return { ok: false, error: uploadError };
-
-  try {
-    const result = await addAffiliateTarget(url);
-    if (!result.ok) return { ok: false, error: result.error };
-    if (!result.added) {
-      return { ok: true, message: `${hostOf(url)} is already in the list.` };
-    }
-  } catch {
-    return {
-      ok: false,
-      error:
-        `The check now clicks ${hostOf(url)}, but the target list could not be ` +
-        "saved. Reload the page and add it again.",
-    };
-  }
+  const change = await applyTargetChange(
+    { previous: active, next: [...active, url] },
+    () => addAffiliateTarget(url),
+  );
+  if (!change.ok) return { ok: false, error: change.error };
 
   revalidatePath("/email");
   return {
     ok: true,
     message:
-      `Added ${hostOf(url)}. The check was rebuilt and now draws from ` +
+      `Added ${targetHost(url)}. The check was rebuilt and now draws from ` +
       `${active.length + 1} active target${active.length === 0 ? "" : "s"}.`,
   };
 }
@@ -546,43 +572,31 @@ export async function toggleTarget(
     return { ok: false, error: "That target is no longer in the list. Reload the page." };
   }
   if (row.enabled === enabled) {
-    return { ok: true, message: `${hostOf(row.url)} is already ${enabled ? "active" : "paused"}.` };
+    return {
+      ok: true,
+      message: `${targetHost(row.url)} is already ${enabled ? "active" : "paused"}.`,
+    };
   }
 
-  const active = targets
+  const previous = targets
+    .filter((target) => target.enabled)
+    .map((target) => target.url);
+  const next = targets
     .filter((target) => (target.id === id ? enabled : target.enabled))
     .map((target) => target.url);
-  if (active.length === 0) {
-    return {
-      ok: false,
-      error:
-        "That is the last active target; the check would click nothing. Add " +
-        "another target first, or leave this one active.",
-    };
-  }
+  if (next.length === 0) return { ok: false, error: NO_ACTIVE_TARGETS };
 
-  const uploadError = await pushTargetsToCheck(active);
-  if (uploadError !== null) return { ok: false, error: uploadError };
-
-  let result: Awaited<ReturnType<typeof setAffiliateTargetEnabled>>;
-  try {
-    result = await setAffiliateTargetEnabled(id, enabled);
-  } catch {
-    return {
-      ok: false,
-      error:
-        `The check was rebuilt with it ${enabled ? "active" : "paused"}, but the ` +
-        "list could not be saved. Reload the page and try again.",
-    };
-  }
-  if (!result.ok) return { ok: false, error: result.error };
+  const change = await applyTargetChange({ previous, next }, () =>
+    setAffiliateTargetEnabled(id, enabled),
+  );
+  if (!change.ok) return { ok: false, error: change.error };
 
   revalidatePath("/email");
   return {
     ok: true,
     message:
-      `${enabled ? "Resumed" : "Paused"} ${hostOf(row.url)}. The check now draws ` +
-      `from ${active.length} target${active.length === 1 ? "" : "s"}.`,
+      `${enabled ? "Resumed" : "Paused"} ${targetHost(row.url)}. The check now ` +
+      `draws from ${next.length} active target${next.length === 1 ? "" : "s"}.`,
   };
 }
 
@@ -605,46 +619,26 @@ export async function removeTarget(
     return { ok: false, error: "That target is no longer in the list. Reload the page." };
   }
 
-  if (targets.length <= 1) {
-    return {
-      ok: false,
-      error: "This is the last target. Add another one before removing it.",
-    };
-  }
-
+  const previous = targets
+    .filter((target) => target.enabled)
+    .map((target) => target.url);
   const remaining = targets.filter((target) => target.id !== id);
-  const active = remaining.filter((target) => target.enabled).map((target) => target.url);
-  if (active.length === 0) {
-    return {
-      ok: false,
-      error:
-        "Every remaining target is paused, so the check would click nothing. " +
-        "Resume one first.",
-    };
-  }
+  const next = remaining
+    .filter((target) => target.enabled)
+    .map((target) => target.url);
+  if (next.length === 0) return { ok: false, error: NO_ACTIVE_TARGETS };
 
-  const uploadError = await pushTargetsToCheck(active);
-  if (uploadError !== null) return { ok: false, error: uploadError };
-
-  let result: Awaited<ReturnType<typeof removeAffiliateTarget>>;
-  try {
-    result = await removeAffiliateTarget(id);
-  } catch {
-    return {
-      ok: false,
-      error:
-        `The check no longer clicks ${hostOf(row.url)}, but the list could not be ` +
-        "saved. Reload the page and try again.",
-    };
-  }
-  if (!result.ok) return { ok: false, error: result.error };
+  const change = await applyTargetChange({ previous, next }, () =>
+    removeAffiliateTarget(id),
+  );
+  if (!change.ok) return { ok: false, error: change.error };
 
   revalidatePath("/email");
   return {
     ok: true,
     message:
-      `Removed ${hostOf(row.url)}. ${active.length} target` +
-      `${active.length === 1 ? "" : "s"} remain active.`,
+      `Removed ${targetHost(row.url)}. ${next.length} target` +
+      `${next.length === 1 ? "" : "s"} remain active.`,
   };
 }
 
@@ -676,7 +670,7 @@ export async function runOneOffClick(
   }
 
   const source = nextEmailProvider();
-  const target = resolveTarget(shuffleBag(active)(), source);
+  const target = resolveTarget(pickActiveTarget(active), source);
 
   // The identity, headers and redirect behaviour live in one place so this
   // button and the Grafana check cannot drift apart. The full list, paused
@@ -781,8 +775,15 @@ export async function runBurst(
   if (!planned.ok) return { ok: false, error: planned.reason };
 
   // Today's enabled list, not the seed: a burst must click what the panel
-  // shows. The workflow embeds this in the script it generates.
+  // shows. Empty is refused here — the workflow would otherwise keep the
+  // committed seed and click targets the operator paused.
   const targets = await activeTargetUrls();
+  if (targets.length === 0) {
+    return {
+      ok: false,
+      error: "Every target is paused, so a burst would click nothing. Resume one first.",
+    };
+  }
   const result = await dispatchBurst(planned.plan, { targets });
   if (!result.ok) return { ok: false, error: result.error };
 

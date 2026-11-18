@@ -398,8 +398,9 @@ that changes nothing, and it remains the fallback for a generator run with no
 database.
 
 The add rule (`targetUrlProblem()` in `voni/src/lib/email/target-url.ts`) is
-absolute `https://`, port 443, public hostname, no credentials, no
-private/loopback/link-local IP literal, ≤ 2048 characters. The builder re-runs
+absolute `https://`, port 443, public domain name (no IP literal at all), no
+credentials, ≤ 2048 characters. The stored value is canonical, so a trailing
+slash cannot create a second row for the same target. The builder re-runs
 it before an upload and `pool.assertEmailTargets` applies it to the seed at
 module load, so a bad entry fails the test suite before any deploy. A burst
 dispatched from the panel carries the active list as the `targets` input; the
