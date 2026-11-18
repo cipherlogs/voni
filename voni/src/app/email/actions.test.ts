@@ -79,7 +79,7 @@ test("the control gate is auth-before-input", () => {
 
   const click = fnBody("runOneOffClick");
   assert.ok(
-    click.indexOf("requireControl()") < click.indexOf("nextEmailTarget()"),
+    click.indexOf("requireControl()") < click.indexOf("listAffiliateTargets()"),
     "runOneOffClick gates before drawing a target",
   );
 });
@@ -598,7 +598,8 @@ test("the one-off click says it runs from voni's server, not Grafana", () => {
   // The identity (UA, referer, redirect policy) is owned by the simulator so
   // this button and the Grafana check cannot drift; the action must not
   // hand-roll a second set of headers.
-  assert.match(click, /simulateOneClick\(\{ target, source \}\)/);
+  assert.match(click, /simulateOneClick\(\{/);
+  assert.match(click, /target,\n\s+source,\n\s+targets:/);
   assert.doesNotMatch(click, /referer:/);
   assert.doesNotMatch(click, /user-agent/);
   assert.match(click, /recordAffiliateClick\(/);
@@ -664,4 +665,81 @@ test("the burst form's field names match what the card renders", () => {
   assert.match(burst, /formData\.getAll\("zones"\)/);
   assert.match(burst, /formData\.get\("clicks"\)/);
   assert.match(burst, /formData\.get\("duration"\)/);
+});
+
+test("every target mutation gates first and rebuilds the check before the table", () => {
+  const mutations: Array<[string, string]> = [
+    ["addTarget", "addAffiliateTarget("],
+    ["toggleTarget", "setAffiliateTargetEnabled("],
+    ["removeTarget", "removeAffiliateTarget("],
+  ];
+
+  for (const [name, write] of mutations) {
+    const body = fnBody(name);
+    assert.match(body, /requireControl\(\)/, `${name} must gate`);
+    assert.ok(
+      body.indexOf("requireControl()") < body.indexOf("targetUrlProblem(") ||
+        body.indexOf("requireControl()") < body.indexOf("listAffiliateTargets("),
+      `${name} gates before reading the form or the list`,
+    );
+    // The list is inlined in Grafana's script, so a table write alone would
+    // leave the live check clicking the old set until someone remembered the
+    // upload. Script first, then the row — the order saveVolume already uses.
+    assert.ok(
+      body.indexOf("pushTargetsToCheck(") < body.indexOf(write),
+      `${name} uploads the rebuilt script before writing the row`,
+    );
+  }
+});
+
+test("the target actions are exported for the card, and each locks like the rest", () => {
+  for (const name of ["addTarget", "toggleTarget", "removeTarget"]) {
+    assert.match(source, new RegExp(`export async function ${name}\\(`));
+    assert.match(fnBody(name), /return targetLocked\(\)/);
+  }
+});
+
+test("a target change re-reads the click count instead of resetting it", () => {
+  // `pushTargetsToCheck` is private to the module, so `fnBody` (which finds an
+  // export) cannot reach it; the body is the slice up to the next export.
+  const start = source.indexOf("async function pushTargetsToCheck(");
+  assert.ok(start >= 0, "pushTargetsToCheck exists");
+  const sync = source.slice(start, source.indexOf("\nexport async function", start));
+  assert.match(
+    sync,
+    /clicksPerRun: current\.data\.clicksPerRun/,
+    "the count lives in Grafana's stored script; a target edit must keep it",
+  );
+  assert.match(sync, /uploadCheckScript\(/, "the change must reach the probes");
+});
+
+test("the one-off click draws from the live list and can refuse an all-paused list", () => {
+  const click = fnBody("runOneOffClick");
+  assert.match(click, /await listAffiliateTargets\(\)/);
+  assert.ok(
+    click.indexOf("active.length === 0") < click.indexOf("simulateOneClick("),
+    "an empty active list must not send a click",
+  );
+  assert.match(
+    click,
+    /targets: targets\.map\(\(row\) => row\.url\)/,
+    "paused hosts stay on the redirect allowlist",
+  );
+  assert.doesNotMatch(click, /nextEmailTarget\(/);
+});
+
+test("the burst carries the live list into the dispatch", () => {
+  const burst = fnBody("runBurst");
+  assert.match(burst, /await activeTargetUrls\(\)/);
+  assert.match(burst, /dispatchBurst\(planned\.plan, \{ targets \}\)/);
+});
+
+test("adding a target uploads the active list, not the paused rows too", () => {
+  const body = fnBody("addTarget");
+  assert.match(
+    body,
+    /filter\(\(target\) => target\.enabled\)/,
+    "a paused target must not start clicking because a sibling was added",
+  );
+  assert.match(body, /pushTargetsToCheck\(\[\.\.\.active, url\]\)/);
 });

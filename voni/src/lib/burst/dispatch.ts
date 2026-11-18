@@ -56,6 +56,13 @@ export type DispatchDeps = {
   fetcher?: typeof fetch;
   /** Injecting the reader keeps the tests off the environment and the Worker context. */
   readSecret?: (name: string) => Promise<string | undefined>;
+  /**
+   * The target list the run should click. The workflow writes this into the
+   * generated script, so a burst uses today's panel list rather than whatever
+   * `targets.json` held when the branch was last generated. Omitted means the
+   * committed seed — the same list a manual `k6 cloud run` would use.
+   */
+  targets?: readonly string[];
 };
 
 function messageOf(error: unknown): string {
@@ -145,6 +152,11 @@ export async function dispatchBurst(
           vus: String(plan.vus),
           duration: String(plan.durationSec),
           zones: JSON.stringify(plan.zones),
+          // An empty input is how the workflow knows to keep the committed
+          // list; sending "[]" would generate a script with no targets.
+          targets: deps.targets && deps.targets.length > 0
+            ? JSON.stringify(deps.targets)
+            : "",
         },
       }),
       signal: AbortSignal.timeout(10_000),

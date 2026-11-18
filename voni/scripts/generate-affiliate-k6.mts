@@ -16,7 +16,8 @@
  *
  * A burst run (`.github/workflows/burst.yml`) needs the same script with fixed
  * VUs, a duration and a load-zone distribution. Setting BURST_VUS,
- * BURST_DURATION and K6_LOAD_ZONES applies those in memory before writing; with
+ * BURST_DURATION and K6_LOAD_ZONES applies those in memory before writing, and
+ * AFFILIATE_TARGETS_JSON swaps the seed for the panel's live list; with all of
  * them unset the committed script is produced byte-for-byte as before, because
  * Grafana's synthetic check must not gain a distribution.
  */
@@ -24,7 +25,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BROWSER_FAMILIES, BROWSER_PROFILES } from "../src/lib/email/user-agents";
 import TARGETS_JSON from "../src/lib/email/targets.json";
-import { EMAIL_PROVIDERS } from "../src/lib/email/pool";
+import { EMAIL_PROVIDERS, assertEmailTargets } from "../src/lib/email/pool";
 import { buildCheckScript } from "../src/lib/email/check-script";
 import {
   applyBurstOptions,
@@ -34,6 +35,30 @@ import {
 const OUT = join(import.meta.dirname, "affiliate-click-check.k6.js");
 
 /**
+ * A burst dispatched from `/email` carries today's target list, because the
+ * panel owns it and the branch only holds the seed. The workflow passes it as
+ * JSON in `AFFILIATE_TARGETS_JSON`; unset (a local run, CI) means the seed.
+ *
+ * `[]` is refused on purpose: a run with no targets would spend VU-hours
+ * clicking nothing and report a green result.
+ */
+function targetsFromEnv(raw: string | undefined): readonly string[] | null {
+  const value = raw?.trim();
+  if (!value) return null;
+
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string")) {
+    throw new Error("AFFILIATE_TARGETS_JSON must be a JSON array of URL strings");
+  }
+  if (parsed.length === 0) {
+    throw new Error("AFFILIATE_TARGETS_JSON is empty: a burst needs at least one target");
+  }
+  return assertEmailTargets(parsed as string[]);
+}
+
+const targets = targetsFromEnv(process.env.AFFILIATE_TARGETS_JSON) ?? TARGETS_JSON;
+
+/**
  * The committed script is the one-click variant with the placeholder: it is
  * reviewed, and it holds no secret. A multi-click script is built by the panel
  * at save time, where the real secret is already in hand.
@@ -41,12 +66,13 @@ const OUT = join(import.meta.dirname, "affiliate-click-check.k6.js");
 const generated = buildCheckScript({
   clicksPerRun: 1,
   reportSecret: null,
+  targets,
 });
 
 const burst = burstK6OptionsFromEnv(process.env);
 writeFileSync(OUT, burst ? applyBurstOptions(generated, burst) : generated);
 console.log(
-  `wrote ${OUT} (${BROWSER_PROFILES.length} profiles, ${BROWSER_FAMILIES.length} families, ${TARGETS_JSON.length} targets, ${EMAIL_PROVIDERS.length} providers` +
+  `wrote ${OUT} (${BROWSER_PROFILES.length} profiles, ${BROWSER_FAMILIES.length} families, ${targets.length} targets, ${EMAIL_PROVIDERS.length} providers` +
     (burst
       ? `, burst: ${burst.vus} VUs, ${burst.durationSec}s, ${burst.zones.length} zones)`
       : ")"),

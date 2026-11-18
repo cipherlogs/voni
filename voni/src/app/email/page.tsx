@@ -12,7 +12,8 @@ import {
 } from "@/components/affiliate-control-panel";
 import { EmailGateForm } from "@/components/email-gate-form";
 import { BurstCard } from "@/components/burst-card";
-import { runBurst } from "@/app/email/actions";
+import { TargetsCard } from "@/components/targets-card";
+import { addTarget, removeTarget, runBurst, toggleTarget } from "@/app/email/actions";
 import { US_ZONES } from "@/lib/burst/plan";
 import { GateFrame, GateSkeleton } from "@/components/email-gate-skeleton";
 import { CardListSkeleton, TableSkeleton } from "@/components/page-skeletons";
@@ -20,6 +21,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { PUBLIC_CONTAINER } from "@/lib/public-container";
 import { VoniLogo } from "@/components/voni-logo";
+import { listAffiliateTargets } from "@/lib/email/targets";
 import { affiliateClickStats, listAffiliateClicks } from "@/lib/email/clicks";
 import {
   EMAIL_CONTROL_COOKIE,
@@ -271,11 +273,14 @@ async function EmailControlData({
   // The click window is measured from the request, so the boundary comes from
   // here rather than from a clock read inside the query helper.
   const now = new Date();
-  const [checkResult, probesResult, stats, clicks] = await Promise.all([
+  const [checkResult, probesResult, stats, clicks, targets] = await Promise.all([
     getCheck(id),
     listProbes(),
     affiliateClickStats(STATS_WINDOW_HOURS, now),
     listAffiliateClicks(PAGE_CLICK_LIMIT),
+    // Adds and pauses land here, not in the repository: this read is the list
+    // both click producers use, so the card shows what will actually run.
+    listAffiliateTargets(),
   ]);
 
   const notice = noticeCopy(params.notice);
@@ -301,6 +306,13 @@ async function EmailControlData({
           byDevice: stats.byDevice,
         }}
         clicks={clicks.map(toClickRow)}
+      />
+      <TargetsCard
+        locked={locked}
+        targets={targets}
+        addTarget={addTarget}
+        toggleTarget={toggleTarget}
+        removeTarget={removeTarget}
       />
       <BurstCard
         locked={locked}

@@ -163,3 +163,41 @@ test("readClicksPerRun reads the stored constant back, one when absent", () => {
   assert.equal(readClicksPerRun("export default function x() {}"), 1);
   assert.equal(readClicksPerRun("const CLICKS_PER_RUN = 99;"), 1);
 });
+
+test("the target list is a parameter, so the panel's list is what the check clicks", () => {
+  const targets = [
+    "https://example.com/a?creative_id=1",
+    "https://example.org/b",
+  ];
+  const script = buildCheckScript({
+    clicksPerRun: 1,
+    reportSecret: null,
+    targets,
+  });
+
+  assert.match(script, /const TARGETS = \[/);
+  for (const target of targets) {
+    assert.ok(
+      script.includes(JSON.stringify(target)),
+      `${target} must be embedded`,
+    );
+  }
+  assert.doesNotMatch(script, /glizzitrium/, "the seed must not leak through");
+  assertParses(script);
+});
+
+test("no target, or a target the panel would refuse, is a builder refusal", () => {
+  assert.throws(
+    () => buildCheckScript({ clicksPerRun: 1, reportSecret: null, targets: [] }),
+    /at least one URL/,
+    "an empty list would upload a check that clicks nothing",
+  );
+  for (const bad of ["http://example.com/", "https://127.0.0.1/", "not a url"]) {
+    assert.throws(
+      () =>
+        buildCheckScript({ clicksPerRun: 1, reportSecret: null, targets: [bad] }),
+      /Invalid email target/,
+      `${bad} must be refused`,
+    );
+  }
+});

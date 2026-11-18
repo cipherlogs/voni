@@ -34,6 +34,7 @@ import {
   EMAIL_MEDIUM,
   EMAIL_PROVIDERS,
   EMAIL_SOURCE_PARAM,
+  assertEmailTargets,
 } from "./pool";
 
 /**
@@ -113,6 +114,13 @@ export type CheckScriptInput = {
    * committed file, which emits the placeholder.
    */
   reportSecret: string | null;
+  /**
+   * The URLs one iteration may draw from, in this order. The panel passes its
+   * live list so adding a target there is what the check clicks; the default is
+   * the seed file, which is all the committed script and a local generator run
+   * have. Empty is refused: a check with no targets runs green and does nothing.
+   */
+  targets?: readonly string[];
 };
 
 /**
@@ -167,8 +175,8 @@ function renderFamilies(): string {
   }).join("\n");
 }
 
-function renderTargets(): string {
-  return TARGETS_JSON.map((target) => `  ${quote(target)},`).join("\n");
+function renderTargets(targets: readonly string[]): string {
+  return targets.map((target) => `  ${quote(target)},`).join("\n");
 }
 
 function renderProviders(): string {
@@ -340,9 +348,16 @@ ${indent(clickBody(), 2)}  }
 export function buildCheckScript({
   clicksPerRun,
   reportSecret,
+  targets = TARGETS_JSON,
 }: CheckScriptInput): string {
   assertClicksPerRun(clicksPerRun);
   if (reportSecret !== null) assertReportSecret(reportSecret);
+  // The seed guard, not a looser one: an empty list and a malformed entry are
+  // both refusals here, so an upload can never disable the check silently.
+  assertEmailTargets(targets);
+  if (targets.length === 0) {
+    throw new RangeError("targets must name at least one URL.");
+  }
 
   const profileCount = BROWSER_PROFILES.length;
   const secretLiteral = reportSecret ?? REPORT_SECRET_PLACEHOLDER;
@@ -391,8 +406,8 @@ ${clicksDoc} *
  *            failed click is recorded instead of rejected.
  *
  * This generates REAL affiliate clicks: every iteration sends production
- * traffic to the targets in src/lib/email/targets.json. It is a live load
- * check, not a mock.
+ * traffic to the target list embedded below (the panel's live list, seeded from
+ * src/lib/email/targets.json). It is a live load check, not a mock.
  *
  * Matrix: ${profileCount} profiles across ${BROWSER_FAMILIES.length} families, mirrored inline from
  * src/lib/email/user-agents.ts (k6 cannot import TypeScript).
@@ -441,9 +456,9 @@ const EMAIL_SOURCE_PARAM = ${quote(EMAIL_SOURCE_PARAM)};
 const EMAIL_MEDIUM = ${quote(EMAIL_MEDIUM)};
 const EMAIL_CAMPAIGN = ${quote(EMAIL_CAMPAIGN)};
 ${clicksConstant}
-/** src/lib/email/targets.json — production URLs. */
+/** The target list embedded at build/upload time — production URLs. */
 const TARGETS = [
-${renderTargets()}
+${renderTargets(targets)}
 ];
 
 /** src/lib/email/pool.ts EMAIL_PROVIDERS. */

@@ -389,14 +389,22 @@ again — or every report answers `401`. The secret is treatable as
 low-privilege precisely because the stored script is readable to anyone who can
 open the check.
 
-The target list is a data file, not code: **`voni/src/lib/email/targets.json`**.
-Edit the array there; `src/lib/email/pool.ts` imports it and validates that
-every entry is an absolute `https://` URL with a host, and
-`src/lib/email/click-simulator.ts` reads the same file as the approved-host list
-for redirect hops, so adding an entry also approves that host. A bad entry
-throws at module load and fails the test suite before any deploy. The k6 check
-script is generated from these sources (`npm run affiliate:check`), so a new
-target reaches Grafana on the next regeneration and `npm run affiliate:upload`.
+The target list is **data in Postgres** (`affiliate_targets`), managed from the
+`/email` panel's Targets card: add, pause/resume, remove. Every change rebuilds
+the check's script from the new list and re-uploads it before the row changes,
+so the probes switch in the same request. `voni/src/lib/email/targets.json` is
+only the seed written into an empty table on the first read — editing it after
+that changes nothing, and it remains the fallback for a generator run with no
+database.
+
+The add rule (`targetUrlProblem()` in `voni/src/lib/email/target-url.ts`) is
+absolute `https://`, port 443, public hostname, no credentials, no
+private/loopback/link-local IP literal, ≤ 2048 characters. The builder re-runs
+it before an upload and `pool.assertEmailTargets` applies it to the seed at
+module load, so a bad entry fails the test suite before any deploy. A burst
+dispatched from the panel carries the active list as the `targets` input; the
+manual `k6 cloud run` fallback runs the committed script and therefore the seed
+list.
 
 ## Background jobs (Cloudflare Queues + R2 staging + cron)
 

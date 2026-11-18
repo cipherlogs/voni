@@ -27,6 +27,11 @@ on:
         description: 'JSON load-zone distribution, e.g. [{"id":"amazon:us:ashburn","percent":50},{"id":"amazon:us:portland","percent":50}]'
         required: true
         type: string
+      targets:
+        description: 'JSON array of URLs the run may click. Empty keeps the committed seed list.'
+        required: false
+        type: string
+        default: ""
 
 # One burst at a time: a second run would spend the same monthly VU-hours while
 # the first is still measuring, and k6 Cloud bills both.
@@ -49,6 +54,9 @@ jobs:
       BURST_VUS: ${{ inputs.vus }}
       BURST_DURATION: ${{ inputs.duration }}
       K6_LOAD_ZONES: ${{ inputs.zones }}
+      # The panel's live target list. Empty is normal: the generator then keeps
+      # `src/lib/email/targets.json`, which is what a manual run would use.
+      AFFILIATE_TARGETS_JSON: ${{ inputs.targets }}
       K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
       # The CLI needs the stack as well as the token outside `k6 cloud login`;
       # without it the run fails with "stack ID not configured". Not a secret.
@@ -109,6 +117,22 @@ jobs:
               if (!script.includes(zone.id)) throw new Error("burst options missing zone: " + zone.id);
             }
             console.log("distribution ok:", process.env.K6_LOAD_ZONES);
+
+            // The panel's list must be the one embedded, or the burst clicks a
+            // set the operator did not choose (usually just the seed).
+            const rawTargets = (process.env.AFFILIATE_TARGETS_JSON || "").trim();
+            if (rawTargets) {
+              const targets = JSON.parse(rawTargets);
+              if (!Array.isArray(targets) || targets.length === 0) {
+                throw new Error("targets input is not a non-empty JSON array");
+              }
+              for (const url of targets) {
+                if (!script.includes(JSON.stringify(url))) {
+                  throw new Error("target missing from the generated script: " + url);
+                }
+              }
+              console.log("targets ok:", targets.length);
+            }
           '
 
       # The CLI takes its stack and default project from the login state, not

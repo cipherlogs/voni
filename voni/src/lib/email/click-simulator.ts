@@ -21,10 +21,11 @@
  * control: `redirect: "follow"` would let a target's 302 send this server to
  * `http://169.254.169.254/…` or an internal host, and the final URL would then
  * be recorded as the click's landing page. So each hop is resolved here and
- * accepted only when it stays on a host `targets.json` already knows.
+ * accepted only when it stays on a host one of the approved targets names.
  */
 
 import TARGETS_JSON from "./targets.json";
+import { isPrivateIpLiteral, normaliseHostname } from "./target-url";
 import { clientHintsFor, pickBrowserProfile, refererForProvider } from "./user-agents";
 
 export const CLICK_SIMULATOR_TIMEOUT_MS = 8_000;
@@ -71,6 +72,13 @@ export type SimulatedClick = {
 export type SimulateOneClickInput = {
   target: string;
   source: string | null;
+  /**
+   * The URLs whose hosts a hop may land on. Production passes the panel's live
+   * list (`src/lib/email/targets.ts`); the seed file is the default so a test
+   * or a script needs no database. Every target on the list approves its own
+   * host, so adding a target is what widens the allowlist — never a redirect.
+   */
+  targets?: readonly string[];
   /** Injected for deterministic tests; defaults to `Math.random`. */
   random?: () => number;
   /** Injected so a test can observe the request without a network. */
@@ -80,109 +88,30 @@ export type SimulateOneClickInput = {
 };
 
 /**
- * `www.example.com.` and `WWW.example.com` name the same host: the trailing dot
- * is the legal "root" form. Dropping exactly one keeps `example.com..` — which
- * is not the approved host — refused.
- */
-function normaliseHostname(hostname: string): string {
-  const lower = hostname.toLowerCase();
-  return lower.endsWith(".") ? lower.slice(0, -1) : lower;
-}
-
-/**
- * The hosts a hop may land on, read from the same file the target bag comes
+ * The hosts a hop may land on, read from the same list the target bag comes
  * from. A second hardcoded list would be a second thing to edit, and the one
  * that gets forgotten is the one that is wrong.
  */
-const APPROVED_HOSTS: ReadonlySet<string> = new Set(
-  TARGETS_JSON.map((target) => normaliseHostname(new URL(target).hostname)),
-);
-
-function ipv4Octets(hostname: string): number[] | null {
-  const parts = hostname.split(".");
-  if (parts.length !== 4) return null;
-  const octets: number[] = [];
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return null;
-    const value = Number(part);
-    if (value > 255) return null;
-    octets.push(value);
-  }
-  return octets;
-}
-
-/** Loopback, private, link-local, CGNAT, documentation and multicast space. */
-function isPrivateIpv4([first, second]: number[]): boolean {
-  if (first === 0 || first === 10 || first === 127) return true;
-  if (first === 100 && second !== undefined && second >= 64 && second <= 127) {
-    return true;
-  }
-  if (first === 169 && second === 254) return true;
-  if (first === 172 && second !== undefined && second >= 16 && second <= 31) {
-    return true;
-  }
-  if (first === 192 && (second === 0 || second === 168)) return true;
-  if (first === 198 && (second === 18 || second === 19 || second === 51)) {
-    return true;
-  }
-  if (first === 203 && second === 0) return true;
-  // 224/4 multicast, 240/4 reserved, and the limited broadcast address.
-  return first >= 224;
-}
-
-function isPrivateIpv6(raw: string): boolean {
-  const value = raw.toLowerCase();
-  if (value === "::" || value === "::1") return true;
-
-  // `URL` normalises an IPv4-mapped address to `::ffff:7f00:1`, so the
-  // dotted form only appears if a caller hands the hostname over directly.
-  const mapped = /^::ffff:(.+)$/.exec(value)?.[1];
-  if (mapped !== undefined) {
-    if (mapped.includes(".")) {
-      const v4 = ipv4Octets(mapped);
-      return v4 !== null && isPrivateIpv4(v4);
-    }
-    const groups = mapped.split(":");
-    if (groups.length === 2) {
-      const high = Number.parseInt(groups[0]!, 16);
-      const low = Number.parseInt(groups[1]!, 16);
-      if (Number.isFinite(high) && Number.isFinite(low)) {
-        return isPrivateIpv4([high >> 8, high & 0xff, low >> 8, low & 0xff]);
-      }
-    }
-  }
-
-  const first = Number.parseInt(value.split(":")[0] ?? "", 16);
-  if (!Number.isFinite(first)) return false;
-  // fc00::/7 unique-local, fe80::/10 link-local.
-  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+function approvedHosts(targets: readonly string[]): ReadonlySet<string> {
+  return new Set(
+    targets.map((target) => normaliseHostname(new URL(target).hostname)),
+  );
 }
 
 /**
- * Whether a hostname is an IP literal in a range this server must never dial.
+ * Accept a URL only when it is https on the default port, its host is one of
+ * the approved targets, and that host is not a private IP literal. A relative
+ * `Location` is resolved against the URL that sent it, which is what a browser
+ * does.
  *
- * Defence in depth: the host allowlist above already refuses every literal, so
- * this only matters if `targets.json` itself ever holds one. It is cheap enough
- * to keep in the same pass.
+ * Every target is stored `https:` on 443 (the panel refuses anything else), so
+ * plaintext and an extra port are surface with no caller and no reason to keep.
  */
-function isPrivateIpLiteral(hostname: string): boolean {
-  if (hostname.startsWith("[") && hostname.endsWith("]")) {
-    return isPrivateIpv6(hostname.slice(1, -1));
-  }
-  const v4 = ipv4Octets(hostname);
-  return v4 !== null && isPrivateIpv4(v4);
-}
-
-/**
- * Accept a URL only when it is https on the default port, its host is one
- * already in `targets.json`, and that host is not a private IP literal. A
- * relative `Location` is resolved against the URL that sent it, which is what a
- * browser does.
- *
- * Every entry in `targets.json` is `https:` on 443, so plaintext and an extra
- * port are surface with no caller and no reason to keep.
- */
-function approvedUrl(value: string, base?: string): URL | null {
+function approvedUrl(
+  value: string,
+  hosts: ReadonlySet<string>,
+  base?: string,
+): URL | null {
   let url: URL;
   try {
     url = base === undefined ? new URL(value) : new URL(value, base);
@@ -192,7 +121,7 @@ function approvedUrl(value: string, base?: string): URL | null {
   if (url.protocol !== "https:") return null;
   if (url.port !== "" && url.port !== "443") return null;
   const hostname = normaliseHostname(url.hostname);
-  if (!APPROVED_HOSTS.has(hostname)) return null;
+  if (!hosts.has(hostname)) return null;
   if (isPrivateIpLiteral(hostname)) return null;
   return url;
 }
@@ -232,7 +161,8 @@ export async function simulateOneClick(
     ...(referer === null ? {} : { referer }),
   };
 
-  const start = approvedUrl(input.target);
+  const hosts = approvedHosts(input.targets ?? TARGETS_JSON);
+  const start = approvedUrl(input.target, hosts);
   if (start === null) {
     // An unapproved target is never fetched. The caller draws from the bag, so
     // reaching this branch means a bug or a forged call, not a bad campaign.
@@ -297,7 +227,7 @@ export async function simulateOneClick(
         break;
       }
 
-      const next = location === null ? null : approvedUrl(location, current);
+      const next = location === null ? null : approvedUrl(location, hosts, current);
       if (!next) {
         finalUrl = current;
         message = CLICK_SIMULATOR_REJECTED_HOP;

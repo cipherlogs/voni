@@ -15,7 +15,6 @@ import {
   EMAIL_TARGETS,
   EMAIL_TARGETS_FILE,
   nextEmailProvider,
-  nextEmailTarget,
   resolveTarget,
   shuffleBag,
 } from "./pool";
@@ -23,7 +22,10 @@ import {
 test("bags: a run of draws covers every target and every provider", () => {
   // Without replacement, any N consecutive draws from an N-item bag cross a
   // refill boundary, so the set is always the whole bag.
-  const targets = Array.from({ length: EMAIL_TARGETS.length }, () => nextEmailTarget());
+  // The live target bag is a database read now (`email/targets.ts`), so the
+  // seed is exercised as a bag rather than through a second production API.
+  const seedBag = shuffleBag(EMAIL_TARGETS);
+  const targets = Array.from({ length: EMAIL_TARGETS.length }, () => seedBag());
   assert.deepEqual([...targets].sort(), [...EMAIL_TARGETS].sort());
 
   const providers = Array.from({ length: EMAIL_PROVIDERS.length }, () => nextEmailProvider());

@@ -8,6 +8,7 @@ import { secret } from "@/lib/env";
 import { describePlan, planBurst } from "@/lib/burst/plan";
 import { dispatchBurst } from "@/lib/burst/dispatch";
 import type { BurstState } from "@/lib/burst/state";
+import type { TargetState } from "@/lib/email/target-state";
 import { recordAffiliateClick } from "@/lib/email/clicks";
 import { simulateOneClick } from "@/lib/email/click-simulator";
 import {
@@ -22,11 +23,15 @@ import {
   pageGateCookieOptions,
   pagePasswordDigest,
 } from "@/lib/email/page-gate";
+import { nextEmailProvider, resolveTarget, shuffleBag } from "@/lib/email/pool";
 import {
-  nextEmailProvider,
-  nextEmailTarget,
-  resolveTarget,
-} from "@/lib/email/pool";
+  activeTargetUrls,
+  addAffiliateTarget,
+  listAffiliateTargets,
+  removeAffiliateTarget,
+  setAffiliateTargetEnabled,
+} from "@/lib/email/targets";
+import { targetUrlProblem } from "@/lib/email/target-url";
 import {
   spendUnlockAttempt,
   type ThrottleVerdict,
@@ -117,6 +122,10 @@ function locked(): ControlState {
 }
 
 function burstLocked(): BurstState {
+  return { ok: false, error: LOCKED.error };
+}
+
+function targetLocked(): TargetState {
   return { ok: false, error: LOCKED.error };
 }
 
@@ -402,10 +411,250 @@ export async function toggleCheck(
 }
 
 /**
+ * Re-upload the check's script with a new target list.
+ *
+ * Every add, remove and pause lands here, because the list is inlined in the
+ * script Grafana runs: writing the table alone would leave the live check
+ * clicking the old set until someone remembered `npm run affiliate:upload`.
+ *
+ * The script goes up *before* the row changes — the same order `saveVolume`
+ * uses — so a Grafana refusal leaves both sides unchanged and the operator
+ * retries a change that never reached the probes, instead of believing one that
+ * did not.
+ *
+ * Returns `null` on success, or the sentence to show instead.
+ */
+async function pushTargetsToCheck(
+  targets: readonly string[],
+): Promise<string | null> {
+  const reportSecret = await secret("EMAIL_CLICK_REPORT_SECRET");
+  if (!reportSecret) {
+    return (
+      "EMAIL_CLICK_REPORT_SECRET is not configured on this deployment, so the " +
+      "check's script could not be rebuilt. The target list is unchanged."
+    );
+  }
+
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+  const current = await getCheck(id);
+  if (!current.ok) return describeSyntheticFailure(current);
+
+  let script: string;
+  try {
+    script = buildCheckScript({
+      // The count lives in the stored script; a target change must not reset it.
+      clicksPerRun: current.data.clicksPerRun,
+      reportSecret,
+      targets,
+    });
+  } catch (error) {
+    return error instanceof Error
+      ? error.message
+      : "The check script could not be built.";
+  }
+
+  const uploaded = await uploadCheckScript(
+    id,
+    Buffer.from(script, "utf8").toString("base64"),
+    AFFILIATE_CHECK_JOB,
+  );
+  if (!uploaded.ok) return describeSyntheticFailure(uploaded);
+  return null;
+}
+
+/** The host is shorter than the URL and is what the operator recognises. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Add a target from the panel. The URL is the row's identity, so adding one
+ * twice is a no-op with a confirmation rather than a duplicate in the bag.
+ */
+export async function addTarget(
+  _previous: TargetState,
+  formData: FormData,
+): Promise<TargetState> {
+  void _previous;
+  if (!(await requireControl())) return targetLocked();
+
+  const url = String(formData.get("url") ?? "").trim();
+  const problem = targetUrlProblem(url);
+  if (problem !== null) {
+    return { ok: false, error: `That URL cannot be a target: ${problem}` };
+  }
+
+  const targets = await listAffiliateTargets();
+  if (targets.some((target) => target.url === url)) {
+    return { ok: true, message: `${hostOf(url)} is already in the list.` };
+  }
+
+  // Only active rows plus the new one: the script must not start clicking a
+  // target the operator paused. The paused rows stay in the table untouched.
+  const active = targets
+    .filter((target) => target.enabled)
+    .map((target) => target.url);
+  const uploadError = await pushTargetsToCheck([...active, url]);
+  if (uploadError !== null) return { ok: false, error: uploadError };
+
+  try {
+    const result = await addAffiliateTarget(url);
+    if (!result.ok) return { ok: false, error: result.error };
+    if (!result.added) {
+      return { ok: true, message: `${hostOf(url)} is already in the list.` };
+    }
+  } catch {
+    return {
+      ok: false,
+      error:
+        `The check now clicks ${hostOf(url)}, but the target list could not be ` +
+        "saved. Reload the page and add it again.",
+    };
+  }
+
+  revalidatePath("/email");
+  return {
+    ok: true,
+    message:
+      `Added ${hostOf(url)}. The check was rebuilt and now draws from ` +
+      `${active.length + 1} active target${active.length === 0 ? "" : "s"}.`,
+  };
+}
+
+/**
+ * Pause or resume one target. Pausing stops the draw without losing the URL,
+ * which is the lever for investigating one creative: the check keeps clicking
+ * the others, and one form submission puts it back.
+ */
+export async function toggleTarget(
+  _previous: TargetState,
+  formData: FormData,
+): Promise<TargetState> {
+  void _previous;
+  if (!(await requireControl())) return targetLocked();
+
+  const id = String(formData.get("id") ?? "");
+  const enabled = formData.get("enabled") === "true";
+
+  const targets = await listAffiliateTargets();
+  const row = targets.find((target) => target.id === id);
+  if (!row) {
+    return { ok: false, error: "That target is no longer in the list. Reload the page." };
+  }
+  if (row.enabled === enabled) {
+    return { ok: true, message: `${hostOf(row.url)} is already ${enabled ? "active" : "paused"}.` };
+  }
+
+  const active = targets
+    .filter((target) => (target.id === id ? enabled : target.enabled))
+    .map((target) => target.url);
+  if (active.length === 0) {
+    return {
+      ok: false,
+      error:
+        "That is the last active target; the check would click nothing. Add " +
+        "another target first, or leave this one active.",
+    };
+  }
+
+  const uploadError = await pushTargetsToCheck(active);
+  if (uploadError !== null) return { ok: false, error: uploadError };
+
+  let result: Awaited<ReturnType<typeof setAffiliateTargetEnabled>>;
+  try {
+    result = await setAffiliateTargetEnabled(id, enabled);
+  } catch {
+    return {
+      ok: false,
+      error:
+        `The check was rebuilt with it ${enabled ? "active" : "paused"}, but the ` +
+        "list could not be saved. Reload the page and try again.",
+    };
+  }
+  if (!result.ok) return { ok: false, error: result.error };
+
+  revalidatePath("/email");
+  return {
+    ok: true,
+    message:
+      `${enabled ? "Resumed" : "Paused"} ${hostOf(row.url)}. The check now draws ` +
+      `from ${active.length} target${active.length === 1 ? "" : "s"}.`,
+  };
+}
+
+/**
+ * Remove one target for good. Its click history stays: `affiliate_clicks` keeps
+ * the URL each visit actually used, so removing a target never rewrites what
+ * was sent.
+ */
+export async function removeTarget(
+  _previous: TargetState,
+  formData: FormData,
+): Promise<TargetState> {
+  void _previous;
+  if (!(await requireControl())) return targetLocked();
+
+  const id = String(formData.get("id") ?? "");
+  const targets = await listAffiliateTargets();
+  const row = targets.find((target) => target.id === id);
+  if (!row) {
+    return { ok: false, error: "That target is no longer in the list. Reload the page." };
+  }
+
+  if (targets.length <= 1) {
+    return {
+      ok: false,
+      error: "This is the last target. Add another one before removing it.",
+    };
+  }
+
+  const remaining = targets.filter((target) => target.id !== id);
+  const active = remaining.filter((target) => target.enabled).map((target) => target.url);
+  if (active.length === 0) {
+    return {
+      ok: false,
+      error:
+        "Every remaining target is paused, so the check would click nothing. " +
+        "Resume one first.",
+    };
+  }
+
+  const uploadError = await pushTargetsToCheck(active);
+  if (uploadError !== null) return { ok: false, error: uploadError };
+
+  let result: Awaited<ReturnType<typeof removeAffiliateTarget>>;
+  try {
+    result = await removeAffiliateTarget(id);
+  } catch {
+    return {
+      ok: false,
+      error:
+        `The check no longer clicks ${hostOf(row.url)}, but the list could not be ` +
+        "saved. Reload the page and try again.",
+    };
+  }
+  if (!result.ok) return { ok: false, error: result.error };
+
+  revalidatePath("/email");
+  return {
+    ok: true,
+    message:
+      `Removed ${hostOf(row.url)}. ${active.length} target` +
+      `${active.length === 1 ? "" : "s"} remain active.`,
+  };
+}
+
+/**
  * One click, right now, from the server this app runs on. This exists to prove
  * the target and the attribution work without waiting for Grafana's next run —
- * so the result must not imply Grafana produced it. The target and source are
- * drawn by the pool's own bags, which keeps this from becoming an open proxy.
+ * so the result must not imply Grafana produced it. The target comes from the
+ * panel's list and the source from the pool's provider bag, both drawn
+ * server-side: the form body names neither, which keeps this from becoming an
+ * open proxy.
  */
 export async function runOneOffClick(
   _previous: ControlState,
@@ -417,12 +666,26 @@ export async function runOneOffClick(
   void _formData;
   if (!(await requireControl())) return locked();
 
+  const targets = await listAffiliateTargets();
+  const active = targets.filter((target) => target.enabled).map((target) => target.url);
+  if (active.length === 0) {
+    return {
+      ok: false,
+      error: "Every target is paused, so no click was sent. Resume one on the targets card first.",
+    };
+  }
+
   const source = nextEmailProvider();
-  const target = resolveTarget(nextEmailTarget(), source);
+  const target = resolveTarget(shuffleBag(active)(), source);
 
   // The identity, headers and redirect behaviour live in one place so this
-  // button and the Grafana check cannot drift apart.
-  const click = await simulateOneClick({ target, source });
+  // button and the Grafana check cannot drift apart. The full list, paused
+  // included, is the host allowlist a redirect chain may hop through.
+  const click = await simulateOneClick({
+    target,
+    source,
+    targets: targets.map((row) => row.url),
+  });
   const { status, finalUrl, ms, userAgent, device, browser } = click;
   const transportError = status === null;
 
@@ -517,7 +780,10 @@ export async function runBurst(
   });
   if (!planned.ok) return { ok: false, error: planned.reason };
 
-  const result = await dispatchBurst(planned.plan);
+  // Today's enabled list, not the seed: a burst must click what the panel
+  // shows. The workflow embeds this in the script it generates.
+  const targets = await activeTargetUrls();
+  const result = await dispatchBurst(planned.plan, { targets });
   if (!result.ok) return { ok: false, error: result.error };
 
   if (result.mode === "manual") {

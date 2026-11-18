@@ -809,3 +809,29 @@ export const affiliateClicks = pgTable(
     index("affiliate_clicks_ran_at_idx").on(table.ranAt.desc()),
   ],
 );
+
+/**
+ * The URL list the click producers draw from. Edited from the `/email` panel,
+ * not from the repository: `src/lib/email/targets.json` is only the seed, used
+ * to fill this table the first time it is read and as the fallback for the
+ * local generator.
+ *
+ * `enabled = false` pauses a target without losing its URL — the lever that
+ * stops the check clicking one creative while it is being investigated. A row
+ * is never deleted by a pause, and a click already recorded keeps the URL it
+ * visited: `affiliate_clicks` is the history, this is today's bag.
+ */
+export const affiliateTargets = pgTable(
+  "affiliate_targets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    url: text("url").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Two adds of the same URL are one target, not two rows competing in the
+    // bag; the panel's "already in the list" answer is this index refusing.
+    uniqueIndex("affiliate_targets_url_uidx").on(table.url),
+  ],
+);

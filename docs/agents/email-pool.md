@@ -65,9 +65,10 @@ which is what the one-off click stores. One column, one meaning.
 ## Target selection
 
 One target and one source per click, drawn without replacement from shuffle
-bags in `voni/src/lib/email/pool.ts`. Each entry in
-`voni/src/lib/email/targets.json` is an absolute `https://` URL, and the bag
-mixes voni-hosted pages with affiliate links that redirect off-site:
+bags. The providers are a constant in `voni/src/lib/email/pool.ts`; the targets
+are rows in `affiliate_targets`, managed from the `/email` panel's **Targets**
+card. The bag mixes voni-hosted pages with affiliate links that redirect
+off-site:
 
 ```
 https://cipherlogs.github.io/print/
@@ -97,9 +98,48 @@ builder is deterministic: the same sources produce byte-identical output, so a
 diff after regenerating means a source file changed (`check-script.test.ts`
 asserts the committed file is exactly a fresh one-click build).
 
-`targets.json` now has a second job: it is the approved-host list for redirect
-hops in the app's one-off click. Adding a target is still a one-file edit, but
-it also approves that host as a redirect destination.
+`voni/src/lib/email/targets.json` is only the **seed**. The first read of an
+empty `affiliate_targets` writes those URLs once; from then on the panel owns
+the list, and a deploy never overwrites an operator's pause or removal. The file
+stays because a generator or test run with no database needs a list, and because
+a seed reviewable in git makes the first page load predictable.
+
+## Managing targets from the panel
+
+The Targets card lists every row with Active/Paused, a pause/resume button and a
+remove button, plus one add field. Four rules make it safe to use against live
+traffic:
+
+- **The check is rebuilt and re-uploaded on every change.** The target list is
+  inlined in the script Grafana runs, so writing `affiliate_targets` alone would
+  leave the probes clicking the old set. `pushTargetsToCheck()` in
+  `src/app/email/actions.ts` uploads the rebuilt script *before* the row
+  changes: a Grafana refusal leaves both unchanged and says so, instead of
+  showing a change that never reached the probes.
+- **Pause is not delete.** A paused row stays in the table and is not drawn by
+  either producer — the lever for investigating one creative while the rest keep
+  clicking. The last active target cannot be paused, and the last row cannot be
+  removed: a check with no targets runs green and clicks nothing.
+- **History keeps its URL.** `affiliate_clicks` stores the URL each visit used,
+  so removing a target never rewrites what was sent.
+- **The add rule is one function.** `targetUrlProblem()` in
+  `voni/src/lib/email/target-url.ts` requires an absolute `https://` URL on port
+  443 with a public hostname, no credentials, no private/loopback/link-local IP
+  literal, at most 2048 characters. `addTarget` re-runs it server-side (a server
+  action is a public endpoint), the builder re-runs it before upload, and
+  `pool.assertEmailTargets` applies it to the seed at module load — a hand edit
+  cannot be looser than the panel.
+
+A burst dispatched from the card carries the active list as the workflow's
+`targets` input, and `burst.yml` proves each URL reached the generated script.
+The **manual** fallback (`k6 cloud run scripts/affiliate-click-check.k6.js`)
+runs the committed script, so it clicks the seed list rather than the panel's —
+the one place the two can differ.
+
+`allTargetUrls()` — every row, paused included — is the approved-host list for
+redirect hops in the app's one-off click. Pausing the tracker must not stop a
+sibling target's chain at its first hop; adding a target is what approves its
+host as a redirect destination.
 
 A consequence worth knowing: because the bag has no local origin, running
 either producer fetches the production URLs, not your dev server. The check is
@@ -213,9 +253,9 @@ nothing at all — it logs one line saying so.
 - The app runtime has no platform-level SSRF defence, so `simulateOneClick`
   follows redirects itself: `redirect: "manual"`, at most 10 hops, each
   `Location` resolved against the URL that sent it, and a hop is accepted only
-  when its host is one already in `targets.json`. Non-`http(s)` schemes and IP
-  literals in private/loopback/link-local ranges are refused as well, as
-  defence in depth.
+  when its host is one named by a target row (`allTargetUrls()`, paused
+  included). Non-`http(s)` schemes, a non-default port and IP literals in
+  private/loopback/link-local ranges are refused as well, as defence in depth.
 - A refused hop ends the visit as a failure: `status` is the last response
   received, `finalUrl` is the last URL accepted, and the message says the chain
   left the approved hosts. The refused URL is never returned or stored — it is
@@ -231,7 +271,7 @@ nothing at all — it logs one line saying so.
   (check, probes, 24 h stats, recent clicks). Nothing on load sends a click.
 - `voni/src/app/email/actions.ts` — page unlock, page lock (`lockPage`, drops
   both cookies), control unlock/lock, `saveVolume`, `toggleCheck`,
-  `runOneOffClick`. Every exported action authorises inside its own body; the
+  `addTarget`, `toggleTarget`, `removeTarget`, `runOneOffClick`, `runBurst`. Every exported action authorises inside its own body; the
   client's locked rendering is never a gate. The unlock throttle's policy lives
   in `voni/src/lib/email/unlock-throttle.ts`.
 - `voni/src/app/api/email/clicks/report/route.ts` — machine intake for the
@@ -249,10 +289,16 @@ nothing at all — it logs one line saying so.
 - `voni/src/lib/email/unlock-throttle.ts` — the attempt budget both password
   forms spend: per-IP first, then the global ceiling, 15-minute fixed window,
   fail-closed with a message the form can render.
-- `voni/src/lib/email/pool.ts` — target/source bags, `resolveTarget()` utm
-  stamping, and the `targets.json` guard.
-- `voni/src/lib/email/targets.json` — **the editable target list**, and the
-  approved-host list for redirect hops. Data, not code.
+- `voni/src/lib/email/pool.ts` — the provider bag, `resolveTarget()` utm
+  stamping, and the seed guard.
+- `voni/src/lib/email/targets.ts` — the live target list: seed-on-empty,
+  `activeTargetUrls()`, `allTargetUrls()`, and the add/pause/remove writes.
+- `voni/src/lib/email/target-url.ts` — the one rule for what a target may be,
+  plus the private-address helpers the redirect guard shares.
+- `voni/src/lib/email/targets.json` — the **seed** list, written once into an
+  empty table. Data, not code; editing it after the first read changes nothing.
+- `voni/src/components/targets-card.tsx` — the panel card that calls the three
+  target actions.
 - `voni/src/lib/email/volume.ts` — accepted intervals (1–60 min), probe ids,
   clicks/day and executions/month.
 - `voni/src/lib/email/check-script.ts` — the one builder for

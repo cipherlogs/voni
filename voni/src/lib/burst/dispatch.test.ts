@@ -232,3 +232,35 @@ test("a plain-text refusal reaches the operator, not just the status", async () 
   assert.equal(result.ok, false);
   assert.match(result.ok === false ? result.error : "", /administrative rules/);
 });
+
+test("the panel's live target list rides the dispatch, and empty stays empty", async () => {
+  const targets = ["https://example.com/a?creative_id=1", "https://example.org/b"];
+
+  const dispatched = stubFetch(204);
+  await dispatchBurst(plan(), {
+    fetcher: dispatched.fetcher,
+    readSecret: async () => TOKEN,
+    targets,
+  });
+  const body = JSON.parse(String(dispatched.calls[0]!.init.body)) as {
+    inputs: Record<string, string>;
+  };
+  assert.deepEqual(JSON.parse(body.inputs.targets), targets);
+
+  // No list means "keep the committed seed": an empty array would generate a
+  // script with no targets and spend a run clicking nothing.
+  const empty = stubFetch(204);
+  await dispatchBurst(plan(), {
+    fetcher: empty.fetcher,
+    readSecret: async () => TOKEN,
+    targets: [],
+  });
+  const emptyBody = JSON.parse(String(empty.calls[0]!.init.body)) as {
+    inputs: Record<string, string>;
+  };
+  assert.equal(emptyBody.inputs.targets, "");
+});
+
+test("the manual command still names the committed script", () => {
+  assert.match(burstCommand(plan()), /affiliate-click-check\.k6\.js$/);
+});

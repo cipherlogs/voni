@@ -5,42 +5,44 @@
  * Grafana check script generated from these bags, and the panel's one-off click.
  * This module used to live in `src/proxy.ts` as the source of a 307; `/email` is
  * a page now, so nothing here may assume a redirect. The browser never picks the
- * target: callers draw it from the bags below.
+ * target: it comes from the live list in `targets.ts`, and the source from the
+ * provider bag below.
  */
 
-/** Targets are edited here, never in this file: `src/lib/email/targets.json`. */
+/**
+ * The seed list, validated and exported for tests and the generator. The live
+ * list the check and the one-off click use is a database read:
+ * `src/lib/email/targets.ts`.
+ */
 import TARGETS_JSON from "./targets.json";
+import { targetUrlProblem } from "./target-url";
 
-/** Named in the guard's error so a bad edit points straight at the file. */
+/** Named in the guard's error so a bad seed edit points straight at the file. */
 export const EMAIL_TARGETS_FILE = "src/lib/email/targets.json";
 
 /**
- * What a click may fetch. Every entry is an absolute URL: the bag carries no
- * paths, so there is no origin to resolve against and no second source of truth
- * for where a target lives.
+ * What a click may fetch. Every entry is an absolute https URL: the bag carries
+ * no paths, so there is no origin to resolve against and no second source of
+ * truth for where a target lives.
  *
  * `https://cipherlogs.github.io/print/` keeps its trailing slash because GitHub
- * Pages 301s `/print` to `/print/`; the slashless form would arrive as a
+ * Pages 301s `/print` to `/print/`, the slashless form would arrive as a
  * followed redirect rather than the page that was asked for.
  *
- * A path-only, `http` or non-URL entry would otherwise be fetched as something
- * else (or silently fetch nothing), so the guard below throws by name and by
- * file at module load: a bad edit fails loudly.
+ * The rules are the panel's add-form rules (`targetUrlProblem` in
+ * `target-url.ts`) — a seed entry cannot be looser than something the operator
+ * can add from `/email`. A bad edit fails loudly at module load, by name and by
+ * file.
  */
 export function assertEmailTargets(
   entries: readonly string[],
 ): readonly string[] {
   for (const entry of entries) {
-    let url: URL | null = null;
-    try {
-      url = new URL(entry);
-    } catch {
-      url = null;
-    }
-    if (!url || url.protocol !== "https:" || !url.hostname) {
+    const problem = targetUrlProblem(entry);
+    if (problem !== null) {
       throw new Error(
         `Invalid email target ${JSON.stringify(entry)} in ${EMAIL_TARGETS_FILE}: ` +
-          "every entry must be an absolute https:// URL with a host.",
+          `every entry must be an absolute https:// URL with a public host (${problem})`,
       );
     }
   }
@@ -94,7 +96,6 @@ export function shuffleBag<T>(
   };
 }
 
-export const nextEmailTarget = shuffleBag(EMAIL_TARGETS);
 export const nextEmailProvider = shuffleBag(EMAIL_PROVIDERS);
 
 /**

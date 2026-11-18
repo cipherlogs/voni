@@ -25,8 +25,8 @@
  *            failed click is recorded instead of rejected.
  *
  * This generates REAL affiliate clicks: every iteration sends production
- * traffic to the targets in src/lib/email/targets.json. It is a live load
- * check, not a mock.
+ * traffic to the target list embedded below (the panel's live list, seeded from
+ * src/lib/email/targets.json). It is a live load check, not a mock.
  *
  * Matrix: 62 profiles across 8 families, mirrored inline from
  * src/lib/email/user-agents.ts (k6 cannot import TypeScript).
@@ -75,7 +75,7 @@ const EMAIL_SOURCE_PARAM = "utm_source";
 const EMAIL_MEDIUM = "email";
 const EMAIL_CAMPAIGN = "voni-email";
 
-/** src/lib/email/targets.json — production URLs. */
+/** The target list embedded at build/upload time — production URLs. */
 const TARGETS = [
   "https://cipherlogs.github.io/print/",
   "https://voni.cc/test",
