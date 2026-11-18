@@ -50,6 +50,9 @@ jobs:
       BURST_DURATION: ${{ inputs.duration }}
       K6_LOAD_ZONES: ${{ inputs.zones }}
       K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+      # The CLI needs the stack as well as the token outside `k6 cloud login`;
+      # without it the run fails with "stack ID not configured". Not a secret.
+      K6_CLOUD_STACK_ID: "1928253"
     steps:
       - uses: actions/checkout@v4
 
