@@ -22,12 +22,19 @@ export type BurstK6Options = {
   vus: number;
   durationSec: number;
   zones: { id: string; percent: number }[];
+  /**
+   * k6 Cloud's project for this stack. The CLI refuses a run without it once a
+   * stack is configured, and the default project of a stack is not discoverable
+   * from the token alone — `k6 cloud login --show` reports it.
+   */
+  projectId: number;
 };
 
 export const BURST_ENV_KEYS = [
   "BURST_VUS",
   "BURST_DURATION",
   "K6_LOAD_ZONES",
+  "BURST_PROJECT_ID",
 ] as const;
 
 /**
@@ -121,6 +128,7 @@ export function burstK6OptionsFromEnv(
     vus: parsePositiveInt("BURST_VUS", env.BURST_VUS),
     durationSec: parsePositiveInt("BURST_DURATION", env.BURST_DURATION),
     zones: parseZones(env.K6_LOAD_ZONES),
+    projectId: parsePositiveInt("BURST_PROJECT_ID", env.BURST_PROJECT_ID),
   };
 }
 
@@ -143,6 +151,7 @@ export function renderBurstOptions(options: BurstK6Options): string {
     `  duration: ${JSON.stringify(`${options.durationSec}s`)},`,
     "  ext: {",
     "    loadimpact: {",
+    `      projectID: ${options.projectId},`,
     `      distribution: ${distributionJson},`,
     "    },",
     "  },",

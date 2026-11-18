@@ -51,13 +51,14 @@ test("no burst env leaves the committed script alone", () => {
 test("a partial burst env is a broken invocation, not a default", () => {
   assert.throws(
     () => burstK6OptionsFromEnv({ BURST_VUS: "200" }),
-    /needs all of BURST_VUS, BURST_DURATION, K6_LOAD_ZONES/,
+    /needs all of BURST_VUS, BURST_DURATION, K6_LOAD_ZONES, BURST_PROJECT_ID/,
   );
 });
 
 test("the distribution is validated against the confirmed US zones", () => {
   const base = {
     BURST_VUS: "200",
+    BURST_PROJECT_ID: "8503693",
     BURST_DURATION: "120",
   };
 
@@ -94,6 +95,7 @@ test("the distribution is validated against the confirmed US zones", () => {
 test("a full env produces options.vus, options.duration and the distribution", () => {
   const options = burstK6OptionsFromEnv({
     BURST_VUS: "200",
+    BURST_PROJECT_ID: "8503693",
     BURST_DURATION: "120",
     K6_LOAD_ZONES: ZONES_JSON,
   });
@@ -101,6 +103,7 @@ test("a full env produces options.vus, options.duration and the distribution", (
   assert.deepEqual(options, {
     vus: 200,
     durationSec: 120,
+    projectId: 8503693,
     zones: [
       { id: "amazon:us:ashburn", percent: 50 },
       { id: "amazon:us:portland", percent: 50 },
@@ -121,6 +124,7 @@ test("a full env produces options.vus, options.duration and the distribution", (
 test("applying the transform keeps the click program parseable", () => {
   const options = burstK6OptionsFromEnv({
     BURST_VUS: "200",
+    BURST_PROJECT_ID: "8503693",
     BURST_DURATION: "120",
     K6_LOAD_ZONES: ZONES_JSON,
   });
@@ -143,6 +147,7 @@ test("an unrecognised options block fails loudly instead of writing a default ru
       applyBurstOptions("export default function x() {}", {
         vus: 1,
         durationSec: 30,
+        projectId: 8503693,
         zones: [{ id: "amazon:us:ashburn", percent: 100 }],
       }),
     /no recognisable `export const options` block/,

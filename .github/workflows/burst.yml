@@ -53,6 +53,8 @@ jobs:
       # The CLI needs the stack as well as the token outside `k6 cloud login`;
       # without it the run fails with "stack ID not configured". Not a secret.
       K6_CLOUD_STACK_ID: "1928253"
+      # Project for that stack; the CLI refuses a run without it.
+      BURST_PROJECT_ID: "8503693"
     steps:
       - uses: actions/checkout@v4
 
