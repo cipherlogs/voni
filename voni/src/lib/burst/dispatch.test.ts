@@ -202,3 +202,33 @@ test("an empty plan never reaches the API", async () => {
   assert.equal(result.ok, false);
   assert.equal(calls.length, 0);
 });
+
+test("the dispatch request carries a User-Agent", async () => {
+  // GitHub refuses UA-less requests with a 403 whose body looks like a
+  // permission error. That is a header bug wearing a credential's clothes.
+  let seen: Record<string, string> = {};
+  const fetcher = (async (_url: string, init?: RequestInit) => {
+    seen = Object.fromEntries(
+      Object.entries((init?.headers ?? {}) as Record<string, string>),
+    );
+    return new Response(null, { status: 204 });
+  }) as unknown as typeof fetch;
+
+  await dispatchBurst(plan(), { fetcher, readSecret: async () => "token" });
+  assert.equal(seen["user-agent"], "voni-burst");
+});
+
+test("a plain-text refusal reaches the operator, not just the status", async () => {
+  const fetcher = (async () =>
+    new Response("Request forbidden by administrative rules.", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    })) as unknown as typeof fetch;
+
+  const result = await dispatchBurst(plan(), {
+    fetcher,
+    readSecret: async () => "token",
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.ok === false ? result.error : "", /administrative rules/);
+});

@@ -65,18 +65,31 @@ function messageOf(error: unknown): string {
 
 /** GitHub's own explanation, when it sent one. Never the token. */
 async function githubMessage(response: Response): Promise<string> {
+  // GitHub is not consistent: permission errors are JSON, but its edge answers
+  // some refusals (a missing User-Agent, for one) with plain text. Reading only
+  // JSON is what hid "Request forbidden by administrative rules" behind the
+  // generic 403 sentence.
+  let text = "";
   try {
-    const body: unknown = await response.json();
+    text = await response.text();
+  } catch {
+    return "";
+  }
+
+  try {
+    const body: unknown = JSON.parse(text);
     if (body && typeof body === "object" && "message" in body) {
       const message = (body as { message?: unknown }).message;
       if (typeof message === "string" && message.trim() !== "") {
-        return `: ${message.slice(0, 200)}`;
+        return `: ${message.trim().slice(0, 200)}`;
       }
     }
   } catch {
-    // No JSON body, or none left to read: the status sentence stands alone.
+    // Not JSON: fall through to the plain text, if any.
   }
-  return "";
+
+  const plain = text.replace(/\s+/g, " ").trim();
+  return plain === "" ? "" : `: ${plain.slice(0, 200)}`;
 }
 
 /** The token must not survive into a UI string, a log line, or a job row. */
@@ -120,6 +133,11 @@ export async function dispatchBurst(
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
         "x-github-api-version": "2022-11-28",
+        // GitHub answers any request without a User-Agent with a 403 and a
+        // plain-text body ("Request forbidden by administrative rules"), which
+        // reads exactly like a permission refusal and cost a day of chasing a
+        // token that was correct all along. undici's default UA does not count.
+        "user-agent": "voni-burst",
       },
       body: JSON.stringify({
         ref: "main",
