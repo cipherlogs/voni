@@ -14,6 +14,11 @@
  *   probes   — `GET /probe`, singular. `/probes` is a 404.
  *   update   — `POST /check/{id}` with the *whole* check body, including `id`
  *              and `tenantId`. `PUT` and `PATCH` both 404.
+ *   labels   — `[{name, value}]`, an array. A map (the obvious guess from the
+ *              way labels read) is rejected: `http 400, "cannot unmarshal
+ *              object into Go struct field UpdateCheckRequest.labels of type
+ *              []synthetic_monitoring.Label"`. Every write path posts the whole
+ *              body back, so getting this wrong breaks *all* of them.
  *   script   — `settings.scripted.script` is base64, and must go back exactly
  *              as it came or the check stops running.
  *   create   — `POST /check` (not used here; kept for reference).
@@ -36,6 +41,9 @@ export type SyntheticResult<T> =
       status?: number;
     };
 
+/** One Grafana label, in the shape the API both reads and writes. */
+export type SyntheticLabel = { name: string; value: string };
+
 /** The check as the panel shows it, flattened from Grafana's wire shape. */
 export type SyntheticCheck = {
   id: number;
@@ -45,7 +53,7 @@ export type SyntheticCheck = {
   frequencyMs: number;
   timeoutMs: number;
   probeIds: number[];
-  labels: Record<string, string>;
+  labels: SyntheticLabel[];
   modified: number | null;
   /**
    * Clicks one iteration sends, read from the stored script. Grafana has no
@@ -91,7 +99,7 @@ export type SyntheticCheckBody = {
   frequency: number;
   timeout: number;
   probes: number[];
-  labels: Record<string, string>;
+  labels: SyntheticLabel[];
   settings: Record<string, unknown>;
   modified: number | null;
 } & Record<string, unknown>;
@@ -110,14 +118,28 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function asStringRecord(value: unknown): Record<string, string> {
-  const record = asRecord(value);
-  if (!record) return {};
-  const out: Record<string, string> = {};
-  for (const [key, entry] of Object.entries(record)) {
-    if (typeof entry === "string") out[key] = entry;
+/**
+ * Labels arrive and leave as `[{name, value}]`. They are never folded into a
+ * map: the update POST sends the body back as read, and Grafana answers a map
+ * with 400 before it looks at anything else.
+ *
+ * An absent key is an empty list (a check with no labels). A present value that
+ * is not a label array fails the read instead of becoming `[]`, because posting
+ * `[]` back would silently delete labels the panel never showed.
+ */
+function parseLabels(value: unknown): SyntheticLabel[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+
+  const labels: SyntheticLabel[] = [];
+  for (const entry of value) {
+    const label = asRecord(entry);
+    const name = label ? asString(label["name"]) : null;
+    const labelValue = label ? asString(label["value"]) : null;
+    if (name === null || labelValue === null) return null;
+    labels.push({ name, value: labelValue });
   }
-  return out;
+  return labels;
 }
 
 function isTimeout(cause: unknown): boolean {
@@ -195,6 +217,9 @@ function parseCheckBody(value: unknown): SyntheticCheckBody | null {
         .filter((probe): probe is number => probe !== null)
     : [];
 
+  const labels = parseLabels(body.labels);
+  if (labels === null) return null;
+
   return {
     ...body,
     id,
@@ -207,7 +232,7 @@ function parseCheckBody(value: unknown): SyntheticCheckBody | null {
     frequency: asNumber(body.frequency) ?? frequencyBounds.minMs,
     timeout: asNumber(body.timeout) ?? REQUEST_TIMEOUT_MS,
     probes,
-    labels: asStringRecord(body.labels),
+    labels,
     settings: asRecord(body.settings) ?? {},
     modified: asNumber(body.modified),
   };
@@ -242,7 +267,7 @@ function toSyntheticCheck(body: SyntheticCheckBody): SyntheticCheck {
     frequencyMs: body.frequency,
     timeoutMs: body.timeout,
     probeIds: [...body.probes],
-    labels: { ...body.labels },
+    labels: [...body.labels],
     modified: body.modified,
     clicksPerRun: script === null ? 1 : readClicksPerRun(decodeScript(script)),
   };

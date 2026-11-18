@@ -29,7 +29,12 @@ const CHECK_BODY: SyntheticCheckBody = {
   frequency: 120_000,
   timeout: 10_000,
   probes: [1, 2],
-  labels: { source: "email", env: "prod" },
+  // Grafana's real shape: an array, not a map. `POST /check/{id}` rejects a
+  // map with 400, so a fixture that models one hides a total write failure.
+  labels: [
+    { name: "source", value: "email" },
+    { name: "env", value: "prod" },
+  ],
   settings: { scripted: { script: "cmV0dXJuIHRydWU7" } },
   modified: 1_760_000_000,
   created: 1_700_000_000,
@@ -164,6 +169,66 @@ test("updateCheck: posts the whole body back and returns the re-read state", asy
       calls[0].init?.signal instanceof AbortSignal,
       "a 10s timeout is always attached",
     );
+  } finally {
+    restore();
+  }
+});
+
+test("updateCheck: labels go back as Grafana's array, never a map", async () => {
+  // The regression: Grafana answers `{"msg":"failed to read incoming request",
+  // "err":"json: cannot unmarshal object into Go struct field
+  // UpdateCheckRequest.labels of type []synthetic_monitoring.Label"}` to a map,
+  // which broke every /email write — targets, volume and pause alike.
+  const restore = withGrafanaEnv();
+  try {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let state: SyntheticCheckBody = { ...CHECK_BODY };
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      if (init?.method === "POST") {
+        const posted = JSON.parse(String(init.body)) as Record<string, unknown>;
+        assert.ok(Array.isArray(posted.labels), "a labels map is a 400 from Grafana");
+        state = posted as SyntheticCheckBody;
+        return jsonResponse(state);
+      }
+      return jsonResponse(state);
+    }) as typeof globalThis.fetch;
+
+    const result = await updateCheck(7, { enabled: false }, fetcher);
+    assert.ok(result.ok);
+    assert.deepEqual(result.data.labels, CHECK_BODY.labels);
+    assert.equal(calls[1].init?.method, "POST");
+  } finally {
+    restore();
+  }
+});
+
+test("getCheck: labels in any other shape fail the read instead of becoming an empty list", async () => {
+  const restore = withGrafanaEnv();
+  try {
+    const fetcher = (async () =>
+      jsonResponse({ ...CHECK_BODY, labels: { source: "email" } })) as typeof globalThis.fetch;
+
+    const result = await getCheck(7, fetcher);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.message, /unexpected check body/);
+    }
+  } finally {
+    restore();
+  }
+});
+
+test("getCheck: a check with no labels reads as an empty list", async () => {
+  const restore = withGrafanaEnv();
+  try {
+    const body: Record<string, unknown> = { ...CHECK_BODY };
+    delete body.labels;
+    const fetcher = (async () => jsonResponse(body)) as typeof globalThis.fetch;
+
+    const result = await getCheck(7, fetcher);
+    assert.ok(result.ok);
+    assert.deepEqual(result.data.labels, []);
   } finally {
     restore();
   }

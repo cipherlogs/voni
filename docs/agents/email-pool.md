@@ -311,6 +311,12 @@ nothing at all — it logs one line saying so.
   `saveVolume`.
 - `voni/src/lib/grafana/synthetic.ts` — Synthetic Monitoring client: read a
   check, list probes, upload a check's script, change enabled/frequency/probes.
+  Every write is read → merge → `POST /check/{id}` with the whole body back, so
+  what it reads must round-trip: `labels` is `[{name, value}]` on the wire, and
+  a map (the natural guess) is a `400` that rejects the entire request — which
+  reads to the operator as "Could not update targets" / "Could not complete" on
+  every panel action at once. The module header lists the rest of the quirks
+  (`/probe` singular, `POST` only, base64 script).
 - `voni/scripts/generate-affiliate-k6.mts` →
   `voni/scripts/affiliate-click-check.k6.js` — the generated check script
   (the writer; the template lives in `check-script.ts`).
