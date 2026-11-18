@@ -111,6 +111,11 @@ jobs:
             console.log("distribution ok:", process.env.K6_LOAD_ZONES);
           '
 
+      # The CLI takes its stack and default project from the login state, not
+      # from the script options, so the runner has to log in once.
+      - name: Authenticate k6 Cloud
+        run: k6 cloud login --token "$K6_CLOUD_TOKEN" --stack https://redtiger372.grafana.net
+
       # Same script the Grafana check runs, at the burst's VUs and window. An
       # unset K6_CLOUD_TOKEN fails here rather than queueing a run that cannot
       # start.
