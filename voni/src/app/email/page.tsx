@@ -11,6 +11,9 @@ import {
   type ProbeView,
 } from "@/components/affiliate-control-panel";
 import { EmailGateForm } from "@/components/email-gate-form";
+import { BurstCard } from "@/components/burst-card";
+import { runBurst } from "@/app/email/actions";
+import { US_ZONES } from "@/lib/burst/plan";
 import { GateFrame, GateSkeleton } from "@/components/email-gate-skeleton";
 import { CardListSkeleton, TableSkeleton } from "@/components/page-skeletons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -67,6 +70,7 @@ function toCheckView(check: SyntheticCheck): CheckView {
     enabled: check.enabled,
     frequencyMs: check.frequencyMs,
     probeIds: [...check.probeIds],
+    clicksPerRun: check.clicksPerRun,
     // The SM API reports `modified` as epoch seconds, not milliseconds.
     modified:
       check.modified === null
@@ -297,6 +301,11 @@ async function EmailControlData({
           byDevice: stats.byDevice,
         }}
         clicks={clicks.map(toClickRow)}
+      />
+      <BurstCard
+        locked={locked}
+        action={runBurst}
+        defaultZones={US_ZONES.map((zone) => zone.id)}
       />
     </div>
   );

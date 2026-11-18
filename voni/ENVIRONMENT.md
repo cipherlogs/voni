@@ -366,8 +366,8 @@ overview page. Check with `npx wrangler whoami`.
 ## Email clicks (`/email`)
 
 `voni.cc/email` is a password-gated control page over the Grafana synthetic
-check that sends the affiliate clicks; the click path, the three locks and the
-retired Cloudflare Worker pool are described in `docs/agents/email-pool.md`.
+check that sends the affiliate clicks; the click path and the three locks are
+described in `docs/agents/email-pool.md`.
 
 | Variable | Purpose |
 | --- | --- |
@@ -397,25 +397,6 @@ for redirect hops, so adding an entry also approves that host. A bad entry
 throws at module load and fails the test suite before any deploy. The k6 check
 script is generated from these sources (`npm run affiliate:check`), so a new
 target reaches Grafana on the next regeneration and `npm run affiliate:upload`.
-
-Retired, still deployed: `POOL_SECRET` and `POOL_WORKER_URLS` configure the
-`email-pool-0N` Workers. They are no longer in the click path and
-`POST /api/email-pool` has been removed; `/email` does not call them.
-
-| Variable | Where | Value |
-| --- | --- | --- |
-| `POOL_SECRET` | `.dev.vars` locally; `wrangler secret put` on each `email-pool-0N` **and** on `voni` | `dev-pool-secret` locally (matches `workers/email-pool/scripts/dev.mjs`) |
-| `POOL_WORKER_URLS` | `.dev.vars` locally | `http://127.0.0.1:8787,http://127.0.0.1:8788,http://127.0.0.1:8789` |
-
-Local pool values go in **`.dev.vars`, not `.env.local`.** `secret()` checks
-`process.env` first, and OpenNext bakes `.env.local` into the Worker at build
-time — so a `POOL_SECRET` there would ride into a local `npm run deploy` and
-disagree with the Worker secret. `.dev.vars` reaches the route through the
-Cloudflare context and is never baked.
-
-The production pool secret has one reference copy in `.env.local` as
-`POOL_SECRET_PROD` (gitignored). The Worker secret remains the source of truth;
-that copy is only so the value is recoverable.
 
 ## Background jobs (Cloudflare Queues + R2 staging + cron)
 

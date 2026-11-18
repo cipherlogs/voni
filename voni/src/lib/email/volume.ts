@@ -4,22 +4,41 @@
  *
  * Grafana prices and rate-limits by check *runs*, not by probe: one run at a
  * selected frequency fires on every selected probe. So the number an operator
- * actually cares about — clicks/day — is `runs per day × probes`, and the
- * panel previews it from the same function the server validates with. Keeping
- * that arithmetic here (rather than in the client) means the preview and the
- * saved value cannot disagree.
+ * actually cares about — clicks/day — is `runs per day × probes × clicks per
+ * run`, and the panel previews it from the same function the server validates
+ * with. Keeping that arithmetic here (rather than in the client) means the
+ * preview and the saved value cannot disagree.
  *
  * Pure and dependency-free: imported by both the server action and the client
  * panel, so it must never reach for `node:*`, `next/*` or the database.
  */
 
-/** The intervals an operator may pick, in minutes. */
-export const FREQUENCY_MINUTES = [5, 10, 15, 30, 60] as const;
+/**
+ * The intervals an operator may pick, in minutes. One and two minutes are the
+ * floor Grafana allows for a scripted check (`frequencyBounds.minMs` in
+ * `@/lib/grafana/synthetic` is 60_000); 60 is the cap the panel offers.
+ */
+export const FREQUENCY_MINUTES = [1, 2, 5, 10, 15, 30, 60] as const;
 
 export type FrequencyMinutes = (typeof FREQUENCY_MINUTES)[number];
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
+const DAYS_PER_MONTH = 30;
+
+/** Clicks one run may add per probe. Mirrors `CLICKS_PER_RUN_MAX`. */
+export const MAX_CLICKS_PER_RUN = 10;
+
+/**
+ * Where a check stops reading as testing and starts reading as traffic. The
+ * panel warns above it; nothing refuses a save, because the decision is the
+ * operator's once they have seen the number.
+ */
+export const HIGH_VOLUME_CLICKS_PER_DAY = 10_000;
+
+/** Grafana's free-tier ceiling for check executions in a month. */
+export const FREE_TIER_EXECUTIONS_PER_MONTH = 100_000;
+
 
 /**
  * The four US probes this stack's check runs from.
@@ -42,8 +61,12 @@ const FREQUENCY_MS: readonly number[] = FREQUENCY_MINUTES.map(
 );
 
 /**
- * Clicks per day for one check: every selected probe runs once per interval,
- * so a 5-minute check on four probes is 288 × 4 = 1152 clicks/day.
+ * Clicks per day for one check: every selected probe runs once per interval and
+ * each run sends `clicksPerRun` clicks, so a 5-minute check on four probes at
+ * three clicks each is 288 × 4 × 3 = 3456 clicks/day.
+ *
+ * `clicksPerRun` defaults to 1, which is what a script generated without the
+ * loop sends: absent means one click, not zero.
  *
  * Invalid input returns 0 rather than `NaN` or `Infinity`: the panel renders
  * the result directly, and a nonsense number in the preview is worse than a
@@ -52,19 +75,47 @@ const FREQUENCY_MS: readonly number[] = FREQUENCY_MINUTES.map(
 export function clicksPerDay(
   frequencyMs: number,
   probeCount: number,
+  clicksPerRun = 1,
 ): number {
   if (!Number.isFinite(frequencyMs) || frequencyMs <= 0) return 0;
   if (!Number.isFinite(probeCount) || probeCount <= 0) return 0;
-  return Math.floor((DAY_MS / frequencyMs) * Math.trunc(probeCount));
+  if (!Number.isFinite(clicksPerRun) || clicksPerRun <= 0) return 0;
+  return Math.floor(
+    (DAY_MS / frequencyMs) * Math.trunc(probeCount) * Math.trunc(clicksPerRun),
+  );
+}
+
+/**
+ * Check executions a month at this interval: one run per interval per probe,
+ * which is the number Grafana's free tier counts (100 000/month). Clicks are
+ * not the billed unit; runs are, so this deliberately ignores `clicksPerRun`.
+ */
+export function executionsPerMonth(
+  frequencyMs: number,
+  probeCount: number,
+): number {
+  if (!Number.isFinite(frequencyMs) || frequencyMs <= 0) return 0;
+  if (!Number.isFinite(probeCount) || probeCount <= 0) return 0;
+  return Math.floor(
+    (DAYS_PER_MONTH * DAY_MS * Math.trunc(probeCount)) / frequencyMs,
+  );
 }
 
 export type VolumeInput = {
   frequencyMs: number;
   probeIds: number[];
+  /** Clicks one run sends per probe; absent means one. */
+  clicksPerRun?: number;
+};
+
+export type VolumeValue = {
+  frequencyMs: number;
+  probeIds: number[];
+  clicksPerRun: number;
 };
 
 export type VolumeValidation =
-  | { ok: true; value: VolumeInput }
+  | { ok: true; value: VolumeValue }
   | { ok: false; reason: string; code: VolumeReason };
 
 /**
@@ -76,37 +127,53 @@ export type VolumeReason =
   | "no_probes"
   | "too_many_probes"
   | "invalid_probe_id"
-  | "duplicate_probe";
+  | "duplicate_probe"
+  | "invalid_clicks";
 
 /**
  * The most probes one save may request.
  *
  * Grafana runs every selected probe on every run, so this is the multiplier on
  * both the bill and the traffic the target sees: ten probes at the fastest
- * interval is already 2,880 clicks/day. The cap exists so a crafted form body
- * cannot make one save order an unbounded amount of traffic — the panel offers
- * four probes, and the ceiling leaves room for a wider stack without turning
- * this action into a load generator.
+ * interval is already 14,400 clicks/day before clicks-per-run. The cap exists
+ * so a crafted form body cannot make one save order an unbounded amount of
+ * traffic — the panel offers four probes, and the ceiling leaves room for a
+ * wider stack without turning this action into a load generator.
  */
 export const MAX_PROBES_PER_SAVE = 10;
 
 /**
  * The one gate both the form and the action go through. It rejects anything
- * Grafana would either refuse or reinterpret: an interval outside the five the
- * panel offers, an empty probe set, more probes than one save may request, or a
- * duplicate/non-integer probe id.
+ * Grafana would either refuse or reinterpret: an interval outside the seven the
+ * panel offers, an empty probe set, more probes than one save may request, a
+ * duplicate/non-integer probe id, or a clicks-per-run outside 1..10.
  *
  * Success returns a copy of the arrays so a caller cannot mutate the value it
  * validated after the fact.
  */
 export function validateVolume(input: VolumeInput): VolumeValidation {
-  const { frequencyMs, probeIds } = input;
+  const { frequencyMs, probeIds, clicksPerRun = 1 } = input;
 
   if (!FREQUENCY_MS.includes(frequencyMs)) {
     return {
       ok: false,
       code: "unsupported_frequency",
-      reason: "Frequency must be 5, 10, 15, 30 or 60 minutes.",
+      reason: "Frequency must be 1, 2, 5, 10, 15, 30 or 60 minutes.",
+    };
+  }
+
+  // Before any network work, and before the array walk: a click count outside
+  // the range is a script the builder would refuse to emit, so the save must
+  // not get far enough to try.
+  if (
+    !Number.isInteger(clicksPerRun) ||
+    clicksPerRun < 1 ||
+    clicksPerRun > MAX_CLICKS_PER_RUN
+  ) {
+    return {
+      ok: false,
+      code: "invalid_clicks",
+      reason: `Clicks per run must be a whole number from 1 to ${MAX_CLICKS_PER_RUN}.`,
     };
   }
 
@@ -147,5 +214,8 @@ export function validateVolume(input: VolumeInput): VolumeValidation {
     seen.add(id);
   }
 
-  return { ok: true, value: { frequencyMs, probeIds: [...probeIds] } };
+  return {
+    ok: true,
+    value: { frequencyMs, probeIds: [...probeIds], clicksPerRun },
+  };
 }

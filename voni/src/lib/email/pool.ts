@@ -1,14 +1,11 @@
 /**
  * The `/email` page's target and source selection.
  *
- * The contract both halves implement is `docs/agents/email-pool.md`. This module
- * used to live in `src/proxy.ts` as the source of a 307; `/email` is a page now,
- * so nothing here may assume a redirect. The browser never picks the target:
- * callers draw it from the bags below.
- *
- * The server-side fan-out to the pool Workers used to live here as well. Its
- * route (`POST /api/email-pool`) lost its last caller with the old panel and was
- * retired, so the pool is exercised by the Grafana check instead.
+ * The contract both producers implement is `docs/agents/email-pool.md`: the
+ * Grafana check script generated from these bags, and the panel's one-off click.
+ * This module used to live in `src/proxy.ts` as the source of a 307; `/email` is
+ * a page now, so nothing here may assume a redirect. The browser never picks the
+ * target: callers draw it from the bags below.
  */
 
 /** Targets are edited here, never in this file: `src/lib/email/targets.json`. */
@@ -18,9 +15,9 @@ import TARGETS_JSON from "./targets.json";
 export const EMAIL_TARGETS_FILE = "src/lib/email/targets.json";
 
 /**
- * What a Worker may be asked to fetch. Every entry is an absolute URL: the bag
- * carries no paths, so there is no origin to resolve against and no second
- * source of truth for where a target lives.
+ * What a click may fetch. Every entry is an absolute URL: the bag carries no
+ * paths, so there is no origin to resolve against and no second source of truth
+ * for where a target lives.
  *
  * `https://cipherlogs.github.io/print/` keeps its trailing slash because GitHub
  * Pages 301s `/print` to `/print/`; the slashless form would arrive as a

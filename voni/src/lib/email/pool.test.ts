@@ -1,9 +1,7 @@
 /**
  * The `/email` target and source draw (`docs/agents/email-pool.md`): the bag
- * invariants, the shuffle, and the attribution `resolveTarget` stamps on.
- *
- * The pool fan-out and the route that exposed it were retired; what remains is
- * the one-off click the panel runs in-process, which draws from these bags.
+ * invariants, the shuffle, and the attribution `resolveTarget` stamps on. Both
+ * the Grafana check script and the panel's one-off click draw from these bags.
  */
 import assert from "node:assert/strict";
 import test from "node:test";

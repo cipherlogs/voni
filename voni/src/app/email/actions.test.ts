@@ -492,8 +492,69 @@ test("saveVolume clamps through validateVolume before writing", () => {
   assert.match(save, /frequencyMs: frequencyMinutes \* 60_000/);
   assert.match(save, /clicksPerDay\(/);
   assert.ok(
-    save.indexOf("if (!volume.ok)") < save.indexOf("updateCheck("),
+    save.indexOf("if (!volume.ok)") < save.indexOf("uploadCheckScript("),
     "an invalid volume never reaches Grafana",
+  );
+});
+
+test("saveVolume validates the clicks the form sent", () => {
+  const save = fnBody("saveVolume");
+  assert.match(save, /formData\.get\("clicks"\)/, "the form's clicks are read");
+  assert.match(
+    save,
+    /validateVolume\(\{[\s\S]*?clicksPerRun,/,
+    "the click count goes through the same gate as the interval and probes",
+  );
+  assert.ok(
+    save.indexOf("clicksPerRun,") < save.indexOf("uploadCheckScript("),
+    "a refused click count never builds or uploads a script",
+  );
+  assert.match(
+    save,
+    /clicksPerDay\(\s*volume\.value\.frequencyMs,\s*volume\.value\.probeIds\.length,\s*volume\.value\.clicksPerRun,?\s*\)/,
+    "the success message quotes the three-factor estimate the preview showed",
+  );
+});
+
+test("saveVolume refuses when the report secret is unconfigured", () => {
+  const save = fnBody("saveVolume");
+  assert.match(save, /await secret\("EMAIL_CLICK_REPORT_SECRET"\)/);
+  assert.match(save, /if \(!reportSecret\)/);
+  assert.match(
+    save,
+    /EMAIL_CLICK_REPORT_SECRET is not configured on this deployment/,
+    "the refusal names what to set",
+  );
+  assert.doesNotMatch(
+    source,
+    /REPORT_SECRET_PLACEHOLDER/,
+    "the action must never fall back to the placeholder: that writes a script that clicks silently",
+  );
+  assert.ok(
+    save.indexOf("if (!reportSecret)") < save.indexOf("buildCheckScript("),
+    "an unset secret is refused before the script is built",
+  );
+});
+
+test("saveVolume uploads the rebuilt script before it moves the interval", () => {
+  const save = fnBody("saveVolume");
+  assert.match(
+    save,
+    /buildCheckScript\(\{ clicksPerRun: volume\.value\.clicksPerRun, reportSecret \}\)/,
+    "the script comes from the one builder `npm run affiliate:check` uses",
+  );
+  assert.match(
+    save,
+    /uploadCheckScript\(\s*id,\s*Buffer\.from\(script, "utf8"\)\.toString\("base64"\),\s*AFFILIATE_CHECK_JOB,?\s*\)/,
+    "the stored script is base64 of the built text, aimed at the affiliate job",
+  );
+  const upload = save.indexOf("uploadCheckScript(");
+  const update = save.indexOf("updateCheck(");
+  assert.ok(upload >= 0 && update > upload, "script first, then frequency");
+  assert.match(
+    save,
+    /if \(!uploaded\.ok\)[\s\S]*?describeSyntheticFailure\(uploaded\)/,
+    "an upload failure is reported, not swallowed",
   );
 });
 

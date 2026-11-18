@@ -1,4 +1,4 @@
-# `/email`, the affiliate click check, and the retired edge-worker pool
+# `/email` and the affiliate click check
 
 `voni.cc/email` is a password-gated control page. It is not a redirect, and it
 no longer fetches anything when it loads. The affiliate clicks the campaign
@@ -89,12 +89,13 @@ Three params are stamped on every target:
 | `utm_campaign` | `voni-email` |
 
 The app stamps them with `resolveTarget()`; the k6 script stamps the same three
-with `withUtm()`. The k6 script is **generated** from the app's own modules —
-profile matrix, targets, providers, referers — by
-`npm run affiliate:check`, so the two producers cannot drift. Never edit
+with `withUtm()`. The k6 script is **generated** from the app's own modules — profile matrix,
+targets, providers, referers — by `src/lib/email/check-script.ts`, which both
+`npm run affiliate:check` and the panel's save call. Never edit
 `scripts/affiliate-click-check.k6.js`; edit its sources and regenerate. The
-generator is deterministic: the same sources produce byte-identical output, so
-a diff after regenerating means a source file changed.
+builder is deterministic: the same sources produce byte-identical output, so a
+diff after regenerating means a source file changed (`check-script.test.ts`
+asserts the committed file is exactly a fresh one-click build).
 
 `targets.json` now has a second job: it is the approved-host list for redirect
 hops in the app's one-off click. Adding a target is still a one-file edit, but
@@ -102,8 +103,11 @@ it also approves that host as a redirect destination.
 
 A consequence worth knowing: because the bag has no local origin, running
 either producer fetches the production URLs, not your dev server. The check is
-live traffic; one run fires once on every selected probe, so clicks/day is
-`runs per day × probes` (`src/lib/email/volume.ts` computes it for the panel).
+live traffic; one run fires once on every selected probe and sends
+clicks-per-run clicks there, so clicks/day is
+`runs per day × probes × clicks per run` (`src/lib/email/volume.ts` computes it
+for the panel). The panel's interval floor is one minute and its clicks-per-run
+ceiling is ten; both are enforced by `validateVolume` and by the builder.
 
 ## Locks
 
@@ -153,7 +157,14 @@ Getting the secret into the script is a build step, not an edit:
 2. `npm run affiliate:upload` reads `.env.local`, replaces that placeholder with
    `EMAIL_CLICK_REPORT_SECRET` **in memory**, base64s the result, posts the
    whole check body back, then re-reads the check and compares the script hash
-   and every other setting before reporting success. It refuses a script that
+   and every other setting before reporting success. The panel's save does the
+   same thing from the app: it rebuilds the script at the clicks-per-run in the
+   form, uploads it through `uploadCheckScript` (which re-reads and confirms the
+   script hash, the job and the frequency), and only then sets the interval and
+   probes. With `EMAIL_CLICK_REPORT_SECRET` unset it refuses and names the
+   variable — it never falls back to the placeholder, because that would upload
+   a script that clicks silently and reports nothing.
+   The upload command refuses a script that
    has no placeholder — that refusal is what keeps an already-injected script
    from being committed or re-uploaded blindly — and it refuses four other
    things before writing: a secret outside the URL-safe alphabet (a quote or a
@@ -199,14 +210,12 @@ nothing at all — it logs one line saying so.
 - The check runs from Grafana's network, not voni's. k6 follows redirects to any
   host and reports the final URL it observed; that row is a measurement of the
   target, not a request voni made.
-- The app runtime has no platform-level SSRF defence. The Cloudflare Worker this
-  path replaced could rely on the platform refusing private, loopback and
-  link-local destinations; Next on Workers has no such control, so
-  `simulateOneClick` follows redirects itself: `redirect: "manual"`, at most 10
-  hops, each `Location` resolved against the URL that sent it, and a hop is
-  accepted only when its host is one already in `targets.json`. Non-`http(s)`
-  schemes and IP literals in private/loopback/link-local ranges are refused as
-  well, as defence in depth.
+- The app runtime has no platform-level SSRF defence, so `simulateOneClick`
+  follows redirects itself: `redirect: "manual"`, at most 10 hops, each
+  `Location` resolved against the URL that sent it, and a hop is accepted only
+  when its host is one already in `targets.json`. Non-`http(s)` schemes and IP
+  literals in private/loopback/link-local ranges are refused as well, as
+  defence in depth.
 - A refused hop ends the visit as a failure: `status` is the last response
   received, `finalUrl` is the last URL accepted, and the message says the chain
   left the approved hosts. The refused URL is never returned or stored — it is
@@ -216,163 +225,7 @@ nothing at all — it logs one line saying so.
 - The app's whole redirect chain shares one 8 s budget, and every response body
   is cancelled unread, so no page is buffered in memory.
 
-## Retired path: the Cloudflare edge-worker pool
-
-The Workers in `workers/email-pool/` are still deployed and still answer the
-contract below, but they are **no longer in the click path**. `/email` does not
-call them, `POST /api/email-pool` has been removed, and nothing on the page fans
-out to a Worker. The sections stay because they record how the pool behaves and
-what its region probe measured; do not read any of it as the current contract.
-
-### Worker contract (retired)
-
-Worker endpoint, one per pool member:
-
-```
-POST {WORKER_URL}/click
-  x-pool-secret: <POOL_SECRET>
-  { "url": "https://voni.cc/test?utm_source=gmail.com", "visitId": "abc" }
-
-200 { "worker": "email-pool-01", "colo": "IAD", "region": "enam", "ok": true,
-      "status": 200, "ms": 187, "target": "<url>",
-      "finalUrl": "<url the chain ended on>", "redirected": false,
-      "reason": null }
-401 { "ok": false, "reason": "unauthorized" }
-400 { "ok": false, "reason": "bad_target", "detail": "..." }
-502 { "ok": false, "reason": "fetch_failed", "detail": "..." }
-
-GET {WORKER_URL}/health
-200 { "worker": "email-pool-01", "colo": "FRA", "redirects": "follow",
-      "targets": "any absolute http(s) URL" }
-```
-
-The fetch ran inside a Durable Object pinned by `region`, so `region` was the
-placement hint we asked for and `colo` is the object's own colo when the
-runtime reports one — `null` is normal, never a stand-in for the caller's colo.
-
-`ok` was the verdict on the **final** status, so 2xx and 3xx passed. A chain
-that ended on a 404 was `ok: false` with `reason: "http_error"`, and
-`finalUrl`/`status` still described where it ended. The Worker answered HTTP
-**200** for that observation on purpose, so the caller still learned the status
-instead of deriving the verdict from the transport.
-
-Worker → target request:
-
-```
-GET <url>  (redirect: "follow")
-  user-agent:       POOL_USER_AGENT (Chrome desktop default)
-  referer:          https://voni.cc/email
-  accept:           text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
-  accept-language:  en-US,en;q=0.9
-  x-pool-worker:    email-pool-01
-```
-
-The body was cancelled as soon as the final response arrived, never buffered:
-the Worker reported status, timing, colo and final URL, not page content.
-
-The old voni route shaped that fan-out as:
-
-```
-POST /api/email-pool        (no body trusted from the browser)
-200 { "ok": true, "visitId": "...", "target": "...", "source": "gmail.com",
-      "workers": [ <worker 200 shape> | { "worker": "...", "ok": false,
-                   "reason": "timeout" | "fetch_failed" | "unauthorized" } ] }
-503 { "ok": false, "reason": "not_configured", "message": "..." }
-```
-
-### Why the Workers had no host allowlist (retired)
-
-By operator decision the Worker accepted any absolute `http(s)` URL and
-followed redirect chains to any host, so it could observe where an affiliate
-link actually lands. The accepted cost was that anyone holding `POOL_SECRET`,
-or anyone who could edit `targets.json`, could make a Worker fetch any public
-URL. What bounded the blast radius was the platform: Cloudflare refuses
-private, loopback and link-local addresses at the edge. The app runtime has no
-equivalent, which is why the live path carries the host allowlist described
-under "Safety rules" instead of inheriting this decision.
-
-### Region: where the pool actually ran (retired)
-
-`colo` in a report is the data center that **received the request**, not one
-the deploy picked. Workers run in the colo nearest the requester, and voni
-called every pool instance from its own colo, so all N instances answered from
-the same place — three deployments bought three URLs and three independent
-fetches, never three regions. Checking `/health` on each instance was the fast
-way to see it.
-
-What the platform does and does not let you choose
-([placement][placement], [egress][egress], [fetch][fetch]):
-
-| Want | Available |
-| --- | --- |
-| Pin a Worker to a named colo | **No.** Placement is proximity-based: Smart Placement (all plans, optimises toward a backend) or Placement Hints (`placement.region`/`host`, best effort, still "nearest colo"). |
-| Guaranteed in-region processing | Regional Services / Data Localization Suite, **Enterprise**, configured per hostname. |
-| Stable egress IP | Dedicated CDN Egress IPs (Smart Shield Advanced), **Enterprise**. Default egress is Cloudflare's shared pool. |
-| Force IPv4 vs IPv6 | **No.** The destination's A/AAAA records decide, and a subrequest must be a URL, not an IP literal. |
-
-#### The `locationHint` probe
-
-`GET /probe-region?hint=enam` on any pool Worker (secret-gated, same
-`x-pool-secret` as `/click`) asks a Durable Object created with that
-`locationHint` to fetch two endpoints: `cloudflare.com/cdn-cgi/trace` (which
-colo handled the request) and `ipinfo.io/json` (the egress IP and its
-geography). It answers "would a pool member in this region see a different IP
-than Madrid does?" — the only in-Cloudflare lever that can plausibly move the
-vantage point.
-
-Read it with the CLI, which probes every URL in `POOL_WORKER_URLS`:
-
-```bash
-npm run probe:region            # in workers/email-pool, needs POOL_SECRET
-```
-
-`locationHint` is a **hint, best effort, decided at first `get()`** — objects
-never relocate, and `sam`, `afr`, `me` currently spawn nothing (they land in a
-neighbouring region). The target also sees a Cloudflare datacenter IP either
-way, which is the distortion that matters most for affiliate pages with bot
-filtering.
-
-#### What the probe measured
-
-Run on 2026-11-17 against the three production instances, all with `hint=enam`,
-each invoked from Madrid:
-
-| instance | invoking colo | object colo | egress | verdict |
-| --- | --- | --- | --- | --- |
-| `email-pool-01` | MAD | IAD | 104.23.209.78 · Ashburn, Virginia, US · AS13335 | US |
-| `email-pool-02` | MAD | ATL | 104.22.1.46 · Atlanta, Georgia, US · AS13335 | US |
-| `email-pool-03` | MAD | EWR | 104.23.187.4 · Newark, New Jersey, US · AS13335 | US |
-
-Three things this settles: the hint does move execution out of the caller's
-colo; the egress follows the object; and it is a **hint**, not a pin — one hint
-produced three different colos. It also shows the limit: the egress is still a
-Cloudflare address (`AS13335`), so geography moved and IP reputation did not.
-
-#### Which region each instance used
-
-`/click` ran its fetch inside an object created with the instance's hint, so
-the region was deployment config, not code:
-
-```
-EMAIL_POOL_REGION_HINTS=enam,wnam,weur   # default; cycled across instances
-```
-
-Instance *i* got `hints[i % hints.length]`. Changing the mapping was an env
-change plus a redeploy; `deploy.mjs` logs what each instance received. An
-invalid hint failed the deploy by name rather than silently falling back.
-
-One throughput note: a Durable Object is single-threaded, and every instance
-reused one object per hint, so concurrent clicks to the same instance queued
-behind each other. That was fine for a QA draw; it was never a load-testing
-architecture — which is part of why the click path moved to Grafana.
-
-[placement]: https://developers.cloudflare.com/workers/configuration/placement/
-[egress]: https://developers.cloudflare.com/smart-shield/configuration/dedicated-egress-ips/
-[fetch]: https://developers.cloudflare.com/workers/runtime-apis/fetch/
-
 ## Layout
-
-Live:
 
 - `voni/src/app/email/page.tsx` — page gate, panel shell, and the four reads
   (check, probes, 24 h stats, recent clicks). Nothing on load sends a click.
@@ -400,24 +253,18 @@ Live:
   stamping, and the `targets.json` guard.
 - `voni/src/lib/email/targets.json` — **the editable target list**, and the
   approved-host list for redirect hops. Data, not code.
-- `voni/src/lib/email/volume.ts` — accepted intervals, probe ids, clicks/day.
+- `voni/src/lib/email/volume.ts` — accepted intervals (1–60 min), probe ids,
+  clicks/day and executions/month.
+- `voni/src/lib/email/check-script.ts` — the one builder for
+  `scripts/affiliate-click-check.k6.js`; imported by the generator and by
+  `saveVolume`.
 - `voni/src/lib/grafana/synthetic.ts` — Synthetic Monitoring client: read a
-  check, list probes, change enabled/frequency/probes.
+  check, list probes, upload a check's script, change enabled/frequency/probes.
 - `voni/scripts/generate-affiliate-k6.mts` →
-  `voni/scripts/affiliate-click-check.k6.js` — the generated check script.
+  `voni/scripts/affiliate-click-check.k6.js` — the generated check script
+  (the writer; the template lives in `check-script.ts`).
 - `voni/scripts/upload-affiliate-check.mts` — `npm run affiliate:upload`:
   injects `EMAIL_CLICK_REPORT_SECRET` into the script in memory, posts it to
   the check, reads it back and verifies the hash and every untouched field.
   Helpers in `voni/scripts/lib/affiliate-check.ts`; tested by
   `voni/scripts/upload-affiliate-check.test.ts`.
-
-Retired but still deployed:
-
-- `workers/email-pool/` — standalone Worker project (own `package.json`,
-  `wrangler.jsonc`, tests). One source file deployed N times by
-  `scripts/deploy.mjs`; `scripts/dev.mjs` runs N `wrangler dev` ports.
-- `.github/workflows/deploy-pool.yml` — deploys all N pool Workers on a push
-  that touches `workers/email-pool/**`. Secrets stay on the Workers; the
-  workflow only carries the Cloudflare token.
-- Env: `POOL_SECRET`, `POOL_WORKER_URLS` (comma-separated). Locally they belong
-  in `voni/.dev.vars`, never `.env.local` (that file is baked into local builds).

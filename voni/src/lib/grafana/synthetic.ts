@@ -1,7 +1,7 @@
 /**
  * Grafana Synthetic Monitoring client for the `/email` control panel: read a
- * check, list the probes a check can run from, and change a check's enabled
- * state, frequency or probe set.
+ * check, list the probes a check can run from, replace a check's stored script,
+ * and change a check's enabled state, frequency or probe set.
  *
  * The panel only ever nudges an existing check, so this module deliberately
  * has no create/delete path. Every call reports a typed failure instead of
@@ -20,6 +20,7 @@
  */
 
 import { secret } from "@/lib/env";
+import { readClicksPerRun } from "@/lib/email/check-script";
 
 type Fetch = typeof globalThis.fetch;
 
@@ -46,6 +47,11 @@ export type SyntheticCheck = {
   probeIds: number[];
   labels: Record<string, string>;
   modified: number | null;
+  /**
+   * Clicks one iteration sends, read from the stored script. Grafana has no
+   * field for it, and the panel's preview has to start from the real value.
+   */
+  clicksPerRun: number;
 };
 
 export type Probe = {
@@ -223,6 +229,11 @@ function parseProbe(value: unknown): Probe | null {
 }
 
 function toSyntheticCheck(body: SyntheticCheckBody): SyntheticCheck {
+  const scripted = asRecord(body.settings["scripted"]);
+  const script =
+    scripted && typeof scripted["script"] === "string"
+      ? scripted["script"]
+      : null;
   return {
     id: body.id,
     job: body.job,
@@ -233,6 +244,7 @@ function toSyntheticCheck(body: SyntheticCheckBody): SyntheticCheck {
     probeIds: [...body.probes],
     labels: { ...body.labels },
     modified: body.modified,
+    clicksPerRun: script === null ? 1 : readClicksPerRun(decodeScript(script)),
   };
 }
 
@@ -392,6 +404,119 @@ export async function listProbes(
     probes.push(probe);
   }
   return { ok: true, data: probes };
+}
+
+/**
+ * The affiliate click check's job name. The script upload refuses to write to a
+ * check whose job is not this, because a misconfigured `EMAIL_CLICK_CHECK_ID`
+ * would otherwise put the secret-bearing script in someone else's check.
+ */
+export const AFFILIATE_CHECK_JOB = "voni-affiliate-click-us";
+
+function decodeScript(scriptBase64: string): string {
+  return Buffer.from(scriptBase64, "base64").toString("utf8");
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Replace the check's stored script, then prove Grafana kept it.
+ *
+ * The stored script is base64 of the k6 source and must go back exactly as it
+ * came or the check stops running, so this is `POST /check/{id}` with the whole
+ * body — same quirk as `updateCheck`, and the same reason the body is read
+ * first rather than assembled from a patch.
+ *
+ * The read-back is the point: a 200 from the write only says Grafana accepted
+ * the request. The function confirms three things before it reports success —
+ * the script hash, the job (so a wrong id cannot silently aim the secret at
+ * another check), and the frequency (a script POST must not move the interval
+ * the panel is about to set separately). A failed confirmation is reported as
+ * `http_error`, because "written but not what we sent" is a lost write, not a
+ * transport failure.
+ */
+export async function uploadCheckScript(
+  id: number,
+  scriptBase64: string,
+  expectedJob: string,
+  fetcher: Fetch = fetch,
+): Promise<SyntheticResult<SyntheticCheck>> {
+  const current = await fetchCheckBody(id, fetcher);
+  if (!current.ok) return current;
+
+  if (current.data.job !== expectedJob) {
+    return unexpectedBody(
+      `Grafana check ${id} is job ${JSON.stringify(current.data.job)}, not ${expectedJob}; refusing to write the script.`,
+    );
+  }
+  if (current.data.tenantId === null) {
+    return unexpectedBody(
+      "Grafana Synthetic Monitoring did not report the check's tenant id, so its script cannot be updated.",
+    );
+  }
+
+  const scripted = asRecord(current.data.settings["scripted"]);
+  if (!scripted || typeof scripted["script"] !== "string") {
+    return unexpectedBody(
+      `Grafana check ${id} is not a scripted check; refusing to rewrite it.`,
+    );
+  }
+
+  const posted = await requestJson(
+    `/check/${encodeURIComponent(String(id))}`,
+    {
+      method: "POST",
+      body: {
+        ...current.data,
+        settings: {
+          ...current.data.settings,
+          scripted: { ...scripted, script: scriptBase64 },
+        },
+      },
+    },
+    fetcher,
+  );
+  if (!posted.ok) return posted;
+
+  const confirmed = await fetchCheckBody(id, fetcher);
+  if (!confirmed.ok) return confirmed;
+
+  const confirmedScripted = asRecord(confirmed.data.settings["scripted"]);
+  if (!confirmedScripted || typeof confirmedScripted["script"] !== "string") {
+    return unexpectedBody(
+      "Grafana Synthetic Monitoring returned the check without a stored script.",
+    );
+  }
+
+  const [storedHash, expectedHash] = await Promise.all([
+    sha256Hex(decodeScript(confirmedScripted["script"])),
+    sha256Hex(decodeScript(scriptBase64)),
+  ]);
+  if (storedHash !== expectedHash) {
+    return unexpectedBody(
+      "Grafana accepted the script but stores different bytes; the check's script was not updated.",
+    );
+  }
+  if (confirmed.data.job !== expectedJob) {
+    return unexpectedBody(
+      "Grafana accepted the script but the check's job changed; re-read the check before using it.",
+    );
+  }
+  if (confirmed.data.frequency !== current.data.frequency) {
+    return unexpectedBody(
+      "Grafana accepted the script but the check's frequency changed; re-read the check before saving an interval.",
+    );
+  }
+
+  return { ok: true, data: toSyntheticCheck(confirmed.data) };
 }
 
 /**

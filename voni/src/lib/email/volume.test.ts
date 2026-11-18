@@ -6,17 +6,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  clicksPerDay,
-  FREQUENCY_MINUTES,
+  FREE_TIER_EXECUTIONS_PER_MONTH,
+  HIGH_VOLUME_CLICKS_PER_DAY,
+  MAX_CLICKS_PER_RUN,
   MAX_PROBES_PER_SAVE,
   US_PROBES,
+  clicksPerDay,
+  executionsPerMonth,
+  FREQUENCY_MINUTES,
   validateVolume,
 } from "./volume";
 
 const MINUTE = 60_000;
 
-test("clicks/day: 5, 15 and 60 minutes at 1 and 4 probes", () => {
+test("clicks/day: 1, 5, 15 and 60 minutes at 1 and 4 probes", () => {
   const cases: Array<[minutes: number, probes: number, expected: number]> = [
+    [1, 1, 1_440],
+    [1, 4, 5_760],
+    [2, 1, 720],
+    [2, 4, 2_880],
     [5, 1, 288],
     [5, 4, 1_152],
     [15, 1, 96],
@@ -34,18 +42,54 @@ test("clicks/day: 5, 15 and 60 minutes at 1 and 4 probes", () => {
   }
 });
 
+test("clicks/day multiplies the clicks one run sends", () => {
+  // The 1-minute case is the one that reaches the panel's warnings: four
+  // probes at ten clicks each is 57,600 clicks/day.
+  const cases: Array<[minutes: number, probes: number, clicks: number, expected: number]> = [
+    [1, 1, 10, 14_400],
+    [1, 4, 1, 5_760],
+    [1, 4, 10, 57_600],
+    [5, 4, 3, 3_456],
+    [60, 4, 2, 192],
+  ];
+
+  for (const [minutes, probes, clicks, expected] of cases) {
+    assert.equal(
+      clicksPerDay(minutes * MINUTE, probes, clicks),
+      expected,
+      `${minutes} min × ${probes} probes × ${clicks} clicks`,
+    );
+  }
+
+  // Absent clicks means one click, not zero: a script without the loop sends one.
+  assert.equal(clicksPerDay(5 * MINUTE, 4), 1_152);
+});
+
 test("clicks/day: nonsense input is zero, never NaN or Infinity", () => {
-  for (const [frequencyMs, probes] of [
-    [0, 4],
-    [-1, 4],
-    [Number.NaN, 4],
-    [Number.POSITIVE_INFINITY, 4],
-    [5 * MINUTE, 0],
-    [5 * MINUTE, Number.NaN],
+  for (const [frequencyMs, probes, clicks] of [
+    [0, 4, 1],
+    [-1, 4, 1],
+    [Number.NaN, 4, 1],
+    [Number.POSITIVE_INFINITY, 4, 1],
+    [5 * MINUTE, 0, 1],
+    [5 * MINUTE, Number.NaN, 1],
+    [5 * MINUTE, 4, 0],
+    [5 * MINUTE, 4, Number.NaN],
   ] as const) {
-    assert.equal(clicksPerDay(frequencyMs, probes), 0);
+    assert.equal(clicksPerDay(frequencyMs, probes, clicks), 0);
   }
 });
+
+test("executions/month ignores clicks and counts runs per probe", () => {
+  // Grafana bills runs, not clicks: 1-minute on four probes is 172,800/month,
+  // over the 100,000 free tier; 5-minute on four probes is 34,560.
+  assert.equal(executionsPerMonth(1 * MINUTE, 4), 172_800);
+  assert.equal(executionsPerMonth(5 * MINUTE, 4), 34_560);
+  assert.equal(executionsPerMonth(5 * MINUTE, 0), 0);
+  assert.equal(FREE_TIER_EXECUTIONS_PER_MONTH, 100_000);
+  assert.equal(HIGH_VOLUME_CLICKS_PER_DAY, 10_000);
+});
+
 
 test("US_PROBES names the four known probe ids", () => {
   assert.deepEqual(
@@ -73,8 +117,6 @@ test("validateVolume accepts every offered interval and a unique probe set", () 
 
 test("validateVolume rejects an interval the panel does not offer", () => {
   for (const frequencyMs of [
-    1 * MINUTE,
-    2 * MINUTE,
     45 * MINUTE,
     120 * MINUTE,
     0,
@@ -82,7 +124,45 @@ test("validateVolume rejects an interval the panel does not offer", () => {
   ]) {
     const result = validateVolume({ frequencyMs, probeIds: [7] });
     assert.equal(result.ok, false, `${frequencyMs} ms must be rejected`);
-    if (!result.ok) assert.match(result.reason, /5, 10, 15, 30 or 60/);
+    if (!result.ok) assert.match(result.reason, /1, 2, 5, 10, 15, 30 or 60/);
+  }
+});
+
+test("validateVolume accepts the one- and two-minute floor", () => {
+  for (const minutes of [1, 2]) {
+    const result = validateVolume({
+      frequencyMs: minutes * MINUTE,
+      probeIds: [7, 13],
+    });
+    assert.equal(result.ok, true, `${minutes} min is offered`);
+    if (result.ok) {
+      assert.equal(result.value.clicksPerRun, 1, "absent clicks means one");
+    }
+  }
+});
+
+test("validateVolume bounds clicks per run at 1..10", () => {
+  assert.equal(MAX_CLICKS_PER_RUN, 10);
+
+  const accepted = validateVolume({
+    frequencyMs: 5 * MINUTE,
+    probeIds: [7],
+    clicksPerRun: 10,
+  });
+  assert.equal(accepted.ok, true);
+  if (accepted.ok) assert.equal(accepted.value.clicksPerRun, 10);
+
+  for (const bad of [0, -1, 11, 2.5, Number.NaN]) {
+    const result = validateVolume({
+      frequencyMs: 5 * MINUTE,
+      probeIds: [7],
+      clicksPerRun: bad,
+    });
+    assert.equal(result.ok, false, `${String(bad)} must be rejected`);
+    if (!result.ok) {
+      assert.equal(result.code, "invalid_clicks");
+      assert.match(result.reason, /whole number from 1 to 10/);
+    }
   }
 });
 

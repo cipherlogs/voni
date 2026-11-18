@@ -20,13 +20,15 @@ import { readFileSync } from "node:fs";
 
 import { parseClickReport } from "../src/lib/email/click-report";
 import {
-  AffiliateCheckUploadError,
-  changedCheckFields,
-  injectReportSecret,
   REPORT_BODY_SOURCE,
   REPORT_FINAL_URL_SOURCE,
   REPORT_SECRET_PATTERN,
   REPORT_SECRET_PLACEHOLDER,
+} from "../src/lib/email/check-script";
+import {
+  AffiliateCheckUploadError,
+  changedCheckFields,
+  injectReportSecret,
 } from "./lib/affiliate-check";
 
 const GENERATED = new URL("./affiliate-click-check.k6.js", import.meta.url);

@@ -1,0 +1,93 @@
+name: Burst
+
+# One-off affiliate click burst, dispatched by the `/email` panel.
+#
+# The panel only starts this workflow (src/lib/burst/dispatch.ts). The run
+# needs the k6 Cloud token and the generated click script, so both stay here on
+# the runner rather than in a Worker request.
+#
+# Same script as the Grafana synthetic check: `npm run affiliate:check` builds
+# it from src/lib/email/check-script.ts, and BURST_VUS / BURST_DURATION /
+# K6_LOAD_ZONES make the generator emit the burst's VUs, duration and US
+# load-zone distribution. With those unset the committed script has no
+# distribution at all, which is what the SM check must keep.
+
+on:
+  workflow_dispatch:
+    inputs:
+      vus:
+        description: "Virtual users (1-500)"
+        required: true
+        type: string
+      duration:
+        description: "Run duration in seconds (30-3600)"
+        required: true
+        type: string
+      zones:
+        description: 'JSON load-zone distribution, e.g. [{"id":"amazon:us:ashburn","percent":50},{"id":"amazon:us:portland","percent":50}]'
+        required: true
+        type: string
+
+# One burst at a time: a second run would spend the same monthly VU-hours while
+# the first is still measuring, and k6 Cloud bills both.
+concurrency:
+  group: burst
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  burst:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: voni
+        shell: bash
+    env:
+      BURST_VUS: ${{ inputs.vus }}
+      BURST_DURATION: ${{ inputs.duration }}
+      K6_LOAD_ZONES: ${{ inputs.zones }}
+      K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voni/package-lock.json
+
+      - run: npm ci
+
+      - name: k6 CLI
+        uses: grafana/setup-k6-action@v1
+
+      # Writes scripts/affiliate-click-check.k6.js. The env above is what adds
+      # options.vus, options.duration and options.ext.loadimpact.distribution.
+      - name: Generate click script with burst options
+        run: npm run affiliate:check
+
+      # A burst that quietly ran from the default zone would still report green,
+      # so prove the distribution landed and names every requested zone. This is
+      # also the only place the percentages are visible in the log.
+      - name: Verify the distribution reached the script
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const script = fs.readFileSync("scripts/affiliate-click-check.k6.js", "utf8");
+            if (!script.includes("loadimpact") || !script.includes("distribution")) {
+              throw new Error("burst options missing: the generator did not emit options.ext.loadimpact.distribution");
+            }
+            for (const zone of JSON.parse(process.env.K6_LOAD_ZONES)) {
+              if (!script.includes(zone.id)) throw new Error("burst options missing zone: " + zone.id);
+            }
+            console.log("distribution ok:", process.env.K6_LOAD_ZONES);
+          '
+
+      # Same script the Grafana check runs, at the burst's VUs and window. An
+      # unset K6_CLOUD_TOKEN fails here rather than queueing a run that cannot
+      # start.
+      - name: Run the burst
+        run: k6 cloud run -u "$BURST_VUS" -d "${BURST_DURATION}s" scripts/affiliate-click-check.k6.js

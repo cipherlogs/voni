@@ -5,6 +5,9 @@ import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { clientIp } from "@/lib/demo/rate-limit";
 import { secret } from "@/lib/env";
+import { describePlan, planBurst } from "@/lib/burst/plan";
+import { dispatchBurst } from "@/lib/burst/dispatch";
+import type { BurstState } from "@/lib/burst/state";
 import { recordAffiliateClick } from "@/lib/email/clicks";
 import { simulateOneClick } from "@/lib/email/click-simulator";
 import {
@@ -30,10 +33,13 @@ import {
   type UnlockScope,
 } from "@/lib/email/unlock-throttle";
 import { clicksPerDay, validateVolume } from "@/lib/email/volume";
+import { buildCheckScript } from "@/lib/email/check-script";
 import {
+  AFFILIATE_CHECK_JOB,
   getCheck,
   resolveCheckId,
   updateCheck,
+  uploadCheckScript,
   type SyntheticResult,
 } from "@/lib/grafana/synthetic";
 
@@ -108,6 +114,10 @@ const LOCKED: ControlState = {
 
 function locked(): ControlState {
   return { ...LOCKED };
+}
+
+function burstLocked(): BurstState {
+  return { ok: false, error: LOCKED.error };
 }
 
 /**
@@ -292,13 +302,55 @@ export async function saveVolume(
 
   const frequencyMinutes = Number(formData.get("frequency"));
   const probeIds = formData.getAll("probe").map((value) => Number(value));
+  const clicksPerRun = Number(formData.get("clicks"));
   const volume = validateVolume({
     frequencyMs: frequencyMinutes * 60_000,
     probeIds,
+    clicksPerRun,
   });
   if (!volume.ok) return { ok: false, error: volume.reason };
 
+  // The script carries the real secret, so an unset one is a refusal, not a
+  // reason to write the placeholder: an uploaded placeholder script clicks
+  // silently and reports nothing, which looks exactly like a healthy check.
+  const reportSecret = await secret("EMAIL_CLICK_REPORT_SECRET");
+  if (!reportSecret) {
+    return {
+      ok: false,
+      error:
+        "EMAIL_CLICK_REPORT_SECRET is not configured on this deployment, so the " +
+        "check's script could not report its clicks. Set it and save again.",
+    };
+  }
+
   const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+
+  // The script is rebuilt here from the same builder `npm run affiliate:check`
+  // uses, so the uploaded copy and the committed one cannot drift. A bad count
+  // is already refused by validateVolume above; the builder's own bound is the
+  // backstop that keeps a hand-crafted request from writing a second source.
+  let script: string;
+  try {
+    script = buildCheckScript({ clicksPerRun: volume.value.clicksPerRun, reportSecret });
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "The check script could not be built.",
+    };
+  }
+
+  // Script first, then the frequency: the stored script is what describes how
+  // many clicks one run sends, so a failure between the two leaves a check that
+  // still runs and reports, just at the old interval.
+  const uploaded = await uploadCheckScript(
+    id,
+    Buffer.from(script, "utf8").toString("base64"),
+    AFFILIATE_CHECK_JOB,
+  );
+  if (!uploaded.ok) {
+    return { ok: false, error: describeSyntheticFailure(uploaded) };
+  }
+
   const updated = await updateCheck(id, {
     frequencyMs: volume.value.frequencyMs,
     probeIds: volume.value.probeIds,
@@ -311,10 +363,13 @@ export async function saveVolume(
   const perDay = clicksPerDay(
     volume.value.frequencyMs,
     volume.value.probeIds.length,
+    volume.value.clicksPerRun,
   );
+  const { probeIds: probes, clicksPerRun: clicks, frequencyMs } = volume.value;
+  const plural = probes.length === 1 ? "" : "s";
   return {
     ok: true,
-    message: `Saved. This check now runs ${perDay} clicks/day across ${volume.value.probeIds.length} probe${volume.value.probeIds.length === 1 ? "" : "s"}.`,
+    message: `Saved. This check now runs ${perDay} clicks/day: ${probes.length} probe${plural} × every ${frequencyMs / 60_000} min × ${clicks} click${clicks === 1 ? "" : "s"} per run.`,
   };
 }
 
@@ -429,5 +484,52 @@ export async function runOneOffClick(
     message:
       `One click ran from voni's server, not Grafana: HTTP ${status ?? "—"} in ${ms} ms. ` +
       "The row is in the table below.",
+  };
+}
+
+/**
+ * Send a burst: the one action here that spends money elsewhere.
+ *
+ * The planner owns every bound — clicks, duration, zones, VUs, VU-hours — so a
+ * hand-crafted request cannot ask for more than `planBurst` allows. Dispatch is
+ * two shapes of success on purpose: with a token the workflow owns the run,
+ * without one the operator gets the exact `k6 cloud run` line instead of an
+ * error, because a missing token is a configuration choice, not a failure.
+ */
+export async function runBurst(
+  _previous: BurstState,
+  formData: FormData,
+): Promise<BurstState> {
+  void _previous;
+  if (!(await requireControl())) return burstLocked();
+
+  const clicks = Number(formData.get("clicks"));
+  const durationMinutes = Number(formData.get("duration"));
+  const zoneIds = formData.getAll("zone").map((value) => String(value));
+
+  const planned = planBurst({
+    clicks,
+    durationSec: Math.round(durationMinutes * 60),
+    zoneIds,
+  });
+  if (!planned.ok) return { ok: false, error: planned.reason };
+
+  const result = await dispatchBurst(planned.plan);
+  if (!result.ok) return { ok: false, error: result.error };
+
+  if (result.mode === "manual") {
+    return {
+      ok: true,
+      message:
+        "No dispatch token is configured, so nothing was queued — run this line yourself:",
+      fallback: result.fallback,
+    };
+  }
+
+  return {
+    ok: true,
+    message:
+      `${describePlan(planned.plan)}. The workflow is queued; its progress is in the run list.`,
+    runUrl: result.runUrl,
   };
 }

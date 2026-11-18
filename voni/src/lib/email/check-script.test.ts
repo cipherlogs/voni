@@ -1,0 +1,165 @@
+/**
+ * The check script builder: the one place that turns the app's modules into the
+ * k6 script Grafana runs.
+ *
+ * What is proved here, without k6 or Grafana:
+ *
+ *   - the committed script is exactly what a fresh build produces, so a diff in
+ *     `scripts/affiliate-click-check.k6.js` always means a source module moved;
+ *   - the click loop appears only above one click, so the committed one-click
+ *     script carries no dead scaffolding;
+ *   - the bounds are the builder's own refusal, not just the form's;
+ *   - the run rules the check depends on (`onlyIPv4`, `report_failed`, a
+ *     redirect-free 2 s report) are present;
+ *   - the secret is a parameter: `null` emits the placeholder, a string emits
+ *     the value, and the emitted text parses as JavaScript either way.
+ */
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+import {
+  CLICKS_PER_RUN_MAX,
+  REPORT_SECRET_PLACEHOLDER,
+  buildCheckScript,
+  readClicksPerRun,
+} from "./check-script";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const COMMITTED = readFileSync(
+  join(here, "../../../scripts/affiliate-click-check.k6.js"),
+  "utf8",
+);
+
+const SECRET = "0123456789abcdef0123456789abcdef";
+
+/** Parse the emitted text as a program body: a broken literal throws here. */
+function assertParses(source: string): void {
+  const body = source
+    .replace(/^import .*$/gm, "")
+    .replace(/^export default /gm, "")
+    .replace(/^export /gm, "");
+  assert.doesNotThrow(() => new Function(body));
+}
+
+const oneClick = buildCheckScript({ clicksPerRun: 1, reportSecret: null });
+
+const RUN_HEADER = "export default function affiliateClickCheck() {\n";
+const LOOP_HEADER = "  for (let i = 0; i < CLICKS_PER_RUN; i++) {\n";
+
+/** The run function's body, as emitted (the file always ends with `}\n`). */
+function runBody(script: string): string {
+  const start = script.indexOf(RUN_HEADER);
+  assert.ok(start >= 0, "the run function is emitted");
+  return script.slice(start + RUN_HEADER.length, script.length - "}\n".length);
+}
+
+function outdent(body: string): string {
+  return body
+    .split("\n")
+    .map((line) => (line.startsWith("  ") ? line.slice(2) : line))
+    .join("\n");
+}
+
+test("the committed script is a fresh one-click generation, byte for byte", () => {
+  assert.equal(oneClick, COMMITTED);
+  // Determinism: the same input is the same output, which is what makes a diff
+  // after `npm run affiliate:check` mean a source module changed.
+  assert.equal(
+    buildCheckScript({ clicksPerRun: 1, reportSecret: null }),
+    oneClick,
+  );
+});
+
+test("one click emits no loop and no unused count", () => {
+  assert.doesNotMatch(oneClick, /CLICKS_PER_RUN/);
+  assert.doesNotMatch(oneClick, /for \(let i = 0; i < CLICKS_PER_RUN/);
+});
+
+test("more than one click wraps the click in the counted loop", () => {
+  const three = buildCheckScript({ clicksPerRun: 3, reportSecret: null });
+  assert.match(three, /const CLICKS_PER_RUN = 3;/);
+
+  const body = runBody(three);
+  assert.ok(
+    body.startsWith(LOOP_HEADER),
+    "the loop is the run function's only top-level statement",
+  );
+  const inner = body.slice(LOOP_HEADER.length, body.length - "  }\n".length);
+
+  // One draw per iteration, not one draw reused: the whole one-click body is
+  // inside the loop, indented, and nothing about it changed on the way in.
+  assert.equal(outdent(inner), runBody(oneClick));
+  assert.equal((three.match(/const profile = pickProfile\(\);/g) ?? []).length, 1);
+});
+
+test("the builder refuses a click count outside 1..10, including fractions", () => {
+  for (const bad of [0, -1, 11, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => buildCheckScript({ clicksPerRun: bad, reportSecret: null }),
+      /clicksPerRun must be an integer from 1 to 10/,
+      `${String(bad)} must be refused`,
+    );
+  }
+  assert.equal(CLICKS_PER_RUN_MAX, 10);
+  assert.doesNotThrow(() =>
+    buildCheckScript({ clicksPerRun: 10, reportSecret: null }),
+  );
+});
+
+test("the run rules a green check depends on are in the emitted options", () => {
+  assert.match(oneClick, /dns: \{ policy: "onlyIPv4" \}/);
+  assert.match(oneClick, /thresholds: \{ report_failed: \["count==0"\] \}/);
+  // The report must not follow a redirect and must give up quickly.
+  assert.match(oneClick, /redirects: 0/);
+  assert.match(oneClick, /timeout: "2s"/);
+  assert.match(oneClick, /"x-voni-click-secret": REPORT_SECRET/);
+});
+
+test("the secret is a parameter, never a constant in the file", () => {
+  assert.equal(oneClick.includes(`"${REPORT_SECRET_PLACEHOLDER}"`), true);
+  assert.equal(oneClick.includes(SECRET), false);
+
+  const injected = buildCheckScript({ clicksPerRun: 2, reportSecret: SECRET });
+  assert.equal(
+    injected.includes(`const REPORT_SECRET = ${JSON.stringify(SECRET)};`),
+    true,
+  );
+  assert.equal(injected.split(SECRET).length - 1, 1);
+  // The enable check still compares against the placeholder: that comparison is
+  // what turns reporting on once the real value is in the declaration.
+  assert.equal(
+    injected.includes(
+      `REPORT_SECRET !== ${JSON.stringify(REPORT_SECRET_PLACEHOLDER)}`,
+    ),
+    true,
+  );
+});
+
+test("a secret that cannot survive the string literal is refused", () => {
+  for (const bad of ['abc"defg', "abc\\defg", "short", ""]) {
+    assert.throws(
+      () => buildCheckScript({ clicksPerRun: 1, reportSecret: bad }),
+      /reportSecret must be at least 8 characters/,
+      `${JSON.stringify(bad)} must be refused`,
+    );
+  }
+});
+
+test("both variants parse as JavaScript", () => {
+  assertParses(oneClick);
+  assertParses(buildCheckScript({ clicksPerRun: 10, reportSecret: SECRET }));
+});
+
+test("readClicksPerRun reads the stored constant back, one when absent", () => {
+  assert.equal(readClicksPerRun(oneClick), 1);
+  assert.equal(
+    readClicksPerRun(buildCheckScript({ clicksPerRun: 4, reportSecret: null })),
+    4,
+  );
+  // A script from before the loop existed is one click, and an out-of-range
+  // constant is not allowed to become the panel's starting value.
+  assert.equal(readClicksPerRun("export default function x() {}"), 1);
+  assert.equal(readClicksPerRun("const CLICKS_PER_RUN = 99;"), 1);
+});

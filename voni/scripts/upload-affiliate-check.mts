@@ -34,6 +34,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  AFFILIATE_CHECK_JOB,
   DEFAULT_CHECK_ID,
   normalizeBaseUrl,
 } from "../src/lib/grafana/synthetic";
@@ -56,7 +57,7 @@ const SCRIPT_LABEL = "scripts/affiliate-click-check.k6.js";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /** The one check this script may write to. */
-const CHECK_JOB = "voni-affiliate-click-us";
+const CHECK_JOB = AFFILIATE_CHECK_JOB;
 const CHECK_TARGET = "https://voni.cc/email";
 
 type Json = Record<string, unknown>;

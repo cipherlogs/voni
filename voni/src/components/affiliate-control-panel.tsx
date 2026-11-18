@@ -49,7 +49,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { clicksPerDay, FREQUENCY_MINUTES } from "@/lib/email/volume";
+import {
+  FREQUENCY_MINUTES,
+  FREE_TIER_EXECUTIONS_PER_MONTH,
+  HIGH_VOLUME_CLICKS_PER_DAY,
+  MAX_CLICKS_PER_RUN,
+  clicksPerDay,
+  executionsPerMonth,
+} from "@/lib/email/volume";
 import { toast } from "@/components/ui/toast";
 
 /**
@@ -72,6 +79,8 @@ export type CheckView = {
   enabled: boolean;
   frequencyMs: number;
   probeIds: number[];
+  /** Clicks one run sends, read from the stored script by the page. */
+  clicksPerRun: number;
   modified: string | null;
 };
 
@@ -153,6 +162,195 @@ function frequencyLabel(frequencyMs: number): string {
   return Number.isInteger(minutes) ? `${minutes} min` : `${frequencyMs} ms`;
 }
 
+/** Deterministic grouping, so the server and client render the same digits. */
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
+function formatCount(value: number): string {
+  return COUNT_FORMAT.format(value);
+}
+
+const CHART_WIDTH = 240;
+/** One row per interval: label, bar, value. Only `text-xs` fits seven rows. */
+const CHART_ROW_HEIGHT = 20;
+const CHART_TOP = 18;
+const CHART_HEIGHT = CHART_TOP + CHART_ROW_HEIGHT * FREQUENCY_MINUTES.length;
+const CHART_LABEL_X = 0;
+const CHART_BAR_X = 34;
+const CHART_BAR_MAX_WIDTH = 148;
+const CHART_VALUE_X = CHART_WIDTH;
+const CHART_BAR_HEIGHT = 9;
+
+/**
+ * Clicks/day for every interval the panel offers, at the probe and
+ * clicks-per-run values currently in the form.
+ *
+ * Hand-drawn SVG, no chart dependency: one row per interval — label, bar,
+ * value — so seven options and five-digit numbers both fit a 320 px screen
+ * without shrinking type below the design scale. The selected row is in the
+ * foreground colour, the rest recede, and every value is written out so the
+ * bar length is never the only way to read a number. Colours come from the
+ * theme tokens, so it follows the palette in both schemes.
+ */
+function VolumeChart({
+  probes,
+  clicks,
+  frequency,
+}: {
+  probes: number;
+  clicks: number;
+  frequency: number;
+}) {
+  const bars = FREQUENCY_MINUTES.map((minutes) => ({
+    minutes,
+    clicks: clicksPerDay(minutes * MINUTE_MS, probes, clicks),
+  }));
+  const peak = Math.max(1, ...bars.map((bar) => bar.clicks));
+
+  return (
+    <figure className="grid max-w-sm gap-1">
+      <svg
+        viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+        className="h-auto w-full"
+        role="img"
+        aria-label={`Clicks per day by interval: ${bars
+          .map((bar) => `every ${bar.minutes} min ${bar.clicks}`)
+          .join(", ")}`}
+        data-testid="email-control-volume-chart"
+      >
+        <text
+          x={CHART_VALUE_X}
+          y={9}
+          textAnchor="end"
+          className="fill-muted-foreground font-mono text-2xs"
+        >
+          clicks/day
+        </text>
+        <line
+          x1={CHART_BAR_X}
+          x2={CHART_BAR_X}
+          y1={CHART_TOP - 4}
+          y2={CHART_HEIGHT - 4}
+          stroke="var(--border)"
+          strokeWidth={1}
+        />
+        {bars.map((bar, index) => {
+          const width = Math.max(
+            2,
+            Math.round((bar.clicks / peak) * CHART_BAR_MAX_WIDTH),
+          );
+          const top = CHART_TOP + index * CHART_ROW_HEIGHT;
+          const middle = top + CHART_ROW_HEIGHT / 2;
+          const selected = bar.minutes === frequency;
+          return (
+            <g key={bar.minutes}>
+              <text
+                x={CHART_LABEL_X}
+                y={middle}
+                dominantBaseline="middle"
+                className={
+                  selected
+                    ? "fill-foreground font-mono text-2xs font-medium"
+                    : "fill-muted-foreground font-mono text-2xs"
+                }
+              >
+                {bar.minutes}m
+              </text>
+              <rect
+                x={CHART_BAR_X}
+                y={middle - CHART_BAR_HEIGHT / 2}
+                width={width}
+                height={CHART_BAR_HEIGHT}
+                rx={2}
+                fill={selected ? "var(--primary)" : "var(--muted-foreground)"}
+                fillOpacity={selected ? 1 : 0.3}
+              />
+              <text
+                x={CHART_VALUE_X}
+                y={middle}
+                textAnchor="end"
+                dominantBaseline="middle"
+                className={
+                  selected
+                    ? "fill-foreground font-mono text-2xs font-medium"
+                    : "fill-muted-foreground font-mono text-2xs"
+                }
+              >
+                {formatCount(bar.clicks)}
+              </text>
+            </g>
+          );
+        })}
+        <line
+          x1={CHART_BAR_X}
+          x2={CHART_BAR_X}
+          y1={CHART_TOP - 4}
+          y2={CHART_HEIGHT - 4}
+          stroke="var(--border)"
+          strokeWidth={1}
+        />
+      </svg>
+      <figcaption className="text-muted-foreground text-xs">
+        Clicks/day by interval at this probe and click count; the selected
+        interval is highlighted.
+      </figcaption>
+    </figure>
+  );
+}
+
+/**
+ * The live estimate and the two lines that say when it stops being a test.
+ * Pure arithmetic from the same module the action validates with, so the
+ * preview cannot promise a number the save would refuse to create.
+ */
+function VolumePreview({
+  probes,
+  clicks,
+  frequency,
+}: {
+  probes: number;
+  clicks: number;
+  frequency: number;
+}) {
+  const perDay = clicksPerDay(frequency * MINUTE_MS, probes, clicks);
+  const perMonth = executionsPerMonth(frequency * MINUTE_MS, probes);
+  const probeWord = probes === 1 ? "probe" : "probes";
+  const clickWord = clicks === 1 ? "click" : "clicks";
+
+  return (
+    <div className="grid gap-3 rounded-lg border px-3 py-3">
+      <p
+        className="font-mono text-sm leading-relaxed break-words"
+        data-testid="email-control-preview"
+      >
+        {probes} {probeWord} × every {frequency} min × {clicks} {clickWord} ={" "}
+        <span className="font-medium">{formatCount(perDay)}</span> clicks/day
+      </p>
+
+      <VolumeChart probes={probes} clicks={clicks} frequency={frequency} />
+
+      {perDay > HIGH_VOLUME_CLICKS_PER_DAY ? (
+        <p
+          className="text-destructive text-sm"
+          data-testid="email-control-high-volume"
+        >
+          {formatCount(perDay)} clicks/day is volume where affiliate networks
+          stop treating this as testing.
+        </p>
+      ) : null}
+      {perMonth > FREE_TIER_EXECUTIONS_PER_MONTH ? (
+        <p
+          className="text-destructive text-sm"
+          data-testid="email-control-free-tier"
+        >
+          About {formatCount(perMonth)} check executions/month at this interval
+          — over Grafana&apos;s {formatCount(FREE_TIER_EXECUTIONS_PER_MONTH)}{" "}
+          free-tier ceiling.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 /** Deterministic, timezone-free display: identical on the server and client. */
 function formatWhen(iso: string | null): string {
   if (!iso) return "—";
@@ -222,7 +420,13 @@ function StatusCard({
             </StatusField>
             <StatusField label="probes">{check.probeIds.length}</StatusField>
             <StatusField label="clicks/day">
-              {clicksPerDay(check.frequencyMs, check.probeIds.length)}
+              {formatCount(
+                clicksPerDay(
+                  check.frequencyMs,
+                  check.probeIds.length,
+                  check.clicksPerRun,
+                ),
+              )}
             </StatusField>
             <StatusField label="check id">{check.id}</StatusField>
             <StatusField label="last modified">
@@ -367,6 +571,11 @@ function ControlsForm({
   const [selected, setSelected] = useState<number[]>(() => [
     ...(check?.probeIds ?? []),
   ]);
+  // Held as text so an empty or half-typed field stays editable; the derived
+  // number is what the preview and the save gate use.
+  const [clicksText, setClicksText] = useState<string>(() =>
+    String(check?.clicksPerRun ?? 1),
+  );
 
   const [saveState, saveAction, saving] = useActionState(saveVolume, INITIAL);
   const [toggleState, toggleAction, toggling] = useActionState(
@@ -396,7 +605,13 @@ function ControlsForm({
     return [...known, ...missing];
   }, [probes, check]);
 
-  const preview = clicksPerDay(frequency * MINUTE_MS, selected.length);
+  const clicks = Number(clicksText);
+  const clicksValid =
+    Number.isInteger(clicks) && clicks >= 1 && clicks <= MAX_CLICKS_PER_RUN;
+  // The preview reads a refused value as zero rather than as `NaN`: the field
+  // itself says what is wrong, and a preview must never print nonsense.
+  const previewClicks = clicksValid ? clicks : 0;
+  const previewProbes = selected.length;
   const disabled = !check || saving;
 
   async function handleLock() {
@@ -418,8 +633,8 @@ function ControlsForm({
           <AlertCircle />
           <AlertTitle>Editing is unavailable</AlertTitle>
           <AlertDescription>
-            The Grafana check could not be read, so interval and probe changes
-            cannot be saved right now.
+            The Grafana check could not be read, so interval, clicks and probe
+            changes cannot be saved right now.
           </AlertDescription>
         </Alert>
       ) : null}
@@ -443,7 +658,7 @@ function ControlsForm({
                 <SelectGroup>
                   {FREQUENCY_MINUTES.map((minutes) => (
                     <SelectItem key={minutes} value={String(minutes)}>
-                      Every {minutes} minutes
+                      Every {minutes} minute{minutes === 1 ? "" : "s"}
                     </SelectItem>
                   ))}
                 </SelectGroup>
@@ -454,19 +669,42 @@ function ControlsForm({
             </FieldDescription>
           </Field>
 
-          <div className="flex flex-col justify-end gap-1 rounded-lg border px-3 py-2">
-            <span className="text-muted-foreground font-mono text-xs">
-              clicks/day
-            </span>
-            <span className="font-mono text-lg font-medium" data-testid="email-control-preview">
-              {preview}
-            </span>
-            <span className="text-muted-foreground text-xs">
-              {selected.length} probe{selected.length === 1 ? "" : "s"} × every{" "}
-              {frequency} min
-            </span>
-          </div>
+          <Field>
+            <FieldLabel htmlFor="email-control-clicks">
+              Clicks per run
+            </FieldLabel>
+            <Input
+              id="email-control-clicks"
+              name="clicks"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={MAX_CLICKS_PER_RUN}
+              step={1}
+              value={clicksText}
+              onChange={(event) => setClicksText(event.target.value)}
+              disabled={disabled}
+              aria-invalid={!clicksValid}
+              required
+            />
+            <FieldDescription>
+              Whole number 1–{MAX_CLICKS_PER_RUN}. Each click draws a fresh
+              profile, target and source.
+            </FieldDescription>
+            {clicksValid ? null : (
+              <p className="text-destructive text-sm">
+                Clicks per run must be a whole number from 1 to{" "}
+                {MAX_CLICKS_PER_RUN}.
+              </p>
+            )}
+          </Field>
         </FieldGroup>
+
+        <VolumePreview
+          probes={previewProbes}
+          clicks={previewClicks}
+          frequency={frequency}
+        />
 
         <FieldGroup className="grid gap-2 sm:grid-cols-2">
           {options.length === 0 ? (
@@ -506,7 +744,7 @@ function ControlsForm({
 
         <FeedbackAlert state={saveState} />
         <div>
-          <SaveSubmitButton disabled={!check} />
+          <SaveSubmitButton disabled={!check || !clicksValid} />
         </div>
       </form>
 
