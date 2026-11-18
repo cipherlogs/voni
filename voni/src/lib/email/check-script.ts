@@ -271,6 +271,10 @@ function clickBody(): string {
           headers: {
             "content-type": "application/json",
             "x-voni-click-secret": REPORT_SECRET,
+            // The report is a side channel to our own API, but leaving k6's
+            // default UA here means one request in the pipeline still
+            // identifies itself as an HTTP client rather than a browser.
+            "user-agent": record.userAgent,
           },
           tags: { phase: "report" },
           // No redirects: a 3xx would re-send the body and the secret header
