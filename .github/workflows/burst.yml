@@ -69,6 +69,26 @@ jobs:
       - name: Generate click script with burst options
         run: npm run affiliate:check
 
+      # The committed script carries a placeholder so git never holds the
+      # secret; a burst has to report its clicks the same way the synthetic
+      # check does, or the panel's table silently misses every burst row. Only
+      # the first occurrence is replaced, which leaves REPORTING_ENABLED able
+      # to tell that a real secret is present.
+      - name: Inject the report secret
+        env:
+          EMAIL_CLICK_REPORT_SECRET: ${{ secrets.EMAIL_CLICK_REPORT_SECRET }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = "scripts/affiliate-click-check.k6.js";
+            const source = fs.readFileSync(path, "utf8");
+            const secret = process.env.EMAIL_CLICK_REPORT_SECRET;
+            if (!secret) throw new Error("EMAIL_CLICK_REPORT_SECRET is not set on this repository");
+            if (!source.includes("__REPORT_SECRET__")) throw new Error("no placeholder in the generated script: refusing to guess");
+            fs.writeFileSync(path, source.replace("__REPORT_SECRET__", secret));
+            console.log("report secret injected");
+          '
+
       # A burst that quietly ran from the default zone would still report green,
       # so prove the distribution landed and names every requested zone. This is
       # also the only place the percentages are visible in the log.
