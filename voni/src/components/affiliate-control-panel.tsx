@@ -896,6 +896,7 @@ function AnalyticsCard({
                   <th className="py-2 pr-3 font-medium">Source</th>
                   <th className="py-2 pr-3 font-medium">Device</th>
                   <th className="py-2 pr-3 font-medium">Browser</th>
+                  <th className="py-2 pr-3 font-medium">User-Agent</th>
                   <th className="py-2 pr-3 font-medium">Status</th>
                   <th className="py-2 pr-3 font-medium">ms</th>
                   <th className="py-2 font-medium">Final host</th>
@@ -921,6 +922,18 @@ function AnalyticsCard({
                     </td>
                     <td className="py-2 pr-3 font-mono text-xs">
                       {click.browser ?? "—"}
+                    </td>
+                    {/* The UA was recorded and queryable all along, but only as
+                        a tooltip on the Device cell — so the panel looked like
+                        it stored none. Show it, truncated; the title carries
+                        the whole string. */}
+                    <td className="py-2 pr-3">
+                      <span
+                        className="block max-w-xs truncate font-mono text-xs"
+                        title={click.userAgent ?? undefined}
+                      >
+                        {click.userAgent ?? "—"}
+                      </span>
                     </td>
                     <td className="py-2 pr-3">
                       <Badge variant={statusBadgeVariant(click.status)}>

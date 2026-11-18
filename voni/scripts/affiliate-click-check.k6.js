@@ -389,6 +389,10 @@ export default function affiliateClickCheck() {
       "user-agent": profile.userAgent,
       accept: ACCEPT,
       "accept-language": ACCEPT_LANGUAGE,
+      // Every browser sends this on a top-level navigation, including Safari
+      // and Firefox, which send none of the sec-fetch-* set below. A request
+      // that omits it is incomplete in a way a bot filter can see.
+      "upgrade-insecure-requests": "1",
     },
     // Empty for Safari/Firefox, which send none of these headers.
     profile.clientHints,

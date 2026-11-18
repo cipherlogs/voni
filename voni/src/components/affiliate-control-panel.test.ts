@@ -42,3 +42,11 @@ test("the redirect rejection is swallowed, not reported as a failed lock", () =>
     "lockPage redirects, and that rejection is the navigation",
   );
 });
+
+test("the click table shows the User-Agent it already stores", () => {
+  // Every row has a UA in Postgres and in the query, but the table only offered
+  // it as a tooltip on the Device cell, so the panel read as "no UA recorded"
+  // while 7,317 rows carried one. A stored value with no column is invisible.
+  assert.match(panel, /<th[^>]*>User-Agent<\/th>/);
+  assert.match(panel, /\{click\.userAgent \?\? "—"\}/);
+});
