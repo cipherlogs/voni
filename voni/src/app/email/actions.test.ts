@@ -644,3 +644,24 @@ test("unlockPage checks the configuration before comparing anything", () => {
   );
 });
 
+test("the burst form's field names match what the card renders", () => {
+  const card = readFileSync(
+    new URL("../../components/burst-card.tsx", import.meta.url),
+    "utf8",
+  );
+  const burst = fnBody("runBurst");
+
+  // A name mismatch is invisible to the compiler and to the card: the checkbox
+  // group submits nothing and the planner says "select at least one zone",
+  // which reads as an operator mistake. That shipped once.
+  for (const field of ["clicks", "duration", "zones"]) {
+    assert.match(
+      card,
+      new RegExp(`name="${field}"`),
+      `burst-card renders a ${field} field`,
+    );
+  }
+  assert.match(burst, /formData\.getAll\("zones"\)/);
+  assert.match(burst, /formData\.get\("clicks"\)/);
+  assert.match(burst, /formData\.get\("duration"\)/);
+});

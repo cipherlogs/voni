@@ -505,7 +505,10 @@ export async function runBurst(
 
   const clicks = Number(formData.get("clicks"));
   const durationMinutes = Number(formData.get("duration"));
-  const zoneIds = formData.getAll("zone").map((value) => String(value));
+  // "zones" is the checkbox group's name in burst-card.tsx. These two strings
+  // drifting apart costs nothing at compile time and silently makes every
+  // submission empty, which reads as "you selected nothing" in the UI.
+  const zoneIds = formData.getAll("zones").map((value) => String(value));
 
   const planned = planBurst({
     clicks,
