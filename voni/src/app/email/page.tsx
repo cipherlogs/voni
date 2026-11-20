@@ -73,6 +73,9 @@ function toCheckView(check: SyntheticCheck): CheckView {
     frequencyMs: check.frequencyMs,
     probeIds: [...check.probeIds],
     clicksPerRun: check.clicksPerRun,
+    // Read from the stored script: what the check is doing, or null when the
+    // script predates the setting (the panel then opens on the new default).
+    targetSelection: check.targetSelection,
     // The SM API reports `modified` as epoch seconds, not milliseconds.
     modified:
       check.modified === null
@@ -299,6 +302,9 @@ async function EmailControlData({
         check={checkResult.ok ? toCheckView(checkResult.data) : null}
         checkError={checkResult.ok ? null : checkResult.message}
         probes={probesResult.ok ? toProbeViews(probesResult.data) : []}
+        oneOffTargets={targets
+          .filter((target) => target.enabled)
+          .map((target) => ({ id: target.id, url: target.url }))}
         stats={{
           total: stats.total,
           byStatus: stats.byStatus,

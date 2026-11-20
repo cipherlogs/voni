@@ -16,9 +16,10 @@
  *
  * A burst run (`.github/workflows/burst.yml`) needs the same script with fixed
  * VUs, a duration and a load-zone distribution. Setting BURST_VUS,
- * BURST_DURATION and K6_LOAD_ZONES applies those in memory before writing, and
- * AFFILIATE_TARGETS_JSON swaps the seed for the panel's live list; with all of
- * them unset the committed script is produced byte-for-byte as before, because
+ * BURST_DURATION and K6_LOAD_ZONES applies those in memory before writing,
+ * AFFILIATE_TARGETS_JSON swaps the seed for the panel's live list, and
+ * AFFILIATE_TARGET_SELECTION picks the target-selection mode; with all of them
+ * unset the committed script is produced byte-for-byte as before, because
  * Grafana's synthetic check must not gain a distribution.
  */
 import { writeFileSync } from "node:fs";
@@ -27,6 +28,11 @@ import { BROWSER_FAMILIES, BROWSER_PROFILES } from "../src/lib/email/user-agents
 import TARGETS_JSON from "../src/lib/email/targets.json";
 import { EMAIL_PROVIDERS, assertEmailTargets } from "../src/lib/email/pool";
 import { buildCheckScript } from "../src/lib/email/check-script";
+import {
+  TARGET_SELECTION_DEFAULT,
+  parseTargetSelection,
+  type TargetSelection,
+} from "../src/lib/email/target-selection";
 import {
   applyBurstOptions,
   burstK6OptionsFromEnv,
@@ -59,6 +65,27 @@ function targetsFromEnv(raw: string | undefined): readonly string[] | null {
 const targets = targetsFromEnv(process.env.AFFILIATE_TARGETS_JSON) ?? TARGETS_JSON;
 
 /**
+ * The burst's target-selection mode. Unset (a local run, CI) means the default
+ * the committed script already carries. An unrecognised value throws instead of
+ * silently falling back: a burst that ran the wrong mode would report green
+ * while doing something the operator did not ask for.
+ */
+function selectionFromEnv(raw: string | undefined): TargetSelection {
+  const value = raw?.trim();
+  if (!value) return TARGET_SELECTION_DEFAULT;
+
+  const parsed = parseTargetSelection(value);
+  if (!parsed) {
+    throw new Error(
+      `AFFILIATE_TARGET_SELECTION must be "random" or "rotate" (got ${JSON.stringify(value)})`,
+    );
+  }
+  return parsed;
+}
+
+const selection = selectionFromEnv(process.env.AFFILIATE_TARGET_SELECTION);
+
+/**
  * The committed script is the one-click variant with the placeholder: it is
  * reviewed, and it holds no secret. A multi-click script is built by the panel
  * at save time, where the real secret is already in hand.
@@ -67,12 +94,13 @@ const generated = buildCheckScript({
   clicksPerRun: 1,
   reportSecret: null,
   targets,
+  selection,
 });
 
 const burst = burstK6OptionsFromEnv(process.env);
 writeFileSync(OUT, burst ? applyBurstOptions(generated, burst) : generated);
 console.log(
-  `wrote ${OUT} (${BROWSER_PROFILES.length} profiles, ${BROWSER_FAMILIES.length} families, ${targets.length} targets, ${EMAIL_PROVIDERS.length} providers` +
+  `wrote ${OUT} (${BROWSER_PROFILES.length} profiles, ${BROWSER_FAMILIES.length} families, ${targets.length} targets, ${EMAIL_PROVIDERS.length} providers, selection ${selection}` +
     (burst
       ? `, burst: ${burst.vus} VUs, ${burst.durationSec}s, ${burst.zones.length} zones)`
       : ")"),

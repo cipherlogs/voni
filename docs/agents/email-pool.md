@@ -7,12 +7,13 @@ depends on are sent by Grafana Synthetic Monitoring check
 `voni/scripts/affiliate-click-check.k6.js`, running from its selected probes
 (the four US probes by default). The
 page reads the rows that check produced from `affiliate_clicks`, and it can
-change the check's interval, probe set and enabled state through Grafana's
-Synthetic Monitoring API.
+change the check's interval, probe set, target-selection mode and enabled state
+through Grafana's Synthetic Monitoring API.
 
 The one exception is the panel's "Run one click now" button. `runOneOffClick`
 in `src/app/email/actions.ts` performs a single click from voni's own server
-with the same identity pool, target bag and header shape, so a target and its
+with the same identity pool and header shape, drawing from the targets ticked
+beside the button (all active targets by default), so a target and its
 attribution can be verified without waiting for Grafana's next run. Its result
 always says it ran from voni rather than Grafana, because everywhere else in
 the table a row means "the check sent this".
@@ -64,10 +65,30 @@ which is what the one-off click stores. One column, one meaning.
 
 ## Target selection
 
-One target and one source per click, drawn without replacement from shuffle
-bags. The providers are a constant in `voni/src/lib/email/pool.ts`; the targets
+One target and one source per click. The source always rotates through a
+no-repeat bag; the target is chosen by the mode saved with the check:
+
+| Mode | What a click does |
+| --- | --- |
+| `random` (what a new script is built with) | uniform draw with replacement: any active target, equal odds, so one target can repeat and another may wait |
+| `rotate` | every active target once per shuffled pass, then the bag refills — the behaviour every script built before the mode existed had |
+
+The mode is a line in the check's stored script — `const TARGET_SELECTION =
+"random";` — emitted by `buildCheckScript` together with the draw itself and
+read back by the panel (`readStoredTargetSelection` / `readTargetSelection` in
+`voni/src/lib/email/target-selection.ts`). It is not a database column, so the
+panel can only show a mode that was actually saved. A script with no marker
+predates the setting — "no choice yet", not "rotate": the switch opens on the
+new default (`random`) and the copy says the live script is still rotating. The
+first Save, or any target change (which also rebuilds the script), applies
+`random` unless the operator turns the switch off. The one-off click does not
+rebuild, so it follows what the live script is doing — `rotate` until that first
+save. `rotate` is per k6 VU: each VU owns its bag, so a burst (up to 500 VUs)
+runs up to 500 independent passes. `random` keeps no per-VU state at all.
+
+The providers are a constant in `voni/src/lib/email/pool.ts`; the targets
 are rows in `affiliate_targets`, managed from the `/email` panel's **Targets**
-card. The bag mixes voni-hosted pages with affiliate links that redirect
+card. The list mixes voni-hosted pages with affiliate links that redirect
 off-site:
 
 ```
@@ -118,7 +139,10 @@ traffic:
   fails after a successful upload, the previous list is pushed back, so the
   probes never keep clicking a URL the table no longer has. `saveVolume()`
   rebuilds through the same path and reads the live list too — a volume save
-  must not resurrect a paused target by falling back to the seed.
+  must not resurrect a paused target by falling back to the seed. A target
+  change preserves the mode as well: `pushTargetsToCheck()` reads
+  `targetSelection` back from the stored script, so pausing one URL never
+  resets the operator's Random/Rotate choice.
 - **Pause is not delete.** A paused row stays in the table and is not drawn by
   either producer — the lever for investigating one creative while the rest keep
   clicking. The last active target cannot be paused, and the last row cannot be
@@ -136,10 +160,12 @@ traffic:
   not two entries competing in the bag.
 
 A burst dispatched from the card carries the active list as the workflow's
-`targets` input, and `burst.yml` proves each URL reached the generated script.
-The **manual** fallback (`k6 cloud run scripts/affiliate-click-check.k6.js`)
-runs the committed script, so it clicks the seed list rather than the panel's —
-the one place the two can differ.
+`targets` input and the check's mode as its `selection` input (the job reads it
+as `AFFILIATE_TARGET_SELECTION` and `burst.yml` proves the marker reached the
+generated script). The **manual** fallback (`k6 cloud run
+scripts/affiliate-click-check.k6.js`) runs the committed script, so it clicks
+the seed list in the committed mode (`random`) rather than the panel's — the one
+place the two can differ.
 
 `allTargetUrls()` — every row, paused included — is the approved-host list for
 redirect hops in the app's one-off click. Pausing the tracker must not stop a
@@ -267,6 +293,14 @@ nothing at all — it logs one line saying so.
   exactly the address that should not become a row.
 - The browser never supplies a URL: both producers draw the target from the bag
   server-side or in-script, which is what keeps this from being an open proxy.
+  The one-off form may name a *subset* of target rows — ids, never URLs, with
+  every active row ticked by default — so an operator can pin one creative. The
+  server re-checks each id against the live enabled list and still chooses the
+  URL itself. In `rotate` mode that press takes the ticked target with the oldest
+  recorded visit (any producer's click counts, folded by `baseTargetUrl`), so
+  repeated presses walk the subset; in `random` mode it is a uniform draw. A
+  failed Grafana read only costs the mode and falls back to `random` — the click
+  still runs.
 - The app's whole redirect chain shares one 8 s budget, and every response body
   is cancelled unread, so no page is buffered in memory.
 
@@ -295,7 +329,10 @@ nothing at all — it logs one line saying so.
   forms spend: per-IP first, then the global ceiling, 15-minute fixed window,
   fail-closed with a message the form can render.
 - `voni/src/lib/email/pool.ts` — the provider bag, `resolveTarget()` utm
-  stamping, and the seed guard.
+  stamping, `baseTargetUrl()` (a stamped click folded back to its target), and
+  the seed guard.
+- `voni/src/lib/email/target-selection.ts` — the two modes, the script marker's
+  read-back (`readTargetSelection`), and `pickTarget()` for the one-off click.
 - `voni/src/lib/email/targets.ts` — the live target list: seed-on-empty,
   `activeTargetUrls()`, `allTargetUrls()`, and the add/pause/remove writes.
 - `voni/src/lib/email/target-url.ts` — the one rule for what a target may be,

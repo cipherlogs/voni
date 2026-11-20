@@ -25,6 +25,7 @@ import {
   buildCheckScript,
   readClicksPerRun,
 } from "./check-script";
+import { readTargetSelection } from "./target-selection";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COMMITTED = readFileSync(
@@ -162,6 +163,33 @@ test("readClicksPerRun reads the stored constant back, one when absent", () => {
   // constant is not allowed to become the panel's starting value.
   assert.equal(readClicksPerRun("export default function x() {}"), 1);
   assert.equal(readClicksPerRun("const CLICKS_PER_RUN = 99;"), 1);
+});
+
+test("selection: a new script draws at random and says so", () => {
+  const random = buildCheckScript({ clicksPerRun: 1, reportSecret: null });
+  assert.equal(readTargetSelection(random), "random");
+  assert.match(random, /const TARGET_SELECTION = "random";/);
+  assert.match(
+    random,
+    /function nextTarget\(\) \{\n  return TARGETS\[Math\.floor\(Math\.random\(\) \* TARGETS\.length\)\];\n\}/,
+    "random mode draws one entry with replacement per click",
+  );
+  assert.doesNotMatch(random, /const nextTarget = shuffleBag\(TARGETS\)/);
+});
+
+test("selection: rotate keeps the shuffle bag and the marker agrees", () => {
+  const rotate = buildCheckScript({
+    clicksPerRun: 1,
+    reportSecret: null,
+    selection: "rotate",
+  });
+  assert.equal(readTargetSelection(rotate), "rotate");
+  assert.match(rotate, /const TARGET_SELECTION = "rotate";/);
+  assert.match(rotate, /const nextTarget = shuffleBag\(TARGETS\);/);
+  assert.doesNotMatch(rotate, /function nextTarget/);
+  // The marker is the annotation the panel reads; the definition is the
+  // behaviour. Both come from one input, and both variants must still parse.
+  assertParses(rotate);
 });
 
 test("the target list is a parameter, so the panel's list is what the check clicks", () => {

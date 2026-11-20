@@ -9,7 +9,7 @@ import { describePlan, planBurst } from "@/lib/burst/plan";
 import { dispatchBurst } from "@/lib/burst/dispatch";
 import type { BurstState } from "@/lib/burst/state";
 import type { TargetState } from "@/lib/email/target-state";
-import { recordAffiliateClick } from "@/lib/email/clicks";
+import { lastClickByTargetUrl, recordAffiliateClick } from "@/lib/email/clicks";
 import { simulateOneClick } from "@/lib/email/click-simulator";
 import {
   EMAIL_CONTROL_COOKIE,
@@ -23,12 +23,18 @@ import {
   pageGateCookieOptions,
   pagePasswordDigest,
 } from "@/lib/email/page-gate";
-import { nextEmailProvider, resolveTarget } from "@/lib/email/pool";
+import { nextEmailProvider, baseTargetUrl, resolveTarget } from "@/lib/email/pool";
+import {
+  TARGET_SELECTION_DEFAULT,
+  TARGET_SELECTION_LEGACY,
+  parseTargetSelection,
+  pickTarget,
+  type TargetSelection,
+} from "@/lib/email/target-selection";
 import {
   activeTargetUrls,
   addAffiliateTarget,
   listAffiliateTargets,
-  pickActiveTarget,
   removeAffiliateTarget,
   setAffiliateTargetEnabled,
 } from "@/lib/email/targets";
@@ -315,6 +321,17 @@ export async function saveVolume(
 ): Promise<ControlState> {
   if (!(await requireControl())) return locked();
 
+  // The mode is the operator's choice, so a request without one is a refusal,
+  // not a reason to save the default: a stale or hand-built form would
+  // otherwise flip a rotating check to random while claiming success.
+  const selection = parseTargetSelection(formData.get("selection"));
+  if (selection === null) {
+    return {
+      ok: false,
+      error: "Choose how each click picks its target: Random or Rotate through all.",
+    };
+  }
+
   const frequencyMinutes = Number(formData.get("frequency"));
   const probeIds = formData.getAll("probe").map((value) => Number(value));
   const clicksPerRun = Number(formData.get("clicks"));
@@ -348,6 +365,7 @@ export async function saveVolume(
   const uploadError = await uploadRebuiltCheck({
     clicksPerRun: volume.value.clicksPerRun,
     targets,
+    selection,
   });
   if (uploadError !== null) return { ok: false, error: uploadError };
 
@@ -373,7 +391,9 @@ export async function saveVolume(
   const plural = probes.length === 1 ? "" : "s";
   return {
     ok: true,
-    message: `Saved. This check now runs ${perDay} clicks/day: ${probes.length} probe${plural} × every ${frequencyMs / 60_000} min × ${clicks} click${clicks === 1 ? "" : "s"} per run.`,
+    message:
+      `Saved. This check now runs ${perDay} clicks/day: ${probes.length} probe${plural} × every ${frequencyMs / 60_000} min × ${clicks} click${clicks === 1 ? "" : "s"} per run.` +
+      ` Targets are drawn ${selection === "random" ? "at random" : "by rotating through every active target"}.`,
   };
 }
 
@@ -418,6 +438,7 @@ export async function toggleCheck(
 async function uploadRebuiltCheck(change: {
   clicksPerRun: number;
   targets: readonly string[];
+  selection: TargetSelection;
 }): Promise<string | null> {
   const reportSecret = await secret("EMAIL_CLICK_REPORT_SECRET");
   if (!reportSecret) {
@@ -435,6 +456,7 @@ async function uploadRebuiltCheck(change: {
       clicksPerRun: change.clicksPerRun,
       reportSecret,
       targets: change.targets,
+      selection: change.selection,
     });
   } catch (error) {
     return error instanceof Error
@@ -451,7 +473,7 @@ async function uploadRebuiltCheck(change: {
   return null;
 }
 
-/** Push a target list using the click count Grafana already has stored. */
+/** Push a target list using the click count and mode Grafana already has stored. */
 async function pushTargetsToCheck(
   targets: readonly string[],
 ): Promise<string | null> {
@@ -461,6 +483,11 @@ async function pushTargetsToCheck(
   return uploadRebuiltCheck({
     clicksPerRun: current.data.clicksPerRun,
     targets,
+    // The mode lives in the same stored script as the count. An unmarked script
+    // is "no choice yet", so this rebuild applies the new default (random); a
+    // marked one is preserved, because a target add or pause must not silently
+    // flip the mode the operator chose.
+    selection: current.data.targetSelection ?? TARGET_SELECTION_DEFAULT,
   });
 }
 
@@ -645,32 +672,73 @@ export async function removeTarget(
 /**
  * One click, right now, from the server this app runs on. This exists to prove
  * the target and the attribution work without waiting for Grafana's next run —
- * so the result must not imply Grafana produced it. The target comes from the
- * panel's list and the source from the pool's provider bag, both drawn
- * server-side: the form body names neither, which keeps this from becoming an
- * open proxy.
+ * so the result must not imply Grafana produced it. The form names the set of
+ * target rows to draw from, never a URL, and every id is checked against the
+ * enabled list before the draw: the source comes from the pool's provider bag
+ * server-side. A body cannot therefore point this action at an arbitrary host,
+ * which keeps it from becoming an open proxy.
  */
 export async function runOneOffClick(
   _previous: ControlState,
-  _formData: FormData,
+  formData: FormData,
 ): Promise<ControlState> {
-  // The target and source are drawn server-side; the form body has nothing to
-  // say about either, which is what keeps this from being an open proxy.
   void _previous;
-  void _formData;
   if (!(await requireControl())) return locked();
 
+  // Ticked rows, as ids: a URL in the body would make this an open proxy.
+  const requested = formData.getAll("target").map(String);
+  if (requested.length === 0) {
+    return { ok: false, error: "Select at least one target for this click." };
+  }
+
   const targets = await listAffiliateTargets();
-  const active = targets.filter((target) => target.enabled).map((target) => target.url);
-  if (active.length === 0) {
+  const active = targets.filter((target) => target.enabled);
+
+  // Dedupe: a repeated id must not weight the draw toward that row. The set is
+  // also the staleness check — every ticked id has to still be an enabled row,
+  // because drawing the remainder would quietly send fewer clicks than asked.
+  const wanted = new Set(requested);
+  const chosen = active.filter((target) => wanted.has(target.id));
+  if (chosen.length !== wanted.size) {
     return {
       ok: false,
-      error: "Every target is paused, so no click was sent. Resume one on the targets card first.",
+      error:
+        "One of the selected targets is paused or no longer in the list. Reload the page.",
     };
   }
 
+  // The candidates are the requested rows' URLs in list order, so both modes
+  // draw from exactly the operator's ticked subset — never the whole list.
+  const candidates = chosen.map((target) => target.url);
+
+  // The mode is the live check's, not a form field: the scheduled clicks and
+  // this button must pick targets the same way. An unmarked script is still
+  // rotating, so it reads as rotate here; a failed read falls back to the
+  // default — the mode only decides which of the same URLs goes next, and a
+  // Grafana outage must not cost the operator the click they asked for.
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+  const current = await getCheck(id);
+  const selection = current.ok
+    ? (current.data.targetSelection ?? TARGET_SELECTION_LEGACY)
+    : TARGET_SELECTION_DEFAULT;
+
+  // `lastClickByTargetUrl` keys by the *base* URL — the stamped click with its
+  // utm params removed. A row's canonical URL is normally that key already,
+  // but a target may carry its own utm params, so re-key onto the exact
+  // candidate strings instead of assuming they match. Random never reads
+  // history, so the query is skipped there and a click stays one query.
+  const lastVisits = new Map<string, number>();
+  if (selection === "rotate") {
+    const byBase = await lastClickByTargetUrl();
+    for (const url of candidates) {
+      const at = byBase.get(baseTargetUrl(url));
+      if (at !== undefined) lastVisits.set(url, at);
+    }
+  }
+  const picked = pickTarget(candidates, selection, lastVisits);
+
   const source = nextEmailProvider();
-  const target = resolveTarget(pickActiveTarget(active), source);
+  const target = resolveTarget(picked, source);
 
   // The identity, headers and redirect behaviour live in one place so this
   // button and the Grafana check cannot drift apart. The full list, paused
@@ -784,7 +852,19 @@ export async function runBurst(
       error: "Every target is paused, so a burst would click nothing. Resume one first.",
     };
   }
-  const result = await dispatchBurst(planned.plan, { targets });
+
+  // The burst clicks the same list the check does, so it should split those
+  // clicks the same way. A burst rebuilds the script, so an unmarked script
+  // takes the new default (random); a failed read falls back to it too, because
+  // the mode only decides which of the same URLs each click takes and a
+  // Grafana outage must not cost the operator a burst.
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+  const current = await getCheck(id);
+  const selection = current.ok
+    ? (current.data.targetSelection ?? TARGET_SELECTION_DEFAULT)
+    : TARGET_SELECTION_DEFAULT;
+
+  const result = await dispatchBurst(planned.plan, { targets, selection });
   if (!result.ok) return { ok: false, error: result.error };
 
   if (result.mode === "manual") {

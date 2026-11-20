@@ -8,6 +8,7 @@ import test from "node:test";
 import TARGETS_JSON from "./targets.json";
 import {
   assertEmailTargets,
+  baseTargetUrl,
   EMAIL_CAMPAIGN,
   EMAIL_MEDIUM,
   EMAIL_PROVIDERS,
@@ -18,6 +19,7 @@ import {
   resolveTarget,
   shuffleBag,
 } from "./pool";
+import { canonicalTargetUrl } from "./target-url";
 
 test("bags: a run of draws covers every target and every provider", () => {
   // Without replacement, any N consecutive draws from an N-item bag cross a
@@ -139,4 +141,24 @@ test("resolveTarget: every bag entry resolves to itself plus the three params", 
     assert.equal(url.searchParams.get("utm_medium"), EMAIL_MEDIUM);
     assert.equal(url.searchParams.get("utm_campaign"), EMAIL_CAMPAIGN);
   }
+});
+
+test("baseTargetUrl: a stamped click belongs to its unstamped target", () => {
+  // Every target, from every provider, must fold back to the row the panel
+  // shows — that identity is what rotation's "last visited" lookup keys on.
+  for (const entry of EMAIL_TARGETS) {
+    const stamped = resolveTarget(entry, "gmail.com");
+    assert.equal(baseTargetUrl(stamped), canonicalTargetUrl(entry));
+  }
+});
+
+test("baseTargetUrl: only attribution is removed, the target's own query stays", () => {
+  const stamped = resolveTarget("https://voni.cc/test?creative_id=1&x=1", "att.com");
+  assert.equal(baseTargetUrl(stamped), "https://voni.cc/test?creative_id=1&x=1");
+
+  // A click recorded before the pool stamped anything still counts as history.
+  assert.equal(
+    baseTargetUrl("https://voni.cc/test"),
+    "https://voni.cc/test",
+  );
 });

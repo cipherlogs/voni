@@ -67,9 +67,22 @@ export const EMAIL_PROVIDERS = [
 
 export const EMAIL_SOURCE_PARAM = "utm_source";
 /** The channel the visit is attributed to, stamped on every target. */
-export const EMAIL_MEDIUM = "email";
+export const UTM_MEDIUM_PARAM = "utm_medium";
 /** The campaign the visit is attributed to, stamped on every target. */
+export const UTM_CAMPAIGN_PARAM = "utm_campaign";
+export const EMAIL_MEDIUM = "email";
 export const EMAIL_CAMPAIGN = "voni-email";
+
+/**
+ * The three params every click is stamped with. Rotation compares "when was
+ * this target last visited", and a recorded click holds the *stamped* URL — one
+ * per provider — so the target it belongs to is the URL with these removed.
+ */
+const ATTRIBUTION_PARAMS = [
+  EMAIL_SOURCE_PARAM,
+  UTM_MEDIUM_PARAM,
+  UTM_CAMPAIGN_PARAM,
+] as const;
 
 /**
  * Draw without replacement: every entry appears once per pass, in its own
@@ -114,7 +127,25 @@ export function resolveTarget(
 ): string {
   const url = new URL(entry);
   url.searchParams.set(EMAIL_SOURCE_PARAM, source);
-  url.searchParams.set("utm_medium", EMAIL_MEDIUM);
-  url.searchParams.set("utm_campaign", EMAIL_CAMPAIGN);
+  url.searchParams.set(UTM_MEDIUM_PARAM, EMAIL_MEDIUM);
+  url.searchParams.set(UTM_CAMPAIGN_PARAM, EMAIL_CAMPAIGN);
+  return url.toString();
+}
+
+/**
+ * The target a recorded click belongs to: the URL it visited with the three
+ * attribution params removed, in the same canonical form `canonicalTargetUrl`
+ * gives a target row.
+ *
+ * A click row stores the stamped URL, so two visits to one target from two
+ * providers are two different strings. Rotation needs the target, not the
+ * stamp: `baseTargetUrl(recorded) === baseTargetUrl(row.url)`, so the "last
+ * visited" lookup has one key per target. A URL with no attribution (a row
+ * written before the pool stamped them) passes through unchanged, which is what
+ * makes old history count too.
+ */
+export function baseTargetUrl(stamped: string): string {
+  const url = new URL(stamped);
+  for (const param of ATTRIBUTION_PARAMS) url.searchParams.delete(param);
   return url.toString();
 }

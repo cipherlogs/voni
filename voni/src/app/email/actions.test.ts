@@ -15,6 +15,13 @@ import {
   controlCookieMatches,
   controlCookieValue,
 } from "@/lib/email/control";
+import { baseTargetUrl } from "@/lib/email/pool";
+import { buildCheckScript } from "@/lib/email/check-script";
+import {
+  TARGET_SELECTION_DEFAULT,
+  pickTarget,
+  readTargetSelection,
+} from "@/lib/email/target-selection";
 import {
   UNLOCK_MAX_GLOBAL,
   UNLOCK_MAX_PER_IP,
@@ -37,6 +44,16 @@ const syntheticSource = readFileSync(
   join(here, "../../lib/grafana/synthetic.ts"),
   "utf8",
 );
+const clicksSource = readFileSync(
+  join(here, "../../lib/email/clicks.ts"),
+  "utf8",
+);
+
+/** One valid script secret; `buildCheckScript` refuses a malformed literal. */
+const SECRET = "0123456789abcdef0123456789abcdef";
+/** A target row's own URL, which is what `baseTargetUrl` folds a stamp onto. */
+const TARGET_A = "https://voni.cc/a";
+const TARGET_B = "https://voni.cc/b";
 
 function fnBody(name: string): string {
   const start = source.indexOf(`export async function ${name}(`);
@@ -543,12 +560,126 @@ test("saveVolume rebuilds with the live target list, not the seed", () => {
   assert.match(save, /await activeTargetUrls\(\)/);
   assert.match(
     save,
-    /uploadRebuiltCheck\(\{\s*clicksPerRun: volume\.value\.clicksPerRun,\s*targets,?\s*\}\)/,
-    "the count and the live list go to the one upload path",
+    /uploadRebuiltCheck\(\{\s*clicksPerRun: volume\.value\.clicksPerRun,\s*targets,\s*selection,?\s*\}\)/,
+    "the count, the live list and the chosen mode go to the one upload path",
   );
   const upload = save.indexOf("uploadRebuiltCheck(");
   const update = save.indexOf("updateCheck(");
   assert.ok(upload >= 0 && update > upload, "script first, then frequency");
+});
+
+test("saveVolume refuses a missing or unrecognised mode before touching Grafana", () => {
+  const save = fnBody("saveVolume");
+  assert.match(
+    save,
+    /const selection = parseTargetSelection\(formData\.get\("selection"\)\)/,
+    "the submitted mode is parsed by the shared module, not read as a string",
+  );
+  assert.ok(
+    save.indexOf('formData.get("selection")') > save.indexOf("requireControl()"),
+    "the mode is read after the cookie gate, like every other input",
+  );
+  const refusal = save.indexOf("if (selection === null)");
+  assert.ok(refusal >= 0, "a missing or unrecognised mode is a refusal");
+  assert.ok(
+    refusal < save.indexOf('secret("EMAIL_CLICK_REPORT_SECRET")'),
+    "a request with no mode never reads the report secret",
+  );
+  assert.ok(
+    refusal < save.indexOf("uploadRebuiltCheck("),
+    "a request with no mode never builds or uploads a script",
+  );
+  assert.ok(
+    refusal < save.indexOf("updateCheck("),
+    "a request with no mode never rewrites the interval",
+  );
+  assert.match(
+    save,
+    /error:\s*"Choose how each click picks its target: Random or Rotate through all\."/,
+    "the refusal names the two choices instead of guessing",
+  );
+  // The parse is strict: a save with no mode must not fall back to the default
+  // the way the burst does, because a save *is* the operator choosing.
+  assert.doesNotMatch(save, /selection\s*(\?\?|\|\|)/);
+});
+
+test("the mode saveVolume submits is the marker the uploaded script carries", () => {
+  const random = buildCheckScript({
+    clicksPerRun: 1,
+    reportSecret: SECRET,
+    targets: [TARGET_A],
+    selection: "random",
+  });
+  assert.match(
+    random,
+    /^const TARGET_SELECTION = "random";$/m,
+    "the stored script names the mode the operator saved",
+  );
+  assert.equal(
+    readTargetSelection(random),
+    "random",
+    "the panel reads back the same mode it wrote, not a copy that can drift",
+  );
+
+  const rotate = buildCheckScript({
+    clicksPerRun: 1,
+    reportSecret: SECRET,
+    targets: [TARGET_A],
+    selection: "rotate",
+  });
+  assert.equal(readTargetSelection(rotate), "rotate");
+
+  const upload = source.slice(
+    source.indexOf("async function uploadRebuiltCheck("),
+    source.indexOf("async function pushTargetsToCheck("),
+  );
+  assert.match(
+    upload,
+    /selection: TargetSelection;/,
+    "the upload path requires a mode, so no caller can omit it and inherit a default",
+  );
+  assert.match(
+    upload,
+    /buildCheckScript\(\{[\s\S]*?selection: change\.selection,/,
+    "the mode reaches the builder, which is what writes the marker",
+  );
+});
+
+test("a target add or pause keeps the mode Grafana's stored script reports", () => {
+  // `pushTargetsToCheck` is private; the body is the slice up to the next export.
+  const start = source.indexOf("async function pushTargetsToCheck(");
+  assert.ok(start >= 0, "pushTargetsToCheck exists");
+  const sync = source.slice(start, source.indexOf("\nexport async function", start));
+  assert.match(
+    sync,
+    /selection: current\.data\.targetSelection \?\? TARGET_SELECTION_DEFAULT/,
+    "a marked mode is preserved, and an unmarked (no-choice-yet) script takes the new default",
+  );
+  assert.match(
+    sync,
+    /clicksPerRun: current\.data\.clicksPerRun/,
+    "and the count is still the stored one",
+  );
+
+  // End to end on the text: the stored script is the only copy of the mode, so
+  // reading it back and rebuilding with it must reproduce rotate.
+  const stored = buildCheckScript({
+    clicksPerRun: 1,
+    reportSecret: SECRET,
+    targets: [TARGET_A, TARGET_B],
+    selection: "rotate",
+  });
+  const rebuilt = buildCheckScript({
+    clicksPerRun: 1,
+    reportSecret: SECRET,
+    targets: [TARGET_A, TARGET_B],
+    selection: readTargetSelection(stored),
+  });
+  assert.equal(
+    readTargetSelection(rebuilt),
+    "rotate",
+    "a target edit must not silently switch the check to random",
+  );
 });
 
 test("one upload path serves both the volume form and target changes", () => {
@@ -733,12 +864,43 @@ test("a target change re-reads the click count instead of resetting it", () => {
   assert.match(sync, /uploadRebuiltCheck\(/, "the change must reach the probes");
 });
 
-test("the one-off click draws from the live list and can refuse an all-paused list", () => {
+test("the one-off click draws from the ticked subset, not the whole list", () => {
   const click = fnBody("runOneOffClick");
   assert.match(click, /await listAffiliateTargets\(\)/);
-  assert.ok(
-    click.indexOf("active.length === 0") < click.indexOf("simulateOneClick("),
-    "an empty active list must not send a click",
+  assert.match(
+    click,
+    /formData\.getAll\("target"\)/,
+    "the form names the candidate subset, one checkbox per enabled row",
+  );
+  assert.match(
+    click,
+    /const chosen = active\.filter\(\(target\) => wanted\.has\(target\.id\)\)/,
+    "a ticked id is resolved against the enabled rows, never used as a URL",
+  );
+  assert.match(
+    click,
+    /const candidates = chosen\.map\(\(target\) => target\.url\)/,
+    "the row's own URL is the candidate, in list order",
+  );
+  assert.match(
+    click,
+    /pickTarget\(candidates, selection, lastVisits\)/,
+    "both modes draw from that subset; only the history differs",
+  );
+  assert.match(
+    click,
+    /await lastClickByTargetUrl\(\)/,
+    "rotate ranks the subset by the recorded history",
+  );
+  assert.match(
+    click,
+    /byBase\.get\(baseTargetUrl\(url\)\)/,
+    "the history key is the base URL, so a row's own utm params do not steal the rotation",
+  );
+  assert.doesNotMatch(
+    click,
+    /pickTarget\((active|targets)\b/,
+    "the whole list is never the draw just because the list was read",
   );
   assert.match(
     click,
@@ -748,10 +910,171 @@ test("the one-off click draws from the live list and can refuse an all-paused li
   assert.doesNotMatch(click, /nextEmailTarget\(/);
 });
 
-test("the burst carries the live list into the dispatch", () => {
+test("the one-off click refuses an empty or stale selection without echoing it", () => {
+  const click = fnBody("runOneOffClick");
+  assert.match(
+    click,
+    /error:\s*"Select at least one target for this click\."/,
+    "an empty selection is refused before any target is read",
+  );
+  assert.ok(
+    click.indexOf("requested.length === 0") < click.indexOf("listAffiliateTargets()"),
+    "the empty-selection refusal costs no database read",
+  );
+  assert.match(
+    click,
+    /if \(chosen\.length !== wanted\.size\)/,
+    "every ticked id must still be an enabled row",
+  );
+  assert.match(
+    click,
+    /error:\s*"One of the selected targets is paused or no longer in the list\. Reload the page\."/,
+    "a stale page gets one sentence, not a partial draw",
+  );
+  assert.ok(
+    click.indexOf("chosen.length !== wanted.size") < click.indexOf("pickTarget("),
+    "a stale id never reaches the draw",
+  );
+  assert.doesNotMatch(
+    click.slice(
+      click.indexOf("if (chosen.length !== wanted.size)"),
+      click.indexOf("const candidates ="),
+    ),
+    /\$\{/,
+    "the refusal must not echo the ids or the URLs it rejected",
+  );
+});
+
+test("random draws only from the subset it is given", () => {
+  const only = [TARGET_A];
+  for (const r of [0, 0.5, 0.999_999]) {
+    assert.equal(
+      pickTarget(only, "random", new Map(), () => r),
+      TARGET_A,
+      "a one-row selection always clicks that row, whatever the draw",
+    );
+  }
+
+  const subset = [TARGET_A, TARGET_B];
+  const full = [TARGET_A, TARGET_B, "https://voni.cc/c"];
+  assert.equal(
+    pickTarget(subset, "random", new Map(), () => 0.99),
+    TARGET_B,
+    "the last entry of the subset, not the last entry of the list it came from",
+  );
+  assert.notEqual(
+    pickTarget(subset, "random", new Map(), () => 0.99),
+    full[2],
+    "an unticked row can never be drawn",
+  );
+});
+
+test("rotate picks the least-recently-clicked row of the subset, keyed by base URL", () => {
+  const c = "https://voni.cc/c";
+  // A click row stores the stamped URL; `baseTargetUrl` is what folds it back
+  // onto the row's key. The action passes that map straight through.
+  const stampedB = `${TARGET_B}?utm_source=gmail.com&utm_medium=email&utm_campaign=voni-email`;
+  assert.equal(baseTargetUrl(stampedB), TARGET_B, "a stamped visit belongs to its target");
+
+  const history = new Map<string, number>([
+    [baseTargetUrl(TARGET_A), 1_000],
+    [baseTargetUrl(stampedB), 500],
+  ]);
+
+  assert.equal(
+    pickTarget([TARGET_A, TARGET_B], "rotate", history),
+    TARGET_B,
+    "the older visit goes next, not the newer one",
+  );
+  assert.equal(
+    pickTarget([TARGET_A, TARGET_B, c], "rotate", history),
+    c,
+    "a row never clicked wins over every seen row",
+  );
+  assert.equal(
+    pickTarget([TARGET_A], "rotate", history),
+    TARGET_A,
+    "a one-row selection rotates to itself rather than being excluded",
+  );
+  assert.equal(
+    pickTarget([TARGET_A, TARGET_B], "rotate", new Map([
+      [TARGET_A, 10],
+      [TARGET_B, 10],
+    ])),
+    TARGET_A,
+    "equal timestamps keep the list's own order",
+  );
+});
+
+test("the rotation history is one entry per target, folded from the stamp", () => {
+  const start = clicksSource.indexOf("export async function lastClickByTargetUrl(");
+  assert.ok(start >= 0, "lastClickByTargetUrl exists");
+  const body = clicksSource.slice(start, clicksSource.indexOf("\n/**", start));
+  assert.match(body, /max\(affiliateClicks\.ranAt\)/, "the latest visit per stored URL");
+  assert.match(body, /\.groupBy\(affiliateClicks\.target\)/);
+  assert.match(
+    body,
+    /const base = baseTargetUrl\(row\.target\)/,
+    "the stamp is why one target is many rows, so the fold is the point",
+  );
+  assert.match(
+    body,
+    /if \(seen === undefined \|\| at > seen\)/,
+    "two providers visiting one target keep the later visit, not two entries",
+  );
+  assert.match(
+    clicksSource,
+    /stamps every one with its provider's/,
+    "the module says why the fold exists, not just that it does",
+  );
+});
+
+test("a Grafana read failure still lets the one-off click run, on the default mode", () => {
+  const click = fnBody("runOneOffClick");
+  assert.match(
+    click,
+    /const selection = current\.ok\s*\?\s*\(current\.data\.targetSelection \?\? TARGET_SELECTION_LEGACY\)\s*:\s*TARGET_SELECTION_DEFAULT/,
+    "an unmarked script still rotates, so the one-off follows that; the default is only the read-failure fallback",
+  );
+  assert.doesNotMatch(
+    click,
+    /if \(!current\.ok\)\s*return/,
+    "a Grafana outage must not refuse a click the operator asked for",
+  );
+  assert.ok(
+    click.indexOf("getCheck(") < click.indexOf("pickTarget("),
+    "the mode is resolved before the draw, so the fallback is what it draws with",
+  );
+  assert.equal(TARGET_SELECTION_DEFAULT, "random");
+});
+
+test("the burst carries the live list and the check's mode into the dispatch", () => {
   const burst = fnBody("runBurst");
   assert.match(burst, /await activeTargetUrls\(\)/);
-  assert.match(burst, /dispatchBurst\(planned\.plan, \{ targets \}\)/);
+  assert.match(
+    burst,
+    /const selection = current\.ok\s*\?\s*\(current\.data\.targetSelection \?\? TARGET_SELECTION_DEFAULT\)\s*:\s*TARGET_SELECTION_DEFAULT/,
+    "a burst rebuilds the script, so it uses the check's mode — or the new default when the script predates the setting",
+  );
+  assert.match(
+    burst,
+    /dispatchBurst\(planned\.plan, \{ targets, selection \}\)/,
+    "both travel as one payload, so a workflow cannot take one without the other",
+  );
+  assert.match(
+    burst,
+    /must not cost the operator a burst/,
+    "the fallback is explained where it is written",
+  );
+  assert.doesNotMatch(
+    burst,
+    /if \(!current\.ok\)\s*return/,
+    "a Grafana read failure is not a reason to refuse the burst",
+  );
+  assert.ok(
+    burst.indexOf("targets.length === 0") < burst.indexOf("dispatchBurst("),
+    "an all-paused list must not dispatch the committed seed",
+  );
 });
 
 test("adding a target uploads the active list, not the paused rows too", () => {

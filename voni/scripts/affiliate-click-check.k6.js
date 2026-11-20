@@ -3,11 +3,12 @@
  * Do not hand-edit this file; run `npm run affiliate:check` instead.
  *
  * What it does: each iteration draws a browser profile from a weighted matrix
- * (family by weight, member uniformly), draws a target and a source from
- * no-repeat bags, stamps the three utm params on the target (keeping its own
- * query params), and fetches it with a browser-shaped header set — including
- * the client hints a Chromium-family profile sends — following up to ten
- * redirects. Each click logs one JSON line, then reports it back to voni.
+ * (family by weight, member uniformly), draws a target
+ * at random (with replacement), stamps the three utm params on the target
+ * (keeping its own query params), and fetches it with a browser-shaped header
+ * set — including the client hints a Chromium-family profile sends — following
+ * up to ten redirects. Each click logs one JSON line, then reports it back to
+ * voni.
  *
  * Two run rules live in `options` below: DNS resolves IPv4 only, so the same
  * target is not measured over a different address family each run, and one
@@ -85,6 +86,14 @@ const TARGETS = [
   "https://www.glizzitrium.com/BCMPW39K/JJRFMXZ/?creative_id=709876",
   "https://www.glizzitrium.com/BCMPW39K/946KZGB/?creative_id=710986",
 ];
+
+/**
+ * How each click picks its target. This is an annotation, not a branch: the
+ * behaviour is the definition of nextTarget below, and the builder emits both
+ * from the same input. The /email panel reads this line back, so it knows what
+ * the stored check is doing — and that a script without it has no choice yet.
+ */
+const TARGET_SELECTION = "random";
 
 /** src/lib/email/pool.ts EMAIL_PROVIDERS. */
 const PROVIDERS = [
@@ -307,7 +316,15 @@ function shuffleBag(items) {
   };
 }
 
-const nextTarget = shuffleBag(TARGETS);
+/**
+ * Uniform draw with replacement: every click picks any entry in TARGETS with
+ * equal odds, so a target can repeat back-to-back and another may wait. This is
+ * TARGET_SELECTION "random", the panel's default.
+ */
+function nextTarget() {
+  return TARGETS[Math.floor(Math.random() * TARGETS.length)];
+}
+
 const nextProvider = shuffleBag(PROVIDERS);
 
 /** Set one query key, preserving every other param (and any #fragment). */

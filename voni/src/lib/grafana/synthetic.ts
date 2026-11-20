@@ -26,6 +26,10 @@
 
 import { secret } from "@/lib/env";
 import { readClicksPerRun } from "@/lib/email/check-script";
+import {
+  readStoredTargetSelection,
+  type TargetSelection,
+} from "@/lib/email/target-selection";
 
 type Fetch = typeof globalThis.fetch;
 
@@ -60,6 +64,13 @@ export type SyntheticCheck = {
    * field for it, and the panel's preview has to start from the real value.
    */
   clicksPerRun: number;
+  /**
+   * How the stored script picks a target, read the same way — `null` when the
+   * script predates the setting. Null is not "rotate": it is "no choice yet",
+   * and the panel starts its switch from the default while saying the live
+   * script is still rotating.
+   */
+  targetSelection: TargetSelection | null;
 };
 
 export type Probe = {
@@ -259,6 +270,7 @@ function toSyntheticCheck(body: SyntheticCheckBody): SyntheticCheck {
     scripted && typeof scripted["script"] === "string"
       ? scripted["script"]
       : null;
+  const decoded = script === null ? null : decodeScript(script);
   return {
     id: body.id,
     job: body.job,
@@ -269,7 +281,9 @@ function toSyntheticCheck(body: SyntheticCheckBody): SyntheticCheck {
     probeIds: [...body.probes],
     labels: [...body.labels],
     modified: body.modified,
-    clicksPerRun: script === null ? 1 : readClicksPerRun(decodeScript(script)),
+    clicksPerRun: decoded === null ? 1 : readClicksPerRun(decoded),
+    targetSelection:
+      decoded === null ? null : readStoredTargetSelection(decoded),
   };
 }
 

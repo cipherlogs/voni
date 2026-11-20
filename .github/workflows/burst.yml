@@ -32,6 +32,11 @@ on:
         required: false
         type: string
         default: ""
+      selection:
+        description: 'Target-selection mode: "random" or "rotate".'
+        required: false
+        type: string
+        default: "random"
 
 # One burst at a time: a second run would spend the same monthly VU-hours while
 # the first is still measuring, and k6 Cloud bills both.
@@ -57,6 +62,9 @@ jobs:
       # The panel's live target list. Empty is normal: the generator then keeps
       # `src/lib/email/targets.json`, which is what a manual run would use.
       AFFILIATE_TARGETS_JSON: ${{ inputs.targets }}
+      # The mode the panel's check uses. The generator refuses an unknown value
+      # and the verify step below proves the mode reached the script.
+      AFFILIATE_TARGET_SELECTION: ${{ inputs.selection }}
       K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
       # The CLI needs the stack as well as the token outside `k6 cloud login`;
       # without it the run fails with "stack ID not configured". Not a secret.
@@ -104,8 +112,8 @@ jobs:
 
       # A burst that quietly ran from the default zone would still report green,
       # so prove the distribution landed and names every requested zone. This is
-      # also the only place the percentages are visible in the log.
-      - name: Verify the distribution reached the script
+      # also the only place the percentages and the mode are visible in the log.
+      - name: Verify the burst options reached the script
         run: |
           node -e '
             const fs = require("node:fs");
@@ -133,6 +141,19 @@ jobs:
               }
               console.log("targets ok:", targets.length);
             }
+
+            // The run has to behave the way the panel's check does. A wrong
+            // mode would still report green, so read it out of the script
+            // rather than trusting the env that produced it.
+            const selection = (process.env.AFFILIATE_TARGET_SELECTION || "").trim();
+            if (selection !== "random" && selection !== "rotate") {
+              throw new Error("selection input must be 'random' or 'rotate', got: " + JSON.stringify(selection));
+            }
+            const marker = 'const TARGET_SELECTION = "' + selection + '";';
+            if (!script.includes(marker)) {
+              throw new Error("target selection missing from the generated script: expected " + marker);
+            }
+            console.log("selection ok:", selection);
           '
 
       # The CLI takes its stack and default project from the login state, not

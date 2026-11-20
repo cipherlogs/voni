@@ -7,9 +7,10 @@
  * absolute http(s) URL or a bug, nothing resolved against an implicit origin.
  */
 
-import { avg, count, desc, gte } from "drizzle-orm";
+import { avg, count, desc, gte, max } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { affiliateClicks } from "@/lib/db/schema";
+import { baseTargetUrl } from "@/lib/email/pool";
 
 /** What one visit recorded. `ranAt` is when the edge saw the click, not insert time. */
 export type AffiliateClickReport = {
@@ -109,6 +110,50 @@ export async function listAffiliateClicks(
     .from(affiliateClicks)
     .orderBy(desc(affiliateClicks.ranAt))
     .limit(clampClickLimit(limit));
+}
+
+/**
+ * The latest visit per target, in epoch milliseconds, for the one-off click's
+ * rotate mode: the target whose last visit is oldest goes next, so this is the
+ * only history that draw reads.
+ *
+ * The query groups by the stored string, not by target, because a row holds the
+ * URL the visitor was sent to — the pool stamps every one with its provider's
+ * `utm_*` params, so a single target appears as one string per provider. Folding
+ * each stamped URL through `baseTargetUrl` collapses those back onto the target
+ * row's own URL, and keeping the max per base means a target visited from two
+ * providers has one entry at its latest visit rather than two entries that
+ * would each look never-seen.
+ *
+ * A group whose max is null is skipped: it is a row with no `ran_at`, which
+ * cannot say when that target was last visited. A stored value that is not a
+ * date parses to `NaN` and is skipped for the same reason.
+ */
+export async function lastClickByTargetUrl(): Promise<Map<string, number>> {
+  const rows = await db
+    .select({
+      target: affiliateClicks.target,
+      lastAt: max(affiliateClicks.ranAt),
+    })
+    .from(affiliateClicks)
+    .groupBy(affiliateClicks.target);
+
+  const last = new Map<string, number>();
+  for (const row of rows) {
+    if (row.lastAt === null || row.lastAt === undefined) continue;
+    // The HTTP driver returns a timestamp as a string, not a Date; accept both
+    // so a driver change cannot silently empty the rotation history.
+    const at =
+      row.lastAt instanceof Date
+        ? row.lastAt.getTime()
+        : new Date(String(row.lastAt)).getTime();
+    if (!Number.isFinite(at)) continue;
+
+    const base = baseTargetUrl(row.target);
+    const seen = last.get(base);
+    if (seen === undefined || at > seen) last.set(base, at);
+  }
+  return last;
 }
 
 /**

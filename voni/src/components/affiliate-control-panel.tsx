@@ -49,6 +49,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import {
+  TARGET_SELECTION_DEFAULT,
+  TARGET_SELECTION_DESCRIPTIONS,
+  TARGET_SELECTION_LABELS,
+  TARGET_SELECTION_LEGACY,
+  type TargetSelection,
+} from "@/lib/email/target-selection";
+import { targetHost } from "@/lib/email/target-url";
 import {
   FREQUENCY_MINUTES,
   FREE_TIER_EXECUTIONS_PER_MONTH,
@@ -81,7 +90,23 @@ export type CheckView = {
   probeIds: number[];
   /** Clicks one run sends, read from the stored script by the page. */
   clicksPerRun: number;
+  /**
+   * How the stored script picks a target, read from its `TARGET_SELECTION`
+   * marker. `null` means the script predates the setting — "no choice yet", not
+   * "rotate": the panel opens its switch on the new default while the copy
+   * beside it says the live script is still rotating.
+   */
+  targetSelection: TargetSelection | null;
   modified: string | null;
+};
+
+/**
+ * One tickable target for "Run one click now". Only enabled rows are passed;
+ * `url` is here so the picker can name the host instead of a database id.
+ */
+export type OneOffTargetView = {
+  id: string;
+  url: string;
 };
 
 export type ProbeView = {
@@ -120,6 +145,12 @@ export type AffiliateControlPanelProps = {
   locked: boolean;
   check: CheckView | null;
   probes: ProbeView[];
+  /**
+   * Enabled target rows, for the one-off click's picker. The server re-reads
+   * the rows itself and refuses an unknown or empty subset, so this list is
+   * only what the operator may choose from, not the authority.
+   */
+  oneOffTargets: OneOffTargetView[];
   stats: StatsView;
   clicks: ClickRowView[];
   /**
@@ -560,9 +591,11 @@ function SaveSubmitButton({ disabled = false }: { disabled?: boolean }) {
 function ControlsForm({
   check,
   probes,
+  oneOffTargets,
 }: {
   check: CheckView | null;
   probes: ProbeView[];
+  oneOffTargets: OneOffTargetView[];
 }) {
   const [frequency, setFrequency] = useState<number>(() => {
     const minutes = check ? check.frequencyMs / MINUTE_MS : NaN;
@@ -575,6 +608,24 @@ function ControlsForm({
   // number is what the preview and the save gate use.
   const [clicksText, setClicksText] = useState<string>(() =>
     String(check?.clicksPerRun ?? 1),
+  );
+  // Initialised from the stored choice, and from the new default when the
+  // script predates the setting (null = "no choice yet"). The description below
+  // says what the live script is still doing in that case, so the switch never
+  // claims a mode the deployed check is not running without explaining why.
+  // A flip is a pending save, so `savedSelection` below stays the read-back for
+  // any copy that describes the current check rather than the unsaved switch.
+  const [selection, setSelection] = useState<TargetSelection>(
+    () => check?.targetSelection ?? TARGET_SELECTION_DEFAULT,
+  );
+  // Whether the switch opens on the default because the stored script has no
+  // marker yet; drives the one-line migration note.
+  const selectionUnmarked = check !== null && check.targetSelection === null;
+  // Every enabled target starts ticked: a one-off click usually means "do the
+  // check's work once", and an unticked default would leave the button dead
+  // with no hint why. Nothing persists — a reload ticks all of them again.
+  const [oneOffSelected, setOneOffSelected] = useState<string[]>(() =>
+    oneOffTargets.map((target) => target.id),
   );
 
   const [saveState, saveAction, saving] = useActionState(saveVolume, INITIAL);
@@ -613,6 +664,23 @@ function ControlsForm({
   const previewClicks = clicksValid ? clicks : 0;
   const previewProbes = selected.length;
   const disabled = !check || saving;
+  // What the running script does, as opposed to what the switch is about to
+  // save. The one-off click reads its mode server-side from this same value.
+  const savedSelection: TargetSelection =
+    check?.targetSelection ?? TARGET_SELECTION_LEGACY;
+  const hasOneOffTargets = oneOffTargets.length > 0;
+  // The server refuses an empty subset; this only makes the refusal visible
+  // immediately instead of after a round trip. Count the *rendered* ticks, not
+  // the state array: a target removed or paused since mount stays in state but
+  // has no checkbox to submit, so it must not keep the button alive.
+  const tickedCount = oneOffTargets.filter((target) =>
+    oneOffSelected.includes(target.id),
+  ).length;
+  const oneOffReady = !hasOneOffTargets || tickedCount > 0;
+  const selectionLabel =
+    selection === "random"
+      ? "Draw targets at random"
+      : "Rotate through every target";
 
   async function handleLock() {
     setLocking(true);
@@ -700,6 +768,39 @@ function ControlsForm({
           </Field>
         </FieldGroup>
 
+        {/* Full width: the mode is one choice for the whole check, so it must
+            not look like a peer of the interval or the click count. The hidden
+            field is the submission: the Switch is a button-style Base UI
+            control that posts nothing on its own, and the server refuses a
+            request with no `selection` rather than guessing the default. */}
+        <Field>
+          <input type="hidden" name="selection" value={selection} />
+          <div className="flex items-center justify-between gap-3">
+            <FieldLabel htmlFor="email-control-selection">
+              {selectionLabel}
+            </FieldLabel>
+            <Switch
+              id="email-control-selection"
+              checked={selection === "random"}
+              onCheckedChange={(next: boolean) => {
+                setSelection(next ? "random" : "rotate");
+              }}
+              disabled={disabled}
+              data-testid="email-control-selection"
+            />
+          </div>
+          <FieldDescription>
+            <span className="text-foreground font-medium">
+              {TARGET_SELECTION_LABELS[selection]}
+            </span>{" "}
+            — {TARGET_SELECTION_DESCRIPTIONS[selection]} This is the mode stored
+            in the saved script; flipping the switch applies it when you save.
+            {selectionUnmarked
+              ? " The saved script predates this setting and is still rotating through every target; saving now applies your choice."
+              : null}
+          </FieldDescription>
+        </Field>
+
         <VolumePreview
           probes={previewProbes}
           clicks={previewClicks}
@@ -768,19 +869,80 @@ function ControlsForm({
         </form>
         <FeedbackAlert state={toggleState} />
 
-        <form action={clickAction} className="flex flex-wrap items-center gap-3">
-          <LoadingButton
-            type="submit"
-            variant="outline"
-            pending={clicking}
-            pendingText="Running…"
-            icon={<RefreshCw />}
-          >
-            Run one click now
-          </LoadingButton>
-          <span className="text-muted-foreground text-sm">
-            Runs from voni&apos;s server, not Grafana.
-          </span>
+        <form action={clickAction} className="grid gap-3">
+          {/* No picker when there is nothing enabled: the server already
+              refuses with "Every target is paused…", and an empty fieldset
+              would only restate that. */}
+          {hasOneOffTargets ? (
+            <FieldGroup className="grid gap-2 sm:grid-cols-2">
+              <p className="text-muted-foreground text-sm sm:col-span-2">
+                Targets for this click
+              </p>
+              {oneOffTargets.map((target) => {
+                const id = `email-one-off-target-${target.id}`;
+                const checked = oneOffSelected.includes(target.id);
+                return (
+                  <Field key={target.id} orientation="horizontal">
+                    <Checkbox
+                      id={id}
+                      name="target"
+                      value={target.id}
+                      checked={checked}
+                      onCheckedChange={(next: boolean) => {
+                        setOneOffSelected((previous) =>
+                          next
+                            ? [
+                                ...previous.filter(
+                                  (value) => value !== target.id,
+                                ),
+                                target.id,
+                              ]
+                            : previous.filter((value) => value !== target.id),
+                        );
+                      }}
+                      disabled={clicking}
+                    />
+                    <FieldLabel htmlFor={id}>
+                      <span className="font-mono text-xs">
+                        {targetHost(target.url)}
+                      </span>
+                    </FieldLabel>
+                  </Field>
+                );
+              })}
+              {/* Only when the check is readable: an unreadable check has no
+                  mode to describe, and the card already says so. */}
+              {check !== null && savedSelection === "rotate" ? (
+                <p className="text-muted-foreground text-sm sm:col-span-2">
+                  In Rotate mode the click goes to the least recently clicked of
+                  the ticked targets.
+                </p>
+              ) : null}
+            </FieldGroup>
+          ) : null}
+
+          {oneOffReady ? null : (
+            <p className="text-destructive text-sm">
+              Select at least one target for this click.
+            </p>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <LoadingButton
+              type="submit"
+              variant="outline"
+              pending={clicking}
+              pendingText="Running…"
+              icon={<RefreshCw />}
+              disabled={!oneOffReady}
+              data-testid="email-one-off-click"
+            >
+              Run one click now
+            </LoadingButton>
+            <span className="text-muted-foreground text-sm">
+              Runs from voni&apos;s server, not Grafana.
+            </span>
+          </div>
         </form>
         <FeedbackAlert state={clickState} />
 
@@ -961,6 +1123,7 @@ export function AffiliateControlPanel({
   locked,
   check,
   probes,
+  oneOffTargets,
   stats,
   clicks,
   checkError = null,
@@ -993,7 +1156,11 @@ export function AffiliateControlPanel({
               </div>
             </div>
           ) : (
-            <ControlsForm check={check} probes={probes} />
+            <ControlsForm
+              check={check}
+              probes={probes}
+              oneOffTargets={oneOffTargets}
+            />
           )}
         </CardContent>
       </Card>

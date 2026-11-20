@@ -12,6 +12,7 @@ import {
   type BurstDispatchResult,
 } from "./dispatch";
 import { US_ZONES, planBurst } from "./plan";
+import { TARGET_SELECTION_DEFAULT } from "../email/target-selection";
 
 const TOKEN = "ghp_burstsecretvalue123";
 const ALL_ZONES = US_ZONES.map((zone) => zone.id);
@@ -259,6 +260,32 @@ test("the panel's live target list rides the dispatch, and empty stays empty", a
     inputs: Record<string, string>;
   };
   assert.equal(emptyBody.inputs.targets, "");
+});
+
+test("the target-selection mode rides the dispatch, defaulting to random", async () => {
+  const cases = [
+    { selection: undefined, expected: TARGET_SELECTION_DEFAULT },
+    { selection: "rotate" as const, expected: "rotate" },
+    { selection: "random" as const, expected: "random" },
+  ];
+
+  for (const { selection, expected } of cases) {
+    const { fetcher, calls } = stubFetch(204);
+    await dispatchBurst(plan(), {
+      fetcher,
+      readSecret: async () => TOKEN,
+      ...(selection ? { selection } : {}),
+    });
+
+    const body = JSON.parse(String(calls[0]!.init.body)) as {
+      inputs: Record<string, string>;
+    };
+    assert.equal(
+      body.inputs.selection,
+      expected,
+      `selection ${selection ?? "(omitted)"} must be sent as ${expected}`,
+    );
+  }
 });
 
 test("the manual command still names the committed script", () => {

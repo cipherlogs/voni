@@ -30,6 +30,10 @@ import {
 } from "./user-agents";
 import TARGETS_JSON from "./targets.json";
 import {
+  TARGET_SELECTION_DEFAULT,
+  type TargetSelection,
+} from "./target-selection";
+import {
   EMAIL_CAMPAIGN,
   EMAIL_MEDIUM,
   EMAIL_PROVIDERS,
@@ -121,6 +125,12 @@ export type CheckScriptInput = {
    * have. Empty is refused: a check with no targets runs green and does nothing.
    */
   targets?: readonly string[];
+  /**
+   * How each click picks its target. Omitted means `TARGET_SELECTION_DEFAULT`
+   * (random); "rotate" keeps the pre-setting shuffle-bag behaviour. The emitted
+   * script carries the mode as a constant the panel reads back.
+   */
+  selection?: TargetSelection;
 };
 
 /**
@@ -177,6 +187,39 @@ function renderFamilies(): string {
 
 function renderTargets(targets: readonly string[]): string {
   return targets.map((target) => `  ${quote(target)},`).join("\n");
+}
+
+/**
+ * The per-click draw, as source, and the one thing that makes the two modes
+ * different inside the script. The marker constant beside the target list is an
+ * annotation the panel reads back; this definition is the behaviour, and both
+ * come from one input so they cannot disagree.
+ */
+function renderTargetDraw(selection: TargetSelection): string {
+  if (selection === "random") {
+    return `/**
+ * Uniform draw with replacement: every click picks any entry in TARGETS with
+ * equal odds, so a target can repeat back-to-back and another may wait. This is
+ * TARGET_SELECTION "random", the panel's default.
+ */
+function nextTarget() {
+  return TARGETS[Math.floor(Math.random() * TARGETS.length)];
+}`;
+  }
+
+  return `/**
+ * Draw without replacement: every entry in TARGETS appears once per pass, in a
+ * fresh shuffled order, then the bag refills. This is TARGET_SELECTION
+ * "rotate", the behaviour every script built before the mode existed had.
+ */
+const nextTarget = shuffleBag(TARGETS);`;
+}
+
+/** The header's one-line description of the two draws, matching the mode. */
+function targetDoc(selection: TargetSelection): string {
+  return selection === "random"
+    ? "at random (with replacement)"
+    : "from a no-repeat bag";
 }
 
 function renderProviders(): string {
@@ -349,6 +392,7 @@ export function buildCheckScript({
   clicksPerRun,
   reportSecret,
   targets = TARGETS_JSON,
+  selection = TARGET_SELECTION_DEFAULT,
 }: CheckScriptInput): string {
   assertClicksPerRun(clicksPerRun);
   if (reportSecret !== null) assertReportSecret(reportSecret);
@@ -384,11 +428,12 @@ const CLICKS_PER_RUN = ${clicksPerRun};
  * Do not hand-edit this file; run \`npm run affiliate:check\` instead.
  *
  * What it does: each iteration draws a browser profile from a weighted matrix
- * (family by weight, member uniformly), draws a target and a source from
- * no-repeat bags, stamps the three utm params on the target (keeping its own
- * query params), and fetches it with a browser-shaped header set — including
- * the client hints a Chromium-family profile sends — following up to ten
- * redirects. Each click logs one JSON line, then reports it back to voni.
+ * (family by weight, member uniformly), draws a target
+ * ${targetDoc(selection)}, stamps the three utm params on the target
+ * (keeping its own query params), and fetches it with a browser-shaped header
+ * set — including the client hints a Chromium-family profile sends — following
+ * up to ten redirects. Each click logs one JSON line, then reports it back to
+ * voni.
 ${clicksDoc} *
  * Two run rules live in \`options\` below: DNS resolves IPv4 only, so the same
  * target is not measured over a different address family each run, and one
@@ -460,6 +505,14 @@ ${clicksConstant}
 const TARGETS = [
 ${renderTargets(targets)}
 ];
+
+/**
+ * How each click picks its target. This is an annotation, not a branch: the
+ * behaviour is the definition of nextTarget below, and the builder emits both
+ * from the same input. The /email panel reads this line back, so it knows what
+ * the stored check is doing — and that a script without it has no choice yet.
+ */
+const TARGET_SELECTION = ${quote(selection)};
 
 /** src/lib/email/pool.ts EMAIL_PROVIDERS. */
 const PROVIDERS = [
@@ -560,7 +613,8 @@ function shuffleBag(items) {
   };
 }
 
-const nextTarget = shuffleBag(TARGETS);
+${renderTargetDraw(selection)}
+
 const nextProvider = shuffleBag(PROVIDERS);
 
 /** Set one query key, preserving every other param (and any #fragment). */

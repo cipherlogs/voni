@@ -1,4 +1,8 @@
 import { secret } from "@/lib/env";
+import {
+  TARGET_SELECTION_DEFAULT,
+  type TargetSelection,
+} from "@/lib/email/target-selection";
 import type { BurstPlan } from "./plan";
 
 /**
@@ -9,6 +13,10 @@ import type { BurstPlan } from "./plan";
  * token and the generated script, and both belong on a runner rather than in a
  * Worker request. So the app's only job is one workflow dispatch, and the
  * workflow (`.github/workflows/burst.yml`) does the rest.
+ *
+ * A run must click the same list in the same mode as the panel's check, so the
+ * dispatch carries both: the operator's targets and the target-selection mode
+ * the generated script should use.
  *
  * The token is optional on purpose. Requiring a fine-grained PAT with Actions
  * write access just to try a burst is a gate nobody needs, and the repo already
@@ -63,6 +71,13 @@ export type DispatchDeps = {
    * committed seed — the same list a manual `k6 cloud run` would use.
    */
   targets?: readonly string[];
+  /**
+   * How the run picks each click's target. The workflow writes this into the
+   * generated script as `TARGET_SELECTION`, so a burst behaves the way the
+   * panel's check does rather than falling back to whatever the committed seed
+   * was built with. Omitted means `TARGET_SELECTION_DEFAULT`.
+   */
+  selection?: TargetSelection;
 };
 
 function messageOf(error: unknown): string {
@@ -157,6 +172,10 @@ export async function dispatchBurst(
           targets: deps.targets && deps.targets.length > 0
             ? JSON.stringify(deps.targets)
             : "",
+          // Always sent, never empty: the workflow asserts the generated
+          // script carries exactly this mode, and an empty input would leave
+          // the run on the committed script's mode without saying so.
+          selection: deps.selection ?? TARGET_SELECTION_DEFAULT,
         },
       }),
       signal: AbortSignal.timeout(10_000),

@@ -1,0 +1,13 @@
+targetNamespace: ''
+packages:
+  - name: click
+    functions:
+      - name: run
+        binary: false
+        main: ''
+        runtime: 'nodejs:22'
+        web: true
+        webSecure: false
+        limits:
+          timeout: 60000
+          memory: 256
