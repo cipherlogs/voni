@@ -18,6 +18,7 @@ import { TargetsCard } from "@/components/targets-card";
 import {
   addTarget,
   dispatchGithubNow,
+  pauseAllSources,
   removeTarget,
   runBurst,
   saveGithubSchedule,
@@ -46,7 +47,11 @@ import {
 } from "@/lib/email/control";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
 import { newestClickByOs, readSourceConfig } from "@/lib/email/source-config";
-import { US_PROBES } from "@/lib/email/volume";
+import {
+  US_PROBES,
+  clicksPerDay as grafanaClicksPerDay,
+} from "@/lib/email/volume";
+import { RUNNER_OSES, clicksPerDay as runnerClicksPerDay } from "@/lib/email/sources";
 import { BROWSER_CHECK_RUN_URL } from "@/lib/github/dispatch";
 import { secret } from "@/lib/env";
 import {
@@ -355,6 +360,35 @@ async function EmailControlData({
     targets.map((target) => target.url),
   );
 
+  // Ticket 09: the aggregate the console exists to show. Both terms come from
+  // the volume modules the cards already render — Grafana's from the live
+  // check, GitHub's from the saved schedule, the shared list and the closed OS
+  // set — so the header cannot grow a second formula. Disabled sources
+  // contribute 0; a Grafana read that failed is `null` (Unavailable), never 0,
+  // because "we could not see the check" and "the check is off" are different
+  // facts. Burst is on demand, so it has no daily volume to add.
+  const grafanaVolume =
+    checkResult.ok && checkResult.data.enabled
+      ? grafanaClicksPerDay(
+          checkResult.data.frequencyMs,
+          checkResult.data.probeIds.length,
+          checkResult.data.clicksPerRun,
+        )
+      : checkResult.ok
+        ? 0
+        : null;
+  const githubVolume =
+    githubConfig?.enabled === true
+      ? runnerClicksPerDay(
+          githubConfig.intervalSeconds,
+          githubConfig.windowSeconds,
+          targets.length,
+          RUNNER_OSES.length,
+        )
+      : 0;
+  const totalClicksPerDay =
+    grafanaVolume === null ? null : grafanaVolume + githubVolume;
+
   const notice = noticeCopy(params.notice);
 
   return (
@@ -371,9 +405,25 @@ async function EmailControlData({
       <TargetsCard
         locked={locked}
         targets={targets}
+        volume={{
+          totalClicksPerDay,
+          sources: [
+            {
+              label: "Grafana",
+              enabled: checkResult.ok && checkResult.data.enabled,
+              clicksPerDay: grafanaVolume,
+            },
+            {
+              label: "GitHub",
+              enabled: githubConfig?.enabled === true,
+              clicksPerDay: githubVolume,
+            },
+          ],
+        }}
         addTarget={addTarget}
         toggleTarget={toggleTarget}
         removeTarget={removeTarget}
+        pauseAll={pauseAllSources}
       />
       <section className="grid gap-6" aria-labelledby="email-sources-heading">
         <h2

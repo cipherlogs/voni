@@ -91,3 +91,89 @@ test("locked disables every write control and says why", () => {
   );
   assert.match(card, /\{locked \? null : <AddTargetForm/);
 });
+
+/**
+ * Ticket 09: the aggregate volume line and Pause all. The console exists to
+ * show one number — what every enabled source adds up to per day — so these
+ * assertions pin where that number comes from, what it says when Grafana
+ * cannot be read, and that pausing everything is one labelled act rather than
+ * an unlabelled spinner.
+ */
+test("the header states the total across enabled continuous sources", () => {
+  assert.match(card, /data-testid="email-targets-volume"/);
+  assert.match(card, /volume\.totalClicksPerDay/);
+  assert.match(card, /clicks\/day/);
+  // A short per-source breakdown follows the total, from the same prop.
+  assert.match(card, /volume\.sources\.map/);
+  assert.match(card, /source\.label/);
+});
+
+test("a failed Grafana read makes the total Unavailable, never zero", () => {
+  assert.match(
+    card,
+    /volume\.totalClicksPerDay === null[\s\S]*?Unavailable/,
+    "the null branch renders the word",
+  );
+  assert.match(
+    card,
+    /unknown\s+rather than zero/,
+    "and says why the number is missing",
+  );
+  assert.match(
+    card,
+    /source\.clicksPerDay === null[\s\S]*?unavailable/,
+    "the per-source breakdown distinguishes unavailable from paused",
+  );
+});
+
+test("a disabled source is shown as paused, contributing nothing", () => {
+  assert.match(card, /if \(!source\.enabled\) return `\$\{source\.label\} paused`/);
+});
+
+test("Pause all is beside the aggregate line and posts to its own action", () => {
+  assert.match(card, /pauseAll:/, "the action arrives as a prop");
+  assert.match(card, /<form action=\{pauseAction\}>/);
+  assert.match(card, /Pause all/);
+  assert.match(
+    card,
+    /It leaves the target\s+list alone[\s\S]*?queued GitHub segment keeps running/,
+    "the copy says what Pause all does not do",
+  );
+  assert.match(
+    page,
+    /pauseAllSources/,
+    "the page imports the action",
+  );
+  assert.match(page, /pauseAll=\{pauseAllSources\}/);
+});
+
+test("each affected source has its own pending line", () => {
+  assert.match(card, /Pausing Grafana…/);
+  assert.match(card, /Disabling GitHub…/);
+  assert.match(
+    card,
+    /pausingAll \?[\s\S]*?Pausing Grafana…[\s\S]*?Disabling GitHub…/,
+    "both lines render together while the single request runs",
+  );
+});
+
+test("locked disables Pause all and says why", () => {
+  assert.match(
+    card,
+    /Unlock the controls to pause every source\./,
+  );
+  const testId = card.indexOf('data-testid="email-targets-pause-all"');
+  const form = card.slice(card.indexOf("<form action={pauseAction}>"), testId);
+  assert.match(form, /pending=\{pausingAll\}/);
+  assert.match(form, /disabled=\{locked\}/);
+});
+
+test("per-source outcomes are shown as separate sentences", () => {
+  assert.match(card, /state\.grafana/);
+  assert.match(card, /state\.github/);
+  assert.match(card, /check paused/);
+  assert.match(card, /source disabled/);
+  assert.match(card, /was already paused/);
+  assert.match(card, /could not be paused/);
+  assert.match(card, /could not be disabled/);
+});
