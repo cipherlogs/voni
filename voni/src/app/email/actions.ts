@@ -26,14 +26,21 @@ import {
 import { nextEmailProvider, baseTargetUrl, resolveTarget } from "@/lib/email/pool";
 import {
   GITHUB_SOURCE_PRODUCER,
+  readSourceConfig,
+  recordSourceDispatch,
   saveSourceSchedule,
   setSourceEnabled,
 } from "@/lib/email/source-config";
 import {
+  MAX_JOB_SECONDS,
+  RUNNER_OSES,
   parseInterval,
   parseWindowSeconds,
   parseWindowStartHour,
+  windowRemainingSeconds,
+  type RunnerOs,
 } from "@/lib/email/sources";
+import { dispatchBrowserCheck } from "@/lib/github/dispatch";
 import {
   TARGET_SELECTION_DEFAULT,
   TARGET_SELECTION_LEGACY,
@@ -971,5 +978,110 @@ export async function saveGithubSchedule(
     ok: true,
     message:
       "Schedule saved. The new interval, window and start hour apply on the next dispatch.",
+  };
+}
+
+/** The refusal for an OS the workflow cannot run; the allowlist is the closed set. */
+const GITHUB_OS_REASON =
+  "Choose one operating system to dispatch: ubuntu, windows or macos.";
+
+const GITHUB_NO_TARGETS_REASON =
+  "Every target is paused, so a browser check would click nothing. Resume one first.";
+
+const GITHUB_NOT_CONFIGURED_REASON =
+  "The GitHub source has no configuration row yet, so there is no schedule to dispatch with.";
+
+/**
+ * What a manual dispatch returns. It carries more than `ControlState` because a
+ * dispatch has two shapes of success: a queued run links to the workflow page,
+ * and a missing token prints the exact command instead of failing.
+ */
+export type GithubDispatchState = {
+  ok: boolean;
+  /** `dispatched` queued a run; `manual` printed the command to run instead. */
+  mode?: "dispatched" | "manual";
+  message?: string;
+  error?: string;
+  runUrl?: string;
+  fallback?: { command: string };
+};
+
+/**
+ * Dispatch one operating system right now, so the path can be proved before
+ * continuous running is turned on.
+ *
+ * This is an inline bounded call, not a job: the request is one small POST, the
+ * run's durability is GitHub's, and creating a job row would mean a session- and
+ * creator-scoped record for a page that authorises with a control cookie.
+ *
+ * The targets and the schedule are read here, never taken from the form: a body
+ * could otherwise point GitHub's runners at any host, or dispatch an interval
+ * the schedule domain would refuse. The segment is clamped to the job ceiling
+ * for the same reason a chained window is — a single job cannot outlive six
+ * hours.
+ */
+export async function dispatchGithubNow(
+  _previous: GithubDispatchState,
+  formData: FormData,
+): Promise<GithubDispatchState> {
+  void _previous;
+  if (!(await requireControl())) return { ok: false, error: LOCKED.error };
+
+  const os = String(formData.get("os") ?? "");
+  if (!(RUNNER_OSES as readonly string[]).includes(os)) {
+    return { ok: false, error: GITHUB_OS_REASON };
+  }
+
+  // The live list, not a field: the runner must click what the console shows.
+  const targets = await activeTargetUrls();
+  if (targets.length === 0) {
+    return { ok: false, error: GITHUB_NO_TARGETS_REASON };
+  }
+
+  const config = await readSourceConfig();
+  if (!config) return { ok: false, error: GITHUB_NOT_CONFIGURED_REASON };
+
+  // One dispatch runs one segment: the rest of the open window, capped at the
+  // job ceiling. Outside the window there is nothing left to measure, so a
+  // manual dispatch takes a full segment rather than refusing the operator.
+  const now = new Date();
+  const segment = Math.min(
+    windowRemainingSeconds(now, config.windowSeconds, config.windowStartHour) ||
+      MAX_JOB_SECONDS,
+    MAX_JOB_SECONDS,
+  );
+
+  const result = await dispatchBrowserCheck({
+    os: os as RunnerOs,
+    targets,
+    intervalSeconds: config.intervalSeconds,
+    windowSeconds: segment,
+  });
+
+  // The dispatcher owns every sentence — 401, 403, 404, transport, other — and
+  // has already redacted the token, so it reaches the operator unchanged.
+  if (!result.ok) return { ok: false, error: result.error };
+
+  if (result.mode === "manual") {
+    // No token is a configuration choice, not a failure. Nothing was queued, so
+    // nothing is recorded: a recorded dispatch here would throttle a retry for a
+    // run that never happened.
+    return {
+      ok: true,
+      mode: "manual",
+      message:
+        "No dispatch token is configured, so nothing was queued — run this line yourself:",
+      fallback: result.fallback,
+    };
+  }
+
+  await recordSourceDispatch(GITHUB_SOURCE_PRODUCER, now);
+  revalidatePath("/email");
+
+  return {
+    ok: true,
+    mode: "dispatched",
+    message: `The ${os} browser check is queued. Its progress is in the run list on the workflow page.`,
+    runUrl: result.runUrl,
   };
 }

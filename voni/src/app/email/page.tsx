@@ -17,6 +17,7 @@ import { GithubSourceCard } from "@/components/github-source-card";
 import { TargetsCard } from "@/components/targets-card";
 import {
   addTarget,
+  dispatchGithubNow,
   removeTarget,
   runBurst,
   saveGithubSchedule,
@@ -411,6 +412,7 @@ async function EmailControlData({
           now={now}
           setEnabled={setGithubSourceEnabled}
           saveSchedule={saveGithubSchedule}
+          dispatchNow={dispatchGithubNow}
         />
         <BurstCard
           locked={locked}
