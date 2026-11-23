@@ -3,10 +3,11 @@
  * scheduled handlers for durable background jobs.
  *
  * Both handlers re-dispatch through internal routes on the generated fetch
- * handler (POST /api/internal/jobs/consume and .../sweep) rather than
- * importing app code here: the OpenNext server bundle already resolves @/
- * aliases, next/cache, and the AI SDK with its workerd patches, while a
- * second hand-bundled copy of the same modules fails to resolve them.
+ * handler (POST /api/internal/jobs/consume and .../sweep, then .../sources/tick
+ * after the sweep) rather than importing app code here: the OpenNext server
+ * bundle already resolves @/ aliases, next/cache, and the AI SDK with its
+ * workerd patches, while a second hand-bundled copy of the same modules fails
+ * to resolve them.
  * Queue messages carry only `{ jobId, kind }`; Postgres owns the truth.
  */
 
@@ -70,7 +71,20 @@ const worker = {
   },
 
   async scheduled(_event: unknown, env: WorkerEnv): Promise<void> {
-    await callInternal("/api/internal/jobs/sweep", workerSecret(env), {});
+    const secret = workerSecret(env);
+
+    // Jobs first, and a sweep failure still fails the cron: a job that is not
+    // swept is lost work. The source ticker runs after it and is subordinate —
+    // it merely asks whether a runner loop needs restarting, so an unreachable
+    // route, a missing database row or a GitHub outage must not turn the sweep
+    // into a failed invocation and must not be retried as though jobs were at
+    // stake.
+    await callInternal("/api/internal/jobs/sweep", secret, {});
+    try {
+      await callInternal("/api/internal/sources/tick", secret, {});
+    } catch (error) {
+      console.error("sources: tick failed", error);
+    }
   },
 };
 
