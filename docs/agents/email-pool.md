@@ -376,8 +376,15 @@ target lowers both the volume and the denominator.
 ### The runner
 
 `voni/scripts/browser-click.mjs` launches Chrome once per segment. Every click
-gets a fresh browser context, so cookies, storage and cache never leak from one
-target to the next. Per pass it:
+draws a profile from the shared pool in `user-agents.ts` and gets a fresh browser
+context, so cookies, storage and cache never leak from one target to the next.
+Phone and tablet are ~60% of that mix (58% phone, 2% tablet), with Chrome
+desktop still the largest single family. A phone or tablet click sets `isMobile`,
+`hasTouch`, `deviceScaleFactor` (3 for phone, 2 for tablet) and the matching
+viewport alongside the UA, locale and client hints, so the DOM agrees with the
+string the click sends — a mobile UA on a non-touch 1x desktop window is a
+contradiction page JavaScript can read. The Grafana k6 path runs no JavaScript:
+it presents a mobile profile by User-Agent and client hints only. Per pass it:
 
 1. shuffles the dispatched target list and clicks all of it;
 2. records final URL, status and duration, and posts the report with
@@ -405,9 +412,16 @@ the campaign decision is recorded here, and the spec is left as history.
 
 GitHub-hosted runners egress from a small shared pool of Azure addresses, and
 every runner in a hosted OS pool can look the same to an affiliate. Rotating the
-browser profile changes the User-Agent, client hints and viewport — a header,
-not the IP address or the ASN. A per-provider campaign makes the URL plausible;
-it does not make a datacenter visitor a residential one.
+browser profile changes the User-Agent, client hints, viewport, touch and DPR — a
+set of headers and DOM facts, not the IP address or the ASN. A per-provider
+campaign makes the URL plausible; it does not make a datacenter visitor a
+residential one.
+
+The address belongs to the host, not the guest: a GitHub-hosted runner egresses
+through the host's NAT, so one segment is one VM with one egress IP, and a
+network reset inside the guest cannot change it. A proxy is the only per-click
+egress control this source has; without one, every click of a segment leaves
+from the same address whatever profile it claims.
 
 The supported fix is a proxy. `voni/scripts/browser-click.mjs` reads:
 

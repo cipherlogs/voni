@@ -312,6 +312,33 @@ test("the runner launches Chrome once, isolates every click, and names its misse
   );
 });
 
+test("a click presents as the device class its profile claims, not only a UA", () => {
+  // A phone UA on a desktop DOM (no touch, 1x DPR, 1440px window) is a
+  // contradiction page JavaScript can read, so the device class sets all of
+  // these together and clickOnce spreads one helper's answer into the context.
+  assert.match(RUNNER, /contextOptionsFor\(profile\)/);
+  assert.match(RUNNER, /\.\.\.contextOptionsFor\(profile\),/);
+  assert.match(
+    RUNNER,
+    /isMobile: true, hasTouch: true, deviceScaleFactor: 3/,
+    "phone: mobile viewport, touch, 3x DPR",
+  );
+  assert.match(
+    RUNNER,
+    /isMobile: true, hasTouch: true, deviceScaleFactor: 2/,
+    "tablet: mobile viewport, touch, 2x DPR",
+  );
+  assert.match(
+    RUNNER,
+    /isMobile: false, hasTouch: false, deviceScaleFactor: 1/,
+    "desktop: non-touch, 1x DPR",
+  );
+  // The viewports are unchanged; only the signals around them were missing.
+  assert.match(RUNNER, /width: 390, height: 844/);
+  assert.match(RUNNER, /width: 820, height: 1_180/);
+  assert.match(RUNNER, /width: 1_440, height: 900/);
+});
+
 test("the runner labels every click with its pass and reports the final pass", () => {
   assert.match(RUNNER, /const passId = randomUUID\(\)/, "one id per pass");
   assert.match(RUNNER, /randomUUID/, "the id is generated, never reused from input");
