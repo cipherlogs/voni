@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { cookies } from "next/headers";
 import { connection } from "next/server";
-import { CheckCircle2, LockKeyhole, MailIcon } from "lucide-react";
+import { LockKeyhole, MailIcon } from "lucide-react";
 import {
   AffiliateControlPanel,
   ClickSurface,
@@ -12,6 +12,10 @@ import {
   type ProbeView,
 } from "@/components/affiliate-control-panel";
 import { EmailGateForm } from "@/components/email-gate-form";
+import {
+  ControlNoticeToast,
+  type ControlNotice,
+} from "@/components/control-notice-toast";
 import { BurstCard } from "@/components/burst-card";
 import { GithubSourceCard } from "@/components/github-source-card";
 import { TargetsCard } from "@/components/targets-card";
@@ -28,7 +32,6 @@ import {
 import { US_ZONES } from "@/lib/burst/plan";
 import { GateFrame, GateSkeleton } from "@/components/email-gate-skeleton";
 import { CardListSkeleton, TableSkeleton } from "@/components/page-skeletons";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { PUBLIC_CONTAINER } from "@/lib/public-container";
 import { VoniLogo } from "@/components/voni-logo";
@@ -158,15 +161,16 @@ function toClickRow(row: {
 }
 
 /**
- * The query string only selects one of two fixed sentences. Nothing from the
- * URL is echoed, so `?notice=<anything>` cannot put attacker copy on the page.
+ * The query string only selects one of two fixed notices. Nothing from the URL
+ * is echoed — the union is closed, and the sentences live in the toast
+ * component — so `?notice=<anything>` cannot put attacker copy on the page.
  */
-function noticeCopy(value: string | undefined): string | null {
+function noticeCopy(value: string | undefined): ControlNotice | null {
   switch (value) {
     case "unlocked":
-      return "Controls unlocked for 12 hours.";
+      return "unlocked";
     case "locked":
-      return "Controls locked. This panel is read-only again.";
+      return "locked";
     default:
       return null;
   }
@@ -401,13 +405,7 @@ async function EmailControlData({
 
   return (
     <div className="grid gap-6">
-      {notice ? (
-        <Alert className="status-enter">
-          <CheckCircle2 />
-          <AlertTitle>Done</AlertTitle>
-          <AlertDescription>{notice}</AlertDescription>
-        </Alert>
-      ) : null}
+      {notice ? <ControlNoticeToast notice={notice} /> : null}
       {/* Targets first: one list, every source. The card's own add, pause,
           resume and remove controls are the only target controls on the page. */}
       <TargetsCard

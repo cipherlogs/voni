@@ -1,21 +1,16 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
-import {
-  AlertCircle,
-  CheckCircle2,
-  ExternalLink,
-  GitBranch,
-} from "lucide-react";
+import { useActionState, useState } from "react";
+import { AlertCircle, ExternalLink, GitBranch } from "lucide-react";
 import type {
   ControlState,
   GithubDispatchState,
 } from "@/app/email/actions";
 import {
-  FeedbackAlert,
-  ManualRunFallback,
+  copyCommand,
   formatCount,
   useActionToast,
+  useIntentActionState,
 } from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import { SourceCard, type SourceCardSummary } from "@/components/source-card";
@@ -38,7 +33,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { toast } from "@/components/ui/toast";
 import type { GithubClickSummary, GithubOsStats } from "@/lib/email/clicks";
 import {
   INTERVAL_SECONDS,
@@ -175,102 +169,39 @@ const SOURCE_ERROR_TITLE = "Could not update the source";
 
 const INITIAL_DISPATCH: GithubDispatchState = { ok: false };
 
-/** The dispatch's own alert titles; the schedule/enable ones do not fit here. */
-function useDispatchToast(state: GithubDispatchState) {
-  useEffect(() => {
-    if (state.error) {
-      toast.add({
-        title: "Could not dispatch",
-        description: state.error,
-        type: "error",
-      });
-    } else if (state.mode) {
-      toast.add({
-        title: state.mode === "manual" ? "Run it yourself" : "Dispatched",
-        description: state.message,
-        type: "success",
-      });
-    }
-    // `state` is a fresh object per submission, so a repeat message still shows.
-  }, [state]);
-}
-
 /**
- * The manual run, when no dispatch token is configured. A missing token is a
- * normal outcome, so this is plain paper rather than a destructive Alert — the
- * same presentation the burst card uses for its own fallback. The block itself
- * is shared; only the credential sentence and the test ids are this card's.
+ * The dispatch's toast, in words: an error, a run action, or the command with
+ * a copy action. The effect lives in the row (one per OS), so dispatching
+ * Ubuntu then Windows produces two distinct toasts rather than one shared
+ * state that the second click overwrites.
  */
-function DispatchFallback({ os, command }: { os: RunnerOs; command: string }) {
-  return (
-    <ManualRunFallback
-      command={command}
-      testId={`email-github-dispatch-${os}-fallback`}
-      copyTestId={`email-github-dispatch-${os}-copy`}
-      note={
-        <>
+function useDispatchToast(state: GithubDispatchState) {
+  // The manual command is this card's artifact: it names the token the line
+  // needs, and the toast carries the exact line, not a summary of it.
+  const command =
+    state.mode === "manual" ? state.fallback?.command : undefined;
+
+  useActionToast(state, "Could not dispatch", {
+    successTitle: command ? "Run it yourself" : "Dispatched",
+    timeout: command ? 12_000 : undefined,
+    description: command ? (
+      <>
+        {state.message}{" "}
+        <code className="mt-1 block font-mono text-xs break-all whitespace-pre-wrap">
+          {command}
+        </code>{" "}
+        <span>
           It needs <code className="font-mono">GITHUB_BURST_TOKEN</code> with
           Actions write access on the repository; this line never carries it.
-        </>
-      }
-    />
-  );
-}
-
-/** What one dispatch returned, in words: an error, a run link, or the command. */
-function DispatchResult({
-  os,
-  state,
-}: {
-  os: RunnerOs;
-  state: GithubDispatchState;
-}) {
-  useDispatchToast(state);
-
-  if (state.error) {
-    return (
-      <Alert
-        variant="destructive"
-        className="status-enter"
-        data-testid={`email-github-dispatch-${os}-result`}
-      >
-        <AlertCircle />
-        <AlertTitle>Browser check not dispatched</AlertTitle>
-        <AlertDescription>{state.error}</AlertDescription>
-      </Alert>
-    );
-  }
-
-  if (state.mode === "manual" && state.fallback) {
-    return <DispatchFallback os={os} command={state.fallback.command} />;
-  }
-
-  if (state.runUrl) {
-    return (
-      <Alert
-        className="status-enter"
-        data-testid={`email-github-dispatch-${os}-result`}
-      >
-        <CheckCircle2 />
-        <AlertTitle>Browser check dispatched</AlertTitle>
-        <AlertDescription>
-          <span className="block">{state.message}</span>
-          <a
-            className="mt-1 inline-flex items-center gap-1 font-medium underline underline-offset-4"
-            href={state.runUrl}
-            target="_blank"
-            rel="noreferrer"
-            data-testid={`email-github-dispatch-${os}-run`}
-          >
-            View the run on GitHub
-            <ExternalLink className="size-3" />
-          </a>
-        </AlertDescription>
-      </Alert>
-    );
-  }
-
-  return null;
+        </span>
+      </>
+    ) : state.message,
+    action: command
+      ? { label: "Copy", onClick: () => copyCommand(command) }
+      : state.runUrl
+        ? { label: "View run", href: state.runUrl }
+        : undefined,
+  });
 }
 
 /**
@@ -293,6 +224,7 @@ function DispatchControl({
     dispatchNow,
     INITIAL_DISPATCH,
   );
+  useDispatchToast(dispatchState);
 
   return (
     <form
@@ -319,7 +251,6 @@ function DispatchControl({
             : "Runs one segment from the saved targets and schedule."}
         </p>
       </div>
-      <DispatchResult os={os} state={dispatchState} />
     </form>
   );
 }
@@ -430,20 +361,29 @@ export function GithubSourceCard({
     () => config?.windowStartHour ?? 7,
   );
 
+  const configured = config !== null;
+  const enabled = config?.enabled ?? false;
+
   const [scheduleState, saveScheduleAction, savingSchedule] = useActionState(
     saveSchedule,
     INITIAL,
   );
-  const [enabledState, setEnabledAction, togglingSource] = useActionState(
-    setEnabled,
-    INITIAL,
-  );
+  const [enabledState, setEnabledAction, togglingSource, enableIntent] =
+    useIntentActionState(
+      setEnabled,
+      INITIAL,
+      (formData) => formData.get("enabled") === "true",
+    );
 
-  useActionToast(scheduleState, SOURCE_ERROR_TITLE);
-  useActionToast(enabledState, SOURCE_ERROR_TITLE);
-
-  const configured = config !== null;
-  const enabled = config?.enabled ?? false;
+  useActionToast(scheduleState, SOURCE_ERROR_TITLE, {
+    successTitle: "Schedule saved",
+  });
+  // The submitted value, not the revalidated prop: by the time the toast reads
+  // this, `enabled` already says what the server wrote, so the prop would name
+  // the opposite of the button that was pressed.
+  useActionToast(enabledState, SOURCE_ERROR_TITLE, {
+    successTitle: enableIntent === false ? "Source disabled" : "Source enabled",
+  });
   // Outside the source's own window, nothing is expected to click: that is a
   // stated state, not a stale one. `insideWindow` is the same predicate the
   // ticker uses, so the card and the scheduler cannot disagree.
@@ -675,12 +615,6 @@ export function GithubSourceCard({
                   saved row, not this form.
                 </p>
               </div>
-
-              <FeedbackAlert
-                state={scheduleState}
-                errorTitle={SOURCE_ERROR_TITLE}
-                testId="email-github-feedback"
-              />
             </form>
           </section>
 
@@ -717,11 +651,6 @@ export function GithubSourceCard({
                   : "Disabled: nothing is dispatched, whatever the schedule says."}
               </p>
             </form>
-            <FeedbackAlert
-              state={enabledState}
-              errorTitle={SOURCE_ERROR_TITLE}
-              testId="email-github-feedback"
-            />
           </section>
 
           {enabled ? null : (

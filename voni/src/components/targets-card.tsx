@@ -27,11 +27,7 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import type { PauseAllState, PauseOutcome } from "@/app/email/actions";
-import {
-  FeedbackAlert,
-  formatCount,
-  useActionToast,
-} from "@/components/action-feedback";
+import { formatCount, useActionToast, useIntentActionState } from "@/components/action-feedback";
 import type { TargetState, TargetView } from "@/lib/email/target-state";
 import { targetHost } from "@/lib/email/target-url";
 
@@ -122,7 +118,7 @@ function AddTargetForm({
   addTarget: TargetsCardProps["addTarget"];
 }) {
   const [state, action, pending] = useActionState(addTarget, INITIAL);
-  useActionToast(state, TARGET_ERROR_TITLE);
+  useActionToast(state, TARGET_ERROR_TITLE, { successTitle: "Target added" });
 
   return (
     <form action={action} className="grid gap-3">
@@ -146,8 +142,6 @@ function AddTargetForm({
           </FieldDescription>
         </Field>
       </FieldGroup>
-
-      <FeedbackAlert state={state} errorTitle={TARGET_ERROR_TITLE} />
 
       <div>
         <LoadingButton
@@ -181,17 +175,25 @@ function TargetRow({
   toggleTarget: TargetsCardProps["toggleTarget"];
   removeTarget: TargetsCardProps["removeTarget"];
 }) {
-  const [toggleState, toggleAction, toggling] = useActionState(
-    toggleTarget,
-    INITIAL,
-  );
+  const [toggleState, toggleAction, toggling, pauseIntent] =
+    useIntentActionState(
+      toggleTarget,
+      INITIAL,
+      (formData) => formData.get("enabled") === "false",
+    );
   const [removeState, removeAction, removing] = useActionState(
     removeTarget,
     INITIAL,
   );
 
-  useActionToast(toggleState, TARGET_ERROR_TITLE);
-  useActionToast(removeState, TARGET_ERROR_TITLE);
+  // The submitted value, not the revalidated prop: after the write the row
+  // says the new state, which would title a pause "Target resumed".
+  useActionToast(toggleState, TARGET_ERROR_TITLE, {
+    successTitle: pauseIntent ? "Target paused" : "Target resumed",
+  });
+  useActionToast(removeState, TARGET_ERROR_TITLE, {
+    successTitle: "Target removed",
+  });
 
   return (
     <li
@@ -255,9 +257,6 @@ function TargetRow({
           </LoadingButton>
         </form>
       </div>
-
-      <FeedbackAlert state={toggleState} errorTitle={TARGET_ERROR_TITLE} />
-      <FeedbackAlert state={removeState} errorTitle={TARGET_ERROR_TITLE} />
     </li>
   );
 }
@@ -283,7 +282,26 @@ function PauseAllControl({
     pauseAll,
     INITIAL_PAUSE,
   );
-  useActionToast(state, "Could not pause every source");
+
+  // Both sources answer in the one toast, each on its own sentence: the act is
+  // a single request, but a Grafana failure must not hide GitHub's outcome.
+  const details = [
+    state.grafana ? grafanaLine(state.grafana) : null,
+    state.github ? githubLine(state.github) : null,
+  ].filter((line): line is string => line !== null);
+
+  useActionToast(state, "Could not pause every source", {
+    successTitle: "Paused every source",
+    description:
+      details.length > 0 ? (
+        <>
+          {state.message}{" "}
+          <span className="mt-1 block">{details.join(" ")}</span>
+        </>
+      ) : (
+        state.message
+      ),
+  });
 
   const enabledCount = volume.sources.filter((source) => source.enabled).length;
 
@@ -352,21 +370,6 @@ function PauseAllControl({
         </ul>
       ) : null}
 
-      {state.grafana ? (
-        <p className="text-sm" data-testid="email-targets-pause-grafana">
-          {grafanaLine(state.grafana)}
-        </p>
-      ) : null}
-      {state.github ? (
-        <p className="text-sm" data-testid="email-targets-pause-github">
-          {githubLine(state.github)}
-        </p>
-      ) : null}
-
-      <FeedbackAlert
-        state={state}
-        errorTitle="Could not pause every source"
-      />
     </div>
   );
 }

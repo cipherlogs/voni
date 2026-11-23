@@ -82,7 +82,7 @@ test("each write control is a LoadingButton with its own pending flag", () => {
 
   // Per-row hooks, not one list-wide boolean: pausing one target must not
   // blank every other row's buttons.
-  assert.match(card, /useActionState\(\s*toggleTarget,\s*INITIAL,?\s*\)/);
+  assert.match(card, /useIntentActionState\(\s*toggleTarget,\s*INITIAL,?/);
   assert.match(card, /useActionState\(\s*removeTarget,\s*INITIAL,?\s*\)/);
 });
 
@@ -176,7 +176,35 @@ test("locked disables Pause all and says why", () => {
   assert.match(form, /disabled=\{locked\}/);
 });
 
-test("per-source outcomes are shown as separate sentences", () => {
+test("add, pause and remove results are toasts only", () => {
+  assert.match(
+    card,
+    /useActionToast\(state, TARGET_ERROR_TITLE, \{ successTitle: "Target added" \}\)/,
+  );
+  assert.match(
+    card,
+    /successTitle: pauseIntent \? "Target paused" : "Target resumed"/,
+  );
+  assert.match(
+    card,
+    /useIntentActionState\(\s*toggleTarget,\s*INITIAL,\s*\(formData\) => formData\.get\("enabled"\) === "false",/,
+    "pause/resume titles read the submitted value, not the revalidated row",
+  );
+  assert.doesNotMatch(
+    card,
+    /successTitle: target\.enabled \?/,
+    "revalidation must not be able to invert the title",
+  );
+  assert.match(
+    card,
+    /useActionToast\(removeState, TARGET_ERROR_TITLE, \{\s*successTitle: "Target removed"/,
+  );
+  assert.doesNotMatch(card, /<FeedbackAlert/, "no duplicate inline surface");
+  // The pending lines stay: they show work in progress, not a result.
+  assert.match(card, /Pausing Grafana…/);
+});
+
+test("per-source outcomes keep their sentences, in the toast", () => {
   assert.match(card, /state\.grafana/);
   assert.match(card, /state\.github/);
   assert.match(card, /check paused/);
@@ -184,4 +212,11 @@ test("per-source outcomes are shown as separate sentences", () => {
   assert.match(card, /was already paused/);
   assert.match(card, /could not be paused/);
   assert.match(card, /could not be disabled/);
+  assert.match(card, /successTitle: "Paused every source"/);
+  assert.match(card, /details\.join\(" "\)/, "both lines ride in one toast");
+  assert.doesNotMatch(
+    card,
+    /email-targets-pause-grafana|email-targets-pause-github/,
+    "no inline outcome paragraphs remain",
+  );
 });

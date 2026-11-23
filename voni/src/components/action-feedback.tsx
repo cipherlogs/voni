@@ -1,23 +1,16 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
-import { AlertCircle, Check, CheckCircle2, Copy } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { useActionState, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "@/components/ui/toast";
 
 /**
  * The one place a server-action result becomes something an operator can see.
  *
- * Every card on `/email` renders the same three pieces — an inline Alert for
- * the outcome, a toast riding along as a convenience, and the copy-to-clipboard
- * manual-run fallback — and each copy drifted slightly. The copy lives here
- * once; a card supplies only what is genuinely its own: the error title, the
- * test id and, for the fallback, the exact command and the sentence about the
- * credential it needs.
- *
- * Copy and test ids are deliberately preserved from the cards this replaced: a
- * reviewer's test, and an operator's eye, should not have to relearn them.
+ * On `/email` there is exactly one surface for an outcome — the floating toast.
+ * The inline Alert that used to ride beside every card said the same thing a
+ * second time, so it is gone; a card supplies only its own words: the error
+ * title, the success title, and, where the outcome has an artifact, the action
+ * that reaches it (a run link, or a copy of the manual command).
  */
 
 /** The shape every action result shares; richer states are assignable. */
@@ -37,130 +30,145 @@ export function formatCount(value: number): string {
   return COUNT_FORMAT.format(value);
 }
 
-/**
- * Inline Alert for one action result. `errorTitle` is the card's own sentence
- * ("Could not update targets", "Burst not dispatched"); the success title is
- * "Done" unless the card says otherwise. `children` renders under the
- * description — a run link, for the burst card.
- */
-export function FeedbackAlert({
-  state,
-  errorTitle = "Could not complete",
-  successTitle = "Done",
-  testId,
-  children,
-}: {
-  state: ActionFeedbackState;
-  errorTitle?: string;
-  successTitle?: string;
-  testId?: string;
-  children?: ReactNode;
-}) {
-  if (!state.error && !state.message) return null;
+/** What a toast's action button does: visit a run, or copy a command. */
+export type ActionToastAction = {
+  label: string;
+  /** Opens in a new tab when the toast is clicked. */
+  href?: string;
+  onClick?: () => void;
+};
 
-  return (
-    <Alert
-      variant={state.error ? "destructive" : "default"}
-      className="status-enter"
-      data-testid={testId}
-    >
-      {state.error ? <AlertCircle /> : <CheckCircle2 />}
-      <AlertTitle>{state.error ? errorTitle : successTitle}</AlertTitle>
-      <AlertDescription>
-        <span className="block">{state.error ?? state.message}</span>
-        {children}
-      </AlertDescription>
-    </Alert>
-  );
+export type ActionToastOptions = {
+  /** The success title; "Done" when the card has nothing more specific. */
+  successTitle?: string;
+  /** The artifact control: a "View run" link or a "Copy" button. */
+  action?: ActionToastAction;
+  /** Longer for command toasts, so an operator can read the line. */
+  timeout?: number;
+  /** Replaces the success message; a React node, so a command can be `<code>`. */
+  description?: ReactNode;
+};
+
+/** The button props Base UI's toast action reads off the toast object. */
+function actionPropsFor(action: ActionToastAction | undefined) {
+  if (!action) return undefined;
+  const onClick =
+    action.onClick ??
+    (action.href
+      ? () => {
+          window.open(action.href, "_blank", "noopener,noreferrer");
+        }
+      : undefined);
+  // The label is the visible text; the extra sentence tells a screen reader
+  // that the click leaves the page, which a button alone cannot say.
+  const ariaLabel = action.href
+    ? `${action.label} (opens in a new tab)`
+    : undefined;
+  return { children: action.label, onClick, "aria-label": ariaLabel };
 }
 
-/** Inline Alert is the required surface; a toast rides along as a convenience. */
+/**
+ * One toast per action result. An error is announced urgently (`priority:
+ * "high"`); a success may carry an artifact action and a longer timeout when
+ * the description is something the operator has to read or copy.
+ */
 export function useActionToast(
   state: ActionFeedbackState,
   errorTitle = "Could not complete",
+  options: ActionToastOptions = {},
 ) {
+  // Options are usually inline literals, so they are read through a ref: the
+  // effect must fire on a new submission, not on every render that rebuilt an
+  // action object or a description node.
+  const optionsRef = useRef(options);
   useEffect(() => {
+    optionsRef.current = options;
+  });
+
+  useEffect(() => {
+    const {
+      successTitle = "Done",
+      action,
+      timeout,
+      description,
+    } = optionsRef.current;
+
     if (state.error) {
       toast.add({
         title: errorTitle,
         description: state.error,
         type: "error",
+        priority: "high",
       });
       return;
     }
     if (state.message) {
-      toast.add({ title: "Done", description: state.message, type: "success" });
+      toast.add({
+        title: successTitle,
+        description: description ?? state.message,
+        type: "success",
+        timeout,
+        actionProps: actionPropsFor(action),
+      });
     }
     // `state` is a fresh object per submission, so a repeat message still shows.
   }, [state, errorTitle]);
 }
 
 /**
- * The manual run, when no dispatch token is configured. A missing token is a
- * normal outcome, so this is plain paper rather than a destructive Alert.
+ * `useActionState` for a form whose result wording depends on what was
+ * submitted.
  *
- * The label is a receipt for one click, not a permanent state: a stale
- * "Copied" next to a command that has since changed would be a lie.
+ * Revalidation replaces a card's props before the toast effect reads them, so a
+ * title derived from the new prop names the opposite of the click that caused
+ * it. The intent is captured from the submitted `FormData` as the action
+ * starts — before the server answers — and handed back with the state, so a
+ * card can say "disabled" because that is what was asked for.
  */
-export function ManualRunFallback({
-  command,
-  testId,
-  copyTestId,
-  note,
-}: {
-  command: string;
-  testId?: string;
-  copyTestId?: string;
-  /** What credential the line needs; the line itself never carries it. */
-  note: ReactNode;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2_000);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-    } catch {
-      toast.add({
-        title: "Could not copy",
-        description: "Select the command and copy it by hand.",
-        type: "error",
-      });
-    }
-  }
-
-  return (
-    <div
-      className="grid gap-2 rounded-lg border px-3 py-3"
-      data-testid={testId}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium">
-          Run it yourself — no dispatch token configured.
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            void copy();
-          }}
-          data-testid={copyTestId}
-        >
-          {copied ? <Check /> : <Copy />}
-          {copied ? "Copied" : "Copy"}
-        </Button>
-      </div>
-      <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs whitespace-pre">
-        <code>{command}</code>
-      </pre>
-      <p className="text-muted-foreground text-xs">{note}</p>
-    </div>
+export function useIntentActionState<State, Intent>(
+  action: (
+    previous: Awaited<State>,
+    formData: FormData,
+  ) => State | Promise<State>,
+  initial: Awaited<State>,
+  readIntent: (formData: FormData) => Intent,
+) {
+  const [intent, setIntent] = useState<Intent | null>(null);
+  const [state, formAction, pending] = useActionState(
+    async (previous: Awaited<State>, formData: FormData) => {
+      setIntent(readIntent(formData));
+      return action(previous, formData);
+    },
+    initial,
   );
+  return [state, formAction, pending, intent] as const;
+}
+
+/**
+ * Copy a manual run command from a toast action. The receipt is another toast,
+ * so the only surface stays the toast — including when the clipboard refuses.
+ */
+export function copyCommand(command: string) {
+  const failed = () => {
+    toast.add({
+      title: "Could not copy",
+      description: "Select the command and copy it by hand.",
+      type: "error",
+      priority: "high",
+    });
+  };
+  try {
+    // `navigator.clipboard` is absent outside a secure context, and reading it
+    // can throw on its own, so the lookup is as guarded as the write.
+    const clipboard = navigator.clipboard;
+    if (!clipboard) {
+      failed();
+      return;
+    }
+    clipboard.writeText(command).then(() => {
+      toast.add({ title: "Copied to clipboard", type: "success", timeout: 3_000 });
+    }, failed);
+  } catch {
+    failed();
+  }
 }

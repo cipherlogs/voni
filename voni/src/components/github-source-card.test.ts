@@ -219,8 +219,8 @@ test("each write control owns its pending state and its own changed text", () =>
   );
   assert.match(
     card,
-    /useActionState\(\s*setEnabled,\s*INITIAL,?\s*\)/,
-    "enable/disable tracks a second, independent submission",
+    /useIntentActionState\(\s*setEnabled,\s*INITIAL,/,
+    "enable/disable tracks a second, independent submission, with its intent",
   );
   assert.match(card, /pending=\{savingSchedule\}/);
   assert.match(card, /pendingText="Saving…"/);
@@ -257,26 +257,35 @@ test("the preview is computed from the draft, before anything is saved", () => {
   assert.match(card, /perDay === null \? "—" : formatCount\(perDay\)/);
 });
 
-test("success and failure surface the shared inline alert and toast, for both controls", () => {
+test("schedule and enable results are toasts only, never an inline Alert", () => {
   assert.match(
     card,
-    /import \{[^}]*FeedbackAlert[^}]*useActionToast[^}]*\} from "@\/components\/action-feedback"/,
-    "the feedback pieces live in one module",
+    /import \{[^}]*useActionToast[^}]*\} from "@\/components\/action-feedback"/,
+    "the toast helper lives in one module",
   );
-  assert.doesNotMatch(card, /function FeedbackAlert/, "not restated here");
-  assert.equal(
-    (card.match(/<FeedbackAlert/g) ?? []).length,
-    2,
-    "one alert under each control",
-  );
-  assert.match(card, /testId="email-github-feedback"/);
+  assert.doesNotMatch(card, /<FeedbackAlert/, "the duplicate inline surface is gone");
+  assert.doesNotMatch(card, /data-testid="email-github-feedback"/);
+  assert.doesNotMatch(card, /status-enter/, "no inline result Alert remains");
+
   assert.match(
     card,
-    /useActionToast\(scheduleState, SOURCE_ERROR_TITLE\)/,
+    /useActionToast\(scheduleState, SOURCE_ERROR_TITLE, \{\s*successTitle: "Schedule saved"/,
+    "a saved schedule is its own toast",
   );
   assert.match(
     card,
-    /useActionToast\(enabledState, SOURCE_ERROR_TITLE\)/,
+    /useActionToast\(enabledState, SOURCE_ERROR_TITLE, \{\s*successTitle: enableIntent === false \? "Source disabled" : "Source enabled"/,
+    "the toggle names the state it just wrote",
+  );
+  assert.match(
+    card,
+    /useIntentActionState\(\s*setEnabled,\s*INITIAL,\s*\(formData\) => formData\.get\("enabled"\) === "true",/,
+    "the title reads the submitted value, not the revalidated prop",
+  );
+  assert.doesNotMatch(
+    card,
+    /successTitle: enabled \?/,
+    "revalidation must not be able to invert the title",
   );
 });
 
@@ -474,54 +483,74 @@ test("every OS row carries its own Dispatch now, and each owns its pending state
   assert.doesNotMatch(card, /const \[pending/);
   assert.doesNotMatch(card, /dispatching \|\|/);
   assert.doesNotMatch(card, /disabled=\{dispatching\}/);
-  assert.equal((card.match(/useActionState\(/g) ?? []).length, 3);
+  assert.equal((card.match(/useActionState\(/g) ?? []).length, 2);
+  assert.equal(
+    (card.match(/useIntentActionState\(/g) ?? []).length,
+    1,
+    "the enable toggle carries its submitted intent",
+  );
 });
 
-test("a dispatched run links to the workflow, and an error is said in words", () => {
-  const result = functionBody(card, "DispatchResult");
-  assert.match(result, /if \(state\.error\)/);
-  assert.match(result, /<AlertTitle>Browser check not dispatched<\/AlertTitle>/);
-  assert.match(result, /<AlertDescription>\{state\.error\}<\/AlertDescription>/);
-  assert.match(result, /if \(state\.runUrl\)/);
-  assert.match(result, /href=\{state\.runUrl\}/);
-  assert.match(result, /data-testid=\{`email-github-dispatch-\$\{os\}-run`\}/);
-  assert.match(result, /View the run on GitHub/);
-  assert.doesNotMatch(result, /api\.github\.com|authorization/);
-});
-
-test("a manual dispatch shows the exact command, copyable, like the burst fallback", () => {
-  const result = functionBody(card, "DispatchResult");
+test("a dispatched run is a toast action that opens the workflow", () => {
+  const toast = functionBody(card, "useDispatchToast");
   assert.match(
-    result,
-    /state\.mode === "manual" && state\.fallback/,
+    toast,
+    /useActionToast\(state, "Could not dispatch"/,
+    "the error title is the card's own",
+  );
+  assert.match(
+    toast,
+    /\{ label: "View run", href: state\.runUrl \}/,
+    "the run link is the toast action, not inline text",
+  );
+  assert.match(toast, /successTitle: command \? "Run it yourself" : "Dispatched"/);
+  const control = functionBody(card, "DispatchControl");
+  assert.doesNotMatch(control, /<Alert/, "no inline result Alert in the row");
+  assert.doesNotMatch(card, /View the run on GitHub/);
+  assert.doesNotMatch(card, /api\.github\.com|authorization/);
+});
+
+test("a manual dispatch puts the exact command in the toast with a copy action", () => {
+  assert.match(
+    card,
+    /state\.mode === "manual" \? state\.fallback\?\.command : undefined/,
     "manual is a normal outcome, not an error",
   );
+  assert.match(card, /import \{[^}]*copyCommand[^}]*\} from "@\/components\/action-feedback"/);
 
-  const fallback = functionBody(card, "DispatchFallback");
-  assert.match(fallback, /<ManualRunFallback/, "the shared copyable block");
-  assert.match(fallback, /command=\{command\}/, "the command is exact");
-  assert.match(fallback, /dispatch-\$\{os\}-copy/);
-  assert.match(fallback, /dispatch-\$\{os\}-fallback/);
-  assert.match(fallback, /GITHUB_BURST_TOKEN/);
-  // The token's name is the only credential the copy mentions; neither the
-  // token nor any dispatch result is echoed into the command block.
-  assert.doesNotMatch(fallback, /Bearer|authorization/i);
-
-  const shared = readFileSync(
-    new URL("./action-feedback.tsx", here),
-    "utf8",
+  const toast = functionBody(card, "useDispatchToast");
+  assert.match(
+    toast,
+    /<code className="[^"]*break-all whitespace-pre-wrap[^"]*">/,
+    "a long command wraps inside the toast",
   );
-  const block = functionBody(shared, "ManualRunFallback");
-  assert.match(block, /<pre[\s\S]*?<code>\{command\}<\/code>/);
-  assert.match(block, /navigator\.clipboard\.writeText\(command\)/);
-  assert.match(block, /Run it yourself — no dispatch token configured\./);
+  assert.match(toast, /\{command\}/, "the command itself, not a summary");
+  assert.match(
+    toast,
+    /\{ label: "Copy", onClick: \(\) => copyCommand\(command\) \}/,
+    "the copy affordance is the toast action",
+  );
+  assert.match(toast, /timeout: command \? 12_000 : undefined/);
+  assert.doesNotMatch(toast, /<pre|email-github-dispatch-\$\{os\}-copy/);
+  // Neither the token nor any dispatch result is echoed into the command.
+  assert.doesNotMatch(toast, /Bearer|authorization/i);
 });
 
-test("a dispatch result surfaces an inline alert and a toast", () => {
+test("each OS dispatch owns its own toast, so two runs are two results", () => {
   assert.match(card, /function useDispatchToast/);
-  assert.match(card, /useDispatchToast\(state\)/);
-  assert.match(card, /title: "Could not dispatch"/);
-  assert.match(card, /type: "error"/);
-  assert.match(card, /type: "success"/);
-  assert.match(card, /title: state\.mode === "manual" \? "Run it yourself" : "Dispatched"/);
+
+  const control = functionBody(card, "DispatchControl");
+  assert.match(
+    control,
+    /useDispatchToast\(dispatchState\)/,
+    "the effect lives in the row's own state",
+  );
+
+  const body = functionBody(card, "GithubSourceCard");
+  assert.doesNotMatch(
+    body,
+    /dispatchState/,
+    "the card shares no dispatch state between rows",
+  );
+  assert.doesNotMatch(card, /email-github-dispatch-\$\{os\}-result/);
 });

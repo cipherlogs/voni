@@ -193,6 +193,26 @@ test("the Grafana card prints its own 24-hour numbers when expanded", () => {
   );
 });
 
+test("save, toggle, one-off and unlock results are toasts only", () => {
+  assert.match(
+    panel,
+    /useActionToast\(saveState, "Could not save the volume", \{\s*successTitle: "Volume saved"/,
+  );
+  assert.match(
+    panel,
+    /useActionToast\(toggleState, "Could not update the check", \{\s*successTitle: "Check updated"/,
+  );
+  assert.match(
+    panel,
+    /useActionToast\(clickState, "Could not run the click", \{\s*successTitle: "Click ran"/,
+  );
+  assert.match(
+    panel,
+    /useActionToast\(state, "Could not unlock the controls", \{\s*successTitle: "Controls unlocked"/,
+  );
+  assert.doesNotMatch(panel, /<FeedbackAlert/, "no duplicate inline surface");
+});
+
 test("the rotate note follows the saved script, not the unsaved switch", () => {
   assert.match(panel, /const savedSelection: TargetSelection =/);
   assert.match(
