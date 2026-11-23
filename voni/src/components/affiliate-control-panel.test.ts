@@ -150,6 +150,34 @@ test("no picker is rendered when every target is paused", () => {
   assert.match(panel, /const hasOneOffTargets = oneOffTargets\.length > 0;/);
 });
 
+test("the shared click table filters by link chips, not client state", () => {
+  // The chosen surface for the source filter is links carrying the value in the
+  // URL: no Tabs primitive, no client state to lose on reload, and the value is
+  // resolved server-side so a copied URL opens the same narrowed table.
+  assert.match(panel, /import Link from "next\/link";/);
+  assert.match(
+    panel,
+    /render=\{<Link href=\{chip\.href\} \/>\}/,
+    "each chip is a real anchor, so it can be copied and opened",
+  );
+  assert.match(panel, /data-testid=\{`email-clicks-source-\$\{chip\.value\}`\}/);
+  assert.match(panel, /aria-current=\{chip\.active \? "page" : undefined\}/);
+  assert.doesNotMatch(panel, /from "@\/components\/ui\/tabs"/);
+  assert.doesNotMatch(panel, /<Tabs/);
+});
+
+test("the Grafana card prints its own 24-hour numbers when expanded", () => {
+  assert.match(panel, /<SourceStatsSection stats=\{stats\} \/>/);
+  assert.match(panel, /data-testid="email-control-grafana-stats"/);
+  // Both surfaces read the same block, so the card and the table cannot show
+  // two different visual languages for the same counts.
+  assert.equal(
+    panel.split("<StatsBlock stats={stats} />").length - 1,
+    2,
+    "the card's inline stats and the shared table share one block",
+  );
+});
+
 test("the rotate note follows the saved script, not the unsaved switch", () => {
   assert.match(panel, /const savedSelection: TargetSelection =/);
   assert.match(

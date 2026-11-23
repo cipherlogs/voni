@@ -5,12 +5,18 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
+import { count } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { affiliateClicks } from "@/lib/db/schema";
 import {
   AFFILIATE_CLICK_DEFAULT_LIMIT,
   AFFILIATE_CLICK_MAX_LIMIT,
   affiliateClicksPage,
   assertClickTarget,
   clampClickLimit,
+  clickSourceChips,
+  clickStatsWhere,
+  parseClickSource,
   recordAffiliateClick,
 } from "./clicks";
 
@@ -114,3 +120,80 @@ test("an unfiltered history has no producer predicate", () => {
 
   assert.doesNotMatch(sql, /where\s+.*"producer"\s*=/i);
 });
+
+test("source chips: All first, then one per stored producer, each a link", () => {
+  const chips = clickSourceChips(null);
+
+  assert.deepEqual(
+    chips.map((chip) => chip.value),
+    ["all", "grafana", "github", "oneoff"],
+  );
+  assert.deepEqual(
+    chips.map((chip) => chip.label),
+    ["All", "Grafana", "GitHub", "Oneoff"],
+  );
+  assert.deepEqual(
+    chips.map((chip) => chip.href),
+    ["/email", "/email?source=grafana", "/email?source=github", "/email?source=oneoff"],
+  );
+  assert.deepEqual(
+    chips.map((chip) => chip.active),
+    [true, false, false, false],
+    "the absent filter is All, and exactly one chip is the open view",
+  );
+});
+
+test("source chips mark the resolved producer, not every chip", () => {
+  for (const producer of ["grafana", "github", "oneoff"] as const) {
+    const active = clickSourceChips(producer).filter((chip) => chip.active);
+    assert.equal(active.length, 1);
+    assert.equal(active[0]!.value, producer);
+    assert.equal(active[0]!.href, `/email?source=${producer}`);
+  }
+});
+
+test("click-source parsing: absent, empty or unknown is All", () => {
+  for (const raw of [undefined, "", "all", "unknown", "graf ana", "all "]) {
+    assert.equal(parseClickSource(raw), null, `${JSON.stringify(raw)} is All`);
+  }
+  assert.equal(parseClickSource([]), null);
+});
+
+test("click-source parsing: known producers, normalised and first repeat", () => {
+  assert.equal(parseClickSource("grafana"), "grafana");
+  assert.equal(parseClickSource("github"), "github");
+  assert.equal(parseClickSource("oneoff"), "oneoff");
+  assert.equal(parseClickSource(" GitHub "), "github", "case does not make it unknown");
+  assert.equal(
+    parseClickSource(["github", "oneoff"]),
+    "github",
+    "a repeated parameter keeps the first value, like Next's own convention",
+  );
+  assert.equal(parseClickSource(["nonsense", "oneoff"]), null, "the first value decides");
+});
+
+test("stats predicate: the trailing window, and a producer filter only when asked", () => {
+  const since = new Date("2026-11-01T00:00:00.000Z");
+
+  const all = db
+    .select({ total: count() })
+    .from(affiliateClicks)
+    .where(clickStatsWhere(since))
+    .toSQL();
+  assert.match(all.sql, /"affiliate_clicks"\."ran_at"\s*>=\s*\$\d+/i);
+  assert.doesNotMatch(all.sql, /"producer"\s*=/i, "All must not narrow the window");
+
+  const grafana = db
+    .select({ total: count() })
+    .from(affiliateClicks)
+    .where(clickStatsWhere(since, "grafana"))
+    .toSQL();
+  assert.match(grafana.sql, /"affiliate_clicks"\."ran_at"\s*>=\s*\$\d+/i);
+  assert.match(
+    grafana.sql,
+    /"affiliate_clicks"\."producer"\s*=\s*\$\d+/i,
+    "a narrowed card/table stats read is served by the (producer, ran_at) index",
+  );
+  assert.deepEqual(grafana.params.slice(1), ["grafana"]);
+});
+

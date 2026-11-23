@@ -23,7 +23,12 @@ import { Badge } from "@/components/ui/badge";
 import { PUBLIC_CONTAINER } from "@/lib/public-container";
 import { VoniLogo } from "@/components/voni-logo";
 import { listAffiliateTargets } from "@/lib/email/targets";
-import { affiliateClickStats, listAffiliateClicks } from "@/lib/email/clicks";
+import {
+  affiliateClickStats,
+  clickSourceChips,
+  listAffiliateClicks,
+  parseClickSource,
+} from "@/lib/email/clicks";
 import {
   EMAIL_CONTROL_COOKIE,
   controlCookieMatches,
@@ -145,6 +150,16 @@ function noticeCopy(value: string | undefined): string | null {
   }
 }
 
+/**
+ * The page's search params. `source` is the shared table's filter and is
+ * resolved against the stored producer here, in the request-time boundary: the
+ * chips are links, not client state, so a copied URL opens the same table.
+ */
+type EmailSearchParams = {
+  notice?: string;
+  source?: string | string[];
+};
+
 /** Title, one line of copy, the password form. Nothing else is rendered. */
 function EmailGateScreen() {
   return (
@@ -179,7 +194,7 @@ function EmailGateScreen() {
 async function EmailPageGate({
   searchParams,
 }: {
-  searchParams: Promise<{ notice?: string }>;
+  searchParams: Promise<EmailSearchParams>;
 }) {
   const jar = await cookies();
   const unlocked = isPageUnlocked(
@@ -228,7 +243,7 @@ async function EmailPageGate({
 export default async function EmailControlPage({
   searchParams,
 }: {
-  searchParams: Promise<{ notice?: string }>;
+  searchParams: Promise<EmailSearchParams>;
 }) {
   return (
     <Suspense fallback={<GateSkeleton />}>
@@ -262,7 +277,7 @@ function PanelSkeleton() {
 async function EmailControlData({
   searchParams,
 }: {
-  searchParams: Promise<{ notice?: string }>;
+  searchParams: Promise<EmailSearchParams>;
 }) {
   await connection();
   const params = await searchParams;
@@ -273,19 +288,34 @@ async function EmailControlData({
     expected,
   );
 
+  // The table's filter is resolved here, against the stored producer, rather
+  // than in the page shell or a client component: the narrowed query and the
+  // chip links below therefore come from the same value, and an unknown or
+  // missing `?source=` is All.
+  const selectedSource = parseClickSource(params.source);
+  const sourceChips = clickSourceChips(selectedSource);
+
   const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
   // The click window is measured from the request, so the boundary comes from
   // here rather than from a clock read inside the query helper.
   const now = new Date();
-  const [checkResult, probesResult, stats, clicks, targets] = await Promise.all([
-    getCheck(id),
-    listProbes(),
-    affiliateClickStats(STATS_WINDOW_HOURS, now),
-    listAffiliateClicks(PAGE_CLICK_LIMIT),
-    // Adds and pauses land here, not in the repository: this read is the list
-    // both click producers use, so the card shows what will actually run.
-    listAffiliateTargets(),
-  ]);
+  const [checkResult, probesResult, stats, surfaceStats, clicks, targets] =
+    await Promise.all([
+      getCheck(id),
+      listProbes(),
+      // The Grafana card shows its own numbers, so its read is narrowed too.
+      affiliateClickStats(STATS_WINDOW_HOURS, now, "grafana"),
+      // The shared table's stats follow its filter; `undefined` is All.
+      affiliateClickStats(
+        STATS_WINDOW_HOURS,
+        now,
+        selectedSource ?? undefined,
+      ),
+      listAffiliateClicks(PAGE_CLICK_LIMIT, selectedSource ?? undefined),
+      // Adds and pauses land here, not in the repository: this read is the list
+      // both click producers use, so the card shows what will actually run.
+      listAffiliateTargets(),
+    ]);
 
   const notice = noticeCopy(params.notice);
 
@@ -339,12 +369,13 @@ async function EmailControlData({
           so its table belongs to the console rather than to one source card. */}
       <ClickSurface
         stats={{
-          total: stats.total,
-          byStatus: stats.byStatus,
-          avgMs: stats.avgMs,
-          byDevice: stats.byDevice,
+          total: surfaceStats.total,
+          byStatus: surfaceStats.byStatus,
+          avgMs: surfaceStats.avgMs,
+          byDevice: surfaceStats.byDevice,
         }}
         clicks={clicks.map(toClickRow)}
+        sources={sourceChips}
       />
     </div>
   );
