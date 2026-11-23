@@ -94,11 +94,15 @@ export function useActionToast(
     } = optionsRef.current;
 
     if (state.error) {
+      // A failure has no inline Alert beside it any more, so it must not
+      // auto-dismiss: the toast is the only place the sentence exists, and an
+      // operator who looked away would otherwise lose the reason it failed.
       toast.add({
         title: errorTitle,
         description: state.error,
         type: "error",
         priority: "high",
+        timeout: 0,
       });
       return;
     }
@@ -155,6 +159,8 @@ export function copyCommand(command: string) {
       description: "Select the command and copy it by hand.",
       type: "error",
       priority: "high",
+      // Stays until dismissed, like every error: no Alert repeats it later.
+      timeout: 0,
     });
   };
   try {
