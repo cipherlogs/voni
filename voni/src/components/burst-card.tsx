@@ -11,17 +11,9 @@ import {
   Zap,
 } from "lucide-react";
 import { LoadingButton } from "@/components/loading-button";
+import { SourceCard } from "@/components/source-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Field,
@@ -42,8 +34,12 @@ import {
 import type { BurstState } from "@/lib/burst/state";
 
 /**
- * The `/email` burst card: one k6 Cloud run from the US load zones, started
- * through the workflow dispatch in `src/lib/burst/dispatch.ts`.
+ * The `/email` burst source card: one k6 Cloud run from the US load zones,
+ * started through the workflow dispatch in `src/lib/burst/dispatch.ts`.
+ *
+ * It is a source card like Grafana — same collapsible shell, same header facts
+ * (state, the volume one run commands, readiness) — because the console grows
+ * by adding cards, not by adding pages.
  *
  * The action arrives as a prop instead of an import so this card can land and
  * be reviewed before `src/app/email/actions.ts` grows the matching export. The
@@ -212,173 +208,171 @@ export function BurstCard({ locked, action, defaultZones }: BurstCardProps) {
   const disabled = locked || pending;
 
   return (
-    <Card data-testid="email-burst-card">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          {locked ? <LockKeyhole className="size-4" /> : <Zap className="size-4" />}
-          Burst
-        </CardTitle>
-        <CardDescription>
-          One manual k6 Cloud run of the same click script, from the US load
-          zones, for a fixed window. It spends the monthly VU-hour allowance.
-        </CardDescription>
-        <CardAction>
-          {locked ? (
-            <Badge variant="outline">Locked</Badge>
-          ) : plan ? (
-            <Badge variant="outline">{plan.vus} VUs</Badge>
-          ) : (
-            <Badge variant="destructive">Check inputs</Badge>
-          )}
-        </CardAction>
-      </CardHeader>
+    <SourceCard
+      testId="email-burst-card"
+      name="Burst"
+      icon={locked ? <LockKeyhole className="size-4" /> : <Zap className="size-4" />}
+      description="One manual k6 Cloud run of the same click script, from the US load zones, for a fixed window. It spends the monthly VU-hour allowance."
+      summary={{
+        status: locked
+          ? { label: "Locked", variant: "outline" }
+          : { label: "On demand", variant: "secondary" },
+        // Burst has no cadence to state, so the volume slot says what one run
+        // commands rather than a daily rate it does not have.
+        volume: {
+          value: plan ? plan.clicks.toLocaleString("en-US") : "—",
+          label: "clicks/run",
+        },
+        health:
+          plan === null
+            ? { label: "Check inputs", variant: "destructive" }
+            : { label: `${plan.vus} VUs`, variant: "outline" },
+      }}
+    >
+      <form action={formAction} className="grid gap-5">
+        <FieldGroup className="grid gap-4 sm:grid-cols-2">
+          <Field>
+            <FieldLabel htmlFor="email-burst-clicks">Clicks</FieldLabel>
+            <Input
+              id="email-burst-clicks"
+              name="clicks"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={MAX_CLICKS}
+              step={1}
+              value={clicksText}
+              onChange={(event) => setClicksText(event.target.value)}
+              disabled={disabled}
+              aria-invalid={!Number.isInteger(clicks) || clicks < 1}
+              required
+            />
+            <FieldDescription>
+              Whole number 1–{MAX_CLICKS}. Each click draws a fresh profile.
+            </FieldDescription>
+          </Field>
 
-      <CardContent>
-        <form action={formAction} className="grid gap-5">
-          <FieldGroup className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="email-burst-clicks">Clicks</FieldLabel>
-              <Input
-                id="email-burst-clicks"
-                name="clicks"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={MAX_CLICKS}
-                step={1}
-                value={clicksText}
-                onChange={(event) => setClicksText(event.target.value)}
-                disabled={disabled}
-                aria-invalid={!Number.isInteger(clicks) || clicks < 1}
-                required
-              />
-              <FieldDescription>
-                Whole number 1–{MAX_CLICKS}. Each click draws a fresh profile.
-              </FieldDescription>
-            </Field>
+          <Field>
+            <FieldLabel htmlFor="email-burst-minutes">
+              Duration (minutes)
+            </FieldLabel>
+            <Input
+              id="email-burst-minutes"
+              name="duration"
+              type="number"
+              inputMode="decimal"
+              min={0.5}
+              max={60}
+              step={0.5}
+              value={minutesText}
+              onChange={(event) => setMinutesText(event.target.value)}
+              disabled={disabled}
+              required
+            />
+            <FieldDescription>
+              0.5–60 minutes. VUs are sized so the clicks fit the window.
+            </FieldDescription>
+          </Field>
+        </FieldGroup>
 
-            <Field>
-              <FieldLabel htmlFor="email-burst-minutes">
-                Duration (minutes)
-              </FieldLabel>
-              <Input
-                id="email-burst-minutes"
-                name="duration"
-                type="number"
-                inputMode="decimal"
-                min={0.5}
-                max={60}
-                step={0.5}
-                value={minutesText}
-                onChange={(event) => setMinutesText(event.target.value)}
-                disabled={disabled}
-                required
-              />
-              <FieldDescription>
-                0.5–60 minutes. VUs are sized so the clicks fit the window.
-              </FieldDescription>
-            </Field>
-          </FieldGroup>
+        <FieldGroup className="grid gap-2 sm:grid-cols-2">
+          {US_ZONES.map((zone) => {
+            const checked = selected.includes(zone.id);
+            return (
+              <Field key={zone.id} orientation="horizontal">
+                <Checkbox
+                  id={`email-burst-zone-${zone.id.replace(/[^a-z]+/gi, "-")}`}
+                  name="zones"
+                  value={zone.id}
+                  checked={checked}
+                  onCheckedChange={(next: boolean) => {
+                    setSelected((previous) =>
+                      next
+                        ? [...previous.filter((id) => id !== zone.id), zone.id]
+                        : previous.filter((id) => id !== zone.id),
+                    );
+                  }}
+                  disabled={disabled}
+                />
+                <FieldLabel htmlFor={`email-burst-zone-${zone.id.replace(/[^a-z]+/gi, "-")}`}>
+                  <span className="font-normal">{zone.label}</span>
+                  <span className="text-muted-foreground font-mono text-xs">
+                    {zone.id}
+                  </span>
+                </FieldLabel>
+              </Field>
+            );
+          })}
+        </FieldGroup>
 
-          <FieldGroup className="grid gap-2 sm:grid-cols-2">
-            {US_ZONES.map((zone) => {
-              const checked = selected.includes(zone.id);
-              return (
-                <Field key={zone.id} orientation="horizontal">
-                  <Checkbox
-                    id={`email-burst-zone-${zone.id.replace(/[^a-z]+/gi, "-")}`}
-                    name="zones"
-                    value={zone.id}
-                    checked={checked}
-                    onCheckedChange={(next: boolean) => {
-                      setSelected((previous) =>
-                        next
-                          ? [...previous.filter((id) => id !== zone.id), zone.id]
-                          : previous.filter((id) => id !== zone.id),
-                      );
-                    }}
-                    disabled={disabled}
-                  />
-                  <FieldLabel htmlFor={`email-burst-zone-${zone.id.replace(/[^a-z]+/gi, "-")}`}>
-                    <span className="font-normal">{zone.label}</span>
-                    <span className="text-muted-foreground font-mono text-xs">
-                      {zone.id}
-                    </span>
-                  </FieldLabel>
-                </Field>
-              );
-            })}
-          </FieldGroup>
+        <div className="grid gap-3 rounded-lg border px-3 py-3">
+          <p
+            className="font-mono text-sm leading-relaxed break-words"
+            data-testid="email-burst-preview"
+          >
+            {result.ok ? (
+              describePlan(result.plan)
+            ) : (
+              <span className="text-muted-foreground">{result.reason}</span>
+            )}
+          </p>
 
-          <div className="grid gap-3 rounded-lg border px-3 py-3">
-            <p
-              className="font-mono text-sm leading-relaxed break-words"
-              data-testid="email-burst-preview"
-            >
-              {result.ok ? (
-                describePlan(result.plan)
-              ) : (
-                <span className="text-muted-foreground">{result.reason}</span>
-              )}
-            </p>
+          {plan ? <BudgetBar vuHours={plan.vuHours} /> : null}
 
-            {plan ? <BudgetBar vuHours={plan.vuHours} /> : null}
-
-            {plan && plan.zones.length > 0 ? (
-              <p className="text-muted-foreground text-xs">
-                {plan.zones
-                  .map((zone) => `${zone.label} ${zone.percent}%`)
-                  .join(" · ")}
-              </p>
-            ) : null}
-
-            {loud && plan ? (
-              <Alert variant="destructive">
-                <AlertCircle />
-                <AlertTitle>This is a load test, not a check</AlertTitle>
-                <AlertDescription>
-                  {[
-                    plan.clicks > LOUD_CLICKS
-                      ? `${plan.clicks.toLocaleString("en-US")} clicks in one run`
-                      : null,
-                    plan.vuHours > LOUD_VU_HOURS
-                      ? `${plan.vuHours.toFixed(1)} VU-hours of the ${FREE_VU_HOURS}`
-                      : null,
-                  ]
-                    .filter((part): part is string => part !== null)
-                    .join(" and ")}{" "}
-                  is past where affiliate networks read traffic as testing.
-                </AlertDescription>
-              </Alert>
-            ) : null}
-          </div>
-
-          {locked ? (
-            <p className="text-muted-foreground text-sm">
-              The panel is read-only. Unlock it to dispatch a burst.
+          {plan && plan.zones.length > 0 ? (
+            <p className="text-muted-foreground text-xs">
+              {plan.zones
+                .map((zone) => `${zone.label} ${zone.percent}%`)
+                .join(" · ")}
             </p>
           ) : null}
 
-          <FeedbackAlert state={state} />
-
-          {state.fallback ? (
-            <FallbackPanel command={state.fallback.command} />
+          {loud && plan ? (
+            <Alert variant="destructive">
+              <AlertCircle />
+              <AlertTitle>This is a load test, not a check</AlertTitle>
+              <AlertDescription>
+                {[
+                  plan.clicks > LOUD_CLICKS
+                    ? `${plan.clicks.toLocaleString("en-US")} clicks in one run`
+                    : null,
+                  plan.vuHours > LOUD_VU_HOURS
+                    ? `${plan.vuHours.toFixed(1)} VU-hours of the ${FREE_VU_HOURS}`
+                    : null,
+                ]
+                  .filter((part): part is string => part !== null)
+                  .join(" and ")}{" "}
+                is past where affiliate networks read traffic as testing.
+              </AlertDescription>
+            </Alert>
           ) : null}
+        </div>
 
-          <div>
-            <LoadingButton
-              type="submit"
-              pending={pending}
-              pendingText="Dispatching…"
-              icon={<Zap />}
-              disabled={locked || plan === null}
-              data-testid="email-burst-dispatch"
-            >
-              Dispatch burst
-            </LoadingButton>
-          </div>
-        </form>
-      </CardContent>
-    </Card>
+        {locked ? (
+          <p className="text-muted-foreground text-sm">
+            The panel is read-only. Unlock it to dispatch a burst.
+          </p>
+        ) : null}
+
+        <FeedbackAlert state={state} />
+
+        {state.fallback ? (
+          <FallbackPanel command={state.fallback.command} />
+        ) : null}
+
+        <div>
+          <LoadingButton
+            type="submit"
+            pending={pending}
+            pendingText="Dispatching…"
+            icon={<Zap />}
+            disabled={locked || plan === null}
+            data-testid="email-burst-dispatch"
+          >
+            Dispatch burst
+          </LoadingButton>
+        </div>
+      </form>
+    </SourceCard>
   );
 }

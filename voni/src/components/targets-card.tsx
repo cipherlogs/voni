@@ -34,8 +34,9 @@ import type { TargetState, TargetView } from "@/lib/email/target-state";
 import { targetHost } from "@/lib/email/target-url";
 
 /**
- * The `/email` targets card: the live list the Grafana check and the one-off
- * click draw from.
+ * The `/email` targets card: the one shared list every source on the console
+ * draws from, rendered above the source cards so the order on the page matches
+ * the dependency — a target is not owned by the Grafana check or by Burst.
  *
  * The actions arrive as props instead of imports so the page stays the one
  * place that knows which server functions exist — the same split as
@@ -256,8 +257,8 @@ export function TargetsCard({
           Targets
         </CardTitle>
         <CardDescription>
-          The click URLs the check and the one-off click draw from. Paused
-          targets stay in the list but receive no clicks.
+          The click URLs every source on this page draws from. Paused targets
+          stay in the list but receive no clicks.
         </CardDescription>
         <CardAction>
           <Badge variant="outline">
