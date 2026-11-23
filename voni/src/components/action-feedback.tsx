@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useActionState, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "@/components/ui/toast";
 
 /**
@@ -59,7 +59,12 @@ function actionPropsFor(action: ActionToastAction | undefined) {
           window.open(action.href, "_blank", "noopener,noreferrer");
         }
       : undefined);
-  return { children: action.label, onClick };
+  // The label is the visible text; the extra sentence tells a screen reader
+  // that the click leaves the page, which a button alone cannot say.
+  const ariaLabel = action.href
+    ? `${action.label} (opens in a new tab)`
+    : undefined;
+  return { children: action.label, onClick, "aria-label": ariaLabel };
 }
 
 /**
@@ -111,21 +116,59 @@ export function useActionToast(
 }
 
 /**
+ * `useActionState` for a form whose result wording depends on what was
+ * submitted.
+ *
+ * Revalidation replaces a card's props before the toast effect reads them, so a
+ * title derived from the new prop names the opposite of the click that caused
+ * it. The intent is captured from the submitted `FormData` as the action
+ * starts — before the server answers — and handed back with the state, so a
+ * card can say "disabled" because that is what was asked for.
+ */
+export function useIntentActionState<State, Intent>(
+  action: (
+    previous: Awaited<State>,
+    formData: FormData,
+  ) => State | Promise<State>,
+  initial: Awaited<State>,
+  readIntent: (formData: FormData) => Intent,
+) {
+  const [intent, setIntent] = useState<Intent | null>(null);
+  const [state, formAction, pending] = useActionState(
+    async (previous: Awaited<State>, formData: FormData) => {
+      setIntent(readIntent(formData));
+      return action(previous, formData);
+    },
+    initial,
+  );
+  return [state, formAction, pending, intent] as const;
+}
+
+/**
  * Copy a manual run command from a toast action. The receipt is another toast,
  * so the only surface stays the toast — including when the clipboard refuses.
  */
 export function copyCommand(command: string) {
-  navigator.clipboard.writeText(command).then(
-    () => {
+  const failed = () => {
+    toast.add({
+      title: "Could not copy",
+      description: "Select the command and copy it by hand.",
+      type: "error",
+      priority: "high",
+    });
+  };
+  try {
+    // `navigator.clipboard` is absent outside a secure context, and reading it
+    // can throw on its own, so the lookup is as guarded as the write.
+    const clipboard = navigator.clipboard;
+    if (!clipboard) {
+      failed();
+      return;
+    }
+    clipboard.writeText(command).then(() => {
       toast.add({ title: "Copied to clipboard", type: "success", timeout: 3_000 });
-    },
-    () => {
-      toast.add({
-        title: "Could not copy",
-        description: "Select the command and copy it by hand.",
-        type: "error",
-        priority: "high",
-      });
-    },
-  );
+    }, failed);
+  } catch {
+    failed();
+  }
 }

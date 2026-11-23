@@ -82,7 +82,7 @@ test("each write control is a LoadingButton with its own pending flag", () => {
 
   // Per-row hooks, not one list-wide boolean: pausing one target must not
   // blank every other row's buttons.
-  assert.match(card, /useActionState\(\s*toggleTarget,\s*INITIAL,?\s*\)/);
+  assert.match(card, /useIntentActionState\(\s*toggleTarget,\s*INITIAL,?/);
   assert.match(card, /useActionState\(\s*removeTarget,\s*INITIAL,?\s*\)/);
 });
 
@@ -183,7 +183,17 @@ test("add, pause and remove results are toasts only", () => {
   );
   assert.match(
     card,
-    /successTitle: target\.enabled \? "Target paused" : "Target resumed"/,
+    /successTitle: pauseIntent \? "Target paused" : "Target resumed"/,
+  );
+  assert.match(
+    card,
+    /useIntentActionState\(\s*toggleTarget,\s*INITIAL,\s*\(formData\) => formData\.get\("enabled"\) === "false",/,
+    "pause/resume titles read the submitted value, not the revalidated row",
+  );
+  assert.doesNotMatch(
+    card,
+    /successTitle: target\.enabled \?/,
+    "revalidation must not be able to invert the title",
   );
   assert.match(
     card,

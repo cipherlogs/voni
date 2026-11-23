@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import type { PauseAllState, PauseOutcome } from "@/app/email/actions";
-import { formatCount, useActionToast } from "@/components/action-feedback";
+import { formatCount, useActionToast, useIntentActionState } from "@/components/action-feedback";
 import type { TargetState, TargetView } from "@/lib/email/target-state";
 import { targetHost } from "@/lib/email/target-url";
 
@@ -175,17 +175,21 @@ function TargetRow({
   toggleTarget: TargetsCardProps["toggleTarget"];
   removeTarget: TargetsCardProps["removeTarget"];
 }) {
-  const [toggleState, toggleAction, toggling] = useActionState(
-    toggleTarget,
-    INITIAL,
-  );
+  const [toggleState, toggleAction, toggling, pauseIntent] =
+    useIntentActionState(
+      toggleTarget,
+      INITIAL,
+      (formData) => formData.get("enabled") === "false",
+    );
   const [removeState, removeAction, removing] = useActionState(
     removeTarget,
     INITIAL,
   );
 
+  // The submitted value, not the revalidated prop: after the write the row
+  // says the new state, which would title a pause "Target resumed".
   useActionToast(toggleState, TARGET_ERROR_TITLE, {
-    successTitle: target.enabled ? "Target paused" : "Target resumed",
+    successTitle: pauseIntent ? "Target paused" : "Target resumed",
   });
   useActionToast(removeState, TARGET_ERROR_TITLE, {
     successTitle: "Target removed",

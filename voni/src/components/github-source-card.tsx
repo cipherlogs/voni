@@ -10,6 +10,7 @@ import {
   copyCommand,
   formatCount,
   useActionToast,
+  useIntentActionState,
 } from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import { SourceCard, type SourceCardSummary } from "@/components/source-card";
@@ -188,7 +189,11 @@ function useDispatchToast(state: GithubDispatchState) {
         {state.message}{" "}
         <code className="mt-1 block font-mono text-xs break-all whitespace-pre-wrap">
           {command}
-        </code>
+        </code>{" "}
+        <span>
+          It needs <code className="font-mono">GITHUB_BURST_TOKEN</code> with
+          Actions write access on the repository; this line never carries it.
+        </span>
       </>
     ) : state.message,
     action: command
@@ -363,16 +368,21 @@ export function GithubSourceCard({
     saveSchedule,
     INITIAL,
   );
-  const [enabledState, setEnabledAction, togglingSource] = useActionState(
-    setEnabled,
-    INITIAL,
-  );
+  const [enabledState, setEnabledAction, togglingSource, enableIntent] =
+    useIntentActionState(
+      setEnabled,
+      INITIAL,
+      (formData) => formData.get("enabled") === "true",
+    );
 
   useActionToast(scheduleState, SOURCE_ERROR_TITLE, {
     successTitle: "Schedule saved",
   });
+  // The submitted value, not the revalidated prop: by the time the toast reads
+  // this, `enabled` already says what the server wrote, so the prop would name
+  // the opposite of the button that was pressed.
   useActionToast(enabledState, SOURCE_ERROR_TITLE, {
-    successTitle: enabled ? "Source disabled" : "Source enabled",
+    successTitle: enableIntent === false ? "Source disabled" : "Source enabled",
   });
   // Outside the source's own window, nothing is expected to click: that is a
   // stated state, not a stale one. `insideWindow` is the same predicate the

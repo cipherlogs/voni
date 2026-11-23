@@ -99,7 +99,13 @@ export function BurstCard({ locked, action, defaultZones }: BurstCardProps) {
         {state.message}{" "}
         <code className="mt-1 block font-mono text-xs break-all whitespace-pre-wrap">
           {command}
-        </code>
+        </code>{" "}
+        <span>
+          It needs <code className="font-mono">K6_CLOUD_TOKEN</code> set
+          (already a repository secret); this line never carries it. The zone
+          split applies to the workflow path — a manual run uses k6&apos;s
+          default zone.
+        </span>
       </>
     ) : (
       state.message ?? BURST_SUCCESS_DEFAULT

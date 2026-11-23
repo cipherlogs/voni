@@ -219,8 +219,8 @@ test("each write control owns its pending state and its own changed text", () =>
   );
   assert.match(
     card,
-    /useActionState\(\s*setEnabled,\s*INITIAL,?\s*\)/,
-    "enable/disable tracks a second, independent submission",
+    /useIntentActionState\(\s*setEnabled,\s*INITIAL,/,
+    "enable/disable tracks a second, independent submission, with its intent",
   );
   assert.match(card, /pending=\{savingSchedule\}/);
   assert.match(card, /pendingText="Saving…"/);
@@ -274,8 +274,18 @@ test("schedule and enable results are toasts only, never an inline Alert", () =>
   );
   assert.match(
     card,
-    /useActionToast\(enabledState, SOURCE_ERROR_TITLE, \{\s*successTitle: enabled \? "Source disabled" : "Source enabled"/,
+    /useActionToast\(enabledState, SOURCE_ERROR_TITLE, \{\s*successTitle: enableIntent === false \? "Source disabled" : "Source enabled"/,
     "the toggle names the state it just wrote",
+  );
+  assert.match(
+    card,
+    /useIntentActionState\(\s*setEnabled,\s*INITIAL,\s*\(formData\) => formData\.get\("enabled"\) === "true",/,
+    "the title reads the submitted value, not the revalidated prop",
+  );
+  assert.doesNotMatch(
+    card,
+    /successTitle: enabled \?/,
+    "revalidation must not be able to invert the title",
   );
 });
 
@@ -473,7 +483,12 @@ test("every OS row carries its own Dispatch now, and each owns its pending state
   assert.doesNotMatch(card, /const \[pending/);
   assert.doesNotMatch(card, /dispatching \|\|/);
   assert.doesNotMatch(card, /disabled=\{dispatching\}/);
-  assert.equal((card.match(/useActionState\(/g) ?? []).length, 3);
+  assert.equal((card.match(/useActionState\(/g) ?? []).length, 2);
+  assert.equal(
+    (card.match(/useIntentActionState\(/g) ?? []).length,
+    1,
+    "the enable toggle carries its submitted intent",
+  );
 });
 
 test("a dispatched run is a toast action that opens the workflow", () => {
