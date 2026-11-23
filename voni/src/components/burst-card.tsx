@@ -1,19 +1,20 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useState } from "react";
 import {
   AlertCircle,
-  Check,
   CheckCircle2,
-  Copy,
   ExternalLink,
   LockKeyhole,
   Zap,
 } from "lucide-react";
+import {
+  FeedbackAlert,
+  ManualRunFallback,
+} from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import { SourceCard } from "@/components/source-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Field,
@@ -23,7 +24,6 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { toast } from "@/components/ui/toast";
 import {
   FREE_VU_HOURS,
   MAX_CLICKS,
@@ -73,41 +73,38 @@ function initialZones(defaultZones: string[]): string[] {
   return known.length > 0 ? known : US_ZONES.map((zone) => zone.id);
 }
 
-function FeedbackAlert({ state }: { state: BurstState }) {
-  if (!state.error && !state.runUrl && !state.message) return null;
+const BURST_SUCCESS_DEFAULT =
+  "The workflow is queued. It appears on the run page once GitHub starts it.";
 
-  if (state.error) {
-    return (
-      <Alert variant="destructive" className="status-enter">
-        <AlertCircle />
-        <AlertTitle>Burst not dispatched</AlertTitle>
-        <AlertDescription>{state.error}</AlertDescription>
-      </Alert>
-    );
-  }
+/**
+ * The burst outcome in words. The success shape carries a run link, which the
+ * shared alert renders under its description; the titles stay this card's own.
+ */
+function BurstFeedback({ state }: { state: BurstState }) {
+  if (!state.error && !state.ok) return null;
 
   return (
-    <Alert className="status-enter">
-      <CheckCircle2 />
-      <AlertTitle>Burst dispatched</AlertTitle>
-      <AlertDescription>
-        <span className="block">
-          {state.message ?? "The workflow is queued. It appears on the run page once GitHub starts it."}
-        </span>
-        {state.runUrl ? (
-          <a
-            className="mt-1 inline-flex items-center gap-1 font-medium underline underline-offset-4"
-            href={state.runUrl}
-            target="_blank"
-            rel="noreferrer"
-            data-testid="email-burst-run-link"
-          >
-            View the run on GitHub
-            <ExternalLink className="size-3" />
-          </a>
-        ) : null}
-      </AlertDescription>
-    </Alert>
+    <FeedbackAlert
+      state={{
+        error: state.error,
+        message: state.ok ? (state.message ?? BURST_SUCCESS_DEFAULT) : null,
+      }}
+      errorTitle="Burst not dispatched"
+      successTitle="Burst dispatched"
+    >
+      {state.runUrl ? (
+        <a
+          className="mt-1 inline-flex items-center gap-1 font-medium underline underline-offset-4"
+          href={state.runUrl}
+          target="_blank"
+          rel="noreferrer"
+          data-testid="email-burst-run-link"
+        >
+          View the run on GitHub
+          <ExternalLink className="size-3" />
+        </a>
+      ) : null}
+    </FeedbackAlert>
   );
 }
 
@@ -134,60 +131,20 @@ function BudgetBar({ vuHours }: { vuHours: number }) {
  * not a destructive Alert.
  */
 function FallbackPanel({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-
-  // The label is a receipt for one click, not a permanent state: a stale
-  // "Copied" next to a command that has since changed would be a lie.
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2_000);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-    } catch {
-      toast.add({
-        title: "Could not copy",
-        description: "Select the command and copy it by hand.",
-        type: "error",
-      });
-    }
-  }
-
   return (
-    <div
-      className="grid gap-2 rounded-lg border px-3 py-3"
-      data-testid="email-burst-fallback"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium">
-          Run it yourself — no dispatch token configured.
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            void copy();
-          }}
-          data-testid="email-burst-copy-command"
-        >
-          {copied ? <Check /> : <Copy />}
-          {copied ? "Copied" : "Copy"}
-        </Button>
-      </div>
-      <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs whitespace-pre">
-        <code>{command}</code>
-      </pre>
-      <p className="text-muted-foreground text-xs">
-        It needs <code className="font-mono">K6_CLOUD_TOKEN</code> set (already a
-        repository secret); this line never carries it. The zone split applies to
-        the workflow path — a manual run uses k6&apos;s default zone.
-      </p>
-    </div>
+    <ManualRunFallback
+      command={command}
+      testId="email-burst-fallback"
+      copyTestId="email-burst-copy-command"
+      note={
+        <>
+          It needs <code className="font-mono">K6_CLOUD_TOKEN</code> set (already
+          a repository secret); this line never carries it. The zone split
+          applies to the workflow path — a manual run uses k6&apos;s default
+          zone.
+        </>
+      }
+    />
   );
 }
 
@@ -354,7 +311,7 @@ export function BurstCard({ locked, action, defaultZones }: BurstCardProps) {
           </p>
         ) : null}
 
-        <FeedbackAlert state={state} />
+        <BurstFeedback state={state} />
 
         {state.fallback ? (
           <FallbackPanel command={state.fallback.command} />

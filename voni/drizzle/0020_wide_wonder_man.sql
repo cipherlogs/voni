@@ -1,0 +1,1 @@
+ALTER TABLE "affiliate_clicks" ADD COLUMN "pass_id" text;

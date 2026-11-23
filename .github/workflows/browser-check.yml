@@ -5,8 +5,8 @@ name: Browser check
 #
 # Dispatch-only on purpose: GitHub's own scheduler cannot hold a sub-minute
 # rhythm, so the app's ticker decides when a segment starts. One segment is at
-# most 348 minutes (the ceiling the schedule domain uses); a 12 h or 24 h
-# window is realised as chained segments of that length, and nothing in the
+# most 20000 seconds / ~5.6 h (MAX_JOB_SECONDS in src/lib/email/sources.ts);
+# a 12 h or 24 h window is realised as chained segments of that length, and nothing in the
 # workflow knows or cares which segment it is.
 #
 # The inputs are read by voni/scripts/browser-click.mjs and are asserted
@@ -29,7 +29,7 @@ on:
         required: true
         type: string
       window:
-        description: "How long this segment runs, in seconds (at most 20880, i.e. 348 minutes)."
+        description: "How long this segment runs, in seconds (at most 20000, i.e. ~5.6 hours)."
         required: true
         type: string
 
@@ -50,10 +50,10 @@ permissions:
 jobs:
   browser-check:
     runs-on: ${{ inputs.os }}-latest
-    # 348 minutes of clicking plus install and teardown fits well inside this,
-    # and it stays minutes under GitHub's six-hour hard ceiling: a runner that
-    # runs away is cancelled deliberately, not by the platform's limit.
-    timeout-minutes: 355
+    # 20000 s of clicking plus install and teardown fits well inside this, and
+    # it stays minutes under GitHub's six-hour hard ceiling: a runner that runs
+    # away is cancelled deliberately, not by the platform's limit.
+    timeout-minutes: 350
     defaults:
       run:
         working-directory: voni

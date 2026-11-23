@@ -1,5 +1,6 @@
 import { secret } from "@/lib/env";
 import { RUNNER_OS_VALUES, type RunnerOs } from "@/lib/email/click-report";
+import { MAX_JOB_SECONDS } from "@/lib/email/sources";
 
 /**
  * One bounded GitHub Actions workflow dispatch, shared by every source that
@@ -178,6 +179,10 @@ export async function dispatchWorkflow(
       return fail(
         `GitHub could not find ${workflowFile} on ${repo} (404): the workflow must exist on the ${ref} branch.`,
       );
+    case 429:
+      return fail(
+        `GitHub rate-limited the ${action} dispatch (429): wait for the limit to reset before trying again.`,
+      );
     default:
       return fail(
         `GitHub returned HTTP ${response.status} for the ${action} dispatch.`,
@@ -228,10 +233,10 @@ export const BROWSER_CHECK_MAX_INTERVAL_SECONDS = 3_600;
 
 /**
  * GitHub cancels a job at six hours, so a window is realised as chained
- * segments. This is the ceiling one segment may ask for (348 minutes), and the
- * workflow's `timeout-minutes` has to stay above it.
+ * segments. `MAX_JOB_SECONDS` is the one ceiling (20 000 s, ~5.6 h) the
+ * scheduler plans with; the workflow's `timeout-minutes` has to stay above it.
+ * No second cap lives here.
  */
-export const BROWSER_CHECK_MAX_WINDOW_SECONDS = 348 * 60;
 
 export type BrowserCheckInput = {
   /** Which runner clicks: `ubuntu`, `windows` or `macos`. */
@@ -306,11 +311,11 @@ export async function dispatchBrowserCheck(
   if (
     !Number.isInteger(input.windowSeconds) ||
     input.windowSeconds < 1 ||
-    input.windowSeconds > BROWSER_CHECK_MAX_WINDOW_SECONDS
+    input.windowSeconds > MAX_JOB_SECONDS
   ) {
     return refuse(
       `the window must be a whole number of seconds from 1 to ` +
-        `${BROWSER_CHECK_MAX_WINDOW_SECONDS} (one segment).`,
+        `${MAX_JOB_SECONDS} (one segment).`,
     );
   }
 

@@ -141,6 +141,13 @@
       "when": 1795458389229,
       "tag": "0019_sudden_ravenous",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795464005705,
+      "tag": "0020_wide_wonder_man",
+      "breakpoints": true
     }
   ]
 }

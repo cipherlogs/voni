@@ -781,6 +781,7 @@ export async function runOneOffClick(
       browser,
       producer: "oneoff",
       runnerOs: null,
+      passId: null,
     });
   } catch {
     return {

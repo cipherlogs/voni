@@ -328,19 +328,25 @@ dispatch answers `204` with no body, so there is no run id to read; the stable
 link is the workflow page.
 
 The header states the enabled state, clicks per day and the worst OS health
-(`Not configured`, `Disabled`, `Never run`, `Stale` or `Live`). The body adds:
+(`Not configured`, `Disabled`, `Outside active hours`, `Never run`, `Stale` or
+`Live`). An enabled source outside its own window is a stated state, not a
+destructive "Stale". The body adds:
 
-- one row per OS with its last run, conclusion, coverage (`targets 4/4`) and a
-  link to the workflow page;
+- one row per OS with its last run, conclusion and coverage (`targets 4/4`) for
+  the **most recent pass**, and a link to the workflow page;
 - `Dispatch now` per OS;
 - this source's own clicks for the basis window, split by OS and by target.
 
 A failed run leaves screenshots on the workflow page as the
 `browser-check-screenshots-<os>` artifact (7-day retention).
 
-The basis is **since last dispatch**, or the last 24 hours when the source has
-never dispatched. Coverage counts distinct shared targets that OS clicked in
-that basis, so a partial pass reads as `3/4` rather than a green run.
+The click statistics use **since last dispatch**, or the last 24 hours when the
+source has never dispatched. Coverage is not a rolling window: it is the OS's
+newest `pass_id`, counted as distinct active shared targets with a row in that
+pass whose status is not null — a no-response row is a miss. The conclusion is
+`Complete` (hits equal the active target count), `Partial`, `Failed` or
+`Never run` (no pass). The denominator is the active target list, so pausing a
+target lowers both the volume and the denominator.
 
 ### The runner
 
@@ -354,21 +360,23 @@ target to the next. Per pass it:
 3. waits out the rest of the interval, drift-corrected, so a slow pass does not
    push every later pass later.
 
-A failed click saves a screenshot and the pass continues. At the end the runner
-checks that every dispatched target produced a response and was stored, names
-every miss, and exits non-zero if any is missing. Coverage is therefore a
-property of the loop, not an assertion about intent.
+Every report of one pass carries the same generated `passId`, including a
+failed navigation (`status: null`). Each pass tracks its own misses; a later
+pass that recovers a target does not erase the earlier miss. At the end the
+runner names the **final pass's** misses and every report that was not stored,
+and exits non-zero if any remains. Coverage is therefore a property of the
+loop, not an assertion about intent.
 
 The workflow (`.github/workflows/browser-check.yml`) is workflow-dispatch only,
 with `contents: read`, a per-OS concurrency group that queues rather than
-cancels, and a 355-minute timeout under GitHub's 6-hour ceiling. The k6 script
+cancels, and a 350-minute timeout under GitHub's 6-hour ceiling. The k6 script
 generator is not modified; its byte-identical output is the Grafana contract.
 
 ### Chained segments
 
 A 12 h or 24 h window exceeds GitHub's hard 6-hour job ceiling, so a window is
 realised as chained segments. The ticker asks for at most 20,000 seconds
-(about 5.6 h) per dispatch; the workflow accepts up to 348 minutes. When a
+(about 5.6 h) per dispatch; the workflow accepts up to 20000 seconds. When a
 segment's clicks stop, the next tick sees the OS as dead and dispatches the rest
 of the open window as a new segment. The card shows one window and one interval;
 chaining is invisible to the operator.
@@ -408,6 +416,11 @@ Each OS dispatches inside its own try/catch, so one OS failure costs that OS its
 segment, not the sweep. A dispatch that fell back to manual mode started no run,
 so it is not recorded — recording it would throttle a retry for work that never
 happened.
+
+The route accepts `{ "dryRun": true }` in its body. A dry run returns the same
+decision and per-OS summary, with each due OS reported as `skipped: dry_run`,
+and performs no dispatch and no `last_dispatched_at` write. The worker always
+sends `{}`, so a dry run is an operator pressing the route by hand.
 
 There is no durable job kind for a dispatch. The job system is session- and
 creator-scoped, `/email` authorises with a control cookie and no session, and a

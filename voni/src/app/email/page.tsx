@@ -46,7 +46,11 @@ import {
   controlCookieMatches,
 } from "@/lib/email/control";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
-import { newestClickByOs, readSourceConfig } from "@/lib/email/source-config";
+import {
+  GITHUB_SOURCE_PRODUCER,
+  newestClickByOs,
+  readSourceConfig,
+} from "@/lib/email/source-config";
 import {
   US_PROBES,
   clicksPerDay as grafanaClicksPerDay,
@@ -352,18 +356,22 @@ async function EmailControlData({
     newestClickByOs(),
     // The GitHub card's own rows for the basis window, folded below so its
     // counts and its `targets x/x` come from one aggregation.
-    runnerClicksSince("github", githubSince),
+    runnerClicksSince(GITHUB_SOURCE_PRODUCER, githubSince),
   ]);
+
+  // A paused target is not clicked by any source, so it is neither part of the
+  // card's denominator nor of the volume the card promises.
+  const activeTargets = targets.filter((target) => target.enabled);
 
   const githubSummary = summariseRunnerClicks(
     githubClicks,
-    targets.map((target) => target.url),
+    activeTargets.map((target) => target.url),
   );
 
   // Ticket 09: the aggregate the console exists to show. Both terms come from
   // the volume modules the cards already render — Grafana's from the live
-  // check, GitHub's from the saved schedule, the shared list and the closed OS
-  // set — so the header cannot grow a second formula. Disabled sources
+  // check, GitHub's from the saved schedule, the active targets and the closed
+  // OS set — so the header cannot grow a second formula. Disabled sources
   // contribute 0; a Grafana read that failed is `null` (Unavailable), never 0,
   // because "we could not see the check" and "the check is off" are different
   // facts. Burst is on demand, so it has no daily volume to add.
@@ -382,7 +390,7 @@ async function EmailControlData({
       ? runnerClicksPerDay(
           githubConfig.intervalSeconds,
           githubConfig.windowSeconds,
-          targets.length,
+          activeTargets.length,
           RUNNER_OSES.length,
         )
       : 0;
@@ -450,7 +458,7 @@ async function EmailControlData({
         <GithubSourceCard
           locked={locked}
           config={githubConfig}
-          targetCount={targets.length}
+          targetCount={activeTargets.length}
           newestByOs={githubNewest}
           summary={githubSummary}
           basis={

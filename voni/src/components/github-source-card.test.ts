@@ -85,18 +85,23 @@ function functionBody(src: string, name: string): string {
   assert.fail(`${name} has a closed body`);
 }
 
-test("honest states: a never-run OS and a disabled source are words, not zeroes", () => {
-  assert.match(card, /"Never run"/, "a never-run OS says so");
+test("honest states: a never-run pass and a disabled source are words, not zeroes", () => {
+  assert.match(card, /"Never run"/, "a never-run pass says so");
   assert.match(card, /"Not scheduled"/, "a disabled source is not scheduled");
   assert.match(
     card,
-    /status === "never"[\s\S]*?"Never run"/,
-    "the never branch precedes any numeric coverage",
+    /!osStats\.pass[\s\S]*?"Never run"/,
+    "the no-pass branch precedes any numeric coverage",
   );
   assert.match(
     card,
     /!enabled[\s\S]*?"Not scheduled"/,
     "the disabled branch precedes any numeric coverage",
+  );
+  assert.match(
+    card,
+    /osStats\.pass\.total === 0[\s\S]*?"No active targets"/,
+    "an all-paused list is not a 0/0 pass",
   );
   assert.match(
     card,
@@ -115,7 +120,18 @@ test("controls arrive as props and no server action is imported", () => {
   assert.match(card, /setEnabled:/, "enable/disable arrives as a prop");
   assert.match(card, /saveSchedule:/, "the schedule action arrives as a prop");
   assert.match(card, /dispatchNow:/, "dispatch arrives as a prop too");
-  assert.doesNotMatch(card, /from "@\/app\/email\/actions"/);
+  // Only the result types may cross the boundary, with `import type`: a value
+  // import would let the card bypass the props the page passes.
+  assert.match(
+    card,
+    /import type \{[^}]*ControlState[^}]*GithubDispatchState[^}]*\} from "@\/app\/email\/actions"/,
+    "the action result types are imported, not restated",
+  );
+  assert.doesNotMatch(
+    card,
+    /import \{(?![^}]*\btype\b)[^}]*\} from "@\/app\/email\/actions"/,
+    "no value is imported from the action module",
+  );
   assert.doesNotMatch(card, /["']use server["']/);
 });
 
@@ -135,20 +151,23 @@ test("volume is the one formula from the schedule domain", () => {
   assert.doesNotMatch(card, /@\/lib\/email\/volume/);
 });
 
-test("worst-OS status follows disabled, never, stale, live", () => {
+test("worst-OS status follows disabled, outside, never, stale, live", () => {
   const worst = functionBody(card, "worstHealth");
 
   const disabledAt = worst.indexOf("!enabled");
+  const outsideAt = worst.indexOf("outsideWindow");
   const neverAt = worst.indexOf('includes("never")');
   const staleAt = worst.indexOf('includes("stale")');
   const liveAt = worst.indexOf('"Live"');
 
   assert.ok(disabledAt >= 0, "disabled is handled");
-  assert.ok(neverAt > disabledAt, "never-run is checked after disabled");
+  assert.ok(outsideAt > disabledAt, "outside hours is checked after disabled");
+  assert.ok(neverAt > outsideAt, "never-run is checked after outside hours");
   assert.ok(staleAt > neverAt, "stale is checked after never-run");
   assert.ok(liveAt > staleAt, "live is the fallback");
 
   assert.match(worst, /label: "Disabled"/);
+  assert.match(worst, /label: "Outside active hours"/);
   assert.match(worst, /label: "Never run"/);
   assert.match(worst, /label: "Stale"/);
   assert.match(worst, /label: "Live"/);
@@ -237,19 +256,92 @@ test("the preview is computed from the draft, before anything is saved", () => {
   assert.match(card, /perDay === null \? "—" : formatCount\(perDay\)/);
 });
 
-test("success and failure surface an inline alert and a toast, for both controls", () => {
-  assert.match(card, /function FeedbackAlert/);
+test("success and failure surface the shared inline alert and toast, for both controls", () => {
+  assert.match(
+    card,
+    /import \{[^}]*FeedbackAlert[^}]*useActionToast[^}]*\} from "@\/components\/action-feedback"/,
+    "the feedback pieces live in one module",
+  );
+  assert.doesNotMatch(card, /function FeedbackAlert/, "not restated here");
   assert.equal(
-    (card.match(/<FeedbackAlert state=\{/g) ?? []).length,
+    (card.match(/<FeedbackAlert/g) ?? []).length,
     2,
     "one alert under each control",
   );
-  assert.match(card, /state\.error \? <AlertCircle \/> : <CheckCircle2 \/>/);
-  assert.match(card, /variant=\{state\.error \? "destructive" : "default"\}/);
-  assert.match(card, /type: "error"/);
-  assert.match(card, /type: "success"/);
-  assert.match(card, /useActionToast\(scheduleState\)/);
-  assert.match(card, /useActionToast\(enabledState\)/);
+  assert.match(card, /testId="email-github-feedback"/);
+  assert.match(
+    card,
+    /useActionToast\(scheduleState, SOURCE_ERROR_TITLE\)/,
+  );
+  assert.match(
+    card,
+    /useActionToast\(enabledState, SOURCE_ERROR_TITLE\)/,
+  );
+});
+
+test("targets x/x is the most recent pass, not a rolling window", () => {
+  assert.match(
+    card,
+    /const PASS_BASIS = "most recent pass"/,
+    "the basis is stated in words",
+  );
+  assert.match(card, /\(\{PASS_BASIS\}\)/, "and rendered beside the number");
+  assert.match(
+    card,
+    /\$\{osStats\.pass\.hits\}\/\$\{osStats\.pass\.total\}/,
+    "the numerator is the pass's hits, the denominator its active list",
+  );
+  assert.match(card, /const statsByOs = new Map\(/, "OS stats are keyed, not searched");
+  assert.doesNotMatch(card, /byOs\.find\(/, "no linear lookup with a non-null assertion");
+
+  const conclusion = functionBody(card, "passConclusionLabel");
+  assert.match(conclusion, /"Complete"/);
+  assert.match(conclusion, /"Partial"/);
+  assert.match(conclusion, /"Failed"/);
+  assert.match(conclusion, /"Never run"/);
+  assert.match(
+    conclusion,
+    /complete[\s\S]*?partial[\s\S]*?Failed/,
+    "the fixed conclusion order survives",
+  );
+});
+
+test("outside the active window the card says so instead of Stale", () => {
+  assert.match(
+    card,
+    /import \{[^}]*insideWindow[^}]*\} from "@\/lib\/email\/sources"/,
+    "the same window predicate the ticker uses",
+  );
+  assert.match(
+    card,
+    /const outsideWindow =[\s\S]*?enabled[\s\S]*?!insideWindow\(now, config\.windowSeconds, config\.windowStartHour\)/,
+    "only an enabled source outside its own window",
+  );
+  const status = functionBody(card, "osStatus");
+  assert.match(status, /if \(outsideWindow\) return "outside"/);
+  assert.match(card, /if \(status === "outside"\) return "outline"/, "not destructive");
+  assert.match(card, /"Outside active hours"/);
+});
+
+test("time selects show their labels closed, and the three windows are a radio group", () => {
+  assert.match(card, /items=\{INTERVAL_ITEMS\}/, "the interval trigger shows 'Every 1 min'");
+  assert.match(card, /items=\{START_HOUR_ITEMS\}/, "the start hour trigger shows '07:00 UTC'");
+  assert.match(
+    card,
+    /const INTERVAL_ITEMS[\s\S]*?every|intervalOptionLabel/,
+    "the label map is the same formatter the options render",
+  );
+  assert.match(
+    card,
+    /<RadioGroup[\s\S]*?WINDOW_SECONDS\.map[\s\S]*?<RadioGroupItem/,
+    "three exclusive choices are a RadioGroup, not a Select",
+  );
+  assert.match(card, /name="window" value=\{draftWindow\}/, "the form still posts a window");
+  assert.doesNotMatch(
+    card,
+    /<Select[\s\S]{0,200}WINDOW_SECONDS\.map/,
+    "no window Select remains",
+  );
 });
 
 test("locked disables every write and says why", () => {
@@ -346,15 +438,25 @@ test("a manual dispatch shows the exact command, copyable, like the burst fallba
     /state\.mode === "manual" && state\.fallback/,
     "manual is a normal outcome, not an error",
   );
+
   const fallback = functionBody(card, "DispatchFallback");
-  assert.match(fallback, /<pre[\s\S]*?<code>\{command\}<\/code>/, "the command is exact and selectable");
-  assert.match(fallback, /navigator\.clipboard\.writeText\(command\)/);
-  assert.match(fallback, /data-testid=\{`email-github-dispatch-\$\{os\}-copy`\}/);
+  assert.match(fallback, /<ManualRunFallback/, "the shared copyable block");
+  assert.match(fallback, /command=\{command\}/, "the command is exact");
+  assert.match(fallback, /dispatch-\$\{os\}-copy/);
   assert.match(fallback, /dispatch-\$\{os\}-fallback/);
-  assert.match(fallback, /Run it yourself — no dispatch token configured\./);
+  assert.match(fallback, /GITHUB_BURST_TOKEN/);
   // The token's name is the only credential the copy mentions; neither the
   // token nor any dispatch result is echoed into the command block.
   assert.doesNotMatch(fallback, /Bearer|authorization/i);
+
+  const shared = readFileSync(
+    new URL("./action-feedback.tsx", here),
+    "utf8",
+  );
+  const block = functionBody(shared, "ManualRunFallback");
+  assert.match(block, /<pre[\s\S]*?<code>\{command\}<\/code>/);
+  assert.match(block, /navigator\.clipboard\.writeText\(command\)/);
+  assert.match(block, /Run it yourself — no dispatch token configured\./);
 });
 
 test("a dispatch result surfaces an inline alert and a toast", () => {

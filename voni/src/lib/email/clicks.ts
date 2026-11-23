@@ -33,6 +33,8 @@ export type AffiliateClickReport = {
   producer: ClickProducer;
   /** The runner OS for a browser producer; null for Grafana and one-off clicks. */
   runnerOs: RunnerOs | null;
+  /** The browser pass this click belonged to; null for other producers. */
+  passId: string | null;
   ranAt: Date;
 };
 
@@ -65,7 +67,7 @@ export type ClickSourceChip = {
 const SOURCE_LABELS: Record<ClickProducer, string> = {
   grafana: "Grafana",
   github: "GitHub",
-  oneoff: "Oneoff",
+  oneoff: "One-off",
 };
 
 export const CLICK_SOURCE_CHIPS: readonly ClickSourceChip[] = [
@@ -174,6 +176,7 @@ export async function recordAffiliateClick(
     browser: input.browser,
     producer: input.producer,
     runnerOs: input.runnerOs,
+    passId: input.passId,
     ranAt: input.ranAt,
   });
 }
@@ -204,6 +207,7 @@ export function affiliateClicksPage(
       browser: affiliateClicks.browser,
       producer: affiliateClicks.producer,
       runnerOs: affiliateClicks.runnerOs,
+      passId: affiliateClicks.passId,
       ranAt: affiliateClicks.ranAt,
     })
     .from(affiliateClicks)
@@ -354,7 +358,34 @@ export type RunnerClickSample = {
   runnerOs: RunnerOs | null;
   target: string;
   status: number | null;
+  /** The pass this click belonged to; null for rows written before the column. */
+  passId: string | null;
   ranAt: Date;
+};
+
+/** How one pass measured up, in the card's words. */
+export type GithubPassConclusion = "complete" | "partial" | "failed";
+
+/**
+ * Coverage of the most recent pass an OS reported — the honest basis for
+ * `targets x/x`.
+ *
+ * A pass is the runner's unit of coverage: every dispatched target, once. A
+ * rolling time window cannot answer "did the last sweep cover everything",
+ * because a target clicked twenty minutes ago and one clicked seconds ago look
+ * the same. Only a row with a status counts as a hit; a report with `status:
+ * null` is a click that got no response, which is exactly the miss the number
+ * is there to show.
+ */
+export type GithubPassCoverage = {
+  id: string;
+  /** The moment the pass's newest row was recorded. */
+  ranAt: Date;
+  /** Distinct shared targets this pass landed on with a response. */
+  hits: number;
+  /** The active shared target count when the summary was built. */
+  total: number;
+  conclusion: GithubPassConclusion;
 };
 
 export type GithubOsStats = {
@@ -365,10 +396,12 @@ export type GithubOsStats = {
   failed: number;
   /**
    * Distinct shared targets this OS actually landed on, folded by base URL.
-   * The card's `x` in `targets x/x`; a target removed from the shared list is
-   * not counted, so an old click cannot inflate today's coverage.
+   * The card's rolling count; a target removed from the shared list is not
+   * counted, so an old click cannot inflate today's coverage.
    */
   targets: string[];
+  /** The most recent pass this OS reported, or null when it has none. */
+  pass: GithubPassCoverage | null;
 };
 
 export type GithubTargetStats = {
@@ -413,6 +446,15 @@ export function summariseRunnerClicks(
   for (const os of RUNNER_OSES) {
     byOs.set(os, { clicks: 0, failed: 0, targets: new Set<string>() });
   }
+  // Per OS, one bucket per pass id: when its newest row landed, which shared
+  // targets it hit. Separate from the rolling `targets` set so a pass that
+  // recovered a target cannot rewrite the earlier pass's coverage.
+  const passesByOs = new Map<
+    RunnerOs,
+    Map<string, { newestAt: number; hits: Set<string> }>
+  >();
+  for (const os of RUNNER_OSES) passesByOs.set(os, new Map());
+
   const byTarget = new Map<string, GithubTargetStats>();
   let total = 0;
 
@@ -429,6 +471,23 @@ export function summariseRunnerClicks(
     if (row.status === null || row.status >= 400) bucket.failed += 1;
     if (shared.has(target)) bucket.targets.add(target);
 
+    if (row.passId) {
+      const passes = passesByOs.get(row.runnerOs);
+      const pass = passes?.get(row.passId);
+      if (passes && pass) {
+        pass.newestAt = Math.max(pass.newestAt, row.ranAt.getTime());
+        if (row.status !== null && shared.has(target)) pass.hits.add(target);
+      } else if (passes) {
+        passes.set(row.passId, {
+          newestAt: row.ranAt.getTime(),
+          hits:
+            row.status !== null && shared.has(target)
+              ? new Set([target])
+              : new Set<string>(),
+        });
+      }
+    }
+
     const targetBucket = byTarget.get(target) ?? {
       target,
       clicks: 0,
@@ -437,6 +496,36 @@ export function summariseRunnerClicks(
     targetBucket.clicks += 1;
     targetBucket.byOs[row.runnerOs] += 1;
     byTarget.set(target, targetBucket);
+  }
+
+  /** The newest pass for one OS, with its hits measured against today's list. */
+  function newestPass(os: RunnerOs): GithubPassCoverage | null {
+    let newest: { id: string; newestAt: number; hits: Set<string> } | null = null;
+    for (const [id, pass] of passesByOs.get(os) ?? []) {
+      if (
+        newest === null ||
+        pass.newestAt > newest.newestAt ||
+        (pass.newestAt === newest.newestAt && id > newest.id)
+      ) {
+        newest = { id, newestAt: pass.newestAt, hits: pass.hits };
+      }
+    }
+    if (newest === null) return null;
+
+    const hits = newest.hits.size;
+    const conclusion: GithubPassConclusion =
+      shared.size > 0 && hits === shared.size
+        ? "complete"
+        : hits > 0
+          ? "partial"
+          : "failed";
+    return {
+      id: newest.id,
+      ranAt: new Date(newest.newestAt),
+      hits,
+      total: shared.size,
+      conclusion,
+    };
   }
 
   return {
@@ -448,6 +537,7 @@ export function summariseRunnerClicks(
         clicks: bucket.clicks,
         failed: bucket.failed,
         targets: [...bucket.targets].sort(),
+        pass: newestPass(os),
       };
     }),
     // Most-clicked first, target URL as the tie-breaker: stable between renders
@@ -470,6 +560,7 @@ export function runnerClicksSincePage(producer: ClickProducer, since: Date) {
       runnerOs: affiliateClicks.runnerOs,
       target: affiliateClicks.target,
       status: affiliateClicks.status,
+      passId: affiliateClicks.passId,
       ranAt: affiliateClicks.ranAt,
     })
     .from(affiliateClicks)

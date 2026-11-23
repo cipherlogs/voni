@@ -59,7 +59,7 @@ test("Grafana's term reads the live check, and a failed read is null", () => {
 test("GitHub's term reads the saved schedule, the shared target count and 3 OSes", () => {
   assert.match(
     controlData,
-    /runnerClicksPerDay\(\s*\n\s*githubConfig\.intervalSeconds,\s*\n\s*githubConfig\.windowSeconds,\s*\n\s*targets\.length,\s*\n\s*RUNNER_OSES\.length,/,
+    /runnerClicksPerDay\(\s*\n\s*githubConfig\.intervalSeconds,\s*\n\s*githubConfig\.windowSeconds,\s*\n\s*activeTargets\.length,\s*\n\s*RUNNER_OSES\.length,/,
   );
   assert.match(
     controlData,
@@ -71,6 +71,35 @@ test("GitHub's term reads the saved schedule, the shared target count and 3 OSes
     /: 0;[\s\S]*?totalClicksPerDay/,
     "the disabled branch is the literal zero",
   );
+});
+
+test("a paused target lowers both the aggregate and the card's denominator", () => {
+  assert.match(
+    controlData,
+    /const activeTargets = targets\.filter\(\(target\) => target\.enabled\)/,
+    "one active set, the same predicate activeTargetUrls() uses at dispatch",
+  );
+  assert.match(
+    controlData,
+    /runnerClicksPerDay\(\s*\n\s*githubConfig\.intervalSeconds,\s*\n\s*githubConfig\.windowSeconds,\s*\n\s*activeTargets\.length,/,
+    "the aggregate counts enabled targets only",
+  );
+  assert.match(
+    controlData,
+    /summariseRunnerClicks\(\s*\n\s*githubClicks,\s*\n\s*activeTargets\.map\(\(target\) => target\.url\),/,
+    "targets x/x is measured against the active list too",
+  );
+  assert.match(
+    page,
+    /targetCount=\{activeTargets\.length\}/,
+    "the card's denominator is the active count, not every row",
+  );
+
+  // Pausing one of four targets lowers both numbers by exactly a quarter.
+  const all = runnerClicksPerDay(60, 12 * 3_600, 4, RUNNER_OSES.length);
+  const paused = runnerClicksPerDay(60, 12 * 3_600, 3, RUNNER_OSES.length);
+  assert.equal(all, 8_640);
+  assert.equal(paused, 6_480);
 });
 
 test("the page adds no second day arithmetic and Burst adds no daily volume", () => {

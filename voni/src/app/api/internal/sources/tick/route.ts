@@ -14,7 +14,9 @@
  * failed cron.
  *
  * The response is a plain, JSON-safe summary of the decisions and of what
- * happened per OS, so a dry run reads as a log line rather than a mystery.
+ * happened per OS, so a dry run reads as a log line rather than a mystery. A
+ * body of `{ "dryRun": true }` returns that summary and stops before any
+ * dispatch or `last_dispatched_at` write; the worker always sends `{}`.
  */
 
 import { NextResponse } from "next/server";
@@ -66,7 +68,7 @@ export type OsTickOutcome =
 
 /** The dry-run log: decisions in, dispatched/skipped per OS out. */
 export type SourceTickSummary = {
-  producer: string;
+  producer: ClickProducer;
   at: string;
   status: "missing" | "silent" | "live" | "throttled" | "due";
   reason?: "disabled" | "outside_window";
@@ -77,6 +79,8 @@ export type SourceTickSummary = {
   remainingSeconds: number;
   /** Length of the segment a dispatch in this minute would ask for. */
   segmentSeconds: number;
+  /** Set by a dry run: the decision is reported, nothing was dispatched. */
+  dryRun?: boolean;
   os: OsTickOutcome[];
 };
 
@@ -92,7 +96,7 @@ function silentSummary(
   extra: Partial<
     Pick<
       SourceTickSummary,
-      "reason" | "resumeInSeconds" | "remainingSeconds"
+      "reason" | "resumeInSeconds" | "remainingSeconds" | "dryRun"
     >
   > = {},
 ): SourceTickSummary {
@@ -133,30 +137,25 @@ function messageOf(error: unknown): string {
  */
 export async function runSourceTick(
   deps: SourceTickDeps = {},
+  options: { dryRun?: boolean } = {},
 ): Promise<SourceTickSummary> {
+  const dryRun = options.dryRun === true;
   const now = deps.now?.() ?? new Date();
   const readConfig = deps.readConfig ?? readSourceConfig;
   const config = await readConfig(GITHUB_SOURCE_PRODUCER);
 
   if (!config) {
-    return silentSummary("missing", null, now, "no_source_config");
-  }
-  if (!config.enabled) {
-    return silentSummary("silent", config, now, "disabled", {
-      reason: "disabled",
-    });
+    return silentSummary("missing", null, now, "no_source_config", { dryRun });
   }
 
+  // The window is read once here for the summary; the gate itself is
+  // `decideDue`'s, in the one order the domain defines (disabled, window,
+  // liveness, throttle). This route must not repeat that branching.
   const remainingSeconds = windowRemainingSeconds(
     now,
     config.windowSeconds,
     config.windowStartHour,
   );
-  if (remainingSeconds <= 0) {
-    return silentSummary("silent", config, now, "outside_window", {
-      reason: "outside_window",
-    });
-  }
 
   const readNewest = deps.readNewestClickByOs ?? newestClickByOs;
   const decision = decideDue({
@@ -166,40 +165,49 @@ export async function runSourceTick(
     windowStartHour: config.windowStartHour,
     now,
     lastDispatchedAt: config.lastDispatchedAt,
-    newestClickByOs: await readNewest(GITHUB_SOURCE_PRODUCER),
+    newestClickByOs: await readNewest(config.producer),
   });
 
+  if (decision.kind === "silent") {
+    return silentSummary("silent", config, now, decision.reason, {
+      reason: decision.reason,
+      remainingSeconds,
+      dryRun,
+    });
+  }
   if (decision.kind === "live") {
     return silentSummary("live", config, now, "clicked_recently", {
       remainingSeconds,
+      dryRun,
     });
   }
   if (decision.kind === "throttled") {
     return silentSummary("throttled", config, now, "throttled", {
       resumeInSeconds: decision.resumeInSeconds,
       remainingSeconds,
-    });
-  }
-  if (decision.kind === "silent") {
-    // decideDue repeats the window check; if it disagrees with the check above,
-    // the safe side is still "do not click".
-    return silentSummary("silent", config, now, decision.reason, {
-      reason: decision.reason,
+      dryRun,
     });
   }
 
-  const segmentSeconds = Math.min(remainingSeconds, MAX_JOB_SECONDS);
+  // One builder for every "due" shape below: the decision, the segment and the
+  // per-OS lines are added to this base rather than restated.
+  const dueSummary = {
+    producer: config.producer,
+    at: now.toISOString(),
+    status: "due" as const,
+    intervalSeconds: config.intervalSeconds,
+    remainingSeconds,
+    segmentSeconds: Math.min(remainingSeconds, MAX_JOB_SECONDS),
+    ...(dryRun ? { dryRun: true as const } : {}),
+  };
+
   const readTargets = deps.readTargets ?? activeTargetUrls;
   const targets = await readTargets();
+  const due: readonly RunnerOs[] = decision.os;
 
   if (targets.length === 0) {
     return {
-      producer: config.producer,
-      at: now.toISOString(),
-      status: "due",
-      intervalSeconds: config.intervalSeconds,
-      remainingSeconds,
-      segmentSeconds,
+      ...dueSummary,
       os: RUNNER_OSES.map((os) => ({
         os,
         action: "skipped",
@@ -208,9 +216,21 @@ export async function runSourceTick(
     };
   }
 
+  // A dry run reports what would happen and stops before any side effect: no
+  // dispatch, no `last_dispatched_at` write.
+  if (dryRun) {
+    return {
+      ...dueSummary,
+      os: RUNNER_OSES.map((os) => ({
+        os,
+        action: "skipped",
+        reason: due.includes(os) ? "dry_run" : "clicked_recently",
+      })),
+    };
+  }
+
   const dispatch = deps.dispatch ?? dispatchBrowserCheck;
   const record = deps.recordDispatch ?? recordSourceDispatch;
-  const due: readonly RunnerOs[] = decision.os;
   const os: OsTickOutcome[] = [];
 
   for (const runnerOs of RUNNER_OSES) {
@@ -224,14 +244,14 @@ export async function runSourceTick(
         os: runnerOs,
         targets,
         intervalSeconds: config.intervalSeconds,
-        windowSeconds: segmentSeconds,
+        windowSeconds: dueSummary.segmentSeconds,
       });
 
       if (!outcome.ok) {
         os.push({
           os: runnerOs,
           action: "failed",
-          segmentSeconds,
+          segmentSeconds: dueSummary.segmentSeconds,
           error: outcome.error,
         });
         continue;
@@ -243,7 +263,7 @@ export async function runSourceTick(
         os.push({
           os: runnerOs,
           action: "manual",
-          segmentSeconds,
+          segmentSeconds: dueSummary.segmentSeconds,
           command: outcome.fallback.command,
         });
         continue;
@@ -252,7 +272,7 @@ export async function runSourceTick(
       os.push({
         os: runnerOs,
         action: "dispatched",
-        segmentSeconds,
+        segmentSeconds: dueSummary.segmentSeconds,
         runUrl: outcome.runUrl,
       });
 
@@ -270,21 +290,13 @@ export async function runSourceTick(
       os.push({
         os: runnerOs,
         action: "failed",
-        segmentSeconds,
+        segmentSeconds: dueSummary.segmentSeconds,
         error: `The browser check could not be dispatched: ${messageOf(error)}`,
       });
     }
   }
 
-  return {
-    producer: config.producer,
-    at: now.toISOString(),
-    status: "due",
-    intervalSeconds: config.intervalSeconds,
-    remainingSeconds,
-    segmentSeconds,
-    os,
-  };
+  return { ...dueSummary, os };
 }
 
 /** Worker-only entry for the one-minute source ticker. */
@@ -292,6 +304,14 @@ export async function POST(request: Request) {
   const denied = await requireWorkerSecret(request);
   if (denied) return denied;
 
-  const summary = await runSourceTick();
+  // The worker sends `{}`; a dry run is an operator pressing the same route by
+  // hand to see the decision. A malformed body is a plain run, not an error.
+  const body: unknown = await request.json().catch(() => null);
+  const dryRun =
+    typeof body === "object" &&
+    body !== null &&
+    (body as { dryRun?: unknown }).dryRun === true;
+
+  const summary = await runSourceTick({}, { dryRun });
   return NextResponse.json(summary);
 }

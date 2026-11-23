@@ -21,10 +21,18 @@ test("the card takes the actions as props and imports only their state types", (
   assert.match(card, /from "@\/lib\/email\/target-state"/);
   assert.match(card, /\bTargetState\b/);
   assert.match(card, /\bTargetView\b/);
+  assert.match(
+    card,
+    /import type \{ PauseAllState, PauseOutcome \} from "@\/app\/email\/actions"/,
+    "the pause-all result types come from the action module, not a local copy",
+  );
 
-  // The page owns the action imports; importing them here would let the card
+  // The page owns the action imports; importing a value here would let the card
   // bypass the props the page passes and hide a page that wired the wrong one.
-  assert.doesNotMatch(card, /@\/app\/email\/actions/);
+  assert.doesNotMatch(
+    card,
+    /import \{(?![^}]*\btype\b)[^}]*\} from "@\/app\/email\/actions"/,
+  );
 });
 
 test("the page imports the three actions and passes them to the card", () => {
