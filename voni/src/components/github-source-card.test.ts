@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { summariseRunnerClicks } from "@/lib/email/clicks";
 
 const here = new URL(".", import.meta.url);
 const card = readFileSync(new URL("./github-source-card.tsx", here), "utf8");
@@ -303,6 +304,63 @@ test("targets x/x is the most recent pass, not a rolling window", () => {
     conclusion,
     /complete[\s\S]*?partial[\s\S]*?Failed/,
     "the fixed conclusion order survives",
+  );
+});
+
+test("a failed response is visible in words and never reads as unqualified Complete", () => {
+  // A hit is any non-null status, so `targets x/x` can be full while every
+  // response was a 500. The row therefore keeps the failed count in words.
+  assert.match(
+    card,
+    /\$\{formatCount\(osStats\.failed\)\} of \$\{formatCount\(osStats\.clicks\)\} clicks failed/,
+    "the failed count is spelled out in the row",
+  );
+  assert.match(
+    card,
+    /data-testid=\{`email-github-os-\$\{os\}-failures`\}/,
+    "and rendered per OS, not only in aggregate",
+  );
+  assert.match(card, /clicks, none failed/, "a clean window still says so");
+
+  // The word beside that count is the pass conclusion from the shared fold,
+  // where Complete requires a delivered response on every shared target.
+  assert.match(
+    functionBody(card, "passConclusionLabel"),
+    /pass\.conclusion === "complete"\) return "Complete"/,
+    "the card's word is the fold's conclusion, never a second count",
+  );
+
+  const at = new Date("2026-11-23T08:00:00.000Z");
+  const shared = ["https://a.example/one", "https://b.example/two"];
+  const allError = summariseRunnerClicks(
+    shared.map((target) => ({
+      runnerOs: "ubuntu" as const,
+      target,
+      status: 500,
+      passId: "pass-1",
+      ranAt: at,
+    })),
+    shared,
+  ).byOs.find((row) => row.os === "ubuntu");
+
+  assert.equal(allError?.pass?.hits, 2, "x/x stays the response count");
+  assert.equal(
+    allError?.pass?.conclusion,
+    "failed",
+    "a pass of 500s is failed, never Complete",
+  );
+
+  const mixed = summariseRunnerClicks(
+    [
+      { runnerOs: "ubuntu", target: shared[0]!, status: 200, passId: "pass-2", ranAt: at },
+      { runnerOs: "ubuntu", target: shared[1]!, status: 500, passId: "pass-2", ranAt: at },
+    ],
+    shared,
+  ).byOs.find((row) => row.os === "ubuntu");
+  assert.equal(
+    mixed?.pass?.conclusion,
+    "partial",
+    "one delivered target among failures is partial",
   );
 });
 

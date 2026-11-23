@@ -198,6 +198,16 @@ function frequencyLabel(frequencyMs: number): string {
   return Number.isInteger(minutes) ? `${minutes} min` : `${frequencyMs} ms`;
 }
 
+/**
+ * The closed option set as the `items` map a Base UI Select needs, so the
+ * closed trigger shows "Every 5 min" rather than the raw minute value. The
+ * options render this same map, so the open list and the closed trigger cannot
+ * disagree.
+ */
+const FREQUENCY_ITEMS: Record<string, string> = Object.fromEntries(
+  FREQUENCY_MINUTES.map((minutes) => [String(minutes), `Every ${minutes} min`]),
+);
+
 const CHART_WIDTH = 240;
 /** One row per interval: label, bar, value. Only `text-xs` fits seven rows. */
 const CHART_ROW_HEIGHT = 20;
@@ -726,6 +736,7 @@ function ControlsForm({
             <FieldLabel htmlFor="email-control-frequency">Interval</FieldLabel>
             <input type="hidden" name="frequency" value={frequency} />
             <Select
+              items={FREQUENCY_ITEMS}
               value={String(frequency)}
               onValueChange={(next) => {
                 if (next) setFrequency(Number(next));
@@ -739,7 +750,7 @@ function ControlsForm({
                 <SelectGroup>
                   {FREQUENCY_MINUTES.map((minutes) => (
                     <SelectItem key={minutes} value={String(minutes)}>
-                      Every {minutes} minute{minutes === 1 ? "" : "s"}
+                      {FREQUENCY_ITEMS[String(minutes)]}
                     </SelectItem>
                   ))}
                 </SelectGroup>
