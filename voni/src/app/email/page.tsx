@@ -13,6 +13,7 @@ import {
 } from "@/components/affiliate-control-panel";
 import { EmailGateForm } from "@/components/email-gate-form";
 import { BurstCard } from "@/components/burst-card";
+import { GithubSourceCard } from "@/components/github-source-card";
 import { TargetsCard } from "@/components/targets-card";
 import { addTarget, removeTarget, runBurst, toggleTarget } from "@/app/email/actions";
 import { US_ZONES } from "@/lib/burst/plan";
@@ -28,13 +29,17 @@ import {
   clickSourceChips,
   listAffiliateClicks,
   parseClickSource,
+  runnerClicksSince,
+  summariseRunnerClicks,
 } from "@/lib/email/clicks";
 import {
   EMAIL_CONTROL_COOKIE,
   controlCookieMatches,
 } from "@/lib/email/control";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
+import { newestClickByOs, readSourceConfig } from "@/lib/email/source-config";
 import { US_PROBES } from "@/lib/email/volume";
+import { BROWSER_CHECK_RUN_URL } from "@/lib/github/dispatch";
 import { secret } from "@/lib/env";
 import {
   getCheck,
@@ -299,23 +304,48 @@ async function EmailControlData({
   // The click window is measured from the request, so the boundary comes from
   // here rather than from a clock read inside the query helper.
   const now = new Date();
-  const [checkResult, probesResult, stats, surfaceStats, clicks, targets] =
-    await Promise.all([
-      getCheck(id),
-      listProbes(),
-      // The Grafana card shows its own numbers, so its read is narrowed too.
-      affiliateClickStats(STATS_WINDOW_HOURS, now, "grafana"),
-      // The shared table's stats follow its filter; `undefined` is All.
-      affiliateClickStats(
-        STATS_WINDOW_HOURS,
-        now,
-        selectedSource ?? undefined,
-      ),
-      listAffiliateClicks(PAGE_CLICK_LIMIT, selectedSource ?? undefined),
-      // Adds and pauses land here, not in the repository: this read is the list
-      // both click producers use, so the card shows what will actually run.
-      listAffiliateTargets(),
-    ]);
+  // The GitHub card's coverage basis: since the last real dispatch, falling
+  // back to 24 h when this source has never dispatched. The clicks read needs
+  // the cutoff, so the config is read first; everything else still fans out.
+  const githubConfig = await readSourceConfig();
+  const githubSince =
+    githubConfig?.lastDispatchedAt ?? new Date(now.getTime() - 24 * 3_600_000);
+
+  const [
+    checkResult,
+    probesResult,
+    stats,
+    surfaceStats,
+    clicks,
+    targets,
+    githubNewest,
+    githubClicks,
+  ] = await Promise.all([
+    getCheck(id),
+    listProbes(),
+    // The Grafana card shows its own numbers, so its read is narrowed too.
+    affiliateClickStats(STATS_WINDOW_HOURS, now, "grafana"),
+    // The shared table's stats follow its filter; `undefined` is All.
+    affiliateClickStats(
+      STATS_WINDOW_HOURS,
+      now,
+      selectedSource ?? undefined,
+    ),
+    listAffiliateClicks(PAGE_CLICK_LIMIT, selectedSource ?? undefined),
+    // Adds and pauses land here, not in the repository: this read is the list
+    // both click producers use, so the card shows what will actually run.
+    listAffiliateTargets(),
+    // The same heartbeat the ticker reads: newest click per runner OS.
+    newestClickByOs(),
+    // The GitHub card's own rows for the basis window, folded below so its
+    // counts and its `targets x/x` come from one aggregation.
+    runnerClicksSince("github", githubSince),
+  ]);
+
+  const githubSummary = summariseRunnerClicks(
+    githubClicks,
+    targets.map((target) => target.url),
+  );
 
   const notice = noticeCopy(params.notice);
 
@@ -358,6 +388,19 @@ async function EmailControlData({
             avgMs: stats.avgMs,
             byDevice: stats.byDevice,
           }}
+        />
+        <GithubSourceCard
+          config={githubConfig}
+          targetCount={targets.length}
+          newestByOs={githubNewest}
+          summary={githubSummary}
+          basis={
+            githubConfig?.lastDispatchedAt
+              ? "since last dispatch"
+              : "last 24 hours"
+          }
+          workflowUrl={BROWSER_CHECK_RUN_URL}
+          now={now}
         />
         <BurstCard
           locked={locked}

@@ -18,6 +18,9 @@ import {
   clickStatsWhere,
   parseClickSource,
   recordAffiliateClick,
+  runnerClicksSincePage,
+  summariseRunnerClicks,
+  type RunnerClickSample,
 } from "./clicks";
 
 test("target guard: absolute http(s) URLs pass unchanged", () => {
@@ -195,5 +198,105 @@ test("stats predicate: the trailing window, and a producer filter only when aske
     "a narrowed card/table stats read is served by the (producer, ran_at) index",
   );
   assert.deepEqual(grafana.params.slice(1), ["grafana"]);
+});
+
+/**
+ * The GitHub card's two cuts. The card shows one row per OS (`targets x/x` is
+ * the shared targets that OS landed on) and one row per base target split by
+ * OS, so "macOS never lands on target 3" is a visible gap rather than an
+ * average. Both are this pure fold; the database read only supplies rows.
+ */
+const sampledAt = new Date("2026-11-23T08:00:00.000Z");
+
+test("runner summary: counts by OS, folds stamps, and only shared targets count", () => {
+  const rows: RunnerClickSample[] = [
+    {
+      runnerOs: "ubuntu",
+      target: "https://a.example/one?utm_source=gmail.com&utm_medium=email",
+      status: 200,
+      ranAt: sampledAt,
+    },
+    { runnerOs: "ubuntu", target: "https://a.example/one", status: null, ranAt: sampledAt },
+    { runnerOs: "ubuntu", target: "https://b.example/two", status: 302, ranAt: sampledAt },
+    // Still a click, but no longer a shared target, so it cannot inflate 2/2.
+    { runnerOs: "ubuntu", target: "https://c.example/three", status: 200, ranAt: sampledAt },
+    { runnerOs: "macos", target: "https://a.example/one", status: 200, ranAt: sampledAt },
+    // Grafana / one-off rows carry no OS and must not become a fourth bucket.
+    { runnerOs: null, target: "https://a.example/one", status: 200, ranAt: sampledAt },
+  ];
+
+  const summary = summariseRunnerClicks(rows, [
+    "https://a.example/one",
+    "https://b.example/two",
+  ]);
+
+  assert.equal(summary.total, 5, "the non-runner row is not counted");
+
+  assert.deepEqual(summary.byOs, [
+    {
+      os: "ubuntu",
+      clicks: 4,
+      failed: 1,
+      targets: ["https://a.example/one", "https://b.example/two"],
+    },
+    { os: "windows", clicks: 0, failed: 0, targets: [] },
+    { os: "macos", clicks: 1, failed: 0, targets: ["https://a.example/one"] },
+  ]);
+
+  // Every clicked base URL, including one no longer shared, split by OS.
+  assert.deepEqual(summary.byTarget, [
+    {
+      target: "https://a.example/one",
+      clicks: 3,
+      byOs: { ubuntu: 2, windows: 0, macos: 1 },
+    },
+    {
+      target: "https://b.example/two",
+      clicks: 1,
+      byOs: { ubuntu: 1, windows: 0, macos: 0 },
+    },
+    {
+      target: "https://c.example/three",
+      clicks: 1,
+      byOs: { ubuntu: 1, windows: 0, macos: 0 },
+    },
+  ]);
+});
+
+test("runner summary: an OS that never reported is empty, not a zeroed success", () => {
+  const summary = summariseRunnerClicks(
+    [
+      { runnerOs: "ubuntu", target: "https://a.example/one", status: 200, ranAt: sampledAt },
+    ],
+    ["https://a.example/one"],
+  );
+
+  const windows = summary.byOs.find((row) => row.os === "windows");
+  assert.deepEqual(windows, {
+    os: "windows",
+    clicks: 0,
+    failed: 0,
+    targets: [],
+  });
+  assert.equal(summary.total, 1);
+});
+
+test("runner rows read: one producer, since a cutoff, OS known, newest first", () => {
+  const since = new Date("2026-11-01T00:00:00.000Z");
+  const { sql, params } = runnerClicksSincePage("github", since).toSQL();
+
+  assert.match(
+    sql,
+    /"affiliate_clicks"\."producer"\s*=\s*\$\d+/i,
+    "one producer's rows, served by the (producer, ran_at) index",
+  );
+  assert.match(sql, /"affiliate_clicks"\."ran_at"\s*>=\s*\$\d+/i);
+  assert.match(sql, /"affiliate_clicks"\."runner_os"\s+is not null/i);
+  assert.match(sql, /order by\s+"affiliate_clicks"\."ran_at"\s+desc/i);
+  assert.equal(params[0], "github", "the producer is the first bound value");
+  assert.ok(
+    params.some((value) => String(value).startsWith("2026-11-01")),
+    "the cutoff is bound too",
+  );
 });
 

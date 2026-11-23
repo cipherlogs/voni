@@ -7,7 +7,7 @@
  * absolute http(s) URL or a bug, nothing resolved against an implicit origin.
  */
 
-import { and, avg, count, desc, eq, gte, max } from "drizzle-orm";
+import { and, avg, count, desc, eq, gte, isNotNull, max } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { affiliateClicks } from "@/lib/db/schema";
 import {
@@ -16,6 +16,7 @@ import {
   type RunnerOs,
 } from "@/lib/email/click-report";
 import { baseTargetUrl } from "@/lib/email/pool";
+import { RUNNER_OSES } from "@/lib/email/sources";
 
 /** What one visit recorded. `ranAt` is when the edge saw the click, not insert time. */
 export type AffiliateClickReport = {
@@ -340,4 +341,151 @@ export async function affiliateClickStats(
     // "nothing in the window had a measured duration", not zero milliseconds.
     avgMs: avgRaw === null ? null : Math.round(Number(avgRaw)),
   };
+}
+
+/**
+ * One runner-produced click, as the GitHub card reads it.
+ *
+ * `runnerOs` is nullable because the table allows it (Grafana and one-off rows
+ * carry none); the query narrows it out, and the summariser skips a row that
+ * somehow arrives without one rather than inventing an OS.
+ */
+export type RunnerClickSample = {
+  runnerOs: RunnerOs | null;
+  target: string;
+  status: number | null;
+  ranAt: Date;
+};
+
+export type GithubOsStats = {
+  os: RunnerOs;
+  /** Every click this OS recorded in the window. */
+  clicks: number;
+  /** Clicks with no response (null) or a non-2xx/3xx status. */
+  failed: number;
+  /**
+   * Distinct shared targets this OS actually landed on, folded by base URL.
+   * The card's `x` in `targets x/x`; a target removed from the shared list is
+   * not counted, so an old click cannot inflate today's coverage.
+   */
+  targets: string[];
+};
+
+export type GithubTargetStats = {
+  /** Base URL the click landed on, with the provider's `utm_*` stamps folded. */
+  target: string;
+  clicks: number;
+  byOs: Record<RunnerOs, number>;
+};
+
+export type GithubClickSummary = {
+  total: number;
+  byOs: GithubOsStats[];
+  byTarget: GithubTargetStats[];
+};
+
+/** A fresh per-OS counter for one target row. */
+function emptyByOs(): Record<RunnerOs, number> {
+  return { ubuntu: 0, windows: 0, macos: 0 };
+}
+
+/**
+ * Fold the GitHub source's click rows into the two cuts its card shows: by OS
+ * (how many clicks, how many failed, which shared targets each landed on) and
+ * by target (one row per base URL, split by OS so "macOS never lands on
+ * target 3" is visible rather than averaged away).
+ *
+ * Pure on purpose: the database read is one query, and every count an
+ * operator reads is this function, so the card cannot disagree with a test.
+ * The `targets` list is the numerator of `targets x/x` and is deliberately
+ * limited to the shared list passed in; `byTarget` keeps every clicked base
+ * URL, including one later removed from the list, so history stays honest.
+ */
+export function summariseRunnerClicks(
+  rows: readonly RunnerClickSample[],
+  sharedTargets: readonly string[],
+): GithubClickSummary {
+  const shared = new Set(sharedTargets.map((url) => baseTargetUrl(url)));
+  const byOs = new Map<
+    RunnerOs,
+    { clicks: number; failed: number; targets: Set<string> }
+  >();
+  for (const os of RUNNER_OSES) {
+    byOs.set(os, { clicks: 0, failed: 0, targets: new Set<string>() });
+  }
+  const byTarget = new Map<string, GithubTargetStats>();
+  let total = 0;
+
+  for (const row of rows) {
+    if (!row.runnerOs) continue;
+    const bucket = byOs.get(row.runnerOs);
+    // An OS outside the closed allowlist cannot be counted; treating it as a
+    // bucket would let a future intake value silently create a fourth column.
+    if (!bucket) continue;
+
+    const target = baseTargetUrl(row.target);
+    total += 1;
+    bucket.clicks += 1;
+    if (row.status === null || row.status >= 400) bucket.failed += 1;
+    if (shared.has(target)) bucket.targets.add(target);
+
+    const targetBucket = byTarget.get(target) ?? {
+      target,
+      clicks: 0,
+      byOs: emptyByOs(),
+    };
+    targetBucket.clicks += 1;
+    targetBucket.byOs[row.runnerOs] += 1;
+    byTarget.set(target, targetBucket);
+  }
+
+  return {
+    total,
+    byOs: RUNNER_OSES.map((os) => {
+      const bucket = byOs.get(os)!;
+      return {
+        os,
+        clicks: bucket.clicks,
+        failed: bucket.failed,
+        targets: [...bucket.targets].sort(),
+      };
+    }),
+    // Most-clicked first, target URL as the tie-breaker: stable between renders
+    // without relying on the order Postgres happened to return.
+    byTarget: [...byTarget.values()].sort(
+      (a, b) => b.clicks - a.clicks || a.target.localeCompare(b.target),
+    ),
+  };
+}
+
+/**
+ * The GitHub source's rows since a cutoff, newest first. One query, narrowed
+ * by the same `(producer, ran_at desc)` index the card and liveness read use;
+ * the caller folds it with `summariseRunnerClicks`, so the aggregation is
+ * proved without a database.
+ */
+export function runnerClicksSincePage(producer: ClickProducer, since: Date) {
+  return db
+    .select({
+      runnerOs: affiliateClicks.runnerOs,
+      target: affiliateClicks.target,
+      status: affiliateClicks.status,
+      ranAt: affiliateClicks.ranAt,
+    })
+    .from(affiliateClicks)
+    .where(
+      and(
+        eq(affiliateClicks.producer, producer),
+        gte(affiliateClicks.ranAt, since),
+        isNotNull(affiliateClicks.runnerOs),
+      ),
+    )
+    .orderBy(desc(affiliateClicks.ranAt));
+}
+
+export async function runnerClicksSince(
+  producer: ClickProducer,
+  since: Date,
+): Promise<RunnerClickSample[]> {
+  return runnerClicksSincePage(producer, since);
 }
