@@ -62,6 +62,9 @@ reaudition-runs/
 /playwright-report/
 /test-results/
 
+# browser-check failure screenshots: uploaded as the workflow's artifact, never committed
+/screenshots/
+
 # agent skill copies: local tooling, refreshed from the registry. Vendored docs
 # carry placeholder credentials that trip the repo's secret-scan gate, and a
 # refresh would reintroduce them, so they are never committed.

@@ -1,4 +1,5 @@
 import { secret } from "@/lib/env";
+import { RUNNER_OS_VALUES, type RunnerOs } from "@/lib/email/click-report";
 
 /**
  * One bounded GitHub Actions workflow dispatch, shared by every source that
@@ -182,4 +183,150 @@ export async function dispatchWorkflow(
         `GitHub returned HTTP ${response.status} for the ${action} dispatch.`,
       );
   }
+}
+
+/**
+ * The browser-check workflow — real Chrome clicking the shared target list.
+ *
+ * A second workflow, not a second dispatcher: everything that must behave the
+ * same as a burst (the token read, the manual fallback, the headers, the
+ * timeout, the status sentences, the redaction) is the generic function above.
+ * This section only names what is specific to a browser check, so the burst
+ * path is untouched by it.
+ */
+
+export const BROWSER_CHECK_REPO = "cipherlogs/voni";
+export const BROWSER_CHECK_WORKFLOW_FILE = "browser-check.yml";
+
+/**
+ * One token dispatches both workflows. A dispatch is a dispatch; a second
+ * repository secret would be a second thing to rotate for no extra scope.
+ */
+export const BROWSER_CHECK_TOKEN_ENV = "GITHUB_BURST_TOKEN";
+
+/** A dispatch answers 204 with no body, so the workflow page is the destination. */
+export const BROWSER_CHECK_RUN_URL = workflowRunUrl(
+  BROWSER_CHECK_REPO,
+  BROWSER_CHECK_WORKFLOW_FILE,
+);
+
+/**
+ * The workflow's input names, in one place. The wiring test imports this and
+ * compares it with the names `browser-check.yml` declares, so a rename on
+ * either side fails at review time instead of at 3am when a dispatch 422s.
+ */
+export const BROWSER_CHECK_INPUTS = {
+  os: "os",
+  targets: "targets",
+  interval: "interval",
+  window: "window",
+} as const;
+
+/** The interval the schedule domain's floor and ceiling allow. */
+export const BROWSER_CHECK_MIN_INTERVAL_SECONDS = 15;
+export const BROWSER_CHECK_MAX_INTERVAL_SECONDS = 3_600;
+
+/**
+ * GitHub cancels a job at six hours, so a window is realised as chained
+ * segments. This is the ceiling one segment may ask for (348 minutes), and the
+ * workflow's `timeout-minutes` has to stay above it.
+ */
+export const BROWSER_CHECK_MAX_WINDOW_SECONDS = 348 * 60;
+
+export type BrowserCheckInput = {
+  /** Which runner clicks: `ubuntu`, `windows` or `macos`. */
+  os: RunnerOs;
+  /** The shared target list, unstamped; the runner stamps each click itself. */
+  targets: readonly string[];
+  /** Seconds between passes. */
+  intervalSeconds: number;
+  /** How long this segment runs, in seconds. */
+  windowSeconds: number;
+};
+
+/** What a human runs when no dispatch token is configured. */
+export function browserCheckCommand(input: BrowserCheckInput): string {
+  return (
+    `gh workflow run ${BROWSER_CHECK_WORKFLOW_FILE} --ref main ` +
+    `-f ${BROWSER_CHECK_INPUTS.os}=${input.os} ` +
+    `-f ${BROWSER_CHECK_INPUTS.interval}=${input.intervalSeconds} ` +
+    `-f ${BROWSER_CHECK_INPUTS.window}=${input.windowSeconds} ` +
+    `-f ${BROWSER_CHECK_INPUTS.targets}='${JSON.stringify(input.targets)}'`
+  );
+}
+
+export type BrowserCheckDeps = {
+  /** Injecting `fetch` keeps the tests off the network. */
+  fetcher?: typeof fetch;
+  /** Injecting the reader keeps the tests off the environment and the Worker context. */
+  readSecret?: (name: string) => Promise<string | undefined>;
+};
+
+/** A refusal is a sentence, never a throw: the card renders it verbatim. */
+function refuse(reason: string): DispatchOutcome {
+  return { ok: false, error: `The browser check was not dispatched: ${reason}` };
+}
+
+export async function dispatchBrowserCheck(
+  input: BrowserCheckInput,
+  deps: BrowserCheckDeps = {},
+): Promise<DispatchOutcome> {
+  if (!(RUNNER_OS_VALUES as readonly string[]).includes(input.os)) {
+    return refuse(
+      `${JSON.stringify(input.os)} is not one of ${RUNNER_OS_VALUES.join(", ")}.`,
+    );
+  }
+
+  if (input.targets.length === 0) {
+    return refuse("there is no active target to click.");
+  }
+  for (const entry of input.targets) {
+    let url: URL;
+    try {
+      url = new URL(entry);
+    } catch {
+      return refuse(`${entry} is not an absolute URL.`);
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return refuse(`${entry} is not an http(s) URL.`);
+    }
+  }
+
+  if (
+    !Number.isInteger(input.intervalSeconds) ||
+    input.intervalSeconds < BROWSER_CHECK_MIN_INTERVAL_SECONDS ||
+    input.intervalSeconds > BROWSER_CHECK_MAX_INTERVAL_SECONDS
+  ) {
+    return refuse(
+      `the interval must be a whole number of seconds from ` +
+        `${BROWSER_CHECK_MIN_INTERVAL_SECONDS} to ${BROWSER_CHECK_MAX_INTERVAL_SECONDS}.`,
+    );
+  }
+
+  if (
+    !Number.isInteger(input.windowSeconds) ||
+    input.windowSeconds < 1 ||
+    input.windowSeconds > BROWSER_CHECK_MAX_WINDOW_SECONDS
+  ) {
+    return refuse(
+      `the window must be a whole number of seconds from 1 to ` +
+        `${BROWSER_CHECK_MAX_WINDOW_SECONDS} (one segment).`,
+    );
+  }
+
+  return dispatchWorkflow({
+    repo: BROWSER_CHECK_REPO,
+    workflowFile: BROWSER_CHECK_WORKFLOW_FILE,
+    tokenEnv: BROWSER_CHECK_TOKEN_ENV,
+    action: "browser check",
+    manualCommand: browserCheckCommand(input),
+    fetcher: deps.fetcher,
+    readSecret: deps.readSecret,
+    inputs: {
+      [BROWSER_CHECK_INPUTS.os]: input.os,
+      [BROWSER_CHECK_INPUTS.targets]: JSON.stringify(input.targets),
+      [BROWSER_CHECK_INPUTS.interval]: String(input.intervalSeconds),
+      [BROWSER_CHECK_INPUTS.window]: String(input.windowSeconds),
+    },
+  });
 }

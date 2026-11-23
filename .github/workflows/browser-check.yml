@@ -1,0 +1,98 @@
+name: Browser check
+
+# Real Chrome clicking the shared /email target list, dispatched by the panel's
+# GitHub source (src/lib/github/dispatch.ts, `dispatchBrowserCheck`).
+#
+# Dispatch-only on purpose: GitHub's own scheduler cannot hold a sub-minute
+# rhythm, so the app's ticker decides when a segment starts. One segment is at
+# most 348 minutes (the ceiling the schedule domain uses); a 12 h or 24 h
+# window is realised as chained segments of that length, and nothing in the
+# workflow knows or cares which segment it is.
+#
+# The inputs are read by voni/scripts/browser-click.mjs and are asserted
+# against the dispatcher by voni/scripts/browser-source-wiring.test.ts. Rename
+# one here and that test fails before the run does.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Runner OS: ubuntu, windows or macos."
+        required: true
+        type: string
+      targets:
+        description: 'JSON array of URLs to click, e.g. ["https://voni.cc/test"].'
+        required: true
+        type: string
+      interval:
+        description: "Seconds between passes (15-3600)."
+        required: true
+        type: string
+      window:
+        description: "How long this segment runs, in seconds (at most 20880, i.e. 348 minutes)."
+        required: true
+        type: string
+
+# The OS is part of the workflow's name on purpose: the card reads the run list
+# for this workflow and needs to tell an ubuntu run from a macos one.
+run-name: "Browser check (${{ inputs.os }})"
+
+# One segment per OS at a time. Queued rather than cancelled: a second window
+# must not overlap the first one's clicks, because two browsers on the same
+# target at the same moment measure each other's noise.
+concurrency:
+  group: browser-check-${{ inputs.os }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  browser-check:
+    runs-on: ${{ inputs.os }}-latest
+    # 348 minutes of clicking plus install and teardown fits well inside this,
+    # and it stays minutes under GitHub's six-hour hard ceiling: a runner that
+    # runs away is cancelled deliberately, not by the platform's limit.
+    timeout-minutes: 355
+    defaults:
+      run:
+        working-directory: voni
+        shell: bash
+    env:
+      # The dispatched inputs, under the names the runner reads.
+      BROWSER_CHECK_OS: ${{ inputs.os }}
+      BROWSER_CHECK_TARGETS: ${{ inputs.targets }}
+      BROWSER_CHECK_INTERVAL: ${{ inputs.interval }}
+      BROWSER_CHECK_WINDOW: ${{ inputs.window }}
+      # Low-privilege by design (the intake may append one click row and
+      # nothing else), and never printed: the runner sends it as a header only.
+      EMAIL_CLICK_REPORT_SECRET: ${{ secrets.EMAIL_CLICK_REPORT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voni/package-lock.json
+
+      - run: npm ci
+
+      # Real Chrome, not a bundled Chromium: a click that survives in a build
+      # no visitor runs would prove the wrong thing about this target.
+      - name: Install Chrome
+        run: npx playwright install --with-deps chrome
+
+      - name: Click every target
+        run: node --import tsx scripts/browser-click.mjs
+
+      # A failed click is evidence, so the image is kept even when the job is
+      # red. A green run writes nothing here and that is normal.
+      - name: Failure screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-check-screenshots-${{ inputs.os }}
+          path: voni/screenshots/
+          if-no-files-found: ignore
+          retention-days: 7
