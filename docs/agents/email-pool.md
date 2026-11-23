@@ -423,7 +423,7 @@ pre-proxy behaviour. Three refusals fail the run before Chrome starts — a
 malformed server, half a credential pair, and credentials without a server URL
 (a username or password set while `BROWSER_PROXY_SERVER` is unset). None of
 them prints the value, and neither does any other line: a proxy URL may carry
-`user:pass@`, so a launch failure is passed through `redactProxyText` before it
+inline userinfo, so a launch failure is passed through `redactProxyText` before it
 is printed, and proxy credentials are never printed anywhere. The values go to
 Playwright's one `chromium.launch` call and nowhere else.
 

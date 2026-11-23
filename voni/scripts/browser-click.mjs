@@ -139,7 +139,7 @@ const PROXY_PROTOCOLS = ["http:", "https:", "socks5:"];
  * rotating the User-Agent changes a header, not the IP or ASN an affiliate
  * sees. Unset server means no proxy at all, which is the pre-proxy behaviour.
  *
- * Nothing here is ever echoed: a proxy URL may carry `user:pass@`, so a refusal
+ * Nothing here is ever echoed: a proxy URL may carry inline credentials, so a refusal
  * names the variable, never the value, and the returned object is handed to
  * Playwright only (never logged, never reported).
  */
