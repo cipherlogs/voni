@@ -6,6 +6,7 @@ import { connection } from "next/server";
 import { CheckCircle2, LockKeyhole, MailIcon } from "lucide-react";
 import {
   AffiliateControlPanel,
+  ClickSurface,
   type CheckView,
   type ClickRowView,
   type ProbeView,
@@ -57,7 +58,7 @@ import {
 export const metadata: Metadata = {
   title: "Email pool · Voni",
   description:
-    "Control the Grafana synthetic check that sends affiliate clicks and review the clicks it recorded.",
+    "The sources console behind the email click campaign: one shared target list, a card per producer of clicks, and the clicks they recorded.",
   robots: { index: false, follow: false },
 };
 
@@ -208,11 +209,11 @@ async function EmailPageGate({
             Email pool
           </h1>
           <p className="text-muted-foreground text-sm">
-            The Grafana synthetic check behind the email click campaign: its
-            interval, probes and state, plus the clicks it recorded. Changes
-            apply on the check&apos;s next run. The one-off button is the
-            exception — it runs from voni&apos;s server, not Grafana, and the
-            result says so.
+            A console of sources that send affiliate clicks. Every source draws
+            from the one shared target list at the top; each source card below
+            has its own cadence, health and numbers. A source change applies on
+            its next run. The one-off button is the exception — it runs from
+            voni&apos;s server, not Grafana, and the result says so.
           </p>
         </div>
 
@@ -243,7 +244,7 @@ function PanelSkeleton() {
       aria-label="Loading email control panel"
       className="grid gap-6"
     >
-      <CardListSkeleton rows={2} />
+      <CardListSkeleton rows={3} />
       <TableSkeleton rows={6} columns={8} />
     </div>
   );
@@ -297,22 +298,8 @@ async function EmailControlData({
           <AlertDescription>{notice}</AlertDescription>
         </Alert>
       ) : null}
-      <AffiliateControlPanel
-        locked={locked}
-        check={checkResult.ok ? toCheckView(checkResult.data) : null}
-        checkError={checkResult.ok ? null : checkResult.message}
-        probes={probesResult.ok ? toProbeViews(probesResult.data) : []}
-        oneOffTargets={targets
-          .filter((target) => target.enabled)
-          .map((target) => ({ id: target.id, url: target.url }))}
-        stats={{
-          total: stats.total,
-          byStatus: stats.byStatus,
-          avgMs: stats.avgMs,
-          byDevice: stats.byDevice,
-        }}
-        clicks={clicks.map(toClickRow)}
-      />
+      {/* Targets first: one list, every source. The card's own add, pause,
+          resume and remove controls are the only target controls on the page. */}
       <TargetsCard
         locked={locked}
         targets={targets}
@@ -320,10 +307,44 @@ async function EmailControlData({
         toggleTarget={toggleTarget}
         removeTarget={removeTarget}
       />
-      <BurstCard
-        locked={locked}
-        action={runBurst}
-        defaultZones={US_ZONES.map((zone) => zone.id)}
+      <section className="grid gap-6" aria-labelledby="email-sources-heading">
+        <h2
+          id="email-sources-heading"
+          className="text-lg font-semibold tracking-tight"
+        >
+          Sources
+        </h2>
+        <AffiliateControlPanel
+          locked={locked}
+          check={checkResult.ok ? toCheckView(checkResult.data) : null}
+          checkError={checkResult.ok ? null : checkResult.message}
+          probes={probesResult.ok ? toProbeViews(probesResult.data) : []}
+          oneOffTargets={targets
+            .filter((target) => target.enabled)
+            .map((target) => ({ id: target.id, url: target.url }))}
+          stats={{
+            total: stats.total,
+            byStatus: stats.byStatus,
+            avgMs: stats.avgMs,
+            byDevice: stats.byDevice,
+          }}
+        />
+        <BurstCard
+          locked={locked}
+          action={runBurst}
+          defaultZones={US_ZONES.map((zone) => zone.id)}
+        />
+      </section>
+      {/* The shared click history: every source writes through the same intake,
+          so its table belongs to the console rather than to one source card. */}
+      <ClickSurface
+        stats={{
+          total: stats.total,
+          byStatus: stats.byStatus,
+          avgMs: stats.avgMs,
+          byDevice: stats.byDevice,
+        }}
+        clicks={clicks.map(toClickRow)}
       />
     </div>
   );
