@@ -7,10 +7,14 @@
  * absolute http(s) URL or a bug, nothing resolved against an implicit origin.
  */
 
-import { avg, count, desc, eq, gte, max } from "drizzle-orm";
+import { and, avg, count, desc, eq, gte, max } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { affiliateClicks } from "@/lib/db/schema";
-import type { ClickProducer, RunnerOs } from "@/lib/email/click-report";
+import {
+  CLICK_PRODUCERS,
+  type ClickProducer,
+  type RunnerOs,
+} from "@/lib/email/click-report";
 import { baseTargetUrl } from "@/lib/email/pool";
 
 /** What one visit recorded. `ranAt` is when the edge saw the click, not insert time. */
@@ -36,6 +40,81 @@ export type AffiliateClickRow = AffiliateClickReport & { id: string };
 export const AFFILIATE_CLICK_DEFAULT_LIMIT = 50;
 export const AFFILIATE_CLICK_MAX_LIMIT = 200;
 export const AFFILIATE_CLICK_DEFAULT_WINDOW_HOURS = 24;
+
+/**
+ * The shared click table's source filter lives in the query string, not in
+ * client state: `?source=grafana` is the whole contract, so a copied URL opens
+ * the same narrowed table and a reload cannot lose it.
+ *
+ * `all` is spelled out rather than left implicit so the "All" chip has a link
+ * like every other chip; an absent, repeated or unrecognised value resolves to
+ * All, never to an error the reader has to decode.
+ */
+export const CLICK_SOURCE_PARAM = "source";
+export const CLICK_SOURCE_ALL = "all";
+
+export type ClickSourceChip = {
+  /** The `?source=` value this chip links to. */
+  value: string;
+  label: string;
+  /** The producer the chip narrows to; null for All. */
+  producer: ClickProducer | null;
+};
+
+const SOURCE_LABELS: Record<ClickProducer, string> = {
+  grafana: "Grafana",
+  github: "GitHub",
+  oneoff: "Oneoff",
+};
+
+export const CLICK_SOURCE_CHIPS: readonly ClickSourceChip[] = [
+  { value: CLICK_SOURCE_ALL, label: "All", producer: null },
+  ...CLICK_PRODUCERS.map((producer) => ({
+    value: producer,
+    label: SOURCE_LABELS[producer],
+    producer,
+  })),
+];
+
+/**
+ * The producer a `?source=` value selects, or null for All. Accepts what Next
+ * hands a page for a repeated parameter and normalises case, so `?source=GitHub`
+ * is the GitHub chip rather than a silently empty table.
+ */
+export function parseClickSource(
+  raw: string | string[] | undefined,
+): ClickProducer | null {
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof first !== "string") return null;
+  const value = first.trim().toLowerCase();
+  return (
+    CLICK_SOURCE_CHIPS.find((chip) => chip.value === value)?.producer ?? null
+  );
+}
+
+/** A chip as the panel renders it: its link, and whether it is the open view. */
+export type ClickSourceChipView = ClickSourceChip & {
+  href: string;
+  active: boolean;
+};
+
+/**
+ * The chip row for one resolved filter. Built beside the query, not in the
+ * client component, so the link a reader copies and the predicate the server
+ * applies come from the same value.
+ */
+export function clickSourceChips(
+  selected: ClickProducer | null,
+): ClickSourceChipView[] {
+  return CLICK_SOURCE_CHIPS.map((chip) => ({
+    ...chip,
+    href:
+      chip.value === CLICK_SOURCE_ALL
+        ? "/email"
+        : `/email?${CLICK_SOURCE_PARAM}=${chip.value}`,
+    active: chip.producer === selected,
+  }));
+}
 
 /**
  * The one invariant a write has to hold: `target` is an absolute http(s) URL.
@@ -184,14 +263,29 @@ export async function lastClickByTargetUrl(): Promise<Map<string, number>> {
 }
 
 /**
- * Click totals for a trailing window. `now` is a parameter, not `Date.now()`:
- * the panel computes this while rendering, and an unstable clock read is what
- * makes `cacheComponents` refuse to prerender the route. Callers pass the
- * request-time `Date`.
+ * The predicate every stats read shares: the trailing window, narrowed to one
+ * producer when the reader asked for one. Exported so the SQL is inspectable
+ * without a database — the filter is the observable contract, and a second
+ * hand-written `where` in any of the three reads is how the by-status counts
+ * would start disagreeing with the total.
+ */
+export function clickStatsWhere(since: Date, producer?: ClickProducer) {
+  const window = gte(affiliateClicks.ranAt, since);
+  return producer === undefined
+    ? window
+    : and(window, eq(affiliateClicks.producer, producer));
+}
+
+/**
+ * Click totals for a trailing window, optionally for one producer. `now` is a
+ * parameter, not `Date.now()`: the panel computes this while rendering, and an
+ * unstable clock read is what makes `cacheComponents` refuse to prerender the
+ * route. Callers pass the request-time `Date`.
  */
 export async function affiliateClickStats(
   windowHours: number = AFFILIATE_CLICK_DEFAULT_WINDOW_HOURS,
   now: Date = new Date(),
+  producer?: ClickProducer,
 ): Promise<{
   total: number;
   byStatus: { status: number | null; count: number }[];
@@ -205,17 +299,18 @@ export async function affiliateClickStats(
       ? windowHours
       : AFFILIATE_CLICK_DEFAULT_WINDOW_HOURS;
   const since = new Date(now.getTime() - hours * 3_600_000);
+  const where = clickStatsWhere(since, producer);
 
   const [totals] = await db
     .select({ total: count(), avgMs: avg(affiliateClicks.ms) })
     .from(affiliateClicks)
-    .where(gte(affiliateClicks.ranAt, since));
+    .where(where);
 
   // `status` is nullable, so a grouped row is "no status observed", never 0.
   const byStatus = await db
     .select({ status: affiliateClicks.status, count: count() })
     .from(affiliateClicks)
-    .where(gte(affiliateClicks.ranAt, since))
+    .where(where)
     .groupBy(affiliateClicks.status)
     .orderBy(desc(count()));
 
@@ -224,7 +319,7 @@ export async function affiliateClickStats(
   const byDevice = await db
     .select({ device: affiliateClicks.device, count: count() })
     .from(affiliateClicks)
-    .where(gte(affiliateClicks.ranAt, since))
+    .where(where)
     .groupBy(affiliateClicks.device)
     .orderBy(desc(count()));
 

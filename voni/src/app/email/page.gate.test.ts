@@ -450,6 +450,29 @@ test("PanelSkeleton stays inside page.tsx and is the only panel fallback", () =>
   );
 });
 
+test("the source filter is resolved in the request-time data boundary", () => {
+  const data = body("EmailControlData");
+
+  // The URL contract is resolved against the stored producer inside the same
+  // boundary that reads the rows, so a copied link and the narrowed query come
+  // from one value; an unknown value resolves to All in `parseClickSource`.
+  assert.match(
+    data,
+    /const selectedSource = parseClickSource\(params\.source\);/,
+  );
+  assert.match(
+    data,
+    /listAffiliateClicks\(PAGE_CLICK_LIMIT, selectedSource \?\? undefined\)/,
+    "the table query is the resolved filter, not the raw query string",
+  );
+  assert.match(data, /clickSourceChips\(selectedSource\)/);
+  assert.match(data, /sources=\{sourceChips\}/);
+
+  // The gate renders before any of this and must not touch the filter.
+  const gate = body("EmailPageGate");
+  assert.doesNotMatch(gate, /selectedSource|clickSourceChips|parseClickSource/);
+});
+
 test("the page stays out of search indexes", () => {
   assert.match(source, /robots: \{ index: false, follow: false \}/);
 });
