@@ -67,6 +67,13 @@ jobs:
       # Low-privilege by design (the intake may append one click row and
       # nothing else), and never printed: the runner sends it as a header only.
       EMAIL_CLICK_REPORT_SECRET: ${{ secrets.EMAIL_CLICK_REPORT_SECRET }}
+      # Optional egress proxy. GitHub-hosted runners leave from a small shared
+      # Azure pool, so a non-datacenter address needs a proxy; empty values mean
+      # no proxy, which is the runner's own address. Credentials are never
+      # printed — the runner hands them to Playwright only.
+      BROWSER_PROXY_SERVER: ${{ secrets.BROWSER_PROXY_SERVER }}
+      BROWSER_PROXY_USERNAME: ${{ secrets.BROWSER_PROXY_USERNAME }}
+      BROWSER_PROXY_PASSWORD: ${{ secrets.BROWSER_PROXY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 

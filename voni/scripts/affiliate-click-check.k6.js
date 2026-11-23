@@ -5,7 +5,8 @@
  * What it does: each iteration draws a browser profile from a weighted matrix
  * (family by weight, member uniformly), draws a target
  * at random (with replacement), stamps the three utm params on the target
- * (keeping its own query params), and fetches it with a browser-shaped header
+ * (the campaign named by that source, keeping the target's own query params),
+ * and fetches it with a browser-shaped header
  * set — including the client hints a Chromium-family profile sends — following
  * up to ten redirects. Each click logs one JSON line, then reports it back to
  * voni.
@@ -74,7 +75,6 @@ const ACCEPT_LANGUAGE = "en-US,en;q=0.9";
 
 const EMAIL_SOURCE_PARAM = "utm_source";
 const EMAIL_MEDIUM = "email";
-const EMAIL_CAMPAIGN = "voni-email";
 
 /** The target list embedded at build/upload time — production URLs. */
 const TARGETS = [
@@ -120,6 +120,29 @@ const REFERERS = {
   "icloud.com": "https://www.icloud.com/mail/",
   "proton.me": "https://mail.proton.me/",
 };
+
+/**
+ * src/lib/email/pool.ts EMAIL_CAMPAIGNS: the campaign each claimed source
+ * carries, one per provider. An unknown source claims the fixed fallback.
+ */
+const CAMPAIGNS = {
+  "xfinity.com": "xfinity-internet",
+  "spectrum.com": "spectrum-upgrade",
+  "att.com": "att-fiber",
+  "verizon.com": "verizon-fios",
+  "cox.com": "cox-bundle",
+  "gmail.com": "gmail-welcome-series",
+  "outlook.com": "outlook-storage",
+  "yahoo.com": "yahoo-mail-upgrade",
+  "icloud.com": "icloud-storage",
+  "proton.me": "proton-privacy",
+};
+const CAMPAIGN_FALLBACK = "email-program";
+
+function campaignFor(source) {
+  const campaign = CAMPAIGNS[source];
+  return campaign === undefined ? CAMPAIGN_FALLBACK : campaign;
+}
 
 /**
  * The weighted profile matrix from src/lib/email/user-agents.ts. Weights are
@@ -359,7 +382,9 @@ function withUtm(target, source) {
   let query = queryIndex === -1 ? "" : base.slice(queryIndex + 1);
   query = setParam(query, EMAIL_SOURCE_PARAM, source);
   query = setParam(query, "utm_medium", EMAIL_MEDIUM);
-  query = setParam(query, "utm_campaign", EMAIL_CAMPAIGN);
+  // The campaign belongs to the source, so source and campaign always agree —
+  // the same lookup resolveTarget uses in src/lib/email/pool.ts.
+  query = setParam(query, "utm_campaign", campaignFor(source));
   return origin + "?" + query + hash;
 }
 

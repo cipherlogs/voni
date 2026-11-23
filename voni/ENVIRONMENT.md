@@ -377,6 +377,9 @@ described in `docs/agents/email-pool.md`.
 | `EMAIL_CLICK_CHECK_ID` | Grafana Synthetic Monitoring check id the panel reads and edits. Defaults to `68584` when unset or not a positive integer. |
 | `GRAFANA_SM_URL` | Synthetic Monitoring API base for the stack: a host with an optional path, scheme optional (`https://` is assumed). A bare word or `localhost` is refused as malformed. Without it the panel still renders click history; check reads and edits report "not configured". |
 | `GRAFANA_SM_TOKEN` | Service-account token for that SM API, with read/write on checks. Higher privilege than the report secret — it can change the check — so it stays in the app environment and never inside the check script. |
+| `BROWSER_PROXY_SERVER` | **GitHub Actions secret only** (not an app env var). Optional egress proxy for the browser runner: an absolute URL with an `http:`, `https:` or `socks5:` scheme and a host, e.g. `http://proxy.example.com:8080`. Unset or empty = no proxy, which is the runner's own Azure address. See `docs/agents/email-pool.md`. |
+| `BROWSER_PROXY_USERNAME` | **GitHub Actions secret only.** Optional proxy credential; must be set together with the password. Handed to Playwright's launch only, never logged. |
+| `BROWSER_PROXY_PASSWORD` | **GitHub Actions secret only.** Optional proxy credential; must be set together with the username. Never logged, never written into a report. |
 
 `EMAIL_CLICK_REPORT_SECRET` lives in two places by design: the deployment
 environment (the Worker secret the report route reads) and the Grafana check
@@ -388,6 +391,11 @@ secret with it, put it in `.env.local`, then run `npm run affiliate:upload`
 again — or every report answers `401`. The secret is treatable as
 low-privilege precisely because the stored script is readable to anyone who can
 open the check.
+
+The three `BROWSER_PROXY_*` values are the exception to "put new secrets in
+`.env.local`": only `.github/workflows/browser-check.yml` reads them, from
+repository Actions secrets of the same names. Empty is a valid value and means
+no proxy; a malformed server fails the runner before Chrome starts.
 
 The target list is **data in Postgres** (`affiliate_targets`), managed from the
 `/email` panel's Targets card: add, pause/resume, remove. Every change rebuilds

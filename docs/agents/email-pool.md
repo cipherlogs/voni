@@ -99,7 +99,8 @@ the intake parser, which is the only way a value can be written. An index on
 `(producer, ran_at desc)` serves both the card stats and the liveness query.
 
 `utm_source` is untouched. It still names the claimed email provider, not the
-source that produced the click.
+source that produced the click. `utm_campaign` is derived from it, so the two
+never disagree.
 
 ## The live click path
 
@@ -205,11 +206,35 @@ Three params are stamped on every target:
 | --- | --- |
 | `utm_source` | the provider bag (`EMAIL_PROVIDERS`) |
 | `utm_medium` | `email` |
-| `utm_campaign` | `voni-email` |
+| `utm_campaign` | that provider's own campaign, from `EMAIL_CAMPAIGNS` |
+
+`utm_campaign` is not a constant. Each provider names a plausible campaign of
+its own, so `utm_source` and `utm_campaign` always agree — a click claiming
+`gmail.com` arrives from `gmail-welcome-series`, not from a campaign name that
+names the vendor:
+
+| `utm_source` | `utm_campaign` |
+| --- | --- |
+| `xfinity.com` | `xfinity-internet` |
+| `spectrum.com` | `spectrum-upgrade` |
+| `att.com` | `att-fiber` |
+| `verizon.com` | `verizon-fios` |
+| `cox.com` | `cox-bundle` |
+| `gmail.com` | `gmail-welcome-series` |
+| `outlook.com` | `outlook-storage` |
+| `yahoo.com` | `yahoo-mail-upgrade` |
+| `icloud.com` | `icloud-storage` |
+| `proton.me` | `proton-privacy` |
+
+A source with no entry (only reachable by a caller that bypasses the bag)
+claims the fixed fallback `email-program`. `campaignForProvider(source)` is the
+one lookup; `resolveTarget()` uses it, and the generator emits the same map and
+the same lookup into the k6 script, so a runtime source pick cannot disagree
+with the app.
 
 The app stamps them with `resolveTarget()`; the k6 script stamps the same three
 with `withUtm()`. The k6 script is **generated** from the app's own modules —
-profile matrix, targets, providers, referers — by
+profile matrix, targets, providers, referers, campaigns — by
 `src/lib/email/check-script.ts`, which both `npm run affiliate:check` and the
 panel's save call use. Never edit `scripts/affiliate-click-check.k6.js`; edit
 its sources and regenerate. The builder is deterministic: the same sources
@@ -370,7 +395,44 @@ loop, not an assertion about intent.
 The workflow (`.github/workflows/browser-check.yml`) is workflow-dispatch only,
 with `contents: read`, a per-OS concurrency group that queues rather than
 cancels, and a 350-minute timeout under GitHub's 6-hour ceiling. The k6 script
-generator is not modified; its byte-identical output is the Grafana contract.
+generator is one builder for both producers: its byte-identical output is still
+the Grafana contract, and it now emits the same per-provider campaign map the
+app stamps with. That is a deliberate change to the earlier out-of-scope note in
+`.scratch/email-sources/spec.md`, which said the generator would not be touched;
+the campaign decision is recorded here, and the spec is left as history.
+
+### The runner's address: the proxy, and why the k6 path has none
+
+GitHub-hosted runners egress from a small shared pool of Azure addresses, and
+every runner in a hosted OS pool can look the same to an affiliate. Rotating the
+browser profile changes the User-Agent, client hints and viewport — a header,
+not the IP address or the ASN. A per-provider campaign makes the URL plausible;
+it does not make a datacenter visitor a residential one.
+
+The supported fix is a proxy. `voni/scripts/browser-click.mjs` reads:
+
+| Variable | Meaning |
+| --- | --- |
+| `BROWSER_PROXY_SERVER` | absolute proxy URL with an `http:`, `https:` or `socks5:` scheme and a host, e.g. `http://proxy.example.com:8080`. Unset = no proxy. |
+| `BROWSER_PROXY_USERNAME` | optional proxy credential; must be set with the password |
+| `BROWSER_PROXY_PASSWORD` | optional proxy credential; must be set with the username |
+
+The workflow maps all three from repository Actions secrets of the same names.
+An empty secret becomes an empty variable and means "no proxy", which is the
+pre-proxy behaviour. A malformed server, or half a credential pair, fails the
+run before Chrome starts, and no refusal or log line ever prints the value — a
+proxy URL may carry `user:pass@`. The values go to Playwright's one
+`chromium.launch` call and nowhere else.
+
+Runner-region spread is an org/plan setting rather than a panel control: GitHub
+larger runners can be configured in more regions than the default hosted pool,
+which changes the egress address span. It is documented here and not invented in
+the UI.
+
+The Grafana k6 path cannot use a proxy: k6 runs on Grafana's synthetic-probe
+network and the script is the check body, not configuration. So an IP-level
+claim — traffic that looks residential rather than datacenter — is true of the
+GitHub browser source only, and even there only when the proxy is configured.
 
 ### Chained segments
 
@@ -565,9 +627,11 @@ nothing at all — it logs one line saying so.
 - The Grafana check runs from Grafana's network, not voni's. k6 follows
   redirects to any host and reports the final URL it observed; that row is a
   measurement of the target, not a request voni made.
-- The browser check runs from GitHub's runners. It clicks only the target list
-  the app dispatches and never a URL supplied by a browser. The click's final
-  URL is whatever the page navigated to, which is the thing a browser proves.
+- The browser check runs from GitHub's runners, or from the configured egress
+  proxy when one is set; either way it is never voni's address. It clicks only
+  the target list the app dispatches and never a URL supplied by a browser. The
+  click's final URL is whatever the page navigated to, which is the thing a
+  browser proves.
 - The app runtime has no platform-level SSRF defence, so `simulateOneClick`
   follows redirects itself: `redirect: "manual"`, at most 10 hops, each
   `Location` resolved against the URL that sent it, and a hop is accepted only
@@ -637,9 +701,9 @@ nothing at all — it logs one line saying so.
 - `voni/src/lib/email/unlock-throttle.ts` — the attempt budget both password
   forms spend: per-IP first, then the global ceiling, 15-minute fixed window,
   fail-closed with a message the form can render.
-- `voni/src/lib/email/pool.ts` — the provider bag, `resolveTarget()` utm
-  stamping, `baseTargetUrl()` (a stamped click folded back to its target), and
-  the seed guard.
+- `voni/src/lib/email/pool.ts` — the provider bag, the per-provider campaign
+  map (`campaignForProvider`), `resolveTarget()` utm stamping, `baseTargetUrl()`
+  (a stamped click folded back to its target), and the seed guard.
 - `voni/src/lib/email/target-selection.ts` — the two modes, the script marker's
   read-back (`readTargetSelection`), and `pickTarget()` for the one-off click.
 - `voni/src/lib/email/targets.ts` — the live target list: seed-on-empty,

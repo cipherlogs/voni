@@ -9,7 +9,9 @@ import TARGETS_JSON from "./targets.json";
 import {
   assertEmailTargets,
   baseTargetUrl,
-  EMAIL_CAMPAIGN,
+  campaignForProvider,
+  EMAIL_CAMPAIGNS,
+  EMAIL_CAMPAIGN_FALLBACK,
   EMAIL_MEDIUM,
   EMAIL_PROVIDERS,
   EMAIL_SOURCE_PARAM,
@@ -18,6 +20,7 @@ import {
   nextEmailProvider,
   resolveTarget,
   shuffleBag,
+  UTM_CAMPAIGN_PARAM,
 } from "./pool";
 import { canonicalTargetUrl } from "./target-url";
 
@@ -100,17 +103,73 @@ test("resolveTarget: an absolute entry keeps its own host and path", () => {
   assert.equal(github.searchParams.get(EMAIL_SOURCE_PARAM), "gmail.com");
 });
 
-test("resolveTarget: exactly utm_source, utm_medium=email and utm_campaign=voni-email", () => {
+test("campaigns: every provider has its own plausible name, never the old constant", () => {
+  // The map is keyed by utm_source exactly, and the bag is the key set: a
+  // provider with no campaign would silently claim the fallback instead.
+  assert.deepEqual(
+    Object.keys(EMAIL_CAMPAIGNS).sort(),
+    [...EMAIL_PROVIDERS].sort(),
+    "one campaign per provider, no extra keys",
+  );
+
+  const campaigns = EMAIL_PROVIDERS.map(campaignForProvider);
+  assert.equal(
+    new Set(campaigns).size,
+    campaigns.length,
+    "each provider claims a different campaign",
+  );
+  for (const campaign of campaigns) {
+    assert.match(
+      campaign,
+      /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
+      `${campaign} must be a plain campaign slug`,
+    );
+    assert.notEqual(campaign, "voni-email", "the fixed campaign is gone");
+  }
+});
+
+test("campaigns: an unknown source falls back to the fixed campaign", () => {
+  assert.equal(campaignForProvider("example.com"), EMAIL_CAMPAIGN_FALLBACK);
+  assert.match(EMAIL_CAMPAIGN_FALLBACK, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+
+  const url = new URL(resolveTarget("https://voni.cc/test", "example.com"));
+  assert.equal(url.searchParams.get(EMAIL_SOURCE_PARAM), "example.com");
+  assert.equal(url.searchParams.get(UTM_CAMPAIGN_PARAM), EMAIL_CAMPAIGN_FALLBACK);
+});
+
+test("resolveTarget: utm_source, utm_medium=email and the source's own campaign", () => {
   const url = new URL(resolveTarget("https://voni.cc/test", "att.com"));
   assert.equal(url.searchParams.get(EMAIL_SOURCE_PARAM), "att.com");
   assert.equal(url.searchParams.get("utm_medium"), EMAIL_MEDIUM);
   assert.equal(url.searchParams.get("utm_medium"), "email");
-  assert.equal(url.searchParams.get("utm_campaign"), EMAIL_CAMPAIGN);
-  assert.equal(url.searchParams.get("utm_campaign"), "voni-email");
+  assert.equal(url.searchParams.get(UTM_CAMPAIGN_PARAM), campaignForProvider("att.com"));
+  assert.equal(url.searchParams.get(UTM_CAMPAIGN_PARAM), "att-fiber");
+  assert.equal(url.searchParams.getAll(UTM_CAMPAIGN_PARAM).length, 1);
   assert.deepEqual(
     [...url.searchParams.keys()].sort(),
     ["utm_campaign", "utm_medium", "utm_source"],
   );
+});
+
+test("resolveTarget: source and campaign agree for every provider", () => {
+  for (const provider of EMAIL_PROVIDERS) {
+    const url = new URL(resolveTarget("https://voni.cc/test", provider));
+    assert.equal(
+      url.searchParams.get(EMAIL_SOURCE_PARAM),
+      provider,
+      "utm_source is the claimed provider, unchanged",
+    );
+    assert.equal(
+      url.searchParams.get(UTM_CAMPAIGN_PARAM),
+      campaignForProvider(provider),
+      `${provider}'s campaign is its own programme name`,
+    );
+    assert.equal(
+      url.searchParams.getAll(UTM_CAMPAIGN_PARAM).length,
+      1,
+      "still exactly one utm_campaign",
+    );
+  }
 });
 
 test("resolveTarget: an entry's own query survives, utm keys are set and never duplicated", () => {
@@ -128,7 +187,7 @@ test("resolveTarget: an entry's own query survives, utm keys are set and never d
   assert.equal(withCreative.searchParams.get("creative_id"), "1");
   assert.equal(withCreative.searchParams.get(EMAIL_SOURCE_PARAM), "cox.com");
   assert.equal(withCreative.searchParams.get("utm_medium"), "email");
-  assert.equal(withCreative.searchParams.get("utm_campaign"), "voni-email");
+  assert.equal(withCreative.searchParams.get(UTM_CAMPAIGN_PARAM), campaignForProvider("cox.com"));
 });
 
 test("resolveTarget: every bag entry resolves to itself plus the three params", () => {
@@ -139,7 +198,7 @@ test("resolveTarget: every bag entry resolves to itself plus the three params", 
     assert.equal(url.pathname, original.pathname);
     assert.equal(url.searchParams.get(EMAIL_SOURCE_PARAM), "verizon.com");
     assert.equal(url.searchParams.get("utm_medium"), EMAIL_MEDIUM);
-    assert.equal(url.searchParams.get("utm_campaign"), EMAIL_CAMPAIGN);
+    assert.equal(url.searchParams.get(UTM_CAMPAIGN_PARAM), campaignForProvider("verizon.com"));
   }
 });
 

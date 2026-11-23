@@ -129,6 +129,62 @@ function parseTargets(raw) {
   return parsed;
 }
 
+/** The proxy schemes Playwright can drive for a whole browser. */
+const PROXY_PROTOCOLS = ["http:", "https:", "socks5:"];
+
+/**
+ * The optional egress proxy. This is the only supported way to click from a
+ * non-datacenter address: GitHub-hosted runners share a small Azure pool, and
+ * rotating the User-Agent changes a header, not the IP or ASN an affiliate
+ * sees. Unset server means no proxy at all, which is the pre-proxy behaviour.
+ *
+ * Nothing here is ever echoed: a proxy URL may carry `user:pass@`, so a refusal
+ * names the variable, never the value, and the returned object is handed to
+ * Playwright only (never logged, never reported).
+ */
+function readProxy() {
+  const server = readEnv("BROWSER_PROXY_SERVER");
+  const username = readEnv("BROWSER_PROXY_USERNAME");
+  const password = readEnv("BROWSER_PROXY_PASSWORD");
+
+  if (server === undefined) {
+    if (username !== undefined || password !== undefined) {
+      stop(
+        "BROWSER_PROXY_USERNAME/BROWSER_PROXY_PASSWORD are set but BROWSER_PROXY_SERVER is not: " +
+          "credentials without a proxy would be silently ignored",
+      );
+    }
+    return undefined;
+  }
+
+  let url;
+  try {
+    url = new URL(server);
+  } catch {
+    stop(
+      "BROWSER_PROXY_SERVER is malformed: it must be an absolute proxy URL " +
+        `with one of ${PROXY_PROTOCOLS.join(", ")} and a host, e.g. http://proxy.example.com:8080`,
+    );
+  }
+  if (!PROXY_PROTOCOLS.includes(url.protocol) || url.hostname === "") {
+    stop(
+      `BROWSER_PROXY_SERVER must use one of ${PROXY_PROTOCOLS.join(", ")} and name a host`,
+    );
+  }
+
+  if ((username === undefined) !== (password === undefined)) {
+    stop(
+      "BROWSER_PROXY_USERNAME and BROWSER_PROXY_PASSWORD must be set together, or neither",
+    );
+  }
+
+  // `server` without credentials is Playwright's plain-proxy shape; adding a
+  // username without a password would send an empty credential instead of none.
+  return username === undefined
+    ? { server }
+    : { server, username, password };
+}
+
 function readConfig() {
   const rawOs = (readEnv("BROWSER_CHECK_OS") ?? process.env.RUNNER_OS ?? "")
     .trim()
@@ -163,6 +219,8 @@ function readConfig() {
     ),
     // Only ever written into a header by `postReport`. Never logged.
     secret,
+    // Handed to Playwright's launch only. Unset = no proxy.
+    proxy: readProxy(),
   };
 }
 
@@ -344,14 +402,20 @@ async function main() {
   const config = readConfig();
   console.log(
     `browser-click: os=${config.os} targets=${config.targets.length} ` +
-      `interval=${config.intervalSeconds}s window=${config.windowSeconds}s`,
+      `interval=${config.intervalSeconds}s window=${config.windowSeconds}s ` +
+      `proxy=${config.proxy === undefined ? "off" : "on"}`,
   );
 
   await mkdir(SCREENSHOT_DIR, { recursive: true });
 
+  // The proxy, when configured, is the segment's egress address: one launch
+  // option for the whole run. The credentials live in this object only.
+  const launchOptions = { channel: "chrome", headless: true };
+  if (config.proxy !== undefined) launchOptions.proxy = config.proxy;
+
   let browser;
   try {
-    browser = await chromium.launch({ channel: "chrome", headless: true });
+    browser = await chromium.launch(launchOptions);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     stop(
