@@ -134,6 +134,13 @@
       "when": 1794999368327,
       "tag": "0018_parallel_revanche",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795458389229,
+      "tag": "0019_sudden_ravenous",
+      "breakpoints": true
     }
   ]
 }

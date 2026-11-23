@@ -7,9 +7,10 @@
  * absolute http(s) URL or a bug, nothing resolved against an implicit origin.
  */
 
-import { avg, count, desc, gte, max } from "drizzle-orm";
+import { avg, count, desc, eq, gte, max } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { affiliateClicks } from "@/lib/db/schema";
+import type { ClickProducer, RunnerOs } from "@/lib/email/click-report";
 import { baseTargetUrl } from "@/lib/email/pool";
 
 /** What one visit recorded. `ranAt` is when the edge saw the click, not insert time. */
@@ -23,6 +24,10 @@ export type AffiliateClickReport = {
   userAgent: string | null;
   device: string | null;
   browser: string | null;
+  /** Which source produced the click. Every pre-column row is Grafana's. */
+  producer: ClickProducer;
+  /** The runner OS for a browser producer; null for Grafana and one-off clicks. */
+  runnerOs: RunnerOs | null;
   ranAt: Date;
 };
 
@@ -87,13 +92,25 @@ export async function recordAffiliateClick(
     userAgent: input.userAgent,
     device: input.device,
     browser: input.browser,
+    producer: input.producer,
+    runnerOs: input.runnerOs,
     ranAt: input.ranAt,
   });
 }
 
-export async function listAffiliateClicks(
+/**
+ * One page of click history, newest first. `producer` narrows it to one source;
+ * the `(producer, ran_at desc)` index is what serves that without sorting every
+ * producer's history.
+ *
+ * Exported separately from `listAffiliateClicks` so the query can be inspected
+ * without a database: a test can prove the predicate and the ordering, which is
+ * the observable contract, rather than needing a live Postgres.
+ */
+export function affiliateClicksPage(
   limit: number = AFFILIATE_CLICK_DEFAULT_LIMIT,
-): Promise<AffiliateClickRow[]> {
+  producer?: ClickProducer,
+) {
   return db
     .select({
       id: affiliateClicks.id,
@@ -105,11 +122,21 @@ export async function listAffiliateClicks(
       userAgent: affiliateClicks.userAgent,
       device: affiliateClicks.device,
       browser: affiliateClicks.browser,
+      producer: affiliateClicks.producer,
+      runnerOs: affiliateClicks.runnerOs,
       ranAt: affiliateClicks.ranAt,
     })
     .from(affiliateClicks)
+    .where(producer === undefined ? undefined : eq(affiliateClicks.producer, producer))
     .orderBy(desc(affiliateClicks.ranAt))
     .limit(clampClickLimit(limit));
+}
+
+export async function listAffiliateClicks(
+  limit: number = AFFILIATE_CLICK_DEFAULT_LIMIT,
+  producer?: ClickProducer,
+): Promise<AffiliateClickRow[]> {
+  return affiliateClicksPage(limit, producer);
 }
 
 /**

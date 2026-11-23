@@ -12,6 +12,9 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organization, user } from "./auth-schema";
+// Type-only: the allowlist is parsed at the intake, and this column stores
+// nothing else. Erased at runtime, so drizzle-kit does not load email code.
+import type { RunnerOs } from "../email/click-report";
 
 // ---------------------------------------------------------------------------
 // Better Auth core tables (user/session/account/verification) + the
@@ -767,6 +770,17 @@ export const backgroundJobs = pgTable(
 );
 
 /**
+ * Which mechanism produced a click. Deliberately closed: the stored value is
+ * what the sources console groups and filters on, and a free-text origin would
+ * create a bucket no card can own.
+ */
+export const clickProducerEnum = pgEnum("click_producer", [
+  "grafana",
+  "github",
+  "oneoff",
+]);
+
+/**
  * One affiliate click the `/email` control panel recorded: the target that was
  * drawn, the claimed source, where the redirect chain ended, the status the
  * edge saw and how long it took.
@@ -800,6 +814,19 @@ export const affiliateClicks = pgTable(
     status: integer("status"),
     /** Wall time of the edge fetch; null when nothing was measured. */
     ms: integer("ms"),
+    /**
+     * Which source produced this click. The default *is* the backfill: rows
+     * written before the column existed were all Grafana's, so they read as
+     * `grafana` without an update statement.
+     */
+    producer: clickProducerEnum("producer").notNull().default("grafana"),
+    /**
+     * The runner OS for runner-produced clicks (`github`); null for Grafana and
+     * the in-app one-off button, which are not tied to a runner. Kept as text
+     * because the allowlist lives in the intake parser, which is the only way a
+     * value can be written.
+     */
+    runnerOs: text("runner_os").$type<RunnerOs>(),
     ranAt: timestamp("ran_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -807,6 +834,13 @@ export const affiliateClicks = pgTable(
     // Every read is "newest first" and every stat is "since some hour", so one
     // descending index serves both without a second sort.
     index("affiliate_clicks_ran_at_idx").on(table.ranAt.desc()),
+    // A source card and the liveness query both ask for one producer's newest
+    // rows, which the ran_at-only index cannot serve without sorting every
+    // producer's history.
+    index("affiliate_clicks_producer_ran_at_idx").on(
+      table.producer,
+      table.ranAt.desc(),
+    ),
   ],
 );
 
@@ -835,3 +869,30 @@ export const affiliateTargets = pgTable(
     uniqueIndex("affiliate_targets_url_uidx").on(table.url),
   ],
 );
+
+/**
+ * The scheduling config for a source this app executes itself (today: GitHub).
+ *
+ * Only config voni can honour lives here. Grafana's interval, probes,
+ * clicks-per-run and enabled state stay in Grafana, read over its API: copying
+ * them here would make this table a second — and silently stale — source of
+ * truth for a remote executor. A producer with no row is simply not scheduled
+ * by the ticker.
+ *
+ * `enabled` defaults to false so a seed row can exist without producing a click;
+ * `last_dispatched_at` is the anti-thrash guard, not evidence of liveness —
+ * clicks are the heartbeat.
+ */
+export const emailSources = pgTable("email_sources", {
+  producer: text("producer").primaryKey(),
+  enabled: boolean("enabled").notNull().default(false),
+  /** Minutes are too coarse: the loop sets the pace, so 15 s is legal. */
+  intervalSeconds: integer("interval_seconds").notNull().default(60),
+  /** How long one window runs, split into chained segments by the ticker. */
+  windowSeconds: integer("window_seconds").notNull().default(43_200),
+  /** UTC hour a window may start at, 0-23. */
+  windowStartHour: integer("window_start_hour").notNull().default(7),
+  lastDispatchedAt: timestamp("last_dispatched_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

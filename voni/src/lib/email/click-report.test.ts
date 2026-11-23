@@ -148,6 +148,153 @@ test("an unparsable ranAt is rejected", () => {
   assert.equal(result.reason, "bad_ran_at");
 });
 
+test("a report with a producer and runner OS keeps both", () => {
+  const result = parseClickReport(
+    {
+      target: "https://voni.cc/landing",
+      producer: "github",
+      runnerOs: "ubuntu",
+    },
+    NOW,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.producer, "github");
+  assert.equal(result.value.runnerOs, "ubuntu");
+});
+
+test("an absent producer is Grafana, and the old Grafana payload is unchanged", () => {
+  const grafana = {
+    target: "https://voni.cc/landing",
+    source: "gmail.com",
+    finalUrl: "https://voni.cc/landing",
+    status: 200,
+    ms: 42,
+    userAgent: "Mozilla/5.0 (X11; Linux x86_64)",
+    device: "desktop",
+    browser: "Chrome",
+    ranAt: "2026-11-17T11:59:00.000Z",
+  };
+  const result = parseClickReport(grafana, NOW);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.producer, "grafana");
+  assert.equal(result.value.runnerOs, null);
+  // Every field the old reporter sent still parses to exactly what it did
+  // before the two new columns existed.
+  assert.deepEqual(
+    { ...result.value, producer: undefined, runnerOs: undefined },
+    {
+      target: "https://voni.cc/landing",
+      source: "gmail.com",
+      finalUrl: "https://voni.cc/landing",
+      status: 200,
+      ms: 42,
+      userAgent: "Mozilla/5.0 (X11; Linux x86_64)",
+      device: "desktop",
+      browser: "Chrome",
+      ranAt: new Date("2026-11-17T11:59:00.000Z"),
+      producer: undefined,
+      runnerOs: undefined,
+    },
+  );
+});
+
+test("a null producer and a null runner OS parse to the defaults", () => {
+  const result = parseClickReport(
+    { target: "https://voni.cc/landing", producer: null, runnerOs: null },
+    NOW,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.producer, "grafana");
+  assert.equal(result.value.runnerOs, null);
+});
+
+test("an unknown producer is rejected with a fixed reason", () => {
+  for (const producer of ["selenium", "githubb", "unknown", ""]) {
+    const result = parseClickReport(
+      { target: "https://voni.cc/landing", producer },
+      NOW,
+    );
+    assert.equal(result.ok, false, `producer ${JSON.stringify(producer)} was accepted`);
+    if (result.ok) continue;
+    assert.equal(result.reason, "bad_producer");
+  }
+});
+
+test("an allowlisted producer is accepted case-insensitively", () => {
+  const result = parseClickReport(
+    { target: "https://voni.cc/landing", producer: " GitHub " },
+    NOW,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.producer, "github");
+});
+
+test("a non-string producer is rejected", () => {
+  const result = parseClickReport(
+    { target: "https://voni.cc/landing", producer: 2 },
+    NOW,
+  );
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "bad_producer");
+});
+
+test("an OS outside the allowlist is rejected with a fixed reason", () => {
+  for (const runnerOs of ["linux", "darwin", "windows-11", "ubuntu; rm -rf /"]) {
+    const result = parseClickReport(
+      { target: "https://voni.cc/landing", producer: "github", runnerOs },
+      NOW,
+    );
+    assert.equal(result.ok, false, `runnerOs ${JSON.stringify(runnerOs)} was accepted`);
+    if (result.ok) continue;
+    assert.equal(result.reason, "bad_runner_os");
+  }
+});
+
+test("an allowlisted OS is accepted case-insensitively, like the device class", () => {
+  const result = parseClickReport(
+    { target: "https://voni.cc/landing", producer: "github", runnerOs: "Ubuntu" },
+    NOW,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.runnerOs, "ubuntu");
+});
+
+test("a non-string runner OS is rejected", () => {
+  const result = parseClickReport(
+    { target: "https://voni.cc/landing", producer: "github", runnerOs: true },
+    NOW,
+  );
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "bad_runner_os");
+});
+
+test("a blank runner OS is not the same as absent and is rejected", () => {
+  const result = parseClickReport(
+    { target: "https://voni.cc/landing", producer: "github", runnerOs: "   " },
+    NOW,
+  );
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "bad_runner_os");
+});
+
+test("a report carrying an explicit grafana producer still parses", () => {
+  const result = parseClickReport(
+    { target: "https://voni.cc/landing", producer: "grafana" },
+    NOW,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.producer, "grafana");
+});
+
 test("unknown extra keys are ignored", () => {
   const result = parseClickReport(
     {
@@ -165,7 +312,9 @@ test("unknown extra keys are ignored", () => {
     "device",
     "finalUrl",
     "ms",
+    "producer",
     "ranAt",
+    "runnerOs",
     "source",
     "status",
     "target",
