@@ -25,6 +25,23 @@ import {
 } from "@/lib/email/page-gate";
 import { nextEmailProvider, baseTargetUrl, resolveTarget } from "@/lib/email/pool";
 import {
+  GITHUB_SOURCE_PRODUCER,
+  readSourceConfig,
+  recordSourceDispatch,
+  saveSourceSchedule,
+  setSourceEnabled,
+} from "@/lib/email/source-config";
+import {
+  MAX_JOB_SECONDS,
+  RUNNER_OSES,
+  parseInterval,
+  parseWindowSeconds,
+  parseWindowStartHour,
+  windowRemainingSeconds,
+  type RunnerOs,
+} from "@/lib/email/sources";
+import { dispatchBrowserCheck } from "@/lib/github/dispatch";
+import {
   TARGET_SELECTION_DEFAULT,
   TARGET_SELECTION_LEGACY,
   parseTargetSelection,
@@ -762,6 +779,9 @@ export async function runOneOffClick(
       userAgent,
       device,
       browser,
+      producer: "oneoff",
+      runnerOs: null,
+      passId: null,
     });
   } catch {
     return {
@@ -881,5 +901,313 @@ export async function runBurst(
     message:
       `${describePlan(planned.plan)}. The workflow is queued; its progress is in the run list.`,
     runUrl: result.runUrl,
+  };
+}
+
+/**
+ * The one refusal an enable/disable form can produce.
+ *
+ * A checkbox would always send a legal value; this form posts the state it
+ * wants explicitly so a hand-crafted request cannot flip the source by posting
+ * nothing, and so "true"/"false" stays the whole vocabulary.
+ */
+const SOURCE_STATE_REASON = "Source state must be on or off.";
+
+/**
+ * Turn the GitHub source on or off.
+ *
+ * Only the flag moves. The schedule stays exactly as it was, so resuming a
+ * source after a pause does not silently re-time it.
+ */
+export async function setGithubSourceEnabled(
+  _previous: ControlState,
+  formData: FormData,
+): Promise<ControlState> {
+  void _previous;
+  if (!(await requireControl())) return locked();
+
+  const raw = formData.get("enabled");
+  if (raw !== "true" && raw !== "false") {
+    return { ok: false, error: SOURCE_STATE_REASON };
+  }
+  const enabled = raw === "true";
+
+  await setSourceEnabled(GITHUB_SOURCE_PRODUCER, enabled);
+  revalidatePath("/email");
+
+  return {
+    ok: true,
+    message: enabled
+      ? "GitHub source enabled. It starts clicking on the next tick, inside its window."
+      : "GitHub source disabled. Nothing clicks from GitHub until it is enabled again.",
+  };
+}
+
+/**
+ * Save the interval, window and start hour in one write.
+ *
+ * The parsers in `@/lib/email/sources` are the only gate — the same ones the
+ * card draws its preview from and the ticker reads back — so a hand-crafted
+ * interval outside the offered set is refused with the sentence that names the
+ * legal values, and nothing is written. All three are parsed before the row is
+ * touched, so a bad start hour cannot leave a half-applied schedule behind.
+ */
+export async function saveGithubSchedule(
+  _previous: ControlState,
+  formData: FormData,
+): Promise<ControlState> {
+  void _previous;
+  if (!(await requireControl())) return locked();
+
+  const interval = parseInterval(formData.get("interval"));
+  if (!interval.ok) return { ok: false, error: interval.reason };
+
+  const activeWindow = parseWindowSeconds(formData.get("window"));
+  if (!activeWindow.ok) return { ok: false, error: activeWindow.reason };
+
+  const startHour = parseWindowStartHour(formData.get("startHour"));
+  if (!startHour.ok) return { ok: false, error: startHour.reason };
+
+  await saveSourceSchedule(GITHUB_SOURCE_PRODUCER, {
+    intervalSeconds: interval.value,
+    windowSeconds: activeWindow.value,
+    windowStartHour: startHour.value,
+  });
+  revalidatePath("/email");
+
+  return {
+    ok: true,
+    message:
+      "Schedule saved. The new interval, window and start hour apply on the next dispatch.",
+  };
+}
+
+/** The refusal for an OS the workflow cannot run; the allowlist is the closed set. */
+const GITHUB_OS_REASON =
+  "Choose one operating system to dispatch: ubuntu, windows or macos.";
+
+const GITHUB_NO_TARGETS_REASON =
+  "Every target is paused, so a browser check would click nothing. Resume one first.";
+
+const GITHUB_NOT_CONFIGURED_REASON =
+  "The GitHub source has no configuration row yet, so there is no schedule to dispatch with.";
+
+/**
+ * What a manual dispatch returns. It carries more than `ControlState` because a
+ * dispatch has two shapes of success: a queued run links to the workflow page,
+ * and a missing token prints the exact command instead of failing.
+ */
+export type GithubDispatchState = {
+  ok: boolean;
+  /** `dispatched` queued a run; `manual` printed the command to run instead. */
+  mode?: "dispatched" | "manual";
+  message?: string;
+  error?: string;
+  runUrl?: string;
+  fallback?: { command: string };
+};
+
+/**
+ * Dispatch one operating system right now, so the path can be proved before
+ * continuous running is turned on.
+ *
+ * This is an inline bounded call, not a job: the request is one small POST, the
+ * run's durability is GitHub's, and creating a job row would mean a session- and
+ * creator-scoped record for a page that authorises with a control cookie.
+ *
+ * The targets and the schedule are read here, never taken from the form: a body
+ * could otherwise point GitHub's runners at any host, or dispatch an interval
+ * the schedule domain would refuse. The segment is clamped to the job ceiling
+ * for the same reason a chained window is — a single job cannot outlive six
+ * hours.
+ */
+export async function dispatchGithubNow(
+  _previous: GithubDispatchState,
+  formData: FormData,
+): Promise<GithubDispatchState> {
+  void _previous;
+  if (!(await requireControl())) return { ok: false, error: LOCKED.error };
+
+  const os = String(formData.get("os") ?? "");
+  if (!(RUNNER_OSES as readonly string[]).includes(os)) {
+    return { ok: false, error: GITHUB_OS_REASON };
+  }
+
+  // The live list, not a field: the runner must click what the console shows.
+  const targets = await activeTargetUrls();
+  if (targets.length === 0) {
+    return { ok: false, error: GITHUB_NO_TARGETS_REASON };
+  }
+
+  const config = await readSourceConfig();
+  if (!config) return { ok: false, error: GITHUB_NOT_CONFIGURED_REASON };
+
+  // One dispatch runs one segment: the rest of the open window, capped at the
+  // job ceiling. Outside the window there is nothing left to measure, so a
+  // manual dispatch takes a full segment rather than refusing the operator.
+  const now = new Date();
+  const segment = Math.min(
+    windowRemainingSeconds(now, config.windowSeconds, config.windowStartHour) ||
+      MAX_JOB_SECONDS,
+    MAX_JOB_SECONDS,
+  );
+
+  const result = await dispatchBrowserCheck({
+    os: os as RunnerOs,
+    targets,
+    intervalSeconds: config.intervalSeconds,
+    windowSeconds: segment,
+  });
+
+  // The dispatcher owns every sentence — 401, 403, 404, transport, other — and
+  // has already redacted the token, so it reaches the operator unchanged.
+  if (!result.ok) return { ok: false, error: result.error };
+
+  if (result.mode === "manual") {
+    // No token is a configuration choice, not a failure. Nothing was queued, so
+    // nothing is recorded: a recorded dispatch here would throttle a retry for a
+    // run that never happened.
+    return {
+      ok: true,
+      mode: "manual",
+      message:
+        "No dispatch token is configured, so nothing was queued — run this line yourself:",
+      fallback: result.fallback,
+    };
+  }
+
+  await recordSourceDispatch(GITHUB_SOURCE_PRODUCER, now);
+  revalidatePath("/email");
+
+  return {
+    ok: true,
+    mode: "dispatched",
+    message: `The ${os} browser check is queued. Its progress is in the run list on the workflow page.`,
+    runUrl: result.runUrl,
+  };
+}
+
+/**
+ * Pause all: the console's one act that stops every continuous source.
+ *
+ * It is deliberately two writes rather than one transaction: Grafana's check
+ * lives in Grafana and GitHub's state lives in our table, so there is no
+ * transaction that could span them. The honest shape is therefore per-source
+ * outcomes — one failing must not be reported as success, and must not stop the
+ * other write from being attempted, because an operator asking to stop
+ * everything is worse off with one source still clicking.
+ *
+ * What it deliberately does not touch: the target list (a pause is not a
+ * delete), Burst (on demand, nothing to pause), and a GitHub segment that is
+ * already queued or running (GitHub owns that job; this action never asks it to
+ * cancel, so a window in flight finishes its segment).
+ */
+
+/** One source's outcome. `changed` separates "did the write" from "already off". */
+export type PauseOutcome =
+  | { ok: true; changed: boolean }
+  | { ok: false; error: string };
+
+/**
+ * The result the card renders. `grafana`/`github` are present only when the
+ * action actually attempted them: a locked refusal claims no outcome it did
+ * not earn.
+ */
+export type PauseAllState = {
+  ok: boolean;
+  message?: string;
+  error?: string;
+  grafana?: PauseOutcome;
+  github?: PauseOutcome;
+};
+
+/** Fixed sentences for the two ways a helper can throw instead of answering. */
+const GRAFANA_UNREACHABLE =
+  "Grafana's check could not be reached, so it was not paused.";
+const GITHUB_UNWRITTEN =
+  "The GitHub source state could not be saved, so it was not paused.";
+
+/** Pause Grafana's check, reading it first so an already-paused check is not a write. */
+async function pauseGrafanaSource(): Promise<PauseOutcome> {
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+  const current = await getCheck(id);
+  if (!current.ok) return { ok: false, error: describeSyntheticFailure(current) };
+  if (!current.data.enabled) return { ok: true, changed: false };
+
+  const updated = await updateCheck(id, { enabled: false });
+  if (!updated.ok) return { ok: false, error: describeSyntheticFailure(updated) };
+  return { ok: true, changed: true };
+}
+
+/** Disable the GitHub source; a missing row is "not configured", not a silent write. */
+async function disableGithubSource(): Promise<PauseOutcome> {
+  const config = await readSourceConfig();
+  if (!config) {
+    return {
+      ok: false,
+      error:
+        "The GitHub source has no configuration row yet, so it was not paused.",
+    };
+  }
+  if (!config.enabled) return { ok: true, changed: false };
+
+  await setSourceEnabled(GITHUB_SOURCE_PRODUCER, false);
+  return { ok: true, changed: true };
+}
+
+export async function pauseAllSources(
+  _previous: PauseAllState,
+  _formData: FormData,
+): Promise<PauseAllState> {
+  // `useActionState` supplies both; this act reads neither the prior state nor
+  // the body, and taking no fields means a hand-built form cannot widen it.
+  void _previous;
+  void _formData;
+  if (!(await requireControl())) return { ok: false, error: LOCKED.error };
+
+  // Both helpers start together and each settles into its own outcome. A
+  // Grafana outage therefore cannot stop the GitHub disable, and neither throw
+  // can reject the whole action.
+  const [grafana, github] = await Promise.all([
+    pauseGrafanaSource().catch(
+      (): PauseOutcome => ({ ok: false, error: GRAFANA_UNREACHABLE }),
+    ),
+    disableGithubSource().catch(
+      (): PauseOutcome => ({ ok: false, error: GITHUB_UNWRITTEN }),
+    ),
+  ]);
+
+  const changed =
+    (grafana.ok && grafana.changed) || (github.ok && github.changed);
+  // A failed write revalidated nothing, so the page keeps showing the source
+  // that is still running rather than a stale "paused" it did not achieve.
+  if (changed) revalidatePath("/email");
+
+  if (!grafana.ok || !github.ok) {
+    const failures: string[] = [];
+    if (!grafana.ok) {
+      failures.push(`Grafana's check was not paused: ${grafana.error}`);
+    }
+    if (!github.ok) {
+      failures.push(`The GitHub source was not disabled: ${github.error}`);
+    }
+    return {
+      ok: false,
+      error:
+        failures.join(" ") +
+        " Nothing else moved: no target was changed and no queued GitHub segment was cancelled.",
+      grafana,
+      github,
+    };
+  }
+
+  return {
+    ok: true,
+    message:
+      "Paused every continuous source: Grafana's check is paused and the GitHub " +
+      "source is disabled. The target list is unchanged, and a GitHub segment " +
+      "already queued keeps running to the end of its window.",
+    grafana,
+    github,
   };
 }

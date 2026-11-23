@@ -6,14 +6,25 @@ import { connection } from "next/server";
 import { CheckCircle2, LockKeyhole, MailIcon } from "lucide-react";
 import {
   AffiliateControlPanel,
+  ClickSurface,
   type CheckView,
   type ClickRowView,
   type ProbeView,
 } from "@/components/affiliate-control-panel";
 import { EmailGateForm } from "@/components/email-gate-form";
 import { BurstCard } from "@/components/burst-card";
+import { GithubSourceCard } from "@/components/github-source-card";
 import { TargetsCard } from "@/components/targets-card";
-import { addTarget, removeTarget, runBurst, toggleTarget } from "@/app/email/actions";
+import {
+  addTarget,
+  dispatchGithubNow,
+  pauseAllSources,
+  removeTarget,
+  runBurst,
+  saveGithubSchedule,
+  setGithubSourceEnabled,
+  toggleTarget,
+} from "@/app/email/actions";
 import { US_ZONES } from "@/lib/burst/plan";
 import { GateFrame, GateSkeleton } from "@/components/email-gate-skeleton";
 import { CardListSkeleton, TableSkeleton } from "@/components/page-skeletons";
@@ -22,13 +33,30 @@ import { Badge } from "@/components/ui/badge";
 import { PUBLIC_CONTAINER } from "@/lib/public-container";
 import { VoniLogo } from "@/components/voni-logo";
 import { listAffiliateTargets } from "@/lib/email/targets";
-import { affiliateClickStats, listAffiliateClicks } from "@/lib/email/clicks";
+import {
+  affiliateClickStats,
+  clickSourceChips,
+  listAffiliateClicks,
+  parseClickSource,
+  runnerClicksSince,
+  summariseRunnerClicks,
+} from "@/lib/email/clicks";
 import {
   EMAIL_CONTROL_COOKIE,
   controlCookieMatches,
 } from "@/lib/email/control";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
-import { US_PROBES } from "@/lib/email/volume";
+import {
+  GITHUB_SOURCE_PRODUCER,
+  newestClickByOs,
+  readSourceConfig,
+} from "@/lib/email/source-config";
+import {
+  US_PROBES,
+  clicksPerDay as grafanaClicksPerDay,
+} from "@/lib/email/volume";
+import { RUNNER_OSES, clicksPerDay as runnerClicksPerDay } from "@/lib/email/sources";
+import { BROWSER_CHECK_RUN_URL } from "@/lib/github/dispatch";
 import { secret } from "@/lib/env";
 import {
   getCheck,
@@ -57,7 +85,7 @@ import {
 export const metadata: Metadata = {
   title: "Email pool · Voni",
   description:
-    "Control the Grafana synthetic check that sends affiliate clicks and review the clicks it recorded.",
+    "The sources console behind the email click campaign: one shared target list, a card per producer of clicks, and the clicks they recorded.",
   robots: { index: false, follow: false },
 };
 
@@ -144,6 +172,16 @@ function noticeCopy(value: string | undefined): string | null {
   }
 }
 
+/**
+ * The page's search params. `source` is the shared table's filter and is
+ * resolved against the stored producer here, in the request-time boundary: the
+ * chips are links, not client state, so a copied URL opens the same table.
+ */
+type EmailSearchParams = {
+  notice?: string;
+  source?: string | string[];
+};
+
 /** Title, one line of copy, the password form. Nothing else is rendered. */
 function EmailGateScreen() {
   return (
@@ -178,7 +216,7 @@ function EmailGateScreen() {
 async function EmailPageGate({
   searchParams,
 }: {
-  searchParams: Promise<{ notice?: string }>;
+  searchParams: Promise<EmailSearchParams>;
 }) {
   const jar = await cookies();
   const unlocked = isPageUnlocked(
@@ -208,11 +246,11 @@ async function EmailPageGate({
             Email pool
           </h1>
           <p className="text-muted-foreground text-sm">
-            The Grafana synthetic check behind the email click campaign: its
-            interval, probes and state, plus the clicks it recorded. Changes
-            apply on the check&apos;s next run. The one-off button is the
-            exception — it runs from voni&apos;s server, not Grafana, and the
-            result says so.
+            A console of sources that send affiliate clicks. Every source draws
+            from the one shared target list at the top; each source card below
+            has its own cadence, health and numbers. A source change applies on
+            its next run. The one-off button is the exception — it runs from
+            voni&apos;s server, not Grafana, and the result says so.
           </p>
         </div>
 
@@ -227,7 +265,7 @@ async function EmailPageGate({
 export default async function EmailControlPage({
   searchParams,
 }: {
-  searchParams: Promise<{ notice?: string }>;
+  searchParams: Promise<EmailSearchParams>;
 }) {
   return (
     <Suspense fallback={<GateSkeleton />}>
@@ -243,7 +281,7 @@ function PanelSkeleton() {
       aria-label="Loading email control panel"
       className="grid gap-6"
     >
-      <CardListSkeleton rows={2} />
+      <CardListSkeleton rows={3} />
       <TableSkeleton rows={6} columns={8} />
     </div>
   );
@@ -261,7 +299,7 @@ function PanelSkeleton() {
 async function EmailControlData({
   searchParams,
 }: {
-  searchParams: Promise<{ notice?: string }>;
+  searchParams: Promise<EmailSearchParams>;
 }) {
   await connection();
   const params = await searchParams;
@@ -272,19 +310,92 @@ async function EmailControlData({
     expected,
   );
 
+  // The table's filter is resolved here, against the stored producer, rather
+  // than in the page shell or a client component: the narrowed query and the
+  // chip links below therefore come from the same value, and an unknown or
+  // missing `?source=` is All.
+  const selectedSource = parseClickSource(params.source);
+  const sourceChips = clickSourceChips(selectedSource);
+
   const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
   // The click window is measured from the request, so the boundary comes from
   // here rather than from a clock read inside the query helper.
   const now = new Date();
-  const [checkResult, probesResult, stats, clicks, targets] = await Promise.all([
+  // The GitHub card's coverage basis: since the last real dispatch, falling
+  // back to 24 h when this source has never dispatched. The clicks read needs
+  // the cutoff, so the config is read first; everything else still fans out.
+  const githubConfig = await readSourceConfig();
+  const githubSince =
+    githubConfig?.lastDispatchedAt ?? new Date(now.getTime() - 24 * 3_600_000);
+
+  const [
+    checkResult,
+    probesResult,
+    stats,
+    surfaceStats,
+    clicks,
+    targets,
+    githubNewest,
+    githubClicks,
+  ] = await Promise.all([
     getCheck(id),
     listProbes(),
-    affiliateClickStats(STATS_WINDOW_HOURS, now),
-    listAffiliateClicks(PAGE_CLICK_LIMIT),
+    // The Grafana card shows its own numbers, so its read is narrowed too.
+    affiliateClickStats(STATS_WINDOW_HOURS, now, "grafana"),
+    // The shared table's stats follow its filter; `undefined` is All.
+    affiliateClickStats(
+      STATS_WINDOW_HOURS,
+      now,
+      selectedSource ?? undefined,
+    ),
+    listAffiliateClicks(PAGE_CLICK_LIMIT, selectedSource ?? undefined),
     // Adds and pauses land here, not in the repository: this read is the list
     // both click producers use, so the card shows what will actually run.
     listAffiliateTargets(),
+    // The same heartbeat the ticker reads: newest click per runner OS.
+    newestClickByOs(),
+    // The GitHub card's own rows for the basis window, folded below so its
+    // counts and its `targets x/x` come from one aggregation.
+    runnerClicksSince(GITHUB_SOURCE_PRODUCER, githubSince),
   ]);
+
+  // A paused target is not clicked by any source, so it is neither part of the
+  // card's denominator nor of the volume the card promises.
+  const activeTargets = targets.filter((target) => target.enabled);
+
+  const githubSummary = summariseRunnerClicks(
+    githubClicks,
+    activeTargets.map((target) => target.url),
+  );
+
+  // Ticket 09: the aggregate the console exists to show. Both terms come from
+  // the volume modules the cards already render — Grafana's from the live
+  // check, GitHub's from the saved schedule, the active targets and the closed
+  // OS set — so the header cannot grow a second formula. Disabled sources
+  // contribute 0; a Grafana read that failed is `null` (Unavailable), never 0,
+  // because "we could not see the check" and "the check is off" are different
+  // facts. Burst is on demand, so it has no daily volume to add.
+  const grafanaVolume =
+    checkResult.ok && checkResult.data.enabled
+      ? grafanaClicksPerDay(
+          checkResult.data.frequencyMs,
+          checkResult.data.probeIds.length,
+          checkResult.data.clicksPerRun,
+        )
+      : checkResult.ok
+        ? 0
+        : null;
+  const githubVolume =
+    githubConfig?.enabled === true
+      ? runnerClicksPerDay(
+          githubConfig.intervalSeconds,
+          githubConfig.windowSeconds,
+          activeTargets.length,
+          RUNNER_OSES.length,
+        )
+      : 0;
+  const totalClicksPerDay =
+    grafanaVolume === null ? null : grafanaVolume + githubVolume;
 
   const notice = noticeCopy(params.notice);
 
@@ -297,33 +408,87 @@ async function EmailControlData({
           <AlertDescription>{notice}</AlertDescription>
         </Alert>
       ) : null}
-      <AffiliateControlPanel
-        locked={locked}
-        check={checkResult.ok ? toCheckView(checkResult.data) : null}
-        checkError={checkResult.ok ? null : checkResult.message}
-        probes={probesResult.ok ? toProbeViews(probesResult.data) : []}
-        oneOffTargets={targets
-          .filter((target) => target.enabled)
-          .map((target) => ({ id: target.id, url: target.url }))}
-        stats={{
-          total: stats.total,
-          byStatus: stats.byStatus,
-          avgMs: stats.avgMs,
-          byDevice: stats.byDevice,
-        }}
-        clicks={clicks.map(toClickRow)}
-      />
+      {/* Targets first: one list, every source. The card's own add, pause,
+          resume and remove controls are the only target controls on the page. */}
       <TargetsCard
         locked={locked}
         targets={targets}
+        volume={{
+          totalClicksPerDay,
+          sources: [
+            {
+              label: "Grafana",
+              enabled: checkResult.ok && checkResult.data.enabled,
+              clicksPerDay: grafanaVolume,
+            },
+            {
+              label: "GitHub",
+              enabled: githubConfig?.enabled === true,
+              clicksPerDay: githubVolume,
+            },
+          ],
+        }}
         addTarget={addTarget}
         toggleTarget={toggleTarget}
         removeTarget={removeTarget}
+        pauseAll={pauseAllSources}
       />
-      <BurstCard
-        locked={locked}
-        action={runBurst}
-        defaultZones={US_ZONES.map((zone) => zone.id)}
+      <section className="grid gap-6" aria-labelledby="email-sources-heading">
+        <h2
+          id="email-sources-heading"
+          className="text-lg font-semibold tracking-tight"
+        >
+          Sources
+        </h2>
+        <AffiliateControlPanel
+          locked={locked}
+          check={checkResult.ok ? toCheckView(checkResult.data) : null}
+          checkError={checkResult.ok ? null : checkResult.message}
+          probes={probesResult.ok ? toProbeViews(probesResult.data) : []}
+          oneOffTargets={targets
+            .filter((target) => target.enabled)
+            .map((target) => ({ id: target.id, url: target.url }))}
+          stats={{
+            total: stats.total,
+            byStatus: stats.byStatus,
+            avgMs: stats.avgMs,
+            byDevice: stats.byDevice,
+          }}
+        />
+        <GithubSourceCard
+          locked={locked}
+          config={githubConfig}
+          targetCount={activeTargets.length}
+          newestByOs={githubNewest}
+          summary={githubSummary}
+          basis={
+            githubConfig?.lastDispatchedAt
+              ? "since last dispatch"
+              : "last 24 hours"
+          }
+          workflowUrl={BROWSER_CHECK_RUN_URL}
+          now={now}
+          setEnabled={setGithubSourceEnabled}
+          saveSchedule={saveGithubSchedule}
+          dispatchNow={dispatchGithubNow}
+        />
+        <BurstCard
+          locked={locked}
+          action={runBurst}
+          defaultZones={US_ZONES.map((zone) => zone.id)}
+        />
+      </section>
+      {/* The shared click history: every source writes through the same intake,
+          so its table belongs to the console rather than to one source card. */}
+      <ClickSurface
+        stats={{
+          total: surfaceStats.total,
+          byStatus: surfaceStats.byStatus,
+          avgMs: surfaceStats.avgMs,
+          byDevice: surfaceStats.byDevice,
+        }}
+        clicks={clicks.map(toClickRow)}
+        sources={sourceChips}
       />
     </div>
   );

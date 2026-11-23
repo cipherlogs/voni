@@ -1,27 +1,20 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useState } from "react";
 import {
   AlertCircle,
-  Check,
   CheckCircle2,
-  Copy,
   ExternalLink,
   LockKeyhole,
   Zap,
 } from "lucide-react";
-import { LoadingButton } from "@/components/loading-button";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  FeedbackAlert,
+  ManualRunFallback,
+} from "@/components/action-feedback";
+import { LoadingButton } from "@/components/loading-button";
+import { SourceCard } from "@/components/source-card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Field,
@@ -31,7 +24,6 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { toast } from "@/components/ui/toast";
 import {
   FREE_VU_HOURS,
   MAX_CLICKS,
@@ -42,8 +34,12 @@ import {
 import type { BurstState } from "@/lib/burst/state";
 
 /**
- * The `/email` burst card: one k6 Cloud run from the US load zones, started
- * through the workflow dispatch in `src/lib/burst/dispatch.ts`.
+ * The `/email` burst source card: one k6 Cloud run from the US load zones,
+ * started through the workflow dispatch in `src/lib/burst/dispatch.ts`.
+ *
+ * It is a source card like Grafana — same collapsible shell, same header facts
+ * (state, the volume one run commands, readiness) — because the console grows
+ * by adding cards, not by adding pages.
  *
  * The action arrives as a prop instead of an import so this card can land and
  * be reviewed before `src/app/email/actions.ts` grows the matching export. The
@@ -77,41 +73,38 @@ function initialZones(defaultZones: string[]): string[] {
   return known.length > 0 ? known : US_ZONES.map((zone) => zone.id);
 }
 
-function FeedbackAlert({ state }: { state: BurstState }) {
-  if (!state.error && !state.runUrl && !state.message) return null;
+const BURST_SUCCESS_DEFAULT =
+  "The workflow is queued. It appears on the run page once GitHub starts it.";
 
-  if (state.error) {
-    return (
-      <Alert variant="destructive" className="status-enter">
-        <AlertCircle />
-        <AlertTitle>Burst not dispatched</AlertTitle>
-        <AlertDescription>{state.error}</AlertDescription>
-      </Alert>
-    );
-  }
+/**
+ * The burst outcome in words. The success shape carries a run link, which the
+ * shared alert renders under its description; the titles stay this card's own.
+ */
+function BurstFeedback({ state }: { state: BurstState }) {
+  if (!state.error && !state.ok) return null;
 
   return (
-    <Alert className="status-enter">
-      <CheckCircle2 />
-      <AlertTitle>Burst dispatched</AlertTitle>
-      <AlertDescription>
-        <span className="block">
-          {state.message ?? "The workflow is queued. It appears on the run page once GitHub starts it."}
-        </span>
-        {state.runUrl ? (
-          <a
-            className="mt-1 inline-flex items-center gap-1 font-medium underline underline-offset-4"
-            href={state.runUrl}
-            target="_blank"
-            rel="noreferrer"
-            data-testid="email-burst-run-link"
-          >
-            View the run on GitHub
-            <ExternalLink className="size-3" />
-          </a>
-        ) : null}
-      </AlertDescription>
-    </Alert>
+    <FeedbackAlert
+      state={{
+        error: state.error,
+        message: state.ok ? (state.message ?? BURST_SUCCESS_DEFAULT) : null,
+      }}
+      errorTitle="Burst not dispatched"
+      successTitle="Burst dispatched"
+    >
+      {state.runUrl ? (
+        <a
+          className="mt-1 inline-flex items-center gap-1 font-medium underline underline-offset-4"
+          href={state.runUrl}
+          target="_blank"
+          rel="noreferrer"
+          data-testid="email-burst-run-link"
+        >
+          View the run on GitHub
+          <ExternalLink className="size-3" />
+        </a>
+      ) : null}
+    </FeedbackAlert>
   );
 }
 
@@ -138,60 +131,20 @@ function BudgetBar({ vuHours }: { vuHours: number }) {
  * not a destructive Alert.
  */
 function FallbackPanel({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-
-  // The label is a receipt for one click, not a permanent state: a stale
-  // "Copied" next to a command that has since changed would be a lie.
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2_000);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-    } catch {
-      toast.add({
-        title: "Could not copy",
-        description: "Select the command and copy it by hand.",
-        type: "error",
-      });
-    }
-  }
-
   return (
-    <div
-      className="grid gap-2 rounded-lg border px-3 py-3"
-      data-testid="email-burst-fallback"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium">
-          Run it yourself — no dispatch token configured.
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            void copy();
-          }}
-          data-testid="email-burst-copy-command"
-        >
-          {copied ? <Check /> : <Copy />}
-          {copied ? "Copied" : "Copy"}
-        </Button>
-      </div>
-      <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs whitespace-pre">
-        <code>{command}</code>
-      </pre>
-      <p className="text-muted-foreground text-xs">
-        It needs <code className="font-mono">K6_CLOUD_TOKEN</code> set (already a
-        repository secret); this line never carries it. The zone split applies to
-        the workflow path — a manual run uses k6&apos;s default zone.
-      </p>
-    </div>
+    <ManualRunFallback
+      command={command}
+      testId="email-burst-fallback"
+      copyTestId="email-burst-copy-command"
+      note={
+        <>
+          It needs <code className="font-mono">K6_CLOUD_TOKEN</code> set (already
+          a repository secret); this line never carries it. The zone split
+          applies to the workflow path — a manual run uses k6&apos;s default
+          zone.
+        </>
+      }
+    />
   );
 }
 
@@ -212,173 +165,171 @@ export function BurstCard({ locked, action, defaultZones }: BurstCardProps) {
   const disabled = locked || pending;
 
   return (
-    <Card data-testid="email-burst-card">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          {locked ? <LockKeyhole className="size-4" /> : <Zap className="size-4" />}
-          Burst
-        </CardTitle>
-        <CardDescription>
-          One manual k6 Cloud run of the same click script, from the US load
-          zones, for a fixed window. It spends the monthly VU-hour allowance.
-        </CardDescription>
-        <CardAction>
-          {locked ? (
-            <Badge variant="outline">Locked</Badge>
-          ) : plan ? (
-            <Badge variant="outline">{plan.vus} VUs</Badge>
-          ) : (
-            <Badge variant="destructive">Check inputs</Badge>
-          )}
-        </CardAction>
-      </CardHeader>
+    <SourceCard
+      testId="email-burst-card"
+      name="Burst"
+      icon={locked ? <LockKeyhole className="size-4" /> : <Zap className="size-4" />}
+      description="One manual k6 Cloud run of the same click script, from the US load zones, for a fixed window. It spends the monthly VU-hour allowance."
+      summary={{
+        status: locked
+          ? { label: "Locked", variant: "outline" }
+          : { label: "On demand", variant: "secondary" },
+        // Burst has no cadence to state, so the volume slot says what one run
+        // commands rather than a daily rate it does not have.
+        volume: {
+          value: plan ? plan.clicks.toLocaleString("en-US") : "—",
+          label: "clicks/run",
+        },
+        health:
+          plan === null
+            ? { label: "Check inputs", variant: "destructive" }
+            : { label: `${plan.vus} VUs`, variant: "outline" },
+      }}
+    >
+      <form action={formAction} className="grid gap-5">
+        <FieldGroup className="grid gap-4 sm:grid-cols-2">
+          <Field>
+            <FieldLabel htmlFor="email-burst-clicks">Clicks</FieldLabel>
+            <Input
+              id="email-burst-clicks"
+              name="clicks"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={MAX_CLICKS}
+              step={1}
+              value={clicksText}
+              onChange={(event) => setClicksText(event.target.value)}
+              disabled={disabled}
+              aria-invalid={!Number.isInteger(clicks) || clicks < 1}
+              required
+            />
+            <FieldDescription>
+              Whole number 1–{MAX_CLICKS}. Each click draws a fresh profile.
+            </FieldDescription>
+          </Field>
 
-      <CardContent>
-        <form action={formAction} className="grid gap-5">
-          <FieldGroup className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="email-burst-clicks">Clicks</FieldLabel>
-              <Input
-                id="email-burst-clicks"
-                name="clicks"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={MAX_CLICKS}
-                step={1}
-                value={clicksText}
-                onChange={(event) => setClicksText(event.target.value)}
-                disabled={disabled}
-                aria-invalid={!Number.isInteger(clicks) || clicks < 1}
-                required
-              />
-              <FieldDescription>
-                Whole number 1–{MAX_CLICKS}. Each click draws a fresh profile.
-              </FieldDescription>
-            </Field>
+          <Field>
+            <FieldLabel htmlFor="email-burst-minutes">
+              Duration (minutes)
+            </FieldLabel>
+            <Input
+              id="email-burst-minutes"
+              name="duration"
+              type="number"
+              inputMode="decimal"
+              min={0.5}
+              max={60}
+              step={0.5}
+              value={minutesText}
+              onChange={(event) => setMinutesText(event.target.value)}
+              disabled={disabled}
+              required
+            />
+            <FieldDescription>
+              0.5–60 minutes. VUs are sized so the clicks fit the window.
+            </FieldDescription>
+          </Field>
+        </FieldGroup>
 
-            <Field>
-              <FieldLabel htmlFor="email-burst-minutes">
-                Duration (minutes)
-              </FieldLabel>
-              <Input
-                id="email-burst-minutes"
-                name="duration"
-                type="number"
-                inputMode="decimal"
-                min={0.5}
-                max={60}
-                step={0.5}
-                value={minutesText}
-                onChange={(event) => setMinutesText(event.target.value)}
-                disabled={disabled}
-                required
-              />
-              <FieldDescription>
-                0.5–60 minutes. VUs are sized so the clicks fit the window.
-              </FieldDescription>
-            </Field>
-          </FieldGroup>
+        <FieldGroup className="grid gap-2 sm:grid-cols-2">
+          {US_ZONES.map((zone) => {
+            const checked = selected.includes(zone.id);
+            return (
+              <Field key={zone.id} orientation="horizontal">
+                <Checkbox
+                  id={`email-burst-zone-${zone.id.replace(/[^a-z]+/gi, "-")}`}
+                  name="zones"
+                  value={zone.id}
+                  checked={checked}
+                  onCheckedChange={(next: boolean) => {
+                    setSelected((previous) =>
+                      next
+                        ? [...previous.filter((id) => id !== zone.id), zone.id]
+                        : previous.filter((id) => id !== zone.id),
+                    );
+                  }}
+                  disabled={disabled}
+                />
+                <FieldLabel htmlFor={`email-burst-zone-${zone.id.replace(/[^a-z]+/gi, "-")}`}>
+                  <span className="font-normal">{zone.label}</span>
+                  <span className="text-muted-foreground font-mono text-xs">
+                    {zone.id}
+                  </span>
+                </FieldLabel>
+              </Field>
+            );
+          })}
+        </FieldGroup>
 
-          <FieldGroup className="grid gap-2 sm:grid-cols-2">
-            {US_ZONES.map((zone) => {
-              const checked = selected.includes(zone.id);
-              return (
-                <Field key={zone.id} orientation="horizontal">
-                  <Checkbox
-                    id={`email-burst-zone-${zone.id.replace(/[^a-z]+/gi, "-")}`}
-                    name="zones"
-                    value={zone.id}
-                    checked={checked}
-                    onCheckedChange={(next: boolean) => {
-                      setSelected((previous) =>
-                        next
-                          ? [...previous.filter((id) => id !== zone.id), zone.id]
-                          : previous.filter((id) => id !== zone.id),
-                      );
-                    }}
-                    disabled={disabled}
-                  />
-                  <FieldLabel htmlFor={`email-burst-zone-${zone.id.replace(/[^a-z]+/gi, "-")}`}>
-                    <span className="font-normal">{zone.label}</span>
-                    <span className="text-muted-foreground font-mono text-xs">
-                      {zone.id}
-                    </span>
-                  </FieldLabel>
-                </Field>
-              );
-            })}
-          </FieldGroup>
+        <div className="grid gap-3 rounded-lg border px-3 py-3">
+          <p
+            className="font-mono text-sm leading-relaxed break-words"
+            data-testid="email-burst-preview"
+          >
+            {result.ok ? (
+              describePlan(result.plan)
+            ) : (
+              <span className="text-muted-foreground">{result.reason}</span>
+            )}
+          </p>
 
-          <div className="grid gap-3 rounded-lg border px-3 py-3">
-            <p
-              className="font-mono text-sm leading-relaxed break-words"
-              data-testid="email-burst-preview"
-            >
-              {result.ok ? (
-                describePlan(result.plan)
-              ) : (
-                <span className="text-muted-foreground">{result.reason}</span>
-              )}
-            </p>
+          {plan ? <BudgetBar vuHours={plan.vuHours} /> : null}
 
-            {plan ? <BudgetBar vuHours={plan.vuHours} /> : null}
-
-            {plan && plan.zones.length > 0 ? (
-              <p className="text-muted-foreground text-xs">
-                {plan.zones
-                  .map((zone) => `${zone.label} ${zone.percent}%`)
-                  .join(" · ")}
-              </p>
-            ) : null}
-
-            {loud && plan ? (
-              <Alert variant="destructive">
-                <AlertCircle />
-                <AlertTitle>This is a load test, not a check</AlertTitle>
-                <AlertDescription>
-                  {[
-                    plan.clicks > LOUD_CLICKS
-                      ? `${plan.clicks.toLocaleString("en-US")} clicks in one run`
-                      : null,
-                    plan.vuHours > LOUD_VU_HOURS
-                      ? `${plan.vuHours.toFixed(1)} VU-hours of the ${FREE_VU_HOURS}`
-                      : null,
-                  ]
-                    .filter((part): part is string => part !== null)
-                    .join(" and ")}{" "}
-                  is past where affiliate networks read traffic as testing.
-                </AlertDescription>
-              </Alert>
-            ) : null}
-          </div>
-
-          {locked ? (
-            <p className="text-muted-foreground text-sm">
-              The panel is read-only. Unlock it to dispatch a burst.
+          {plan && plan.zones.length > 0 ? (
+            <p className="text-muted-foreground text-xs">
+              {plan.zones
+                .map((zone) => `${zone.label} ${zone.percent}%`)
+                .join(" · ")}
             </p>
           ) : null}
 
-          <FeedbackAlert state={state} />
-
-          {state.fallback ? (
-            <FallbackPanel command={state.fallback.command} />
+          {loud && plan ? (
+            <Alert variant="destructive">
+              <AlertCircle />
+              <AlertTitle>This is a load test, not a check</AlertTitle>
+              <AlertDescription>
+                {[
+                  plan.clicks > LOUD_CLICKS
+                    ? `${plan.clicks.toLocaleString("en-US")} clicks in one run`
+                    : null,
+                  plan.vuHours > LOUD_VU_HOURS
+                    ? `${plan.vuHours.toFixed(1)} VU-hours of the ${FREE_VU_HOURS}`
+                    : null,
+                ]
+                  .filter((part): part is string => part !== null)
+                  .join(" and ")}{" "}
+                is past where affiliate networks read traffic as testing.
+              </AlertDescription>
+            </Alert>
           ) : null}
+        </div>
 
-          <div>
-            <LoadingButton
-              type="submit"
-              pending={pending}
-              pendingText="Dispatching…"
-              icon={<Zap />}
-              disabled={locked || plan === null}
-              data-testid="email-burst-dispatch"
-            >
-              Dispatch burst
-            </LoadingButton>
-          </div>
-        </form>
-      </CardContent>
-    </Card>
+        {locked ? (
+          <p className="text-muted-foreground text-sm">
+            The panel is read-only. Unlock it to dispatch a burst.
+          </p>
+        ) : null}
+
+        <BurstFeedback state={state} />
+
+        {state.fallback ? (
+          <FallbackPanel command={state.fallback.command} />
+        ) : null}
+
+        <div>
+          <LoadingButton
+            type="submit"
+            pending={pending}
+            pendingText="Dispatching…"
+            icon={<Zap />}
+            disabled={locked || plan === null}
+            data-testid="email-burst-dispatch"
+          >
+            Dispatch burst
+          </LoadingButton>
+        </div>
+      </form>
+    </SourceCard>
   );
 }

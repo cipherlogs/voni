@@ -73,7 +73,13 @@ const VALID = {
   browser: "chromium",
   ranAt: RAN_AT,
 };
-const PARSED: ClickReportInput = { ...VALID, ranAt: new Date(RAN_AT) };
+const PARSED: ClickReportInput = {
+  ...VALID,
+  producer: "grafana",
+  runnerOs: null,
+  passId: null,
+  ranAt: new Date(RAN_AT),
+};
 
 process.env.EMAIL_CLICK_REPORT_SECRET = SECRET;
 test.after(() => {
@@ -238,6 +244,84 @@ test("a valid report is stored once, in the shape the parser produced", async ()
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0], PARSED);
+});
+
+test("a GitHub click is stored with its producer, runner OS and pass id", async () => {
+  const calls = recordWrites();
+  const passId = "2f3a9c7e-1b2d-4c5e-8f90-abcdef123456";
+  const body = JSON.stringify({
+    ...VALID,
+    // A failed navigation reports null status, and the pass id is still stored:
+    // coverage counts the whole pass, not just the clicks that answered.
+    status: null,
+    producer: "github",
+    runnerOs: "ubuntu",
+    passId,
+  });
+  const response = await POST(postRequest({ body }));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].producer, "github");
+  assert.equal(calls[0].runnerOs, "ubuntu");
+  assert.equal(calls[0].passId, passId);
+  assert.equal(calls[0].status, null);
+});
+
+test("a bad pass id is refused and nothing is written", async () => {
+  const calls = recordWrites();
+  const response = await POST(
+    postRequest({
+      body: JSON.stringify({
+        ...VALID,
+        producer: "github",
+        runnerOs: "ubuntu",
+        passId: "not a pass id",
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    reason: "bad_pass_id",
+  });
+  assert.equal(calls.length, 0);
+});
+
+test("an unknown producer is refused and nothing is written", async () => {
+  const calls = recordWrites();
+  const response = await POST(
+    postRequest({ body: JSON.stringify({ ...VALID, producer: "selenium" }) }),
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    reason: "bad_producer",
+  });
+  assert.equal(calls.length, 0);
+});
+
+test("an OS outside the allowlist is refused and nothing is written", async () => {
+  const calls = recordWrites();
+  const response = await POST(
+    postRequest({
+      body: JSON.stringify({
+        ...VALID,
+        producer: "github",
+        runnerOs: "linux",
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    reason: "bad_runner_os",
+  });
+  assert.equal(calls.length, 0);
 });
 
 test("a failed write is a 502 and logs a fixed string, never the error message", async () => {

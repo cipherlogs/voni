@@ -1,8 +1,10 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useActionState, useMemo, useState } from "react";
 import { useFormStatus } from "react-dom";
 import {
+  Activity,
   AlertCircle,
   CheckCircle2,
   Clock,
@@ -22,7 +24,16 @@ import {
   unlockControl,
   type ControlState,
 } from "@/app/email/actions";
+import {
+  FeedbackAlert,
+  formatCount,
+  useActionToast,
+} from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
+import {
+  SourceCard,
+  type SourceCardSummary,
+} from "@/components/source-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -66,10 +77,10 @@ import {
   clicksPerDay,
   executionsPerMonth,
 } from "@/lib/email/volume";
-import { toast } from "@/components/ui/toast";
 
 /**
- * The `/email` affiliate click control panel.
+ * The Grafana source on the `/email` console, and the shared click surface that
+ * used to live inside it.
  *
  * Read-only until the server-side unlock action accepts the control secret —
  * the locked/unlocked split here is presentation only. Every action re-checks
@@ -141,6 +152,19 @@ export type ClickRowView = {
   browser?: string | null;
 };
 
+/** The view shape of one `?source=` chip, built by the page's data boundary. */
+export type ClickSourceChipView = {
+  /** The `?source=` value this chip links to. */
+  value: string;
+  label: string;
+  /** The producer this chip narrows to; null for All. */
+  producer: string | null;
+  /** The link itself, so the panel never has to reconstruct the contract. */
+  href: string;
+  /** Whether this chip is the view the server resolved. */
+  active: boolean;
+};
+
 export type AffiliateControlPanelProps = {
   locked: boolean;
   check: CheckView | null;
@@ -151,8 +175,13 @@ export type AffiliateControlPanelProps = {
    * only what the operator may choose from, not the authority.
    */
   oneOffTargets: OneOffTargetView[];
+  /**
+   * The Grafana producer's 24-hour buckets: its card header reads them for the
+   * one number a collapsed card must keep visible (its worst health) and its
+   * body prints the total, latency, status and device mix inline. The shared
+   * table has its own, filtered read — `ClickSurface` takes its stats as props.
+   */
   stats: StatsView;
-  clicks: ClickRowView[];
   /**
    * Why `check` is null. The spec's prop list stopped at `check`, but a
    * destructive Alert that cannot name the reason is the silent failure the
@@ -164,40 +193,9 @@ export type AffiliateControlPanelProps = {
 const INITIAL: ControlState = { ok: false };
 const MINUTE_MS = 60_000;
 
-function FeedbackAlert({ state }: { state: ControlState }) {
-  if (!state.error && !state.message) return null;
-  return (
-    <Alert variant={state.error ? "destructive" : "default"} className="status-enter">
-      {state.error ? <AlertCircle /> : <CheckCircle2 />}
-      <AlertTitle>{state.error ? "Could not complete" : "Done"}</AlertTitle>
-      <AlertDescription>{state.error ?? state.message}</AlertDescription>
-    </Alert>
-  );
-}
-
-/** Inline Alert is the required surface; a toast rides along as a convenience. */
-function useActionToast(state: ControlState) {
-  useEffect(() => {
-    if (state.error) {
-      toast.add({ title: "Could not complete", description: state.error, type: "error" });
-      return;
-    }
-    if (state.message) {
-      toast.add({ title: "Done", description: state.message, type: "success" });
-    }
-  }, [state]);
-}
-
 function frequencyLabel(frequencyMs: number): string {
   const minutes = frequencyMs / MINUTE_MS;
   return Number.isInteger(minutes) ? `${minutes} min` : `${frequencyMs} ms`;
-}
-
-/** Deterministic grouping, so the server and client render the same digits. */
-const COUNT_FORMAT = new Intl.NumberFormat("en-US");
-
-function formatCount(value: number): string {
-  return COUNT_FORMAT.format(value);
 }
 
 const CHART_WIDTH = 240;
@@ -404,7 +402,12 @@ function statusBadgeVariant(
   return status >= 200 && status < 400 ? "secondary" : "destructive";
 }
 
-function StatusCard({
+/**
+ * What the check is doing, as the Grafana source card's body. The enabled
+ * state moved up into the card header, where it stays visible when the card is
+ * collapsed; everything here is detail that may be folded away.
+ */
+function StatusSection({
   check,
   checkError,
 }: {
@@ -412,26 +415,12 @@ function StatusCard({
   checkError: string | null;
 }) {
   return (
-    <Card data-testid="email-control-status">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Clock className="size-4" />
-          Status
-        </CardTitle>
-        <CardDescription>
-          What the Grafana synthetic check is doing right now.
-        </CardDescription>
-        <CardAction>
-          {check === null ? (
-            <Badge variant="destructive">Unavailable</Badge>
-          ) : check.enabled ? (
-            <Badge>Live</Badge>
-          ) : (
-            <Badge variant="outline">Paused</Badge>
-          )}
-        </CardAction>
-      </CardHeader>
-      <CardContent className="grid gap-5">
+    <section data-testid="email-control-status" className="grid gap-4">
+      <h4 className="text-muted-foreground flex items-center gap-2 font-mono text-xs">
+        <Clock className="size-3.5" aria-hidden />
+        Check state
+      </h4>
+      <div className="grid gap-5">
         {check === null ? (
           <Alert variant="destructive">
             <AlertCircle />
@@ -470,8 +459,8 @@ function StatusCard({
             </div>
           </dl>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
 
@@ -487,6 +476,30 @@ function StatusField({
       <dt className="text-muted-foreground font-mono text-xs">{label}</dt>
       <dd className="font-mono text-sm break-all">{children}</dd>
     </div>
+  );
+}
+
+/**
+ * The Grafana source's own 24-hour numbers, inline in its expanded body: the
+ * reader sees this producer's total, latency, status and device mix without
+ * first navigating the shared table to a filtered view.
+ */
+function SourceStatsSection({ stats }: { stats: StatsView }) {
+  return (
+    <section
+      data-testid="email-control-grafana-stats"
+      className="grid gap-4"
+      aria-labelledby="email-grafana-stats-heading"
+    >
+      <h4
+        id="email-grafana-stats-heading"
+        className="text-muted-foreground flex items-center gap-2 font-mono text-xs"
+      >
+        <Clock className="size-3.5" aria-hidden />
+        Last 24 hours
+      </h4>
+      <StatsBlock stats={stats} />
+    </section>
   );
 }
 
@@ -970,83 +983,127 @@ function ControlsForm({
   );
 }
 
-function AnalyticsCard({
+/**
+ * The 24-hour counts, in the shape both surfaces use: one block of labelled
+ * values and badges. The Grafana card renders it as its own inline stats and
+ * the shared table renders it above the rows, so the numbers cannot drift into
+ * two visual languages.
+ */
+function StatsBlock({ stats }: { stats: StatsView }) {
+  return (
+    <dl className="grid gap-4 sm:grid-cols-2">
+      <StatusField label="24h total">{stats.total}</StatusField>
+      <StatusField label="avg ms">
+        {stats.avgMs === null ? "—" : stats.avgMs}
+      </StatusField>
+      <div className="sm:col-span-2">
+        <dt className="text-muted-foreground font-mono text-xs">by status</dt>
+        <dd className="mt-1 flex flex-wrap gap-2">
+          {stats.byStatus.length === 0 ? (
+            <span className="text-muted-foreground text-sm">
+              No clicks in the window.
+            </span>
+          ) : (
+            stats.byStatus.map((row) => (
+              <Badge
+                key={row.status === null ? "none" : row.status}
+                variant={statusBadgeVariant(row.status)}
+              >
+                {row.status === null ? "no status" : `HTTP ${row.status}`} ·{" "}
+                {row.count}
+              </Badge>
+            ))
+          )}
+        </dd>
+      </div>
+      {stats.byDevice === undefined ? null : (
+        <div className="sm:col-span-2">
+          <dt className="text-muted-foreground font-mono text-xs">
+            by device
+          </dt>
+          <dd className="mt-1 flex flex-wrap gap-2">
+            {stats.byDevice.length === 0 ? (
+              <span className="text-muted-foreground text-sm">
+                No clicks in the window.
+              </span>
+            ) : (
+              stats.byDevice.map((row) => (
+                <Badge key={row.device ?? "unknown"} variant="outline">
+                  {row.device ?? "no device"} · {row.count}
+                </Badge>
+              ))
+            )}
+          </dd>
+        </div>
+      )}
+    </dl>
+  );
+}
+
+/**
+ * The shared click history, as its own surface rather than a footer inside the
+ * Grafana card: every source on the page writes through the same intake, so the
+ * table belongs to the console, not to one producer's card.
+ *
+ * The chips are links, not client state. The page resolves `?source=` inside its
+ * request-time data boundary and hands the already-built links down, so a
+ * copied URL opens the same narrowed table and a reload cannot reset it.
+ */
+export function ClickSurface({
   stats,
   clicks,
+  sources,
 }: {
   stats: StatsView;
   clicks: ClickRowView[];
+  sources: ClickSourceChipView[];
 }) {
+  const active = sources.find((chip) => chip.active) ?? null;
+  // "All" is the absence of a producer, not a label worth repeating in prose.
+  const narrowed = active !== null && active.producer !== null;
+
   return (
     <Card data-testid="email-control-analytics">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Globe className="size-4" />
-          Analytics
+          Clicks
         </CardTitle>
         <CardDescription>
-          Affiliate clicks recorded in the last 24 hours.
+          {narrowed
+            ? `The last 24 hours of clicks from ${active.label}.`
+            : "Every affiliate click recorded in the last 24 hours, from every source on this page."}
         </CardDescription>
         <CardAction>
           <Badge variant="outline">{stats.total} clicks</Badge>
         </CardAction>
       </CardHeader>
       <CardContent className="grid gap-5">
-        <dl className="grid gap-4 sm:grid-cols-2">
-          <StatusField label="24h total">{stats.total}</StatusField>
-          <StatusField label="avg ms">
-            {stats.avgMs === null ? "—" : stats.avgMs}
-          </StatusField>
-          <div className="sm:col-span-2">
-            <dt className="text-muted-foreground font-mono text-xs">
-              by status
-            </dt>
-            <dd className="mt-1 flex flex-wrap gap-2">
-              {stats.byStatus.length === 0 ? (
-                <span className="text-muted-foreground text-sm">
-                  No clicks in the window.
-                </span>
-              ) : (
-                stats.byStatus.map((row) => (
-                  <Badge
-                    key={row.status === null ? "none" : row.status}
-                    variant={statusBadgeVariant(row.status)}
-                  >
-                    {row.status === null ? "no status" : `HTTP ${row.status}`} ·{" "}
-                    {row.count}
-                  </Badge>
-                ))
-              )}
-            </dd>
-          </div>
-          {stats.byDevice === undefined ? null : (
-            <div className="sm:col-span-2">
-              <dt className="text-muted-foreground font-mono text-xs">
-                by device
-              </dt>
-              <dd className="mt-1 flex flex-wrap gap-2">
-                {stats.byDevice.length === 0 ? (
-                  <span className="text-muted-foreground text-sm">
-                    No clicks in the window.
-                  </span>
-                ) : (
-                  stats.byDevice.map((row) => (
-                    <Badge
-                      key={row.device ?? "unknown"}
-                      variant="outline"
-                    >
-                      {row.device ?? "no device"} · {row.count}
-                    </Badge>
-                  ))
-                )}
-              </dd>
-            </div>
-          )}
-        </dl>
+        <nav
+          aria-label="Filter clicks by source"
+          className="flex flex-wrap items-center gap-2"
+          data-testid="email-clicks-sources"
+        >
+          {sources.map((chip) => (
+            <Badge
+              key={chip.value}
+              variant={chip.active ? "default" : "outline"}
+              render={<Link href={chip.href} />}
+              aria-current={chip.active ? "page" : undefined}
+              data-testid={`email-clicks-source-${chip.value}`}
+            >
+              {chip.label}
+            </Badge>
+          ))}
+        </nav>
+
+        <StatsBlock stats={stats} />
 
         {clicks.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            No clicks recorded yet. Run one click or wait for the Grafana check.
+            {narrowed
+              ? `No clicks from ${active.label} in the last 24 hours.`
+              : "No clicks recorded yet. Run one click or wait for the Grafana check."}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -1119,53 +1176,129 @@ function AnalyticsCard({
   );
 }
 
+/** The lock state of the controls, and the forms once unlocked. */
+function ControlsSection({
+  locked,
+  check,
+  probes,
+  oneOffTargets,
+}: {
+  locked: boolean;
+  check: CheckView | null;
+  probes: ProbeView[];
+  oneOffTargets: OneOffTargetView[];
+}) {
+  return (
+    <section className="grid gap-4 border-t pt-5">
+      <div className="grid gap-1">
+        <h4 className="flex items-center gap-2 font-medium">
+          {locked ? (
+            <LockKeyhole className="size-4" aria-hidden />
+          ) : (
+            <Unlock className="size-4" aria-hidden />
+          )}
+          Controls
+        </h4>
+        <p className="text-muted-foreground text-sm">
+          {locked
+            ? "The panel is read-only. Unlock it to change the check or run a click."
+            : "Changes apply to the Grafana check on the next run."}
+        </p>
+      </div>
+      {locked ? (
+        <div className="grid gap-5">
+          <UnlockForm />
+          <div className="flex flex-wrap items-center gap-3 border-t pt-4">
+            <LockPageButton />
+            <span className="text-muted-foreground text-sm">
+              Clears both cookies and returns to the password screen.
+            </span>
+          </div>
+        </div>
+      ) : (
+        <ControlsForm
+          check={check}
+          probes={probes}
+          oneOffTargets={oneOffTargets}
+        />
+      )}
+    </section>
+  );
+}
+
+/**
+ * The worst thing in the 24-hour status buckets, as one header fact. A source
+ * whose clicks are all failing must say so while its body is folded away, so
+ * this reads failures first: no response at all outranks any HTTP code.
+ */
+function worstHealth(byStatus: StatsView["byStatus"]): SourceCardSummary["health"] {
+  if (byStatus.length === 0) {
+    return { label: "No clicks yet", variant: "outline" };
+  }
+  const failing = byStatus.filter(
+    (row) => row.status === null || row.status >= 400,
+  );
+  if (failing.length === 0) {
+    return { label: "Healthy", variant: "secondary" };
+  }
+  const noResponse = failing.find((row) => row.status === null);
+  if (noResponse) {
+    return { label: `No response ×${noResponse.count}`, variant: "destructive" };
+  }
+  const worst = failing.reduce((max, row) =>
+    (row.status ?? 0) > (max.status ?? 0) ? row : max,
+  );
+  return { label: `HTTP ${worst.status} ×${worst.count}`, variant: "destructive" };
+}
+
 export function AffiliateControlPanel({
   locked,
   check,
   probes,
   oneOffTargets,
   stats,
-  clicks,
   checkError = null,
 }: AffiliateControlPanelProps) {
+  // The same arithmetic the body prints, so the collapsed header cannot quote a
+  // rate the expanded card disagrees with.
+  const perDay = check
+    ? clicksPerDay(
+        check.frequencyMs,
+        check.probeIds.length,
+        check.clicksPerRun,
+      )
+    : null;
+
   return (
-    <div className="grid gap-6" data-testid="affiliate-control-panel">
-      <StatusCard check={check} checkError={checkError} />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            {locked ? <LockKeyhole className="size-4" /> : <Unlock className="size-4" />}
-            Controls
-          </CardTitle>
-          <CardDescription>
-            {locked
-              ? "The panel is read-only. Unlock it to change the check or run a click."
-              : "Changes apply to the Grafana check on the next run."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {locked ? (
-            <div className="grid gap-5">
-              <UnlockForm />
-              <div className="flex flex-wrap items-center gap-3 border-t pt-4">
-                <LockPageButton />
-                <span className="text-muted-foreground text-sm">
-                  Clears both cookies and returns to the password screen.
-                </span>
-              </div>
-            </div>
-          ) : (
-            <ControlsForm
-              check={check}
-              probes={probes}
-              oneOffTargets={oneOffTargets}
-            />
-          )}
-        </CardContent>
-      </Card>
-
-      <AnalyticsCard stats={stats} clicks={clicks} />
+    <div data-testid="affiliate-control-panel">
+      <SourceCard
+        testId="email-control-source-grafana"
+        name="Grafana"
+        icon={<Activity className="size-4" />}
+        description="Synthetic Monitoring runs the click script over HTTP from its US probes. Its interval, probes and enabled state live in Grafana."
+        summary={{
+          status:
+            check === null
+              ? { label: "Unavailable", variant: "destructive" }
+              : check.enabled
+                ? { label: "Live", variant: "default" }
+                : { label: "Paused", variant: "outline" },
+          volume: {
+            value: perDay === null ? "—" : formatCount(perDay),
+            label: "clicks/day",
+          },
+          health: worstHealth(stats.byStatus),
+        }}
+      >
+        <StatusSection check={check} checkError={checkError} />
+        <SourceStatsSection stats={stats} />
+        <ControlsSection
+          locked={locked}
+          check={check}
+          probes={probes}
+          oneOffTargets={oneOffTargets}
+        />
+      </SourceCard>
     </div>
   );
 }

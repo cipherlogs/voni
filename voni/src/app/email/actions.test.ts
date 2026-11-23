@@ -62,6 +62,14 @@ function fnBody(name: string): string {
   return next < 0 ? source.slice(start) : source.slice(start, next);
 }
 
+/** The body of an internal helper, which is not exported from a server module. */
+function anyBody(name: string): string {
+  const start = source.indexOf(`async function ${name}(`);
+  assert.ok(start >= 0, `${name} exists`);
+  const next = source.indexOf("\nasync function ", start + 1);
+  return next < 0 ? source.slice(start) : source.slice(start, next);
+}
+
 test("every mutating action calls requireControl() itself", () => {
   for (const name of ["saveVolume", "toggleCheck", "runOneOffClick"]) {
     const body = fnBody(name);
@@ -1116,5 +1124,373 @@ test("a burst refuses an empty active list instead of falling back to the seed",
   assert.ok(
     burst.indexOf("targets.length === 0") < burst.indexOf("dispatchBurst("),
     "an all-paused list must not dispatch the committed seed",
+  );
+});
+
+const GITHUB_ACTIONS = ["setGithubSourceEnabled", "saveGithubSchedule"];
+
+test("the GitHub source actions gate inside the body, before reading the form", () => {
+  for (const name of GITHUB_ACTIONS) {
+    const body = fnBody(name);
+    assert.match(
+      body,
+      /if \(!\(await requireControl\(\)\)\) return locked\(\);/,
+      `${name} refuses before it parses anything`,
+    );
+    assert.ok(
+      body.indexOf("requireControl()") < body.indexOf("formData.get("),
+      `${name} authorises before the first field read`,
+    );
+  }
+});
+
+test("an illegal schedule value is refused by the shared parser and nothing is written", () => {
+  const body = fnBody("saveGithubSchedule");
+
+  assert.match(body, /parseInterval\(formData\.get\("interval"\)\)/);
+  assert.match(body, /parseWindowSeconds\(formData\.get\("window"\)\)/);
+  assert.match(body, /parseWindowStartHour\(formData\.get\("startHour"\)\)/);
+
+  for (const parsed of ["interval", "activeWindow", "startHour"]) {
+    assert.match(
+      body,
+      new RegExp(
+        `if \\(!${parsed}\\.ok\\) return \\{ ok: false, error: ${parsed}\\.reason \\}`,
+      ),
+      `${parsed} refuses with the parser's fixed sentence`,
+    );
+  }
+
+  // Every value is parsed before the row is touched: a bad start hour must not
+  // leave a new interval behind.
+  assert.ok(body.indexOf("interval.ok") < body.indexOf("activeWindow.ok"));
+  assert.ok(body.indexOf("activeWindow.ok") < body.indexOf("startHour.ok"));
+  assert.ok(
+    body.indexOf("startHour.ok") < body.indexOf("saveSourceSchedule("),
+    "the write is the last step after all three gates",
+  );
+});
+
+test("the source actions take their rules from the schedule domain and its DB boundary", () => {
+  assert.match(
+    source,
+    /import \{[\s\S]*?parseInterval,[\s\S]*?parseWindowSeconds,[\s\S]*?parseWindowStartHour,[\s\S]*?\} from "@\/lib\/email\/sources";/,
+    "the parsers are the same ones the card and ticker use",
+  );
+  assert.match(
+    source,
+    /import \{[\s\S]*?GITHUB_SOURCE_PRODUCER,[\s\S]*?readSourceConfig,[\s\S]*?recordSourceDispatch,[\s\S]*?saveSourceSchedule,[\s\S]*?setSourceEnabled,[\s\S]*?\} from "@\/lib\/email\/source-config";/,
+    "the row is read and written through the one source-config boundary",
+  );
+
+  const toggle = fnBody("setGithubSourceEnabled");
+  assert.match(toggle, /setSourceEnabled\(GITHUB_SOURCE_PRODUCER, enabled\)/);
+  assert.match(toggle, /const raw = formData\.get\("enabled"\)/);
+  assert.match(
+    toggle,
+    /raw !== "true" && raw !== "false"/,
+    "only the two words a form may post are accepted",
+  );
+
+  const schedule = fnBody("saveGithubSchedule");
+  assert.match(
+    schedule,
+    /saveSourceSchedule\(GITHUB_SOURCE_PRODUCER, \{/,
+    "the row is written through the one source-config boundary",
+  );
+});
+
+test("every source action ends in a fixed sentence, and a refusal writes nothing", () => {
+  const toggle = fnBody("setGithubSourceEnabled");
+  assert.match(
+    source,
+    /const SOURCE_STATE_REASON = "Source state must be on or off\.";/,
+  );
+  assert.match(toggle, /return \{ ok: false, error: SOURCE_STATE_REASON \}/);
+  assert.match(
+    toggle,
+    /"GitHub source enabled\. It starts clicking on the next tick, inside its window\."/,
+  );
+  assert.match(
+    toggle,
+    /"GitHub source disabled\. Nothing clicks from GitHub until it is enabled again\."/,
+  );
+
+  const schedule = fnBody("saveGithubSchedule");
+  assert.match(
+    schedule,
+    /"Schedule saved\. The new interval, window and start hour apply on the next dispatch\."/,
+  );
+});
+
+test("a successful source save revalidates, and no refusal does", () => {
+  const writeFor: Record<string, string> = {
+    setGithubSourceEnabled: "await setSourceEnabled(",
+    saveGithubSchedule: "await saveSourceSchedule(",
+  };
+  for (const name of GITHUB_ACTIONS) {
+    const body = fnBody(name);
+    const writes = body.match(/revalidatePath\("\/email"\)/g) ?? [];
+    assert.equal(writes.length, 1, `${name} revalidates once`);
+    assert.ok(
+      body.indexOf("revalidatePath(") > body.indexOf(writeFor[name]),
+      `${name} revalidates only after the write`,
+    );
+    assert.match(
+      body,
+      /revalidatePath\("\/email"\);\s*\n\s*return \{\s*\n\s*ok: true,/,
+      `${name} revalidates on the success path, not on a refusal`,
+    );
+  }
+});
+
+test("the source actions never echo the control secret or a submitted value", () => {
+  for (const name of GITHUB_ACTIONS) {
+    const body = fnBody(name);
+    assert.doesNotMatch(body, /EMAIL_CONTROL_SECRET|controlCookie|safeSecretEqual/);
+    assert.doesNotMatch(body, /\$\{formData|\$\{raw\}/);
+    assert.doesNotMatch(body, /console\.(log|error)/);
+  }
+});
+
+test("dispatch now gates inside the body, before it reads the OS", () => {
+  const body = fnBody("dispatchGithubNow");
+  assert.match(
+    body,
+    /if \(!\(await requireControl\(\)\)\) return \{ ok: false, error: LOCKED\.error \};/,
+    "the dispatch refuses without the control cookie",
+  );
+  assert.ok(
+    body.indexOf("requireControl()") < body.indexOf('formData.get("os")'),
+    "authorisation happens before the first field read",
+  );
+  assert.ok(
+    body.indexOf("requireControl()") < body.indexOf("dispatchBrowserCheck("),
+    "a locked request never reaches GitHub",
+  );
+});
+
+test("an OS outside the allowlist is refused with one fixed sentence", () => {
+  const body = fnBody("dispatchGithubNow");
+  assert.match(
+    source,
+    /const GITHUB_OS_REASON =\s*\n?\s*"Choose one operating system to dispatch: ubuntu, windows or macos\.";/,
+  );
+  assert.match(
+    body,
+    /\(RUNNER_OSES as readonly string\[\]\)\.includes\(os\)/,
+    "the closed set in the schedule domain is the gate, not a second list",
+  );
+  assert.match(body, /if \(!.*includes\(os\)\) \{\s*return \{ ok: false, error: GITHUB_OS_REASON \};/);
+  assert.ok(
+    body.indexOf("GITHUB_OS_REASON") < body.indexOf("dispatchBrowserCheck("),
+    "an unknown OS is refused before the dispatch",
+  );
+});
+
+test("an all-paused list and a missing config row are refused, not dispatched", () => {
+  const body = fnBody("dispatchGithubNow");
+  assert.match(source, /const GITHUB_NO_TARGETS_REASON =/);
+  assert.match(source, /const GITHUB_NOT_CONFIGURED_REASON =/);
+  assert.match(body, /const targets = await activeTargetUrls\(\);/);
+  assert.match(body, /if \(targets\.length === 0\) \{\s*return \{ ok: false, error: GITHUB_NO_TARGETS_REASON \};\s*\}/);
+  assert.match(body, /const config = await readSourceConfig\(\);/);
+  assert.match(body, /if \(!config\) return \{ ok: false, error: GITHUB_NOT_CONFIGURED_REASON \};/);
+  assert.ok(
+    body.indexOf("targets.length === 0") < body.indexOf("dispatchBrowserCheck("),
+    "an empty list must not fall back to the committed seed",
+  );
+  assert.ok(
+    body.indexOf("if (!config)") < body.indexOf("dispatchBrowserCheck("),
+    "no schedule means nothing to dispatch",
+  );
+});
+
+test("one OS is dispatched with the current targets and the saved interval and window", () => {
+  const body = fnBody("dispatchGithubNow");
+
+  // Targets come from the live list, never the form: a body that could name a
+  // host would make this an open proxy on GitHub's runners.
+  assert.doesNotMatch(body, /formData\.getAll\(/);
+  assert.match(body, /dispatchBrowserCheck\(\{\s*os: os as RunnerOs,\s*targets,\s*intervalSeconds: config\.intervalSeconds,\s*windowSeconds: segment,?\s*\}\)/);
+
+  // One segment, clamped to the job ceiling: the last part of an open window,
+  // or a full segment when the window is closed.
+  assert.match(
+    body,
+    /Math\.min\(\s*windowRemainingSeconds\(now, config\.windowSeconds, config\.windowStartHour\) \|\|\s*MAX_JOB_SECONDS,\s*MAX_JOB_SECONDS,?\s*\)/,
+    "the window is the remaining segment, capped at MAX_JOB_SECONDS",
+  );
+  assert.match(source, /MAX_JOB_SECONDS[\s\S]*?from "@\/lib\/email\/sources"/);
+});
+
+test("a missing dispatch token is a manual success: the command, not an error", () => {
+  const body = fnBody("dispatchGithubNow");
+
+  assert.match(
+    body,
+    /if \(result\.mode === "manual"\) \{[\s\S]*?ok: true,\s*mode: "manual",[\s\S]*?fallback: result\.fallback,/,
+    "manual mode is ok:true and carries the runnable command",
+  );
+  assert.match(
+    body,
+    /"No dispatch token is configured, so nothing was queued — run this line yourself:"/,
+  );
+  assert.ok(
+    body.indexOf('result.mode === "manual"') < body.indexOf("recordSourceDispatch("),
+    "a manual fallback records nothing",
+  );
+});
+
+test("only a real dispatch is recorded and revalidated", () => {
+  const body = fnBody("dispatchGithubNow");
+  const records = body.match(/recordSourceDispatch\(/g) ?? [];
+  assert.equal(records.length, 1, "one dispatch record, on the dispatched path only");
+  assert.match(body, /await recordSourceDispatch\(GITHUB_SOURCE_PRODUCER, now\);/);
+
+  const writes = body.match(/revalidatePath\("\/email"\)/g) ?? [];
+  assert.equal(writes.length, 1, "one revalidation, after the record");
+  assert.ok(
+    body.indexOf("recordSourceDispatch(") < body.indexOf('revalidatePath("/email")'),
+    "the card re-renders from the row the dispatch just wrote",
+  );
+  assert.match(
+    body,
+    /revalidatePath\("\/email"\);\s*\n\s*return \{\s*\n\s*ok: true,\s*\n\s*mode: "dispatched",/,
+    "the dispatched result is the success path",
+  );
+  assert.match(body, /runUrl: result\.runUrl/);
+});
+
+test("the dispatcher's own sentences reach the operator unchanged", () => {
+  const body = fnBody("dispatchGithubNow");
+  assert.match(
+    body,
+    /if \(!result\.ok\) return \{ ok: false, error: result\.error \};/,
+    "401, 403, 404, transport and other are the dispatcher's sentences, not rewritten here",
+  );
+  assert.doesNotMatch(
+    body,
+    /`[^`]*\$\{result\.error\}|result\.error\s*\+/,
+    "the action never wraps or prefixes the sentence",
+  );
+  assert.doesNotMatch(body, /api\.github\.com|authorization|Bearer/);
+});
+
+test("dispatch stays an inline bounded call, with no durable job", () => {
+  const body = fnBody("dispatchGithubNow");
+  assert.doesNotMatch(source, /@\/lib\/jobs/);
+  assert.doesNotMatch(body, /insertJob|createJob|jobId|enqueue/);
+  assert.doesNotMatch(body, /await db\b/);
+  assert.ok(
+    body.indexOf("dispatchBrowserCheck(") > body.indexOf("segment"),
+    "the one call is the bounded wait; nothing is scheduled after it",
+  );
+});
+
+test("the dispatch never echoes the control or dispatch token", () => {
+  const body = fnBody("dispatchGithubNow");
+  assert.doesNotMatch(body, /EMAIL_CONTROL_SECRET|controlCookie|safeSecretEqual/);
+  assert.doesNotMatch(body, /GITHUB_BURST_TOKEN|secret\("GITHUB/);
+  assert.doesNotMatch(body, /\$\{formData/);
+  assert.doesNotMatch(body, /console\.(log|error)/);
+});
+
+/**
+ * Ticket 09: Pause all. The action is one form with two independent writes, so
+ * the tests pin the properties that make partial failure honest: it authorises
+ * inside its own body, it attempts both writes, each source's outcome is its
+ * own, a failure is never reported as success, nothing is cancelled, and the
+ * page is only revalidated when something actually moved.
+ */
+test("pauseAllSources authorises inside its body, before either write", () => {
+  const body = fnBody("pauseAllSources");
+  assert.match(body, /if \(!\(await requireControl\(\)\)\)/);
+  assert.ok(
+    body.indexOf("requireControl()") < body.indexOf("pauseGrafanaSource("),
+    "the gate comes before the Grafana write",
+  );
+  assert.ok(
+    body.indexOf("requireControl()") < body.indexOf("disableGithubSource("),
+    "the gate comes before the GitHub write",
+  );
+  assert.match(
+    body,
+    /if \(!\(await requireControl\(\)\)\) return \{ ok: false, error: LOCKED\.error \};/,
+    "a locked request claims no source outcome it did not attempt",
+  );
+});
+
+test("pauseAllSources attempts both writes, independently", () => {
+  const body = fnBody("pauseAllSources");
+  assert.match(
+    body,
+    /Promise\.all\(\[\s*pauseGrafanaSource\(\)[\s\S]*?disableGithubSource\(\)/,
+    "both helpers start together, so a slow or failing Grafana cannot skip GitHub",
+  );
+  assert.doesNotMatch(
+    body,
+    /if \(!grafana\.ok\) return|if \(grafana\.ok\)/,
+    "neither outcome short-circuits the other write",
+  );
+
+  const grafana = anyBody("pauseGrafanaSource");
+  assert.match(grafana, /getCheck\(/);
+  assert.match(grafana, /updateCheck\(id, \{ enabled: false \}\)/);
+
+  const github = anyBody("disableGithubSource");
+  assert.match(github, /readSourceConfig\(\)/);
+  assert.match(github, /setSourceEnabled\(GITHUB_SOURCE_PRODUCER, false\)/);
+});
+
+test("a partial failure is a refusal in words, never a silent success", () => {
+  const body = fnBody("pauseAllSources");
+  assert.match(body, /if \(!grafana\.ok\)/);
+  assert.match(body, /if \(!github\.ok\)/);
+  assert.match(body, /Grafana's check was not paused:/);
+  assert.match(body, /The GitHub source was not disabled:/);
+  assert.match(
+    body,
+    /ok: false,/,
+    "at least one failed source means the whole action is not ok",
+  );
+  assert.match(
+    body,
+    /no target was changed and no queued GitHub segment was cancelled/,
+    "the failure sentence states the two things Pause all does not do",
+  );
+  assert.doesNotMatch(
+    body,
+    /\$\{result\.error\}|\$\{formData|console\.(log|error)/,
+    "no upstream body, form value or log line rides in the result",
+  );
+});
+
+test("Pause all never cancels a queued or running GitHub segment", () => {
+  const body = fnBody("pauseAllSources");
+  assert.doesNotMatch(body, /\bcancel[A-Za-z]*\(/);
+  assert.doesNotMatch(source, /cancelWorkflowRun|actions\/runs\//);
+});
+
+test("the page is revalidated only when a source actually changed", () => {
+  const body = fnBody("pauseAllSources");
+  const calls = body.split('revalidatePath("/email")').length - 1;
+  assert.equal(calls, 1, "one revalidation site");
+  assert.match(
+    body,
+    /const changed =[\s\S]*?grafana\.changed[\s\S]*?github\.changed[\s\S]*?if \(changed\) revalidatePath\("\/email"\);/,
+    "the revalidation is guarded by the per-source changed flags",
+  );
+});
+
+test("the Pause all result carries a per-source outcome", () => {
+  assert.match(
+    source,
+    /export type PauseOutcome =[\s\S]*?ok: true; changed: boolean[\s\S]*?ok: false; error: string/,
+    "each source reports changed/unchanged separately from failure",
+  );
+  assert.match(
+    source,
+    /export type PauseAllState = \{[\s\S]*?grafana\?: PauseOutcome;[\s\S]*?github\?: PauseOutcome;/,
   );
 });
