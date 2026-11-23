@@ -827,6 +827,13 @@ export const affiliateClicks = pgTable(
      * value can be written.
      */
     runnerOs: text("runner_os").$type<RunnerOs>(),
+    /**
+     * The pass id the browser runner generated for the pass this click belonged
+     * to. Every click of one pass shares it, so a card can measure coverage of
+     * the most recent pass rather than of a rolling time window. Null for
+     * Grafana/one-off rows and for reports written before the field existed.
+     */
+    passId: text("pass_id"),
     ranAt: timestamp("ran_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

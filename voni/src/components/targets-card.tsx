@@ -1,9 +1,7 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState } from "react";
 import {
-  AlertCircle,
-  CheckCircle2,
   Link2,
   LockKeyhole,
   Pause,
@@ -12,7 +10,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { LoadingButton } from "@/components/loading-button";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -29,7 +26,12 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { toast } from "@/components/ui/toast";
+import type { PauseAllState, PauseOutcome } from "@/app/email/actions";
+import {
+  FeedbackAlert,
+  formatCount,
+  useActionToast,
+} from "@/components/action-feedback";
 import type { TargetState, TargetView } from "@/lib/email/target-state";
 import { targetHost } from "@/lib/email/target-url";
 
@@ -66,20 +68,6 @@ export type TargetsVolumeView = {
   sources: SourceVolumeView[];
 };
 
-/** One source's outcome from Pause all; the shape the action returns. */
-export type PauseOutcomeView =
-  | { ok: true; changed: boolean }
-  | { ok: false; error: string };
-
-/** Pause all's result, kept local to the card like the other card states. */
-export type PauseAllState = {
-  ok: boolean;
-  message?: string;
-  error?: string;
-  grafana?: PauseOutcomeView;
-  github?: PauseOutcomeView;
-};
-
 export type TargetsCardProps = {
   locked: boolean;
   targets: TargetView[];
@@ -99,15 +87,10 @@ export type TargetsCardProps = {
   ) => Promise<PauseAllState>;
 };
 
+const TARGET_ERROR_TITLE = "Could not update targets";
+
 const INITIAL: TargetState = { ok: false };
 const INITIAL_PAUSE: PauseAllState = { ok: false };
-
-/** Deterministic grouping, so the server and client render the same digits. */
-const COUNT_FORMAT = new Intl.NumberFormat("en-US");
-
-function formatCount(value: number): string {
-  return COUNT_FORMAT.format(value);
-}
 
 /** One clause of the breakdown: unavailable, paused, or a number. */
 function describeSource(source: SourceVolumeView): string {
@@ -117,56 +100,18 @@ function describeSource(source: SourceVolumeView): string {
 }
 
 /** Pause all's per-source sentences, so a failure is words, not a spinner. */
-function grafanaLine(outcome: PauseOutcomeView): string {
+function grafanaLine(outcome: PauseOutcome): string {
   if (!outcome.ok) return `Grafana: could not be paused. ${outcome.error}`;
   return outcome.changed
     ? "Grafana: check paused."
     : "Grafana: check was already paused.";
 }
 
-function githubLine(outcome: PauseOutcomeView): string {
+function githubLine(outcome: PauseOutcome): string {
   if (!outcome.ok) return `GitHub: could not be disabled. ${outcome.error}`;
   return outcome.changed
     ? "GitHub: source disabled."
     : "GitHub: source was already disabled.";
-}
-
-function FeedbackAlert({
-  state,
-  title = "Could not update targets",
-}: {
-  state: { error?: string | null; message?: string | null };
-  title?: string;
-}) {
-  if (!state.error && !state.message) return null;
-
-  return (
-    <Alert variant={state.error ? "destructive" : "default"} className="status-enter">
-      {state.error ? <AlertCircle /> : <CheckCircle2 />}
-      <AlertTitle>{state.error ? title : "Done"}</AlertTitle>
-      <AlertDescription>{state.error ?? state.message}</AlertDescription>
-    </Alert>
-  );
-}
-
-/** Inline Alert is the required surface; a toast rides along as a convenience. */
-function useActionToast(
-  state: { error?: string | null; message?: string | null },
-  title = "Could not update targets",
-) {
-  useEffect(() => {
-    if (state.error) {
-      toast.add({
-        title,
-        description: state.error,
-        type: "error",
-      });
-      return;
-    }
-    if (state.message) {
-      toast.add({ title: "Done", description: state.message, type: "success" });
-    }
-  }, [state, title]);
 }
 
 function AddTargetForm({
@@ -177,7 +122,7 @@ function AddTargetForm({
   addTarget: TargetsCardProps["addTarget"];
 }) {
   const [state, action, pending] = useActionState(addTarget, INITIAL);
-  useActionToast(state);
+  useActionToast(state, TARGET_ERROR_TITLE);
 
   return (
     <form action={action} className="grid gap-3">
@@ -202,7 +147,7 @@ function AddTargetForm({
         </Field>
       </FieldGroup>
 
-      <FeedbackAlert state={state} />
+      <FeedbackAlert state={state} errorTitle={TARGET_ERROR_TITLE} />
 
       <div>
         <LoadingButton
@@ -245,8 +190,8 @@ function TargetRow({
     INITIAL,
   );
 
-  useActionToast(toggleState);
-  useActionToast(removeState);
+  useActionToast(toggleState, TARGET_ERROR_TITLE);
+  useActionToast(removeState, TARGET_ERROR_TITLE);
 
   return (
     <li
@@ -311,8 +256,8 @@ function TargetRow({
         </form>
       </div>
 
-      <FeedbackAlert state={toggleState} />
-      <FeedbackAlert state={removeState} />
+      <FeedbackAlert state={toggleState} errorTitle={TARGET_ERROR_TITLE} />
+      <FeedbackAlert state={removeState} errorTitle={TARGET_ERROR_TITLE} />
     </li>
   );
 }
@@ -418,7 +363,10 @@ function PauseAllControl({
         </p>
       ) : null}
 
-      <FeedbackAlert state={state} title="Could not pause every source" />
+      <FeedbackAlert
+        state={state}
+        errorTitle="Could not pause every source"
+      />
     </div>
   );
 }

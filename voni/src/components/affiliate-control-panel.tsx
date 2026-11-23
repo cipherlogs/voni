@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useEffect, useMemo, useState } from "react";
+import { useActionState, useMemo, useState } from "react";
 import { useFormStatus } from "react-dom";
 import {
   Activity,
@@ -24,6 +24,11 @@ import {
   unlockControl,
   type ControlState,
 } from "@/app/email/actions";
+import {
+  FeedbackAlert,
+  formatCount,
+  useActionToast,
+} from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import {
   SourceCard,
@@ -72,7 +77,6 @@ import {
   clicksPerDay,
   executionsPerMonth,
 } from "@/lib/email/volume";
-import { toast } from "@/components/ui/toast";
 
 /**
  * The Grafana source on the `/email` console, and the shared click surface that
@@ -189,40 +193,9 @@ export type AffiliateControlPanelProps = {
 const INITIAL: ControlState = { ok: false };
 const MINUTE_MS = 60_000;
 
-function FeedbackAlert({ state }: { state: ControlState }) {
-  if (!state.error && !state.message) return null;
-  return (
-    <Alert variant={state.error ? "destructive" : "default"} className="status-enter">
-      {state.error ? <AlertCircle /> : <CheckCircle2 />}
-      <AlertTitle>{state.error ? "Could not complete" : "Done"}</AlertTitle>
-      <AlertDescription>{state.error ?? state.message}</AlertDescription>
-    </Alert>
-  );
-}
-
-/** Inline Alert is the required surface; a toast rides along as a convenience. */
-function useActionToast(state: ControlState) {
-  useEffect(() => {
-    if (state.error) {
-      toast.add({ title: "Could not complete", description: state.error, type: "error" });
-      return;
-    }
-    if (state.message) {
-      toast.add({ title: "Done", description: state.message, type: "success" });
-    }
-  }, [state]);
-}
-
 function frequencyLabel(frequencyMs: number): string {
   const minutes = frequencyMs / MINUTE_MS;
   return Number.isInteger(minutes) ? `${minutes} min` : `${frequencyMs} ms`;
-}
-
-/** Deterministic grouping, so the server and client render the same digits. */
-const COUNT_FORMAT = new Intl.NumberFormat("en-US");
-
-function formatCount(value: number): string {
-  return COUNT_FORMAT.format(value);
 }
 
 const CHART_WIDTH = 240;

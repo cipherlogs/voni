@@ -163,6 +163,49 @@ test("a report with a producer and runner OS keeps both", () => {
   assert.equal(result.value.runnerOs, "ubuntu");
 });
 
+test("a pass id is carried, and absent is null", () => {
+  const withPass = parseClickReport(
+    {
+      target: "https://voni.cc/landing",
+      producer: "github",
+      runnerOs: "ubuntu",
+      passId: "2f3a9c7e-1b2d-4c5e-8f90-abcdef123456",
+    },
+    NOW,
+  );
+  assert.equal(withPass.ok, true);
+  if (!withPass.ok) return;
+  assert.equal(
+    withPass.value.passId,
+    "2f3a9c7e-1b2d-4c5e-8f90-abcdef123456",
+  );
+
+  const without = parseClickReport({ target: "https://voni.cc/landing" }, NOW);
+  assert.equal(without.ok, true);
+  if (!without.ok) return;
+  assert.equal(without.value.passId, null, "absent is not an error");
+});
+
+test("a malformed or oversized pass id is refused with a fixed reason", () => {
+  for (const passId of [
+    "",
+    "short",
+    "has spaces in it",
+    "slash/inside",
+    "a".repeat(65),
+    42,
+    { id: "abc123" },
+  ]) {
+    const result = parseClickReport(
+      { target: "https://voni.cc/landing", passId },
+      NOW,
+    );
+    assert.equal(result.ok, false, `${JSON.stringify(passId)} must be refused`);
+    if (result.ok) return;
+    assert.equal(result.reason, "bad_pass_id");
+  }
+});
+
 test("an absent producer is Grafana, and the old Grafana payload is unchanged", () => {
   const grafana = {
     target: "https://voni.cc/landing",
@@ -183,7 +226,12 @@ test("an absent producer is Grafana, and the old Grafana payload is unchanged", 
   // Every field the old reporter sent still parses to exactly what it did
   // before the two new columns existed.
   assert.deepEqual(
-    { ...result.value, producer: undefined, runnerOs: undefined },
+    {
+      ...result.value,
+      producer: undefined,
+      runnerOs: undefined,
+      passId: undefined,
+    },
     {
       target: "https://voni.cc/landing",
       source: "gmail.com",
@@ -196,6 +244,7 @@ test("an absent producer is Grafana, and the old Grafana payload is unchanged", 
       ranAt: new Date("2026-11-17T11:59:00.000Z"),
       producer: undefined,
       runnerOs: undefined,
+      passId: undefined,
     },
   );
 });
@@ -312,6 +361,7 @@ test("unknown extra keys are ignored", () => {
     "device",
     "finalUrl",
     "ms",
+    "passId",
     "producer",
     "ranAt",
     "runnerOs",

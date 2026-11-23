@@ -66,6 +66,7 @@ test("target guard: a rejected target never reaches the insert", async () => {
       browser: null,
       producer: "grafana",
       runnerOs: null,
+      passId: null,
       ranAt: new Date(),
     }),
     /absolute http\(s\) URL/,
@@ -133,7 +134,7 @@ test("source chips: All first, then one per stored producer, each a link", () =>
   );
   assert.deepEqual(
     chips.map((chip) => chip.label),
-    ["All", "Grafana", "GitHub", "Oneoff"],
+    ["All", "Grafana", "GitHub", "One-off"],
   );
   assert.deepEqual(
     chips.map((chip) => chip.href),
@@ -214,15 +215,46 @@ test("runner summary: counts by OS, folds stamps, and only shared targets count"
       runnerOs: "ubuntu",
       target: "https://a.example/one?utm_source=gmail.com&utm_medium=email",
       status: 200,
+      passId: "pass-ubuntu-1",
       ranAt: sampledAt,
     },
-    { runnerOs: "ubuntu", target: "https://a.example/one", status: null, ranAt: sampledAt },
-    { runnerOs: "ubuntu", target: "https://b.example/two", status: 302, ranAt: sampledAt },
+    {
+      runnerOs: "ubuntu",
+      target: "https://a.example/one",
+      status: null,
+      passId: "pass-ubuntu-1",
+      ranAt: sampledAt,
+    },
+    {
+      runnerOs: "ubuntu",
+      target: "https://b.example/two",
+      status: 302,
+      passId: "pass-ubuntu-1",
+      ranAt: sampledAt,
+    },
     // Still a click, but no longer a shared target, so it cannot inflate 2/2.
-    { runnerOs: "ubuntu", target: "https://c.example/three", status: 200, ranAt: sampledAt },
-    { runnerOs: "macos", target: "https://a.example/one", status: 200, ranAt: sampledAt },
+    {
+      runnerOs: "ubuntu",
+      target: "https://c.example/three",
+      status: 200,
+      passId: "pass-ubuntu-1",
+      ranAt: sampledAt,
+    },
+    {
+      runnerOs: "macos",
+      target: "https://a.example/one",
+      status: 200,
+      passId: "pass-macos-1",
+      ranAt: sampledAt,
+    },
     // Grafana / one-off rows carry no OS and must not become a fourth bucket.
-    { runnerOs: null, target: "https://a.example/one", status: 200, ranAt: sampledAt },
+    {
+      runnerOs: null,
+      target: "https://a.example/one",
+      status: 200,
+      passId: null,
+      ranAt: sampledAt,
+    },
   ];
 
   const summary = summariseRunnerClicks(rows, [
@@ -238,9 +270,28 @@ test("runner summary: counts by OS, folds stamps, and only shared targets count"
       clicks: 4,
       failed: 1,
       targets: ["https://a.example/one", "https://b.example/two"],
+      pass: {
+        id: "pass-ubuntu-1",
+        ranAt: sampledAt,
+        hits: 2,
+        total: 2,
+        conclusion: "complete",
+      },
     },
-    { os: "windows", clicks: 0, failed: 0, targets: [] },
-    { os: "macos", clicks: 1, failed: 0, targets: ["https://a.example/one"] },
+    { os: "windows", clicks: 0, failed: 0, targets: [], pass: null },
+    {
+      os: "macos",
+      clicks: 1,
+      failed: 0,
+      targets: ["https://a.example/one"],
+      pass: {
+        id: "pass-macos-1",
+        ranAt: sampledAt,
+        hits: 1,
+        total: 2,
+        conclusion: "partial",
+      },
+    },
   ]);
 
   // Every clicked base URL, including one no longer shared, split by OS.
@@ -266,7 +317,13 @@ test("runner summary: counts by OS, folds stamps, and only shared targets count"
 test("runner summary: an OS that never reported is empty, not a zeroed success", () => {
   const summary = summariseRunnerClicks(
     [
-      { runnerOs: "ubuntu", target: "https://a.example/one", status: 200, ranAt: sampledAt },
+      {
+        runnerOs: "ubuntu",
+        target: "https://a.example/one",
+        status: 200,
+        passId: "pass-ubuntu-1",
+        ranAt: sampledAt,
+      },
     ],
     ["https://a.example/one"],
   );
@@ -277,8 +334,92 @@ test("runner summary: an OS that never reported is empty, not a zeroed success",
     clicks: 0,
     failed: 0,
     targets: [],
+    pass: null,
   });
   assert.equal(summary.total, 1);
+});
+
+test("history rows carry the pass id the runner wrote", () => {
+  const { sql } = affiliateClicksPage(10).toSQL();
+  assert.match(sql, /select .*"pass_id"/, "the column is read back, not just stored");
+});
+
+test("runner summary: coverage is the most recent pass, measured alone", () => {
+  const t1 = new Date("2026-11-23T08:00:00.000Z");
+  const t2 = new Date("2026-11-23T08:01:00.000Z");
+  const rows: RunnerClickSample[] = [
+    // Pass A covered all three targets, one of them with no response.
+    { runnerOs: "ubuntu", target: "https://a.example/one", status: 200, passId: "pass-a", ranAt: t1 },
+    { runnerOs: "ubuntu", target: "https://b.example/two", status: null, passId: "pass-a", ranAt: t1 },
+    { runnerOs: "ubuntu", target: "https://c.example/three", status: 200, passId: "pass-a", ranAt: t1 },
+    // Pass B, newer, only landed on one of them. A rolling window would carry
+    // A's hits forward; a pass basis must not.
+    { runnerOs: "ubuntu", target: "https://a.example/one", status: 200, passId: "pass-b", ranAt: t2 },
+  ];
+
+  const summary = summariseRunnerClicks(rows, [
+    "https://a.example/one",
+    "https://b.example/two",
+    "https://c.example/three",
+  ]);
+  const ubuntu = summary.byOs.find((row) => row.os === "ubuntu");
+
+  assert.deepEqual(ubuntu?.pass, {
+    id: "pass-b",
+    ranAt: t2,
+    hits: 1,
+    total: 3,
+    conclusion: "partial",
+  });
+  assert.deepEqual(
+    ubuntu?.targets,
+    ["https://a.example/one", "https://b.example/two", "https://c.example/three"],
+    "the rolling target list is unchanged; only the pass number is new",
+  );
+});
+
+test("runner summary: a no-response row is a miss, and conclusions are fixed", () => {
+  const at = new Date("2026-11-23T08:00:00.000Z");
+  const shared = ["https://a.example/one", "https://b.example/two"];
+
+  const complete = summariseRunnerClicks(
+    [
+      { runnerOs: "ubuntu", target: shared[0]!, status: 200, passId: "pass-1", ranAt: at },
+      { runnerOs: "ubuntu", target: shared[1]!, status: 302, passId: "pass-1", ranAt: at },
+    ],
+    shared,
+  ).byOs.find((row) => row.os === "ubuntu");
+  assert.equal(complete?.pass?.conclusion, "complete");
+  assert.equal(complete?.pass?.hits, 2);
+
+  const partial = summariseRunnerClicks(
+    [
+      { runnerOs: "ubuntu", target: shared[0]!, status: 200, passId: "pass-1", ranAt: at },
+      { runnerOs: "ubuntu", target: shared[1]!, status: null, passId: "pass-1", ranAt: at },
+    ],
+    shared,
+  ).byOs.find((row) => row.os === "ubuntu");
+  assert.equal(partial?.pass?.conclusion, "partial");
+  assert.equal(partial?.pass?.hits, 1, "status null is a click, never a hit");
+
+  const failed = summariseRunnerClicks(
+    [
+      { runnerOs: "ubuntu", target: shared[0]!, status: null, passId: "pass-1", ranAt: at },
+      { runnerOs: "ubuntu", target: shared[1]!, status: null, passId: "pass-1", ranAt: at },
+    ],
+    shared,
+  ).byOs.find((row) => row.os === "ubuntu");
+  assert.equal(failed?.pass?.conclusion, "failed");
+  assert.equal(failed?.pass?.hits, 0);
+
+  const neverRanPass = summariseRunnerClicks(
+    [
+      // A click with no pass id was written before the runner reported one.
+      { runnerOs: "ubuntu", target: shared[0]!, status: 200, passId: null, ranAt: at },
+    ],
+    shared,
+  ).byOs.find((row) => row.os === "ubuntu");
+  assert.equal(neverRanPass?.pass, null, "no pass means 'Never run' in the card");
 });
 
 test("runner rows read: one producer, since a cutoff, OS known, newest first", () => {
@@ -292,6 +433,11 @@ test("runner rows read: one producer, since a cutoff, OS known, newest first", (
   );
   assert.match(sql, /"affiliate_clicks"\."ran_at"\s*>=\s*\$\d+/i);
   assert.match(sql, /"affiliate_clicks"\."runner_os"\s+is not null/i);
+  assert.match(
+    sql,
+    /select .*"pass_id"/,
+    "the pass id is selected so the card can measure the most recent pass",
+  );
   assert.match(sql, /order by\s+"affiliate_clicks"\."ran_at"\s+desc/i);
   assert.equal(params[0], "github", "the producer is the first bound value");
   assert.ok(

@@ -17,7 +17,7 @@ import {
   type DispatchOutcome,
 } from "@/lib/github/dispatch";
 import type { SourceConfig } from "@/lib/email/source-config";
-import type { RunnerOs } from "@/lib/email/sources";
+import { windowRemainingSeconds, type RunnerOs } from "@/lib/email/sources";
 import { POST, runSourceTick, type SourceTickDeps } from "./route";
 
 const SOURCE: SourceConfig = {
@@ -341,6 +341,127 @@ test("the summary is JSON-safe and never carries the dispatch token", async () =
     if (previous === undefined) delete process.env.GITHUB_BURST_TOKEN;
     else process.env.GITHUB_BURST_TOKEN = previous;
   }
+});
+
+test("a dry run reports the decision per OS and dispatches or records nothing", async () => {
+  const { deps, calls } = harness({});
+
+  const summary = await runSourceTick(deps, { dryRun: true });
+
+  assert.equal(summary.status, "due");
+  assert.equal(summary.dryRun, true);
+  assert.equal(summary.segmentSeconds, 20_000);
+  assert.deepEqual(calls.dispatched, [], "no dispatch in a dry run");
+  assert.deepEqual(calls.recorded, [], "no last_dispatched_at write either");
+  assert.deepEqual(
+    summary.os.map((outcome) => [
+      outcome.os,
+      outcome.action,
+      outcome.action === "skipped" ? outcome.reason : null,
+    ]),
+    [
+      ["ubuntu", "skipped", "dry_run"],
+      ["windows", "skipped", "dry_run"],
+      ["macos", "skipped", "dry_run"],
+    ],
+  );
+});
+
+test("the tick route reads the dry-run flag from the request body", () => {
+  const route = readFileSync(
+    fileURLToPath(new URL("./route.ts", import.meta.url)),
+    "utf8",
+  );
+  assert.match(route, /\.dryRun === true/, "only an explicit true is a dry run");
+  assert.match(
+    route,
+    /runSourceTick\(\{\}, \{ dryRun \}\)/,
+    "the parsed flag is the one the tick receives",
+  );
+  assert.match(
+    route,
+    /await request\.json\(\)\.catch\(\(\) => null\)/,
+    "a body-less worker call is a normal run, not an error",
+  );
+});
+
+test("a full 12 h window with no clicks is due on cadence and never overruns it", async () => {
+  const start = WINDOW_START.getTime();
+  const minute = 60_000;
+  const windowMs = 43_200_000;
+  const end = start + windowMs;
+  let lastDispatchedAt: Date | null = null;
+  const dispatches: { at: number; segment: number; remaining: number }[] = [];
+  const dueAt: number[] = [];
+
+  for (let elapsed = 0; start + elapsed < end; elapsed += minute) {
+    const now = new Date(start + elapsed);
+    const deps: SourceTickDeps = {
+      now: () => now,
+      readConfig: async () => ({ ...SOURCE, lastDispatchedAt }),
+      readNewestClickByOs: async () => ({}),
+      readTargets: async () => ["https://example.com/a"],
+      dispatch: async (input) => {
+        dispatches.push({
+          at: now.getTime(),
+          segment: input.windowSeconds,
+          remaining: windowRemainingSeconds(
+            now,
+            SOURCE.windowSeconds,
+            SOURCE.windowStartHour,
+          ),
+        });
+        return {
+          ok: true,
+          mode: "dispatched",
+          runUrl:
+            "https://github.com/cipherlogs/voni/actions/workflows/browser-check.yml",
+        };
+      },
+      recordDispatch: async (_producer, at) => {
+        lastDispatchedAt = at;
+      },
+    };
+
+    const summary = await runSourceTick(deps);
+    if (summary.status === "due") {
+      dueAt.push(now.getTime());
+      assert.ok(
+        summary.os.every((outcome) => outcome.action === "dispatched"),
+        "with no clicks every OS is due together",
+      );
+    }
+  }
+
+  // No clicks means every OS stays dead; the cadence is the anti-thrash floor.
+  assert.equal(dueAt.length, 72, "one due tick every ten minutes for 12 h");
+  for (let index = 1; index < dueAt.length; index += 1) {
+    assert.equal(
+      dueAt[index]! - dueAt[index - 1]!,
+      600_000,
+      "the next segment starts exactly when the throttle allows it",
+    );
+  }
+
+  assert.equal(dispatches.length, dueAt.length * 3, "three OSes per due tick");
+  for (const dispatch of dispatches) {
+    assert.ok(
+      dispatch.segment <= 20_000,
+      `segment ${dispatch.segment} must not exceed the one job cap`,
+    );
+    assert.ok(
+      dispatch.segment <= dispatch.remaining,
+      `segment ${dispatch.segment} must not outlive the open window (${dispatch.remaining} left)`,
+    );
+    assert.equal(
+      dispatch.segment,
+      Math.min(dispatch.remaining, 20_000),
+      "the segment is the smaller of what is left and the cap",
+    );
+  }
+
+  // The last dispatch is clamped by the window, not by the cap.
+  assert.equal(dispatches[dispatches.length - 1]!.segment, 600);
 });
 
 test("the worker ticks the source after the sweep and contains a ticker failure", () => {

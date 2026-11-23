@@ -3,23 +3,33 @@
 import { useActionState, useEffect, useState } from "react";
 import {
   AlertCircle,
-  Check,
   CheckCircle2,
-  Copy,
   ExternalLink,
   GitBranch,
 } from "lucide-react";
+import type {
+  ControlState,
+  GithubDispatchState,
+} from "@/app/email/actions";
+import {
+  FeedbackAlert,
+  ManualRunFallback,
+  formatCount,
+  useActionToast,
+} from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import { SourceCard, type SourceCardSummary } from "@/components/source-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Field,
   FieldDescription,
   FieldGroup,
   FieldLabel,
+  FieldLegend,
+  FieldSet,
 } from "@/components/ui/field";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Select,
   SelectContent,
@@ -29,13 +39,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
-import type { GithubClickSummary } from "@/lib/email/clicks";
+import type { GithubClickSummary, GithubOsStats } from "@/lib/email/clicks";
 import {
   INTERVAL_SECONDS,
   RUNNER_OSES,
   WINDOW_SECONDS,
   clicksPerDay,
   deadAfterSeconds,
+  insideWindow,
   type RunnerOs,
 } from "@/lib/email/sources";
 import { targetHost } from "@/lib/email/target-url";
@@ -73,33 +84,12 @@ export type GithubSourceConfigView = {
   lastDispatchedAt: Date | null;
 };
 
-/** The shape both actions return; the house `ControlState`, kept local. */
-export type GithubControlState = {
-  ok: boolean;
-  message?: string;
-  error?: string;
-};
-
-/**
- * What a dispatch returns. Kept local rather than imported from the action file
- * for the same reason the two states above are: this card receives server
- * functions as props and must not reach into `actions.ts`.
- */
-export type GithubDispatchState = {
-  ok: boolean;
-  mode?: "dispatched" | "manual";
-  message?: string;
-  error?: string;
-  runUrl?: string;
-  fallback?: { command: string };
-};
-
 export type GithubSourceCardProps = {
   /** Presentation only; every action re-checks the cookie itself. */
   locked: boolean;
   /** The `email_sources` row for this producer; null when it is not seeded. */
   config: GithubSourceConfigView | null;
-  /** The shared target list size — the denominator of `targets x/x`. */
+  /** The active shared target count — the denominator of `targets x/x`. */
   targetCount: number;
   /** Newest click per OS, the heartbeat the ticker also reads. */
   newestByOs: Partial<Record<RunnerOs, Date>>;
@@ -113,14 +103,14 @@ export type GithubSourceCardProps = {
   now: Date;
   /** Enable or disable this source; field `enabled` = "true" | "false". */
   setEnabled: (
-    previous: GithubControlState,
+    previous: ControlState,
     formData: FormData,
-  ) => Promise<GithubControlState>;
+  ) => Promise<ControlState>;
   /** Save the schedule; fields `interval`, `window`, `startHour`. */
   saveSchedule: (
-    previous: GithubControlState,
+    previous: ControlState,
     formData: FormData,
-  ) => Promise<GithubControlState>;
+  ) => Promise<ControlState>;
   /** Dispatch one OS right now; field `os` = one of `RUNNER_OSES`. */
   dispatchNow: (
     previous: GithubDispatchState,
@@ -142,13 +132,7 @@ const OS_SHORT: Record<RunnerOs, string> = {
 
 const START_HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 
-const COUNT_FORMAT = new Intl.NumberFormat("en-US");
-
-const INITIAL: GithubControlState = { ok: false };
-
-function formatCount(value: number): string {
-  return COUNT_FORMAT.format(value);
-}
+const INITIAL: ControlState = { ok: false };
 
 /** Deterministic, timezone-free display: identical on the server and client. */
 function formatWhen(at: Date | null): string {
@@ -172,43 +156,22 @@ function intervalOptionLabel(seconds: number): string {
   return seconds % 60 === 0 ? `Every ${seconds / 60} min` : `Every ${seconds} s`;
 }
 
-function FeedbackAlert({ state }: { state: GithubControlState }) {
-  if (!state.error && !state.message) return null;
+/**
+ * The closed option sets as the `items` map a Base UI Select needs, so a closed
+ * trigger shows "Every 1 min" or "07:00 UTC" rather than the raw value.
+ */
+const INTERVAL_ITEMS: Record<string, string> = Object.fromEntries(
+  INTERVAL_SECONDS.map((seconds) => [String(seconds), intervalOptionLabel(seconds)]),
+);
 
-  return (
-    <Alert
-      variant={state.error ? "destructive" : "default"}
-      className="status-enter"
-      data-testid="email-github-feedback"
-    >
-      {state.error ? <AlertCircle /> : <CheckCircle2 />}
-      <AlertTitle>
-        {state.error ? "Could not update the source" : "Done"}
-      </AlertTitle>
-      <AlertDescription>{state.error ?? state.message}</AlertDescription>
-    </Alert>
-  );
-}
+const START_HOUR_ITEMS: Record<string, string> = Object.fromEntries(
+  START_HOURS.map((hour) => [String(hour), formatStartHour(hour)]),
+);
 
-/** Inline Alert is the required surface; a toast rides along as a convenience. */
-function useActionToast(state: GithubControlState) {
-  useEffect(() => {
-    if (state.error) {
-      toast.add({
-        title: "Could not update the source",
-        description: state.error,
-        type: "error",
-      });
-    } else if (state.message) {
-      toast.add({
-        title: "Done",
-        description: state.message,
-        type: "success",
-      });
-    }
-    // `state` is a fresh object per submission, so a repeat message still shows.
-  }, [state]);
-}
+/** The coverage basis the card states beside `targets x/x`. */
+const PASS_BASIS = "most recent pass";
+
+const SOURCE_ERROR_TITLE = "Could not update the source";
 
 const INITIAL_DISPATCH: GithubDispatchState = { ok: false };
 
@@ -235,62 +198,22 @@ function useDispatchToast(state: GithubDispatchState) {
 /**
  * The manual run, when no dispatch token is configured. A missing token is a
  * normal outcome, so this is plain paper rather than a destructive Alert — the
- * same presentation the burst card uses for its own fallback.
+ * same presentation the burst card uses for its own fallback. The block itself
+ * is shared; only the credential sentence and the test ids are this card's.
  */
 function DispatchFallback({ os, command }: { os: RunnerOs; command: string }) {
-  const [copied, setCopied] = useState(false);
-
-  // The label is a receipt for one click, not a permanent state: a stale
-  // "Copied" next to a command that has since changed would be a lie.
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2_000);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-    } catch {
-      toast.add({
-        title: "Could not copy",
-        description: "Select the command and copy it by hand.",
-        type: "error",
-      });
-    }
-  }
-
   return (
-    <div
-      className="grid gap-2 rounded-lg border px-3 py-3"
-      data-testid={`email-github-dispatch-${os}-fallback`}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium">
-          Run it yourself — no dispatch token configured.
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            void copy();
-          }}
-          data-testid={`email-github-dispatch-${os}-copy`}
-        >
-          {copied ? <Check /> : <Copy />}
-          {copied ? "Copied" : "Copy"}
-        </Button>
-      </div>
-      <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs whitespace-pre">
-        <code>{command}</code>
-      </pre>
-      <p className="text-muted-foreground text-xs">
-        It needs <code className="font-mono">GITHUB_BURST_TOKEN</code> with
-        Actions write access on the repository; this line never carries it.
-      </p>
-    </div>
+    <ManualRunFallback
+      command={command}
+      testId={`email-github-dispatch-${os}-fallback`}
+      copyTestId={`email-github-dispatch-${os}-copy`}
+      note={
+        <>
+          It needs <code className="font-mono">GITHUB_BURST_TOKEN</code> with
+          Actions write access on the repository; this line never carries it.
+        </>
+      }
+    />
   );
 }
 
@@ -401,18 +324,22 @@ function DispatchControl({
   );
 }
 
-type OsStatus = "never" | "stale" | "live";
+type OsStatus = "never" | "stale" | "live" | "outside";
 
 /**
  * The same half-open judgement `decideDue` makes: an OS is stale once its
  * newest click is at least `deadAfterSeconds` old. Kept here as a word rather
- * than a second scheduling rule — the number comes from `sources.ts`.
+ * than a second scheduling rule — the number comes from `sources.ts`. Outside
+ * the source's active window nothing is expected to be clicking, so that is
+ * said as its own state rather than as staleness.
  */
 function osStatus(
   newest: Date | undefined,
   now: Date,
   intervalSeconds: number,
+  outsideWindow: boolean,
 ): OsStatus {
+  if (outsideWindow) return "outside";
   if (!newest) return "never";
   const thresholdMs = deadAfterSeconds(intervalSeconds) * 1_000;
   return now.getTime() - newest.getTime() >= thresholdMs ? "stale" : "live";
@@ -420,13 +347,17 @@ function osStatus(
 
 /**
  * The worst OS status, in the order the ticket fixes:
- * disabled, then any OS never run, then any OS stale, else live.
+ * disabled, outside active hours, then any OS never run, any stale, else live.
  */
 function worstHealth(
   enabled: boolean,
+  outsideWindow: boolean,
   statuses: readonly OsStatus[],
 ): SourceCardSummary["health"] {
   if (!enabled) return { label: "Disabled", variant: "outline" };
+  if (outsideWindow) {
+    return { label: "Outside active hours", variant: "outline" };
+  }
   if (statuses.includes("never")) {
     return { label: "Never run", variant: "destructive" };
   }
@@ -436,13 +367,26 @@ function worstHealth(
   return { label: "Live", variant: "secondary" };
 }
 
-function osBadgeVariant(status: OsStatus): "secondary" | "destructive" {
-  return status === "live" ? "secondary" : "destructive";
+function osBadgeVariant(
+  status: OsStatus,
+): "secondary" | "destructive" | "outline" {
+  if (status === "live") return "secondary";
+  if (status === "outside") return "outline";
+  return "destructive";
 }
 
 function osStatusLabel(status: OsStatus): string {
   if (status === "never") return "Never run";
+  if (status === "outside") return "Outside active hours";
   return status === "stale" ? "Stale" : "Live";
+}
+
+/** The pass conclusion in the card's words; no pass is "Never run". */
+function passConclusionLabel(pass: GithubOsStats["pass"]): string {
+  if (!pass) return "Never run";
+  if (pass.conclusion === "complete") return "Complete";
+  if (pass.conclusion === "partial") return "Partial";
+  return "Failed";
 }
 
 function StatusField({
@@ -495,11 +439,18 @@ export function GithubSourceCard({
     INITIAL,
   );
 
-  useActionToast(scheduleState);
-  useActionToast(enabledState);
+  useActionToast(scheduleState, SOURCE_ERROR_TITLE);
+  useActionToast(enabledState, SOURCE_ERROR_TITLE);
 
   const configured = config !== null;
   const enabled = config?.enabled ?? false;
+  // Outside the source's own window, nothing is expected to click: that is a
+  // stated state, not a stale one. `insideWindow` is the same predicate the
+  // ticker uses, so the card and the scheduler cannot disagree.
+  const outsideWindow =
+    config !== null &&
+    enabled &&
+    !insideWindow(now, config.windowSeconds, config.windowStartHour);
   // The one volume arithmetic in the repo; a second formula would let the
   // header and the scheduler disagree about what the source commands.
   const perDay = config
@@ -519,9 +470,21 @@ export function GithubSourceCard({
   );
   const statuses = config
     ? RUNNER_OSES.map((os) =>
-        osStatus(newestByOs[os], now, config.intervalSeconds),
+        osStatus(newestByOs[os], now, config.intervalSeconds, outsideWindow),
       )
     : [];
+  // Keyed, not searched: the summary always carries one row per OS, and a
+  // lookup that returns `undefined` falls back to an honest empty row rather
+  // than a non-null assertion that could crash the card.
+  const statsByOs = new Map(summary.byOs.map((row) => [row.os, row]));
+  const osStatsFor = (os: RunnerOs): GithubOsStats =>
+    statsByOs.get(os) ?? {
+      os,
+      clicks: 0,
+      failed: 0,
+      targets: [],
+      pass: null,
+    };
 
   return (
     <SourceCard
@@ -541,7 +504,7 @@ export function GithubSourceCard({
         },
         health: !configured
           ? { label: "Not configured", variant: "destructive" }
-          : worstHealth(enabled, statuses),
+          : worstHealth(enabled, outsideWindow, statuses),
       }}
     >
       {config === null ? (
@@ -587,6 +550,7 @@ export function GithubSourceCard({
                     value={draftInterval}
                   />
                   <Select
+                    items={INTERVAL_ITEMS}
                     value={String(draftInterval)}
                     onValueChange={(next) => {
                       if (next) setDraftInterval(Number(next));
@@ -614,35 +578,33 @@ export function GithubSourceCard({
                   </FieldDescription>
                 </Field>
 
-                <Field>
-                  <FieldLabel htmlFor="email-github-window">
-                    Active window
-                  </FieldLabel>
+                <FieldSet>
+                  <FieldLegend variant="label">Active window</FieldLegend>
                   <input type="hidden" name="window" value={draftWindow} />
-                  <Select
+                  <RadioGroup
                     value={String(draftWindow)}
                     onValueChange={(next) => {
                       if (next) setDraftWindow(Number(next));
                     }}
                     disabled={locked || savingSchedule}
+                    aria-label="Active window"
                   >
-                    <SelectTrigger id="email-github-window" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {WINDOW_SECONDS.map((seconds) => (
-                          <SelectItem key={seconds} value={String(seconds)}>
+                    {WINDOW_SECONDS.map((seconds) => {
+                      const id = `email-github-window-${seconds}`;
+                      return (
+                        <Field key={seconds} orientation="horizontal">
+                          <RadioGroupItem value={String(seconds)} id={id} />
+                          <FieldLabel htmlFor={id} className="font-normal">
                             {formatWindow(seconds)}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
+                          </FieldLabel>
+                        </Field>
+                      );
+                    })}
+                  </RadioGroup>
                   <FieldDescription>
                     How long the source runs each day.
                   </FieldDescription>
-                </Field>
+                </FieldSet>
 
                 <Field>
                   <FieldLabel htmlFor="email-github-start-hour">
@@ -654,6 +616,7 @@ export function GithubSourceCard({
                     value={draftStartHour}
                   />
                   <Select
+                    items={START_HOUR_ITEMS}
                     value={String(draftStartHour)}
                     onValueChange={(next) => {
                       if (next) setDraftStartHour(Number(next));
@@ -713,7 +676,11 @@ export function GithubSourceCard({
                 </p>
               </div>
 
-              <FeedbackAlert state={scheduleState} />
+              <FeedbackAlert
+                state={scheduleState}
+                errorTitle={SOURCE_ERROR_TITLE}
+                testId="email-github-feedback"
+              />
             </form>
           </section>
 
@@ -750,7 +717,11 @@ export function GithubSourceCard({
                   : "Disabled: nothing is dispatched, whatever the schedule says."}
               </p>
             </form>
-            <FeedbackAlert state={enabledState} />
+            <FeedbackAlert
+              state={enabledState}
+              errorTitle={SOURCE_ERROR_TITLE}
+              testId="email-github-feedback"
+            />
           </section>
 
           {enabled ? null : (
@@ -778,22 +749,20 @@ export function GithubSourceCard({
                   newest,
                   now,
                   config.intervalSeconds,
+                  outsideWindow,
                 );
-                const osStats = summary.byOs.find((row) => row.os === os)!;
-                // A never-run OS and a disabled source are said in words: a
-                // `0/4` would read as a measured miss rather than "no run".
+                const osStats = osStatsFor(os);
+                // A never-run OS, a disabled source and an all-paused list are
+                // said in words: a `0/4` would read as a measured miss rather
+                // than "no run" or "nothing to click".
                 const coverage = !enabled
                   ? "Not scheduled"
-                  : status === "never"
+                  : !osStats.pass
                     ? "Never run"
-                    : `${osStats.targets.length}/${targetCount}`;
-                const conclusion = !newest
-                  ? "Never run"
-                  : osStats.clicks === 0
-                    ? `No clicks ${basis}`
-                    : osStats.failed === 0
-                      ? `${formatCount(osStats.clicks)} clicks, none failed`
-                      : `${formatCount(osStats.failed)} of ${formatCount(osStats.clicks)} clicks failed`;
+                    : osStats.pass.total === 0
+                      ? "No active targets"
+                      : `${osStats.pass.hits}/${osStats.pass.total}`;
+                const conclusion = passConclusionLabel(osStats.pass);
 
                 return (
                   <li
@@ -822,7 +791,7 @@ export function GithubSourceCard({
                           {coverage}
                         </span>{" "}
                         <span className="text-muted-foreground text-xs">
-                          ({basis})
+                          ({PASS_BASIS})
                         </span>
                       </StatusField>
                       <StatusField label="runs">
@@ -865,7 +834,7 @@ export function GithubSourceCard({
 
             <dl className="grid gap-3 sm:grid-cols-3">
               {RUNNER_OSES.map((os) => {
-                const osStats = summary.byOs.find((row) => row.os === os)!;
+                const osStats = osStatsFor(os);
                 return (
                   <StatusField key={os} label={OS_LABELS[os]}>
                     {osStats.clicks === 0 ? (

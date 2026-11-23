@@ -149,10 +149,10 @@ test("a caller can name its own ref and User-Agent", async () => {
   assert.equal(JSON.parse(String(calls[0]!.init.body)).ref, "release");
 });
 
-test("401, 403, 404 and any other status read differently and name the caller", async () => {
+test("401, 403, 404, 429 and any other status read differently and name the caller", async () => {
   const sentences = new Map<number, string>();
 
-  for (const status of [401, 403, 404, 500]) {
+  for (const status of [401, 403, 404, 429, 500]) {
     const { fetcher } = stubFetch(status, {
       message:
         status === 403
@@ -184,10 +184,19 @@ test("401, 403, 404 and any other status read differently and name the caller", 
   assert.match(missing, /browser-check\.yml/);
   assert.match(missing, /cipherlogs\/voni/);
 
+  const rateLimited = sentences.get(429) ?? "";
+  assert.match(rateLimited, /rate-limited/, "a 429 is its own failure mode");
+  assert.match(rateLimited, /429/);
+  assert.doesNotMatch(
+    rateLimited,
+    /needs Actions write access|expired|does not exist/,
+    "a temporary rate limit must not read as a bad credential or a bad workflow",
+  );
+
   const other = sentences.get(500) ?? "";
   assert.match(other, /browser/);
 
-  assert.equal(new Set(sentences.values()).size, 4);
+  assert.equal(new Set(sentences.values()).size, 5);
 });
 
 test("a plain-text refusal reaches the operator, not just the status", async () => {
@@ -234,7 +243,7 @@ test("no returned string ever contains the token", async () => {
         request({ fetcher, readSecret: async () => undefined }),
       );
     },
-    ...[401, 403, 404, 500].map((status) => async () => {
+    ...[401, 403, 404, 429, 500].map((status) => async () => {
       // A body that echoes the credential back must not reach the operator.
       const { fetcher } = stubFetch(status, { message: `token ${TOKEN} nope` });
       return dispatchWorkflow(request({ fetcher, readSecret: async () => TOKEN }));

@@ -15,14 +15,18 @@
 import { and, eq, isNotNull, max } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { affiliateClicks, emailSources } from "@/lib/db/schema";
-import type { ClickProducer, RunnerOs } from "@/lib/email/click-report";
+import {
+  CLICK_PRODUCERS,
+  type ClickProducer,
+  type RunnerOs,
+} from "@/lib/email/click-report";
 
 /** The one producer the ticker schedules today. */
-export const GITHUB_SOURCE_PRODUCER = "github";
+export const GITHUB_SOURCE_PRODUCER: ClickProducer = "github";
 
 /** Everything the ticker needs from `email_sources`, already typed. */
 export type SourceConfig = {
-  producer: string;
+  producer: ClickProducer;
   enabled: boolean;
   intervalSeconds: number;
   windowSeconds: number;
@@ -37,7 +41,7 @@ export type SourceConfig = {
  * that has not been seeded yet looks like.
  */
 export async function readSourceConfig(
-  producer: string = GITHUB_SOURCE_PRODUCER,
+  producer: ClickProducer = GITHUB_SOURCE_PRODUCER,
 ): Promise<SourceConfig | null> {
   const [row] = await db
     .select({
@@ -52,7 +56,14 @@ export async function readSourceConfig(
     .where(eq(emailSources.producer, producer))
     .limit(1);
 
-  return row ?? null;
+  if (!row) return null;
+  // The column is text, not the enum, so a row naming a producer the app does
+  // not schedule is "not scheduled" — null — rather than a string the ticker
+  // would pass around as if it were a known producer.
+  if (!(CLICK_PRODUCERS as readonly string[]).includes(row.producer)) {
+    return null;
+  }
+  return { ...row, producer: row.producer as ClickProducer };
 }
 
 /**
@@ -104,7 +115,7 @@ export type SourceSchedule = {
  * "not configured" instead of pretending a write landed.
  */
 export async function setSourceEnabled(
-  producer: string,
+  producer: ClickProducer,
   enabled: boolean,
 ): Promise<void> {
   const now = new Date();
@@ -120,7 +131,7 @@ export async function setSourceEnabled(
  * window).
  */
 export async function saveSourceSchedule(
-  producer: string,
+  producer: ClickProducer,
   schedule: SourceSchedule,
 ): Promise<void> {
   const now = new Date();
@@ -142,7 +153,7 @@ export async function saveSourceSchedule(
  * so recording it would throttle a retry for a dispatch that never happened.
  */
 export async function recordSourceDispatch(
-  producer: string,
+  producer: ClickProducer,
   at: Date,
 ): Promise<void> {
   await db

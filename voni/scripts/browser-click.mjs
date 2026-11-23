@@ -23,8 +23,8 @@
  *     copy of the utm stamping or the profile table, so the browser path cannot
  *     drift from the Grafana and one-off paths.
  *   - A click that fails saves a screenshot and the pass continues. Only at the
- *     end does the run fail, naming every target that never produced a response
- *     and every click whose report was not stored.
+ *     end does the run fail, naming every target the FINAL pass could not
+ *     complete and every click whose report was not stored.
  *
  * The report secret is read from the environment and only ever placed in a
  * request header. Nothing here prints, logs, or serialises it.
@@ -32,6 +32,7 @@
 
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import { chromium } from "@playwright/test";
 
@@ -44,6 +45,10 @@ import {
   pickBrowserProfile,
   refererForProvider,
 } from "../src/lib/email/user-agents.ts";
+import {
+  INTERVAL_SECONDS,
+  MAX_JOB_SECONDS,
+} from "../src/lib/email/sources.ts";
 
 /** The one intake both producers write through. */
 const REPORT_URL = "https://voni.cc/api/email/clicks/report";
@@ -52,11 +57,13 @@ const REPORT_SECRET_ENV = "EMAIL_CLICK_REPORT_SECRET";
 /** The runner OSes the intake stores; anything else is refused there anyway. */
 const RUNNER_OS_VALUES = ["ubuntu", "windows", "macos"];
 
-/** The schedule domain's floor and ceiling, mirrored so a bad input fails here. */
-const MIN_INTERVAL_SECONDS = 15;
-const MAX_INTERVAL_SECONDS = 3_600;
-/** The segment ceiling the ticker plans with (348 minutes). */
-const MAX_WINDOW_SECONDS = 348 * 60;
+/**
+ * The schedule domain's interval set and job cap, imported rather than copied:
+ * a value the panel offers must be one this script honours, and the segment
+ * ceiling lives in `sources.ts` alone.
+ */
+const MIN_INTERVAL_SECONDS = INTERVAL_SECONDS[0];
+const MAX_INTERVAL_SECONDS = INTERVAL_SECONDS[INTERVAL_SECONDS.length - 1];
 const DEFAULT_INTERVAL_SECONDS = 60;
 const DEFAULT_WINDOW_SECONDS = 12 * 3_600;
 
@@ -152,7 +159,7 @@ function readConfig() {
       readEnv("BROWSER_CHECK_WINDOW"),
       DEFAULT_WINDOW_SECONDS,
       1,
-      MAX_WINDOW_SECONDS,
+      MAX_JOB_SECONDS,
     ),
     // Only ever written into a header by `postReport`. Never logged.
     secret,
@@ -238,7 +245,7 @@ async function postReport(report, secret) {
  * One click: a fresh context, the profile and provider the app would claim,
  * the observed status, URL and duration, and a screenshot when it failed.
  */
-async function clickOnce(browser, target, config) {
+async function clickOnce(browser, target, config, passId) {
   const source = nextEmailProvider();
   const visited = resolveTarget(target, source);
   const profile = pickBrowserProfile();
@@ -304,6 +311,9 @@ async function clickOnce(browser, target, config) {
         browser: profile.browser,
         producer: "github",
         runnerOs: config.os,
+        // The same id for every click of this pass, including a failed one:
+        // coverage is measured over the pass, not over the clicks that worked.
+        passId,
         ranAt,
       },
       config.secret,
@@ -350,8 +360,13 @@ async function main() {
     );
   }
 
-  const misses = new Map();
-  const unreported = new Map();
+  // Each pass measures itself. A later pass recovering a target must not erase
+  // the earlier pass's miss, and the job's verdict is the FINAL pass's: that is
+  // the one the card's `targets x/x` will show.
+  let finalPassMisses = new Map();
+  // Every click whose report never landed, for the whole segment. A report is a
+  // row; a later success does not un-lose one that was not stored.
+  const unreported = [];
   const startedAt = Date.now();
   const deadline = startedAt + config.windowSeconds * 1_000;
   let nextPassAt = startedAt;
@@ -360,28 +375,32 @@ async function main() {
   try {
     while (Date.now() < deadline) {
       passes += 1;
+      const passId = randomUUID();
       const order = shuffled(config.targets);
       const attempted = [];
       const responded = new Set();
+      const passMisses = new Map();
       let reported = 0;
 
       for (const target of order) {
         if (Date.now() >= deadline) break;
         attempted.push(target);
         console.log(`browser-click: pass ${passes} click ${target}`);
-        const result = await clickOnce(browser, target, config);
+        const result = await clickOnce(browser, target, config, passId);
         console.log(`browser-click: pass ${passes} ${describe(result)}`);
         if (result.responded) {
           responded.add(target);
-          misses.delete(target);
         } else {
-          misses.set(target, result.failure ?? "no response");
+          passMisses.set(target, result.failure ?? "no response");
         }
         if (result.posted.ok) {
           reported += 1;
-          unreported.delete(target);
         } else {
-          unreported.set(target, result.posted.detail);
+          unreported.push({
+            target,
+            pass: passes,
+            detail: result.posted.detail,
+          });
         }
       }
 
@@ -398,6 +417,7 @@ async function main() {
           `browser-click: pass ${passes} no response from ${target}`,
         );
       }
+      finalPassMisses = attempted.length > 0 ? passMisses : finalPassMisses;
 
       // Drift correction: the next pass is due `interval` after this one
       // STARTED. A pass that overran starts the next immediately instead of
@@ -416,19 +436,26 @@ async function main() {
   const ranFor = Math.round((Date.now() - startedAt) / 1_000);
   console.log(`browser-click: ${passes} pass(es) in ${ranFor}s`);
 
-  if (unreported.size > 0) {
-    for (const [target, detail] of unreported) {
-      console.error(`browser-click: report not stored for ${target} (${detail})`);
+  if (unreported.length > 0) {
+    for (const { target, pass, detail } of unreported) {
+      console.error(
+        `browser-click: report not stored for ${target} (pass ${pass}: ${detail})`,
+      );
     }
   }
-  if (misses.size > 0) {
-    for (const [target, reason] of misses) {
-      console.error(`browser-click: no response from ${target} (${reason})`);
+  if (finalPassMisses.size > 0) {
+    for (const [target, reason] of finalPassMisses) {
+      console.error(
+        `browser-click: final pass no response from ${target} (${reason})`,
+      );
     }
   }
 
-  if (unreported.size > 0 || misses.size > 0) {
-    const missed = new Set([...misses.keys(), ...unreported.keys()]);
+  if (unreported.length > 0 || finalPassMisses.size > 0) {
+    const missed = new Set([
+      ...finalPassMisses.keys(),
+      ...unreported.map(({ target }) => target),
+    ]);
     console.error(
       `browser-click: ${missed.size} target(s) did not complete: ${[...missed].join(", ")}`,
     );

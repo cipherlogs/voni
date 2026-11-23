@@ -6,11 +6,11 @@ import { fileURLToPath } from "node:url";
 
 import {
   BROWSER_CHECK_INPUTS,
-  BROWSER_CHECK_MAX_WINDOW_SECONDS,
   BROWSER_CHECK_WORKFLOW_FILE,
   dispatchBrowserCheck,
   type BrowserCheckInput,
 } from "../src/lib/github/dispatch";
+import { MAX_JOB_SECONDS } from "../src/lib/email/sources";
 import type { RunnerOs } from "../src/lib/email/click-report";
 
 /**
@@ -105,8 +105,40 @@ test("a segment is comfortably inside GitHub's six-hour ceiling", () => {
   const minutes = Number(match[1]);
   assert.ok(minutes < 360, `timeout ${minutes} must stay under six hours`);
   assert.ok(
-    minutes > BROWSER_CHECK_MAX_WINDOW_SECONDS / 60,
+    minutes > MAX_JOB_SECONDS / 60,
     "the timeout must outlast the longest segment the dispatcher may ask for",
+  );
+
+  // One cap: the workflow's input documents MAX_JOB_SECONDS, not a second one.
+  assert.match(WORKFLOW, /at most 20000/, "the input names the one segment cap");
+  assert.doesNotMatch(WORKFLOW, /20880|348 minutes/, "the old cap is gone");
+});
+
+test("the runner imports the schedule domain's constants instead of copying them", () => {
+  assert.match(
+    RUNNER,
+    /import\s*\{[^}]*INTERVAL_SECONDS[^}]*MAX_JOB_SECONDS[^}]*\}\s*from\s*"\.\.\/src\/lib\/email\/sources\.ts"/,
+    "the runner imports both constants from the domain, through tsx",
+  );
+  assert.match(
+    RUNNER,
+    /const MIN_INTERVAL_SECONDS = INTERVAL_SECONDS\[0\]/,
+    "the interval floor is the domain's first value",
+  );
+  assert.match(
+    RUNNER,
+    /const MAX_INTERVAL_SECONDS = INTERVAL_SECONDS\[INTERVAL_SECONDS\.length - 1\]/,
+    "the interval ceiling is the domain's last value",
+  );
+  assert.doesNotMatch(
+    RUNNER,
+    /348 \* 60|20_880|MAX_WINDOW_SECONDS/,
+    "no second window cap in the runner",
+  );
+  assert.doesNotMatch(
+    RUNNER,
+    /const MAX_INTERVAL_SECONDS = 3_600/,
+    "the ceiling is not re-declared as a literal",
   );
 });
 
@@ -213,6 +245,35 @@ test("the runner launches Chrome once, isolates every click, and names its misse
   );
 });
 
+test("the runner labels every click with its pass and reports the final pass", () => {
+  assert.match(RUNNER, /const passId = randomUUID\(\)/, "one id per pass");
+  assert.match(RUNNER, /randomUUID/, "the id is generated, never reused from input");
+  assert.match(
+    RUNNER,
+    /clickOnce\(browser, target, config, passId\)/,
+    "every click of the pass receives it",
+  );
+  assert.match(RUNNER, /passId,/, "the report carries it, successful or not");
+  assert.match(
+    RUNNER,
+    /status = null;[\s\S]*?producer: "github",[\s\S]*?passId,/,
+    "a failed navigation (status null) is still reported with the pass id",
+  );
+
+  assert.match(
+    RUNNER,
+    /finalPassMisses = attempted\.length > 0 \? passMisses : finalPassMisses/,
+    "each pass's misses are tracked separately and the final pass wins",
+  );
+  assert.doesNotMatch(
+    RUNNER,
+    /misses\.delete\(target\)/,
+    "a later pass recovering a target must not erase the earlier miss",
+  );
+  assert.match(RUNNER, /final pass no response from/, "the verdict names the final pass");
+  assert.match(RUNNER, /report not stored for/, "and every report that never landed");
+});
+
 test("the dispatcher sends those inputs, on main, as strings", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -300,7 +361,7 @@ test("an impossible request is refused before it reaches GitHub", async () => {
   );
   const noTargets = await dispatchBrowserCheck({ ...base, targets: [] }, deps);
   const longWindow = await dispatchBrowserCheck(
-    { ...base, windowSeconds: BROWSER_CHECK_MAX_WINDOW_SECONDS + 1 },
+    { ...base, windowSeconds: MAX_JOB_SECONDS + 1 },
     deps,
   );
 
