@@ -249,6 +249,23 @@ function viewportFor(device) {
   return { width: 1_440, height: 900 };
 }
 
+/**
+ * Everything a context must report besides its User-Agent. A phone with a
+ * desktop DOM (no touch, one device pixel per CSS pixel, a 1440px window) is a
+ * contradiction a client-side filter can read in one line of JavaScript, so the
+ * device class decides all of these together and the UA decides none of them.
+ */
+function contextOptionsFor(profile) {
+  const viewport = viewportFor(profile.device);
+  if (profile.device === "mobile") {
+    return { viewport, isMobile: true, hasTouch: true, deviceScaleFactor: 3 };
+  }
+  if (profile.device === "tablet") {
+    return { viewport, isMobile: true, hasTouch: true, deviceScaleFactor: 2 };
+  }
+  return { viewport, isMobile: false, hasTouch: false, deviceScaleFactor: 1 };
+}
+
 function screenshotName(target) {
   let host = "target";
   try {
@@ -313,7 +330,8 @@ async function clickOnce(browser, target, config, passId) {
   const context = await browser.newContext({
     userAgent: profile.userAgent,
     locale: "en-US",
-    viewport: viewportFor(profile.device),
+    // Touch, DPR and viewport follow the device class, not the UA alone.
+    ...contextOptionsFor(profile),
     // Chromium sends these as part of a top-level navigation; a Chrome UA
     // without them is exactly what a bot filter looks for first.
     extraHTTPHeaders: clientHintsFor(profile),

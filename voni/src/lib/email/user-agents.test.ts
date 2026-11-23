@@ -136,16 +136,42 @@ test("mobile and tablet families send Mobile or iPad; desktop does not", () => {
   }
 });
 
-test("family weights follow the market-share shape", () => {
+test("family weights follow the market-share shape and tilt mobile", () => {
   const weights = Object.fromEntries(
     BROWSER_FAMILIES.map((group) => [group.family, group.weight]),
   ) as Record<ProfileFamily, number>;
   // Approximations, not measurements — see the module header. Families must
-  // still sum to 1 and keep Chromium family traffic in front.
-  assert.ok(Math.abs(weights["chrome-desktop"] - 0.42) < 0.001);
-  assert.ok(Math.abs(weights["safari-ios"] - 0.22) < 0.001);
+  // still sum to 1 and keep Chrome desktop the largest single family.
+  assert.ok(Math.abs(weights["chrome-desktop"] - 0.3) < 0.001);
+  assert.ok(Math.abs(weights["safari-ios"] - 0.26) < 0.001);
   assert.ok(weights["chrome-desktop"] > weights["chrome-android"]);
   assert.ok(weights["chrome-android"] > weights["safari-macos"]);
+  for (const [family, weight] of Object.entries(weights)) {
+    if (family !== "chrome-desktop") {
+      assert.ok(
+        weight < weights["chrome-desktop"],
+        `${family} (${weight}) outweighs Chrome desktop`,
+      );
+    }
+  }
+});
+
+test("phone and tablet are ~60% of clicks, with phone the larger part", () => {
+  const shareOf = (device: "desktop" | "mobile" | "tablet") =>
+    BROWSER_PROFILES.filter((profile) => profile.device === device).reduce(
+      (sum, profile) => sum + profile.weight,
+      0,
+    );
+
+  const mobile = shareOf("mobile");
+  const tablet = shareOf("tablet");
+  const mixed = mobile + tablet;
+
+  assert.ok(Math.abs(mixed - 0.6) < 0.001, `mobile+tablet is ${mixed}`);
+  assert.ok(Math.abs(mobile - 0.58) < 0.001, `phone is ${mobile}`);
+  assert.ok(Math.abs(tablet - 0.02) < 0.001, `tablet is ${tablet}`);
+  assert.ok(mobile > tablet, "phone must be the larger part of mobile traffic");
+  assert.ok(tablet / mixed >= 0.02, "tablet must not be a rounding error");
 });
 
 test("pickBrowserProfile is deterministic at both ends of the range", () => {
@@ -169,7 +195,7 @@ test("pickBrowserProfile is deterministic at both ends of the range", () => {
   assert.equal(pickBrowserProfile(() => Number.NaN), BROWSER_PROFILES[0]);
 });
 
-test("10,000 draws put Chrome desktop first and iOS Safari second", () => {
+test("10,000 draws put Chrome desktop first and Chrome Android second", () => {
   const counts = new Map<ProfileFamily, number>();
   for (let draw = 0; draw < 10_000; draw += 1) {
     const profile = pickBrowserProfile();
@@ -177,13 +203,17 @@ test("10,000 draws put Chrome desktop first and iOS Safari second", () => {
   }
   const ranked = [...counts.entries()].sort((left, right) => right[1] - left[1]);
   assert.equal(ranked[0]?.[0], "chrome-desktop");
-  assert.equal(ranked[1]?.[0], "safari-ios");
+  assert.equal(ranked[1]?.[0], "chrome-android");
 
   // 10% slack on each share, so the assertion tracks the table, not the noise.
   const share = (family: ProfileFamily) => (counts.get(family) ?? 0) / 10_000;
-  assert.ok(share("chrome-desktop") > 0.42 * 0.9, "Chrome desktop share too low");
-  assert.ok(share("safari-ios") > 0.22 * 0.9, "iOS Safari share too low");
-  assert.ok(share("safari-ios") < 0.22 * 1.1, "iOS Safari share too high");
+  assert.ok(share("chrome-desktop") > 0.3 * 0.9, "Chrome desktop share too low");
+  assert.ok(share("chrome-android") > 0.28 * 0.9, "Chrome Android share too low");
+  assert.ok(share("chrome-android") < 0.28 * 1.1, "Chrome Android share too high");
+  const mobileShare = BROWSER_PROFILES.filter(
+    (profile) => profile.device === "mobile",
+  ).reduce((sum, profile) => sum + profile.weight, 0);
+  assert.ok(mobileShare > 0.55, "phone share must dominate the pool");
 });
 
 test("every family can be reached by its own bucket", () => {

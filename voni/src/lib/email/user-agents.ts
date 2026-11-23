@@ -19,10 +19,14 @@
  * Across web traffic, Chrome is roughly 60-65% of all requests (desktop plus
  * Android), Safari mobile roughly 20-25%, Safari desktop roughly 5-7%, Firefox
  * roughly 3-5%, Edge roughly 4-5%, Samsung Internet roughly 2-3%, and iPad
- * roughly 1%. The family weights below approximate that split, then split
- * desktop Chrome between Windows and macOS (Windows dominates) and split mobile
- * Chrome between Pixel and Samsung. They are deliberately rounded, not
- * measured: the point is that a burst of clicks does not arrive as one browser.
+ * roughly 1%. The family weights below keep that shape but deliberately tilt it
+ * mobile: phone plus tablet is ~60% (58% phone, 2% tablet), because the
+ * recipients of this mail open it on a phone, and a segment that arrives as
+ * almost-all desktop is its own tell. Chrome desktop stays the largest single
+ * family. The weights then split desktop Chrome between Windows and macOS
+ * (Windows dominates) and split mobile Chrome between Pixel and Samsung. They
+ * are deliberately rounded, not measured: the point is that a burst of clicks
+ * does not arrive as one browser or one device class.
  *
  * Version assumption, checked 2026-11-17: Chrome/Edge stable majors 148-150,
  * Firefox 150-152, iOS Safari 26.0/26.4. Where a current major was uncertain the
@@ -294,16 +298,20 @@ const FAMILY_MEMBERS: Record<ProfileFamily, ProfileSeed[]> = {
  * Family shares. They must sum to 1; the module throws at load if an edit
  * breaks that, because a pool that quietly adds up to 0.9 silently changes
  * every downstream distribution.
+ *
+ * Phone families total 0.58 and the iPad family 0.02, so ~60% of clicks present
+ * as a phone or tablet. Chrome desktop (0.30) remains the largest single
+ * family, and desktop as a whole keeps 0.40.
  */
 const FAMILY_WEIGHTS: Record<ProfileFamily, number> = {
-  "chrome-desktop": 0.42,
-  "chrome-android": 0.16,
-  "safari-ios": 0.22,
-  "safari-macos": 0.06,
-  "firefox-desktop": 0.05,
-  "edge-desktop": 0.05,
-  "samsung-internet": 0.03,
-  "safari-ipad": 0.01,
+  "chrome-desktop": 0.3,
+  "chrome-android": 0.28,
+  "safari-ios": 0.26,
+  "safari-macos": 0.04,
+  "firefox-desktop": 0.03,
+  "edge-desktop": 0.03,
+  "samsung-internet": 0.04,
+  "safari-ipad": 0.02,
 };
 
 function buildProfiles(): BrowserProfile[] {
