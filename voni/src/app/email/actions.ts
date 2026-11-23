@@ -1085,3 +1085,128 @@ export async function dispatchGithubNow(
     runUrl: result.runUrl,
   };
 }
+
+/**
+ * Pause all: the console's one act that stops every continuous source.
+ *
+ * It is deliberately two writes rather than one transaction: Grafana's check
+ * lives in Grafana and GitHub's state lives in our table, so there is no
+ * transaction that could span them. The honest shape is therefore per-source
+ * outcomes — one failing must not be reported as success, and must not stop the
+ * other write from being attempted, because an operator asking to stop
+ * everything is worse off with one source still clicking.
+ *
+ * What it deliberately does not touch: the target list (a pause is not a
+ * delete), Burst (on demand, nothing to pause), and a GitHub segment that is
+ * already queued or running (GitHub owns that job; this action never asks it to
+ * cancel, so a window in flight finishes its segment).
+ */
+
+/** One source's outcome. `changed` separates "did the write" from "already off". */
+export type PauseOutcome =
+  | { ok: true; changed: boolean }
+  | { ok: false; error: string };
+
+/**
+ * The result the card renders. `grafana`/`github` are present only when the
+ * action actually attempted them: a locked refusal claims no outcome it did
+ * not earn.
+ */
+export type PauseAllState = {
+  ok: boolean;
+  message?: string;
+  error?: string;
+  grafana?: PauseOutcome;
+  github?: PauseOutcome;
+};
+
+/** Fixed sentences for the two ways a helper can throw instead of answering. */
+const GRAFANA_UNREACHABLE =
+  "Grafana's check could not be reached, so it was not paused.";
+const GITHUB_UNWRITTEN =
+  "The GitHub source state could not be saved, so it was not paused.";
+
+/** Pause Grafana's check, reading it first so an already-paused check is not a write. */
+async function pauseGrafanaSource(): Promise<PauseOutcome> {
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+  const current = await getCheck(id);
+  if (!current.ok) return { ok: false, error: describeSyntheticFailure(current) };
+  if (!current.data.enabled) return { ok: true, changed: false };
+
+  const updated = await updateCheck(id, { enabled: false });
+  if (!updated.ok) return { ok: false, error: describeSyntheticFailure(updated) };
+  return { ok: true, changed: true };
+}
+
+/** Disable the GitHub source; a missing row is "not configured", not a silent write. */
+async function disableGithubSource(): Promise<PauseOutcome> {
+  const config = await readSourceConfig();
+  if (!config) {
+    return {
+      ok: false,
+      error:
+        "The GitHub source has no configuration row yet, so it was not paused.",
+    };
+  }
+  if (!config.enabled) return { ok: true, changed: false };
+
+  await setSourceEnabled(GITHUB_SOURCE_PRODUCER, false);
+  return { ok: true, changed: true };
+}
+
+export async function pauseAllSources(
+  _previous: PauseAllState,
+  _formData: FormData,
+): Promise<PauseAllState> {
+  // `useActionState` supplies both; this act reads neither the prior state nor
+  // the body, and taking no fields means a hand-built form cannot widen it.
+  void _previous;
+  void _formData;
+  if (!(await requireControl())) return { ok: false, error: LOCKED.error };
+
+  // Both helpers start together and each settles into its own outcome. A
+  // Grafana outage therefore cannot stop the GitHub disable, and neither throw
+  // can reject the whole action.
+  const [grafana, github] = await Promise.all([
+    pauseGrafanaSource().catch(
+      (): PauseOutcome => ({ ok: false, error: GRAFANA_UNREACHABLE }),
+    ),
+    disableGithubSource().catch(
+      (): PauseOutcome => ({ ok: false, error: GITHUB_UNWRITTEN }),
+    ),
+  ]);
+
+  const changed =
+    (grafana.ok && grafana.changed) || (github.ok && github.changed);
+  // A failed write revalidated nothing, so the page keeps showing the source
+  // that is still running rather than a stale "paused" it did not achieve.
+  if (changed) revalidatePath("/email");
+
+  if (!grafana.ok || !github.ok) {
+    const failures: string[] = [];
+    if (!grafana.ok) {
+      failures.push(`Grafana's check was not paused: ${grafana.error}`);
+    }
+    if (!github.ok) {
+      failures.push(`The GitHub source was not disabled: ${github.error}`);
+    }
+    return {
+      ok: false,
+      error:
+        failures.join(" ") +
+        " Nothing else moved: no target was changed and no queued GitHub segment was cancelled.",
+      grafana,
+      github,
+    };
+  }
+
+  return {
+    ok: true,
+    message:
+      "Paused every continuous source: Grafana's check is paused and the GitHub " +
+      "source is disabled. The target list is unchanged, and a GitHub segment " +
+      "already queued keeps running to the end of its window.",
+    grafana,
+    github,
+  };
+}

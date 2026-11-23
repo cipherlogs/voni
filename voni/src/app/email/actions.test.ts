@@ -62,6 +62,14 @@ function fnBody(name: string): string {
   return next < 0 ? source.slice(start) : source.slice(start, next);
 }
 
+/** The body of an internal helper, which is not exported from a server module. */
+function anyBody(name: string): string {
+  const start = source.indexOf(`async function ${name}(`);
+  assert.ok(start >= 0, `${name} exists`);
+  const next = source.indexOf("\nasync function ", start + 1);
+  return next < 0 ? source.slice(start) : source.slice(start, next);
+}
+
 test("every mutating action calls requireControl() itself", () => {
   for (const name of ["saveVolume", "toggleCheck", "runOneOffClick"]) {
     const body = fnBody(name);
@@ -1386,4 +1394,103 @@ test("the dispatch never echoes the control or dispatch token", () => {
   assert.doesNotMatch(body, /GITHUB_BURST_TOKEN|secret\("GITHUB/);
   assert.doesNotMatch(body, /\$\{formData/);
   assert.doesNotMatch(body, /console\.(log|error)/);
+});
+
+/**
+ * Ticket 09: Pause all. The action is one form with two independent writes, so
+ * the tests pin the properties that make partial failure honest: it authorises
+ * inside its own body, it attempts both writes, each source's outcome is its
+ * own, a failure is never reported as success, nothing is cancelled, and the
+ * page is only revalidated when something actually moved.
+ */
+test("pauseAllSources authorises inside its body, before either write", () => {
+  const body = fnBody("pauseAllSources");
+  assert.match(body, /if \(!\(await requireControl\(\)\)\)/);
+  assert.ok(
+    body.indexOf("requireControl()") < body.indexOf("pauseGrafanaSource("),
+    "the gate comes before the Grafana write",
+  );
+  assert.ok(
+    body.indexOf("requireControl()") < body.indexOf("disableGithubSource("),
+    "the gate comes before the GitHub write",
+  );
+  assert.match(
+    body,
+    /if \(!\(await requireControl\(\)\)\) return \{ ok: false, error: LOCKED\.error \};/,
+    "a locked request claims no source outcome it did not attempt",
+  );
+});
+
+test("pauseAllSources attempts both writes, independently", () => {
+  const body = fnBody("pauseAllSources");
+  assert.match(
+    body,
+    /Promise\.all\(\[\s*pauseGrafanaSource\(\)[\s\S]*?disableGithubSource\(\)/,
+    "both helpers start together, so a slow or failing Grafana cannot skip GitHub",
+  );
+  assert.doesNotMatch(
+    body,
+    /if \(!grafana\.ok\) return|if \(grafana\.ok\)/,
+    "neither outcome short-circuits the other write",
+  );
+
+  const grafana = anyBody("pauseGrafanaSource");
+  assert.match(grafana, /getCheck\(/);
+  assert.match(grafana, /updateCheck\(id, \{ enabled: false \}\)/);
+
+  const github = anyBody("disableGithubSource");
+  assert.match(github, /readSourceConfig\(\)/);
+  assert.match(github, /setSourceEnabled\(GITHUB_SOURCE_PRODUCER, false\)/);
+});
+
+test("a partial failure is a refusal in words, never a silent success", () => {
+  const body = fnBody("pauseAllSources");
+  assert.match(body, /if \(!grafana\.ok\)/);
+  assert.match(body, /if \(!github\.ok\)/);
+  assert.match(body, /Grafana's check was not paused:/);
+  assert.match(body, /The GitHub source was not disabled:/);
+  assert.match(
+    body,
+    /ok: false,/,
+    "at least one failed source means the whole action is not ok",
+  );
+  assert.match(
+    body,
+    /no target was changed and no queued GitHub segment was cancelled/,
+    "the failure sentence states the two things Pause all does not do",
+  );
+  assert.doesNotMatch(
+    body,
+    /\$\{result\.error\}|\$\{formData|console\.(log|error)/,
+    "no upstream body, form value or log line rides in the result",
+  );
+});
+
+test("Pause all never cancels a queued or running GitHub segment", () => {
+  const body = fnBody("pauseAllSources");
+  assert.doesNotMatch(body, /\bcancel[A-Za-z]*\(/);
+  assert.doesNotMatch(source, /cancelWorkflowRun|actions\/runs\//);
+});
+
+test("the page is revalidated only when a source actually changed", () => {
+  const body = fnBody("pauseAllSources");
+  const calls = body.split('revalidatePath("/email")').length - 1;
+  assert.equal(calls, 1, "one revalidation site");
+  assert.match(
+    body,
+    /const changed =[\s\S]*?grafana\.changed[\s\S]*?github\.changed[\s\S]*?if \(changed\) revalidatePath\("\/email"\);/,
+    "the revalidation is guarded by the per-source changed flags",
+  );
+});
+
+test("the Pause all result carries a per-source outcome", () => {
+  assert.match(
+    source,
+    /export type PauseOutcome =[\s\S]*?ok: true; changed: boolean[\s\S]*?ok: false; error: string/,
+    "each source reports changed/unchanged separately from failure",
+  );
+  assert.match(
+    source,
+    /export type PauseAllState = \{[\s\S]*?grafana\?: PauseOutcome;[\s\S]*?github\?: PauseOutcome;/,
+  );
 });

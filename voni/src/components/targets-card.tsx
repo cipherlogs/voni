@@ -47,9 +47,43 @@ import { targetHost } from "@/lib/email/target-url";
  * its own body, so a request that skips this card is still refused.
  */
 
+/**
+ * What each continuous source commands per day, as the page read it.
+ *
+ * `clicksPerDay: null` means the source could not be read (Grafana is down or
+ * not configured) — a fact, not a zero. `enabled: false` means the source is
+ * paused and contributes nothing, which is a zero the page is entitled to add.
+ */
+export type SourceVolumeView = {
+  label: string;
+  enabled: boolean;
+  clicksPerDay: number | null;
+};
+
+export type TargetsVolumeView = {
+  /** Sum over enabled sources; `null` when any enabled read failed. */
+  totalClicksPerDay: number | null;
+  sources: SourceVolumeView[];
+};
+
+/** One source's outcome from Pause all; the shape the action returns. */
+export type PauseOutcomeView =
+  | { ok: true; changed: boolean }
+  | { ok: false; error: string };
+
+/** Pause all's result, kept local to the card like the other card states. */
+export type PauseAllState = {
+  ok: boolean;
+  message?: string;
+  error?: string;
+  grafana?: PauseOutcomeView;
+  github?: PauseOutcomeView;
+};
+
 export type TargetsCardProps = {
   locked: boolean;
   targets: TargetView[];
+  volume: TargetsVolumeView;
   addTarget: (previous: TargetState, formData: FormData) => Promise<TargetState>;
   toggleTarget: (
     previous: TargetState,
@@ -59,28 +93,71 @@ export type TargetsCardProps = {
     previous: TargetState,
     formData: FormData,
   ) => Promise<TargetState>;
+  pauseAll: (
+    previous: PauseAllState,
+    formData: FormData,
+  ) => Promise<PauseAllState>;
 };
 
 const INITIAL: TargetState = { ok: false };
+const INITIAL_PAUSE: PauseAllState = { ok: false };
 
-function FeedbackAlert({ state }: { state: TargetState }) {
+/** Deterministic grouping, so the server and client render the same digits. */
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
+function formatCount(value: number): string {
+  return COUNT_FORMAT.format(value);
+}
+
+/** One clause of the breakdown: unavailable, paused, or a number. */
+function describeSource(source: SourceVolumeView): string {
+  if (source.clicksPerDay === null) return `${source.label} unavailable`;
+  if (!source.enabled) return `${source.label} paused`;
+  return `${source.label} ${formatCount(source.clicksPerDay)}`;
+}
+
+/** Pause all's per-source sentences, so a failure is words, not a spinner. */
+function grafanaLine(outcome: PauseOutcomeView): string {
+  if (!outcome.ok) return `Grafana: could not be paused. ${outcome.error}`;
+  return outcome.changed
+    ? "Grafana: check paused."
+    : "Grafana: check was already paused.";
+}
+
+function githubLine(outcome: PauseOutcomeView): string {
+  if (!outcome.ok) return `GitHub: could not be disabled. ${outcome.error}`;
+  return outcome.changed
+    ? "GitHub: source disabled."
+    : "GitHub: source was already disabled.";
+}
+
+function FeedbackAlert({
+  state,
+  title = "Could not update targets",
+}: {
+  state: { error?: string | null; message?: string | null };
+  title?: string;
+}) {
   if (!state.error && !state.message) return null;
 
   return (
     <Alert variant={state.error ? "destructive" : "default"} className="status-enter">
       {state.error ? <AlertCircle /> : <CheckCircle2 />}
-      <AlertTitle>{state.error ? "Could not update targets" : "Done"}</AlertTitle>
+      <AlertTitle>{state.error ? title : "Done"}</AlertTitle>
       <AlertDescription>{state.error ?? state.message}</AlertDescription>
     </Alert>
   );
 }
 
 /** Inline Alert is the required surface; a toast rides along as a convenience. */
-function useActionToast(state: TargetState) {
+function useActionToast(
+  state: { error?: string | null; message?: string | null },
+  title = "Could not update targets",
+) {
   useEffect(() => {
     if (state.error) {
       toast.add({
-        title: "Could not update targets",
+        title,
         description: state.error,
         type: "error",
       });
@@ -89,7 +166,7 @@ function useActionToast(state: TargetState) {
     if (state.message) {
       toast.add({ title: "Done", description: state.message, type: "success" });
     }
-  }, [state]);
+  }, [state, title]);
 }
 
 function AddTargetForm({
@@ -240,12 +317,120 @@ function TargetRow({
   );
 }
 
+/**
+ * The aggregate line and Pause all: the header fact the console exists to show,
+ * and the one act that stops every continuous source.
+ *
+ * Pending state is per source by copy, not by number: one request still names
+ * both sources it is acting on ("Pausing Grafana…", "Disabling GitHub…"), so a
+ * slow Grafana never looks like a button that did nothing.
+ */
+function PauseAllControl({
+  locked,
+  volume,
+  pauseAll,
+}: {
+  locked: boolean;
+  volume: TargetsVolumeView;
+  pauseAll: TargetsCardProps["pauseAll"];
+}) {
+  const [state, pauseAction, pausingAll] = useActionState(
+    pauseAll,
+    INITIAL_PAUSE,
+  );
+  useActionToast(state, "Could not pause every source");
+
+  const enabledCount = volume.sources.filter((source) => source.enabled).length;
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <p className="text-sm" data-testid="email-targets-volume">
+          {volume.totalClicksPerDay === null ? (
+            <>
+              Total <span className="font-medium">Unavailable</span> —
+              Grafana&apos;s check could not be read, so the total is unknown
+              rather than zero.
+            </>
+          ) : (
+            <>
+              Total{" "}
+              <span className="font-medium">
+                {formatCount(volume.totalClicksPerDay)} clicks/day
+              </span>{" "}
+              across {enabledCount} enabled source
+              {enabledCount === 1 ? "" : "s"}.
+            </>
+          )}
+          <span className="text-muted-foreground mt-1 block font-mono text-xs">
+            {volume.sources.map(describeSource).join(" · ")}
+          </span>
+        </p>
+
+        <div className="grid justify-items-end gap-1">
+          <form action={pauseAction}>
+            <LoadingButton
+              type="submit"
+              size="sm"
+              variant="outline"
+              pending={pausingAll}
+              pendingText="Pausing all…"
+              icon={<Pause />}
+              disabled={locked}
+              data-testid="email-targets-pause-all"
+            >
+              Pause all
+            </LoadingButton>
+          </form>
+          {locked ? (
+            <span className="text-muted-foreground text-xs">
+              Unlock the controls to pause every source.
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      <p className="text-muted-foreground text-xs">
+        Pause all stops every continuous source in one act. It leaves the target
+        list alone, and a queued GitHub segment keeps running to the end of its
+        window.
+      </p>
+
+      {pausingAll ? (
+        <ul
+          className="text-muted-foreground grid gap-1 text-sm"
+          aria-live="polite"
+          data-testid="email-targets-pause-pending"
+        >
+          <li>Pausing Grafana…</li>
+          <li>Disabling GitHub…</li>
+        </ul>
+      ) : null}
+
+      {state.grafana ? (
+        <p className="text-sm" data-testid="email-targets-pause-grafana">
+          {grafanaLine(state.grafana)}
+        </p>
+      ) : null}
+      {state.github ? (
+        <p className="text-sm" data-testid="email-targets-pause-github">
+          {githubLine(state.github)}
+        </p>
+      ) : null}
+
+      <FeedbackAlert state={state} title="Could not pause every source" />
+    </div>
+  );
+}
+
 export function TargetsCard({
   locked,
   targets,
+  volume,
   addTarget,
   toggleTarget,
   removeTarget,
+  pauseAll,
 }: TargetsCardProps) {
   const active = targets.filter((target) => target.enabled).length;
 
@@ -265,6 +450,11 @@ export function TargetsCard({
             {active} of {targets.length} active
           </Badge>
         </CardAction>
+        {/* The aggregate sits in the header, not the body: a source's number
+            and the sum are the two facts a collapsed card may never hide. */}
+        <div className="col-span-full w-full">
+          <PauseAllControl locked={locked} volume={volume} pauseAll={pauseAll} />
+        </div>
       </CardHeader>
 
       <CardContent className="grid gap-5">
