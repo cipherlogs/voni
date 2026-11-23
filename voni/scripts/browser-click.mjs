@@ -49,6 +49,7 @@ import {
   INTERVAL_SECONDS,
   MAX_JOB_SECONDS,
 } from "../src/lib/email/sources.ts";
+import { redactProxyText } from "./browser-proxy-redaction.mjs";
 
 /** The one intake both producers write through. */
 const REPORT_URL = "https://voni.cc/api/email/clicks/report";
@@ -418,8 +419,10 @@ async function main() {
     browser = await chromium.launch(launchOptions);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // The launch options hold the proxy, and Playwright may quote them. A
+    // failure is still a failure (exit 2 below), but never a credential leak.
     stop(
-      `could not launch real Chrome (${message}); ` +
+      `could not launch real Chrome (${redactProxyText(message, config.proxy)}); ` +
         "the runner installs it with `npx playwright install --with-deps chrome`",
     );
   }

@@ -42,10 +42,11 @@ the flows that already follow it.
   `src/components/ui/toast.tsx`) for a fire-and-forget
   confirmation — see `edit-agent.tsx` and `agents/new/page.tsx` for the house
   pattern of using both together. On `/email`, the floating toast is the only
-  action-result surface — success and failure alike — and its viewport is
-  centred at the bottom of the screen on every breakpoint; inline Alerts remain
-  only for the page gate and form-level validation. Never let a failed action
-  just silently reset a pending flag with nothing shown (see the `catch` in
+  action-result surface — success and failure alike; inline Alerts remain only
+  for the page gate and form-level validation. The one global `<Toaster>` uses
+  a single bottom-centre viewport on every route and every breakpoint (not just
+  `/email`), and an error toast stays until it is dismissed. Never let a failed
+  action just silently reset a pending flag with nothing shown (see the `catch` in
   `agent-config-form.tsx`'s save handler for the shape to copy).
 - **Track pending state per-item, not with one shared boolean**, whenever a
   list can have more than one row acted on independently (see `phone-numbers.tsx`'s

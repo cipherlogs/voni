@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useMemo, useState } from "react";
 import { AlertCircle, ExternalLink, GitBranch } from "lucide-react";
 import type {
   ControlState,
@@ -178,30 +178,49 @@ const INITIAL_DISPATCH: GithubDispatchState = { ok: false };
 function useDispatchToast(state: GithubDispatchState) {
   // The manual command is this card's artifact: it names the token the line
   // needs, and the toast carries the exact line, not a summary of it.
-  const command =
-    state.mode === "manual" ? state.fallback?.command : undefined;
+  const manual = state.mode === "manual";
+  const command = manual ? state.fallback?.command : undefined;
 
-  useActionToast(state, "Could not dispatch", {
-    successTitle: command ? "Run it yourself" : "Dispatched",
-    timeout: command ? 12_000 : undefined,
-    description: command ? (
-      <>
-        {state.message}{" "}
-        <code className="mt-1 block font-mono text-xs break-all whitespace-pre-wrap">
-          {command}
-        </code>{" "}
-        <span>
-          It needs <code className="font-mono">GITHUB_BURST_TOKEN</code> with
-          Actions write access on the repository; this line never carries it.
-        </span>
-      </>
-    ) : state.message,
-    action: command
-      ? { label: "Copy", onClick: () => copyCommand(command) }
-      : state.runUrl
-        ? { label: "View run", href: state.runUrl }
-        : undefined,
-  });
+  // A manual result with no command is not a dispatch that happened: it is a
+  // failure, and it is worded as one so no receipt claims a run that does not
+  // exist. Memoised because the hook fires on the state object's identity.
+  const feedback = useMemo<GithubDispatchState>(
+    () =>
+      manual && !command
+        ? {
+            ok: false,
+            error:
+              "No dispatch token is configured, and no command was returned.",
+          }
+        : state,
+    [manual, command, state],
+  );
+
+  useActionToast(
+    feedback,
+    manual ? "Could not run the check" : "Could not dispatch",
+    {
+      successTitle: manual ? "Run it yourself" : "Dispatched",
+      timeout: command ? 12_000 : undefined,
+      description: command ? (
+        <>
+          {state.message}{" "}
+          <code className="mt-1 block font-mono text-xs break-all whitespace-pre-wrap">
+            {command}
+          </code>{" "}
+          <span>
+            It needs <code className="font-mono">GITHUB_BURST_TOKEN</code> with
+            Actions write access on the repository; this line never carries it.
+          </span>
+        </>
+      ) : state.message,
+      action: command
+        ? { label: "Copy", onClick: () => copyCommand(command) }
+        : state.runUrl
+          ? { label: "View run", href: state.runUrl }
+          : undefined,
+    },
+  );
 }
 
 /**

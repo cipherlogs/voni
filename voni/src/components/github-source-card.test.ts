@@ -495,7 +495,12 @@ test("a dispatched run is a toast action that opens the workflow", () => {
   const toast = functionBody(card, "useDispatchToast");
   assert.match(
     toast,
-    /useActionToast\(state, "Could not dispatch"/,
+    /useActionToast\(\s*feedback,/,
+    "the toast reads the derived result, not the raw dispatch state",
+  );
+  assert.match(
+    toast,
+    /manual \? "Could not run the check" : "Could not dispatch"/,
     "the error title is the card's own",
   );
   assert.match(
@@ -503,7 +508,11 @@ test("a dispatched run is a toast action that opens the workflow", () => {
     /\{ label: "View run", href: state\.runUrl \}/,
     "the run link is the toast action, not inline text",
   );
-  assert.match(toast, /successTitle: command \? "Run it yourself" : "Dispatched"/);
+  assert.match(
+    toast,
+    /successTitle: manual \? "Run it yourself" : "Dispatched"/,
+    "the title follows the mode, so a manual result never claims a dispatch",
+  );
   const control = functionBody(card, "DispatchControl");
   assert.doesNotMatch(control, /<Alert/, "no inline result Alert in the row");
   assert.doesNotMatch(card, /View the run on GitHub/);
@@ -513,8 +522,12 @@ test("a dispatched run is a toast action that opens the workflow", () => {
 test("a manual dispatch puts the exact command in the toast with a copy action", () => {
   assert.match(
     card,
-    /state\.mode === "manual" \? state\.fallback\?\.command : undefined/,
+    /const manual = state\.mode === "manual";/,
     "manual is a normal outcome, not an error",
+  );
+  assert.match(
+    card,
+    /const command = manual \? state\.fallback\?\.command : undefined;/,
   );
   assert.match(card, /import \{[^}]*copyCommand[^}]*\} from "@\/components\/action-feedback"/);
 

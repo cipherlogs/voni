@@ -86,11 +86,6 @@ test("a command toast keeps the long timeout and the copy action", () => {
   ] as const) {
     assert.match(
       card,
-      /successTitle: command \? "Run it yourself"/,
-      `${name}: a manual run is its own title`,
-    );
-    assert.match(
-      card,
       /\{ label: "Copy", onClick: \(\) => copyCommand\(command\) \}/,
       `${name}: the toast action copies the command`,
     );
@@ -105,6 +100,12 @@ test("a command toast keeps the long timeout and the copy action", () => {
       `${name}: the token is never echoed`,
     );
   }
+  assert.match(burstCard, /successTitle: command \? "Run it yourself"/);
+  assert.match(
+    githubCard,
+    /successTitle: manual \? "Run it yourself" : "Dispatched"/,
+    "the title follows the mode, not whether a command came back",
+  );
   // The credential the manual line expects is named, never its value.
   assert.match(burstCard, /It needs <code className="font-mono">K6_CLOUD_TOKEN<\/code>/);
   assert.match(
@@ -112,6 +113,29 @@ test("a command toast keeps the long timeout and the copy action", () => {
     /It needs <code className="font-mono">GITHUB_BURST_TOKEN<\/code> with\s*Actions write access/,
   );
 });
+
+test("a manual dispatch with no command is an error, never a dispatch", () => {
+  assert.match(
+    githubCard,
+    /manual && !command[\s\S]*?error:\s*"No dispatch token is configured, and no command was returned\."/,
+    "a missing command is worded as a failure",
+  );
+  assert.doesNotMatch(
+    githubCard,
+    /successTitle: command \?/,
+    "a manual result never falls back to the dispatched title",
+  );
+});
+
+test("an error toast is persistent, so the only copy of it cannot vanish", () => {
+  for (const block of [
+    /if \(state\.error\) \{[\s\S]*?type: "error",[\s\S]*?priority: "high",[\s\S]*?timeout: 0,/,
+    /title: "Could not copy",[\s\S]*?type: "error",[\s\S]*?priority: "high",[\s\S]*?timeout: 0,/,
+  ]) {
+    assert.match(feedback, block, "every error toast sets timeout 0");
+  }
+});
+
 
 test("a refused clipboard is a toast too, not an unhandled rejection", () => {
   assert.match(feedback, /try \{[\s\S]*?navigator\.clipboard;[\s\S]*?\} catch \{/);

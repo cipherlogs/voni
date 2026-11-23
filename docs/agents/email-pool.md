@@ -419,10 +419,13 @@ The supported fix is a proxy. `voni/scripts/browser-click.mjs` reads:
 
 The workflow maps all three from repository Actions secrets of the same names.
 An empty secret becomes an empty variable and means "no proxy", which is the
-pre-proxy behaviour. A malformed server, or half a credential pair, fails the
-run before Chrome starts, and no refusal or log line ever prints the value — a
-proxy URL may carry `user:pass@`. The values go to Playwright's one
-`chromium.launch` call and nowhere else.
+pre-proxy behaviour. Three refusals fail the run before Chrome starts — a
+malformed server, half a credential pair, and credentials without a server URL
+(a username or password set while `BROWSER_PROXY_SERVER` is unset). None of
+them prints the value, and neither does any other line: a proxy URL may carry
+`user:pass@`, so a launch failure is passed through `redactProxyText` before it
+is printed, and proxy credentials are never printed anywhere. The values go to
+Playwright's one `chromium.launch` call and nowhere else.
 
 Runner-region spread is an org/plan setting rather than a panel control: GitHub
 larger runners can be configured in more regions than the default hosted pool,
