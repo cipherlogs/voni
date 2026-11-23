@@ -794,6 +794,22 @@ export function GithubSourceCard({
                           ({PASS_BASIS})
                         </span>
                       </StatusField>
+                      {/* Failed clicks stay visible in words: a hit is any
+                          response, so a pass full of 500s would otherwise read
+                          as a clean sweep. This count is the OS's whole window,
+                          from the same summary fold the header uses. */}
+                      <StatusField label="failures">
+                        <span data-testid={`email-github-os-${os}-failures`}>
+                          {osStats.clicks === 0
+                            ? "No clicks yet"
+                            : osStats.failed === 0
+                              ? `${formatCount(osStats.clicks)} clicks, none failed`
+                              : `${formatCount(osStats.failed)} of ${formatCount(osStats.clicks)} clicks failed`}
+                        </span>{" "}
+                        <span className="text-muted-foreground text-xs">
+                          ({basis})
+                        </span>
+                      </StatusField>
                       <StatusField label="runs">
                         <a
                           href={workflowUrl}

@@ -150,6 +150,21 @@ test("no picker is rendered when every target is paused", () => {
   assert.match(panel, /const hasOneOffTargets = oneOffTargets\.length > 0;/);
 });
 
+test("the Grafana interval Select shows its label closed, never the raw minutes", () => {
+  assert.match(panel, /items=\{FREQUENCY_ITEMS\}/);
+  assert.match(
+    panel,
+    /const FREQUENCY_ITEMS: Record<string, string> = Object\.fromEntries/,
+    "one map for the closed trigger",
+  );
+  assert.match(panel, /Every \$\{minutes\} min/);
+  assert.match(
+    panel,
+    /\{FREQUENCY_ITEMS\[String\(minutes\)\]\}/,
+    "the open options render the same map the trigger reads",
+  );
+});
+
 test("the shared click table filters by link chips, not client state", () => {
   // The chosen surface for the source filter is links carrying the value in the
   // URL: no Tabs primitive, no client state to lose on reload, and the value is

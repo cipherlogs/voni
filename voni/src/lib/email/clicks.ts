@@ -375,7 +375,9 @@ export type GithubPassConclusion = "complete" | "partial" | "failed";
  * because a target clicked twenty minutes ago and one clicked seconds ago look
  * the same. Only a row with a status counts as a hit; a report with `status:
  * null` is a click that got no response, which is exactly the miss the number
- * is there to show.
+ * is there to show. The conclusion is stricter than the number: it is complete
+ * only when every shared target got a 2xx/3xx, so a sweep that answered 500 on
+ * every target still reads `hits = total` but concludes failed.
  */
 export type GithubPassCoverage = {
   id: string;
@@ -451,7 +453,7 @@ export function summariseRunnerClicks(
   // recovered a target cannot rewrite the earlier pass's coverage.
   const passesByOs = new Map<
     RunnerOs,
-    Map<string, { newestAt: number; hits: Set<string> }>
+    Map<string, { newestAt: number; hits: Set<string>; succeeded: Set<string> }>
   >();
   for (const os of RUNNER_OSES) passesByOs.set(os, new Map());
 
@@ -477,11 +479,18 @@ export function summariseRunnerClicks(
       if (passes && pass) {
         pass.newestAt = Math.max(pass.newestAt, row.ranAt.getTime());
         if (row.status !== null && shared.has(target)) pass.hits.add(target);
+        if (row.status !== null && row.status < 400 && shared.has(target)) {
+          pass.succeeded.add(target);
+        }
       } else if (passes) {
         passes.set(row.passId, {
           newestAt: row.ranAt.getTime(),
           hits:
             row.status !== null && shared.has(target)
+              ? new Set([target])
+              : new Set<string>(),
+          succeeded:
+            row.status !== null && row.status < 400 && shared.has(target)
               ? new Set([target])
               : new Set<string>(),
         });
@@ -500,23 +509,39 @@ export function summariseRunnerClicks(
 
   /** The newest pass for one OS, with its hits measured against today's list. */
   function newestPass(os: RunnerOs): GithubPassCoverage | null {
-    let newest: { id: string; newestAt: number; hits: Set<string> } | null = null;
+    let newest: {
+      id: string;
+      newestAt: number;
+      hits: Set<string>;
+      succeeded: Set<string>;
+    } | null = null;
     for (const [id, pass] of passesByOs.get(os) ?? []) {
       if (
         newest === null ||
         pass.newestAt > newest.newestAt ||
         (pass.newestAt === newest.newestAt && id > newest.id)
       ) {
-        newest = { id, newestAt: pass.newestAt, hits: pass.hits };
+        newest = {
+          id,
+          newestAt: pass.newestAt,
+          hits: pass.hits,
+          succeeded: pass.succeeded,
+        };
       }
     }
     if (newest === null) return null;
 
     const hits = newest.hits.size;
+    // A hit is any response, including a 500; a pass is only complete when
+    // every shared target got a status the runner could treat as delivered
+    // (2xx/3xx — the runner follows redirects). Otherwise it is partial when
+    // something succeeded and failed when nothing did, so a pass full of 500s
+    // cannot read as an unqualified Complete.
+    const succeeded = newest.succeeded.size;
     const conclusion: GithubPassConclusion =
-      shared.size > 0 && hits === shared.size
+      shared.size > 0 && succeeded === shared.size
         ? "complete"
-        : hits > 0
+        : succeeded > 0
           ? "partial"
           : "failed";
     return {
