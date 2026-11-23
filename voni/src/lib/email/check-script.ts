@@ -34,7 +34,8 @@ import {
   type TargetSelection,
 } from "./target-selection";
 import {
-  EMAIL_CAMPAIGN,
+  EMAIL_CAMPAIGNS,
+  EMAIL_CAMPAIGN_FALLBACK,
   EMAIL_MEDIUM,
   EMAIL_PROVIDERS,
   EMAIL_SOURCE_PARAM,
@@ -224,6 +225,32 @@ function targetDoc(selection: TargetSelection): string {
 
 function renderProviders(): string {
   return EMAIL_PROVIDERS.map((provider) => `  ${quote(provider)},`).join("\n");
+}
+
+/**
+ * The provider→campaign map and the lookup that reads it, as source. Entries
+ * follow `EMAIL_PROVIDERS` order and come from `EMAIL_CAMPAIGNS` itself, so the
+ * emitted text is deterministic and cannot disagree with the app's stamping.
+ * The fallback is the same constant `resolveTarget` uses for an unknown source.
+ */
+function renderCampaigns(): string {
+  const entries = EMAIL_PROVIDERS.map(
+    (provider) =>
+      `  ${quote(provider)}: ${quote(EMAIL_CAMPAIGNS[provider] ?? EMAIL_CAMPAIGN_FALLBACK)},`,
+  );
+  return `/**
+ * src/lib/email/pool.ts EMAIL_CAMPAIGNS: the campaign each claimed source
+ * carries, one per provider. An unknown source claims the fixed fallback.
+ */
+const CAMPAIGNS = {
+${entries.join("\n")}
+};
+const CAMPAIGN_FALLBACK = ${quote(EMAIL_CAMPAIGN_FALLBACK)};
+
+function campaignFor(source) {
+  const campaign = CAMPAIGNS[source];
+  return campaign === undefined ? CAMPAIGN_FALLBACK : campaign;
+}`;
 }
 
 function renderReferers(): string {
@@ -430,7 +457,8 @@ const CLICKS_PER_RUN = ${clicksPerRun};
  * What it does: each iteration draws a browser profile from a weighted matrix
  * (family by weight, member uniformly), draws a target
  * ${targetDoc(selection)}, stamps the three utm params on the target
- * (keeping its own query params), and fetches it with a browser-shaped header
+ * (the campaign named by that source, keeping the target's own query params),
+ * and fetches it with a browser-shaped header
  * set — including the client hints a Chromium-family profile sends — following
  * up to ten redirects. Each click logs one JSON line, then reports it back to
  * voni.
@@ -499,7 +527,6 @@ const ACCEPT_LANGUAGE = "en-US,en;q=0.9";
 
 const EMAIL_SOURCE_PARAM = ${quote(EMAIL_SOURCE_PARAM)};
 const EMAIL_MEDIUM = ${quote(EMAIL_MEDIUM)};
-const EMAIL_CAMPAIGN = ${quote(EMAIL_CAMPAIGN)};
 ${clicksConstant}
 /** The target list embedded at build/upload time — production URLs. */
 const TARGETS = [
@@ -526,6 +553,8 @@ ${renderProviders()}
 const REFERERS = {
 ${renderReferers()}
 };
+
+${renderCampaigns()}
 
 /**
  * The weighted profile matrix from src/lib/email/user-agents.ts. Weights are
@@ -649,7 +678,9 @@ function withUtm(target, source) {
   let query = queryIndex === -1 ? "" : base.slice(queryIndex + 1);
   query = setParam(query, EMAIL_SOURCE_PARAM, source);
   query = setParam(query, "utm_medium", EMAIL_MEDIUM);
-  query = setParam(query, "utm_campaign", EMAIL_CAMPAIGN);
+  // The campaign belongs to the source, so source and campaign always agree —
+  // the same lookup resolveTarget uses in src/lib/email/pool.ts.
+  query = setParam(query, "utm_campaign", campaignFor(source));
   return origin + "?" + query + hash;
 }
 

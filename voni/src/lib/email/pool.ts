@@ -65,13 +65,47 @@ export const EMAIL_PROVIDERS = [
   "proton.me",
 ];
 
+/**
+ * The campaign each provider claims, one per entry in `EMAIL_PROVIDERS`. The
+ * campaign is a plausible name for that provider's own email programme, not a
+ * constant: an affiliate reading a click sees `gmail.com` arriving from
+ * `gmail-welcome-series`, so source and campaign agree. A campaign that says
+ * nothing about the source is the shape a synthetic click usually has.
+ *
+ * Keyed by `utm_source` exactly, and every key is a provider above — a source
+ * with no entry falls back to `EMAIL_CAMPAIGN_FALLBACK`.
+ */
+export const EMAIL_CAMPAIGNS: Readonly<Record<string, string>> = {
+  "xfinity.com": "xfinity-internet",
+  "spectrum.com": "spectrum-upgrade",
+  "att.com": "att-fiber",
+  "verizon.com": "verizon-fios",
+  "cox.com": "cox-bundle",
+  "gmail.com": "gmail-welcome-series",
+  "outlook.com": "outlook-storage",
+  "yahoo.com": "yahoo-mail-upgrade",
+  "icloud.com": "icloud-storage",
+  "proton.me": "proton-privacy",
+};
+
+/**
+ * What an unrecognised source claims. Fixed rather than derived from the source:
+ * a made-up campaign per unknown string would grow the map one typo at a time,
+ * and the fallback is only reachable through a caller that bypasses the bag.
+ */
+export const EMAIL_CAMPAIGN_FALLBACK = "email-program";
+
+/** The campaign a claimed source carries. Unknown sources get the fallback. */
+export function campaignForProvider(source: string): string {
+  return EMAIL_CAMPAIGNS[source] ?? EMAIL_CAMPAIGN_FALLBACK;
+}
+
 export const EMAIL_SOURCE_PARAM = "utm_source";
 /** The channel the visit is attributed to, stamped on every target. */
 export const UTM_MEDIUM_PARAM = "utm_medium";
 /** The campaign the visit is attributed to, stamped on every target. */
 export const UTM_CAMPAIGN_PARAM = "utm_campaign";
 export const EMAIL_MEDIUM = "email";
-export const EMAIL_CAMPAIGN = "voni-email";
 
 /**
  * The three params every click is stamped with. Rotation compares "when was
@@ -114,7 +148,8 @@ export const nextEmailProvider = shuffleBag(EMAIL_PROVIDERS);
 /**
  * One target URL with the claimed attribution stamped on as `utm_source`,
  * `utm_medium` and `utm_campaign`. The source is drawn from the same no-repeat
- * bag as the target.
+ * bag as the target, and the campaign is that source's own programme name
+ * (`campaignForProvider`), so the two params always agree.
  *
  * The entry is absolute and keeps its own host, path and query; the three params
  * are `set`, never appended, so an entry's own query keys survive and no utm key
@@ -128,7 +163,7 @@ export function resolveTarget(
   const url = new URL(entry);
   url.searchParams.set(EMAIL_SOURCE_PARAM, source);
   url.searchParams.set(UTM_MEDIUM_PARAM, EMAIL_MEDIUM);
-  url.searchParams.set(UTM_CAMPAIGN_PARAM, EMAIL_CAMPAIGN);
+  url.searchParams.set(UTM_CAMPAIGN_PARAM, campaignForProvider(source));
   return url.toString();
 }
 

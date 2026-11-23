@@ -26,6 +26,11 @@ import {
   readClicksPerRun,
 } from "./check-script";
 import { readTargetSelection } from "./target-selection";
+import {
+  campaignForProvider,
+  EMAIL_CAMPAIGN_FALLBACK,
+  EMAIL_PROVIDERS,
+} from "./pool";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COMMITTED = readFileSync(
@@ -76,6 +81,45 @@ test("the committed script is a fresh one-click generation, byte for byte", () =
 test("one click emits no loop and no unused count", () => {
   assert.doesNotMatch(oneClick, /CLICKS_PER_RUN/);
   assert.doesNotMatch(oneClick, /for \(let i = 0; i < CLICKS_PER_RUN/);
+});
+
+test("the emitted campaign map is the app's, one campaign per provider", () => {
+  assert.doesNotMatch(oneClick, /voni-email/, "the fixed campaign is gone");
+  assert.match(oneClick, /const CAMPAIGNS = \{/);
+  for (const provider of EMAIL_PROVIDERS) {
+    assert.ok(
+      oneClick.includes(
+        `  ${JSON.stringify(provider)}: ${JSON.stringify(campaignForProvider(provider))},`,
+      ),
+      `${provider} carries its own campaign`,
+    );
+  }
+  assert.ok(
+    oneClick.includes(
+      `const CAMPAIGN_FALLBACK = ${JSON.stringify(EMAIL_CAMPAIGN_FALLBACK)};`,
+    ),
+  );
+  assert.match(
+    oneClick,
+    /query = setParam\(query, "utm_campaign", campaignFor\(source\)\);/,
+    "a runtime source pick sets the matching campaign",
+  );
+});
+
+test("the emitted lookup answers exactly what campaignForProvider answers", () => {
+  // The script is plain JavaScript the test can run: whatever a source resolves
+  // to here must be what the app stamps, unknown sources included.
+  const start = oneClick.indexOf("const CAMPAIGNS = {");
+  assert.notEqual(start, -1, "the campaign map is emitted");
+  const lookupAt = oneClick.indexOf("function campaignFor(source)");
+  assert.notEqual(lookupAt, -1, "the campaign lookup is emitted");
+  const end = oneClick.indexOf("\n}", lookupAt) + 2;
+  const source = `${oneClick.slice(start, end)}\nreturn campaignFor;`;
+  const lookup = new Function(source)() as (provider: string) => string;
+
+  for (const provider of [...EMAIL_PROVIDERS, "example.com", "unknown.example"]) {
+    assert.equal(lookup(provider), campaignForProvider(provider), provider);
+  }
 });
 
 test("more than one click wraps the click in the counted loop", () => {

@@ -176,14 +176,81 @@ test("the report secret comes from repository secrets and no literal is committe
   ].map((match) => match[1]);
   assert.deepEqual(
     [...new Set(referenced)],
-    ["EMAIL_CLICK_REPORT_SECRET"],
-    "the workflow reads no secret other than the click report's",
+    [
+      "EMAIL_CLICK_REPORT_SECRET",
+      "BROWSER_PROXY_SERVER",
+      "BROWSER_PROXY_USERNAME",
+      "BROWSER_PROXY_PASSWORD",
+    ],
+    "the workflow reads the report secret and the optional proxy only",
   );
 
   assert.doesNotMatch(
     WORKFLOW,
     /EMAIL_CLICK_REPORT_SECRET:\s*["']?[A-Za-z0-9._~+/=-]{8,}/,
     "a literal secret in the workflow is a credential in git",
+  );
+});
+
+test("the optional proxy comes from repository secrets, never a literal", () => {
+  // The values are optional: an empty secret is an empty env var, which the
+  // runner reads as "no proxy".
+  for (const name of [
+    "BROWSER_PROXY_SERVER",
+    "BROWSER_PROXY_USERNAME",
+    "BROWSER_PROXY_PASSWORD",
+  ]) {
+    assert.ok(
+      WORKFLOW.includes(`${name}: \${{ secrets.${name} }}`),
+      `${name} is passed from the repository secret of the same name`,
+    );
+  }
+
+  // A committed proxy address or password would outlive the rotation that
+  // invented it. Nothing on the right-hand side may be a literal.
+  const envLines = WORKFLOW.split("\n").filter((line) =>
+    /^\s+BROWSER_PROXY_[A-Z]+:/.test(line),
+  );
+  assert.equal(envLines.length, 3, "exactly the three proxy variables are mapped");
+  for (const line of envLines) {
+    assert.match(
+      line,
+      /: \$\{\{ secrets\.BROWSER_PROXY_(?:SERVER|USERNAME|PASSWORD) \}\}$/,
+      `${line.trim()} must be a secret reference`,
+    );
+  }
+
+  // The runner reads all three and hands them to Playwright only.
+  for (const name of [
+    "BROWSER_PROXY_SERVER",
+    "BROWSER_PROXY_USERNAME",
+    "BROWSER_PROXY_PASSWORD",
+  ]) {
+    assert.ok(
+      RUNNER.includes(`readEnv("${name}")`),
+      `browser-click.mjs reads ${name}`,
+    );
+  }
+  assert.match(
+    RUNNER,
+    /if \(config\.proxy !== undefined\) launchOptions\.proxy = config\.proxy;/,
+    "the proxy is one launch option, and absent means no proxy",
+  );
+  assert.match(RUNNER, /proxy=\$\{config\.proxy === undefined \? "off" : "on"\}/);
+  assert.doesNotMatch(
+    RUNNER,
+    /console\.[a-z]+\([^)]*proxy[^)]*password/i,
+    "a proxy password must never be printed",
+  );
+  assert.match(
+    RUNNER,
+    /BROWSER_PROXY_USERNAME and BROWSER_PROXY_PASSWORD must be set together/,
+    "half a credential pair is a refusal, not an empty password",
+  );
+  assert.match(
+    RUNNER,
+    /BROWSER_PROXY_SERVER is malformed/,
+    "a malformed server fails loudly before Chrome starts",
   );
 });
 
