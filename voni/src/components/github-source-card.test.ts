@@ -114,6 +114,7 @@ test("controls arrive as props and no server action is imported", () => {
   assert.match(card, /["']use client["']/, "the card is interactive now");
   assert.match(card, /setEnabled:/, "enable/disable arrives as a prop");
   assert.match(card, /saveSchedule:/, "the schedule action arrives as a prop");
+  assert.match(card, /dispatchNow:/, "dispatch arrives as a prop too");
   assert.doesNotMatch(card, /from "@\/app\/email\/actions"/);
   assert.doesNotMatch(card, /["']use server["']/);
 });
@@ -280,11 +281,87 @@ test("the form fields are the actions' contract", () => {
 test("the page passes the lock and both actions to the card", () => {
   assert.match(
     page,
-    /<GithubSourceCard[\s\S]*?locked=\{locked\}[\s\S]*?setEnabled=\{setGithubSourceEnabled\}[\s\S]*?saveSchedule=\{saveGithubSchedule\}/,
-    "the card gets the panel's lock state and the two server actions",
+    /<GithubSourceCard[\s\S]*?locked=\{locked\}[\s\S]*?setEnabled=\{setGithubSourceEnabled\}[\s\S]*?saveSchedule=\{saveGithubSchedule\}[\s\S]*?dispatchNow=\{dispatchGithubNow\}/,
+    "the card gets the panel's lock state and all three server actions",
   );
   assert.match(
     page,
     /import \{[^}]*saveGithubSchedule[^}]*\} from "@\/app\/email\/actions"/,
   );
+  assert.match(
+    page,
+    /import \{[^}]*dispatchGithubNow[^}]*\} from "@\/app\/email\/actions"/,
+  );
+});
+
+test("every OS row carries its own Dispatch now, and each owns its pending state", () => {
+  // One control per row: the dispatch form is rendered by the same map that
+  // renders the per-OS rows, so a new OS cannot arrive without one.
+  assert.match(
+    card,
+    /RUNNER_OSES\.map\(\(os\) => \{[\s\S]*?<DispatchControl\s+os=\{os\}/,
+    "the runs-by-OS list renders one control per row",
+  );
+  assert.match(card, /name="os" value=\{os\}/, "the form posts the OS it belongs to");
+  assert.match(card, /function DispatchControl/);
+
+  const control = functionBody(card, "DispatchControl");
+  assert.match(
+    control,
+    /useActionState\(\s*dispatchNow,\s*INITIAL_DISPATCH,?\s*\)/,
+    "the pending flag lives in the row, not on the card",
+  );
+  assert.match(control, /pending=\{dispatching\}/);
+  assert.match(control, /pendingText="Dispatching…"/);
+  assert.match(control, /disabled=\{locked\}/, "locked is the only disable reason");
+  assert.match(
+    card,
+    /import \{ LoadingButton \} from "@\/components\/loading-button"/,
+  );
+
+  // Nothing on the card shares that flag, so dispatching Ubuntu cannot disable
+  // Windows or macOS — and the other two controls keep their own flags.
+  assert.doesNotMatch(card, /const \[pending/);
+  assert.doesNotMatch(card, /dispatching \|\|/);
+  assert.doesNotMatch(card, /disabled=\{dispatching\}/);
+  assert.equal((card.match(/useActionState\(/g) ?? []).length, 3);
+});
+
+test("a dispatched run links to the workflow, and an error is said in words", () => {
+  const result = functionBody(card, "DispatchResult");
+  assert.match(result, /if \(state\.error\)/);
+  assert.match(result, /<AlertTitle>Browser check not dispatched<\/AlertTitle>/);
+  assert.match(result, /<AlertDescription>\{state\.error\}<\/AlertDescription>/);
+  assert.match(result, /if \(state\.runUrl\)/);
+  assert.match(result, /href=\{state\.runUrl\}/);
+  assert.match(result, /data-testid=\{`email-github-dispatch-\$\{os\}-run`\}/);
+  assert.match(result, /View the run on GitHub/);
+  assert.doesNotMatch(result, /api\.github\.com|authorization/);
+});
+
+test("a manual dispatch shows the exact command, copyable, like the burst fallback", () => {
+  const result = functionBody(card, "DispatchResult");
+  assert.match(
+    result,
+    /state\.mode === "manual" && state\.fallback/,
+    "manual is a normal outcome, not an error",
+  );
+  const fallback = functionBody(card, "DispatchFallback");
+  assert.match(fallback, /<pre[\s\S]*?<code>\{command\}<\/code>/, "the command is exact and selectable");
+  assert.match(fallback, /navigator\.clipboard\.writeText\(command\)/);
+  assert.match(fallback, /data-testid=\{`email-github-dispatch-\$\{os\}-copy`\}/);
+  assert.match(fallback, /dispatch-\$\{os\}-fallback/);
+  assert.match(fallback, /Run it yourself — no dispatch token configured\./);
+  // The token's name is the only credential the copy mentions; neither the
+  // token nor any dispatch result is echoed into the command block.
+  assert.doesNotMatch(fallback, /Bearer|authorization/i);
+});
+
+test("a dispatch result surfaces an inline alert and a toast", () => {
+  assert.match(card, /function useDispatchToast/);
+  assert.match(card, /useDispatchToast\(state\)/);
+  assert.match(card, /title: "Could not dispatch"/);
+  assert.match(card, /type: "error"/);
+  assert.match(card, /type: "success"/);
+  assert.match(card, /title: state\.mode === "manual" \? "Run it yourself" : "Dispatched"/);
 });

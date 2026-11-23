@@ -3,7 +3,9 @@
 import { useActionState, useEffect, useState } from "react";
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
+  Copy,
   ExternalLink,
   GitBranch,
 } from "lucide-react";
@@ -11,6 +13,7 @@ import { LoadingButton } from "@/components/loading-button";
 import { SourceCard, type SourceCardSummary } from "@/components/source-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Field,
   FieldDescription,
@@ -77,6 +80,20 @@ export type GithubControlState = {
   error?: string;
 };
 
+/**
+ * What a dispatch returns. Kept local rather than imported from the action file
+ * for the same reason the two states above are: this card receives server
+ * functions as props and must not reach into `actions.ts`.
+ */
+export type GithubDispatchState = {
+  ok: boolean;
+  mode?: "dispatched" | "manual";
+  message?: string;
+  error?: string;
+  runUrl?: string;
+  fallback?: { command: string };
+};
+
 export type GithubSourceCardProps = {
   /** Presentation only; every action re-checks the cookie itself. */
   locked: boolean;
@@ -104,6 +121,11 @@ export type GithubSourceCardProps = {
     previous: GithubControlState,
     formData: FormData,
   ) => Promise<GithubControlState>;
+  /** Dispatch one OS right now; field `os` = one of `RUNNER_OSES`. */
+  dispatchNow: (
+    previous: GithubDispatchState,
+    formData: FormData,
+  ) => Promise<GithubDispatchState>;
 };
 
 const OS_LABELS: Record<RunnerOs, string> = {
@@ -188,6 +210,197 @@ function useActionToast(state: GithubControlState) {
   }, [state]);
 }
 
+const INITIAL_DISPATCH: GithubDispatchState = { ok: false };
+
+/** The dispatch's own alert titles; the schedule/enable ones do not fit here. */
+function useDispatchToast(state: GithubDispatchState) {
+  useEffect(() => {
+    if (state.error) {
+      toast.add({
+        title: "Could not dispatch",
+        description: state.error,
+        type: "error",
+      });
+    } else if (state.mode) {
+      toast.add({
+        title: state.mode === "manual" ? "Run it yourself" : "Dispatched",
+        description: state.message,
+        type: "success",
+      });
+    }
+    // `state` is a fresh object per submission, so a repeat message still shows.
+  }, [state]);
+}
+
+/**
+ * The manual run, when no dispatch token is configured. A missing token is a
+ * normal outcome, so this is plain paper rather than a destructive Alert — the
+ * same presentation the burst card uses for its own fallback.
+ */
+function DispatchFallback({ os, command }: { os: RunnerOs; command: string }) {
+  const [copied, setCopied] = useState(false);
+
+  // The label is a receipt for one click, not a permanent state: a stale
+  // "Copied" next to a command that has since changed would be a lie.
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2_000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+    } catch {
+      toast.add({
+        title: "Could not copy",
+        description: "Select the command and copy it by hand.",
+        type: "error",
+      });
+    }
+  }
+
+  return (
+    <div
+      className="grid gap-2 rounded-lg border px-3 py-3"
+      data-testid={`email-github-dispatch-${os}-fallback`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium">
+          Run it yourself — no dispatch token configured.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            void copy();
+          }}
+          data-testid={`email-github-dispatch-${os}-copy`}
+        >
+          {copied ? <Check /> : <Copy />}
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </div>
+      <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs whitespace-pre">
+        <code>{command}</code>
+      </pre>
+      <p className="text-muted-foreground text-xs">
+        It needs <code className="font-mono">GITHUB_BURST_TOKEN</code> with
+        Actions write access on the repository; this line never carries it.
+      </p>
+    </div>
+  );
+}
+
+/** What one dispatch returned, in words: an error, a run link, or the command. */
+function DispatchResult({
+  os,
+  state,
+}: {
+  os: RunnerOs;
+  state: GithubDispatchState;
+}) {
+  useDispatchToast(state);
+
+  if (state.error) {
+    return (
+      <Alert
+        variant="destructive"
+        className="status-enter"
+        data-testid={`email-github-dispatch-${os}-result`}
+      >
+        <AlertCircle />
+        <AlertTitle>Browser check not dispatched</AlertTitle>
+        <AlertDescription>{state.error}</AlertDescription>
+      </Alert>
+    );
+  }
+
+  if (state.mode === "manual" && state.fallback) {
+    return <DispatchFallback os={os} command={state.fallback.command} />;
+  }
+
+  if (state.runUrl) {
+    return (
+      <Alert
+        className="status-enter"
+        data-testid={`email-github-dispatch-${os}-result`}
+      >
+        <CheckCircle2 />
+        <AlertTitle>Browser check dispatched</AlertTitle>
+        <AlertDescription>
+          <span className="block">{state.message}</span>
+          <a
+            className="mt-1 inline-flex items-center gap-1 font-medium underline underline-offset-4"
+            href={state.runUrl}
+            target="_blank"
+            rel="noreferrer"
+            data-testid={`email-github-dispatch-${os}-run`}
+          >
+            View the run on GitHub
+            <ExternalLink className="size-3" />
+          </a>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  return null;
+}
+
+/**
+ * One OS's Dispatch now control.
+ *
+ * The `useActionState` lives here, in the row, rather than on the card: three
+ * runners can be dispatched independently, and one shared pending flag would
+ * disable the other two rows without saying which dispatch is actually running.
+ */
+function DispatchControl({
+  os,
+  locked,
+  dispatchNow,
+}: {
+  os: RunnerOs;
+  locked: boolean;
+  dispatchNow: GithubSourceCardProps["dispatchNow"];
+}) {
+  const [dispatchState, dispatchAction, dispatching] = useActionState(
+    dispatchNow,
+    INITIAL_DISPATCH,
+  );
+
+  return (
+    <form
+      action={dispatchAction}
+      className="grid gap-2"
+      data-testid={`email-github-dispatch-${os}`}
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <input type="hidden" name="os" value={os} />
+        <LoadingButton
+          type="submit"
+          variant="outline"
+          size="sm"
+          pending={dispatching}
+          pendingText="Dispatching…"
+          disabled={locked}
+          data-testid={`email-github-dispatch-${os}-button`}
+        >
+          Dispatch now
+        </LoadingButton>
+        <p className="text-muted-foreground text-xs">
+          {locked
+            ? "Unlock the panel to dispatch a run."
+            : "Runs one segment from the saved targets and schedule."}
+        </p>
+      </div>
+      <DispatchResult os={os} state={dispatchState} />
+    </form>
+  );
+}
+
 type OsStatus = "never" | "stale" | "live";
 
 /**
@@ -258,6 +471,7 @@ export function GithubSourceCard({
   now,
   setEnabled,
   saveSchedule,
+  dispatchNow,
 }: GithubSourceCardProps) {
   // Draft values start from the saved row and stay editable until a save lands;
   // the preview reads these, not the saved numbers, so it answers "what would
@@ -346,8 +560,9 @@ export function GithubSourceCard({
               <AlertTitle>Controls are locked</AlertTitle>
               <AlertDescription>
                 Unlock the panel above to enable this source or change its
-                schedule. The values below are the saved configuration, and
-                nothing here can be written while the panel is locked.
+                schedule, or to dispatch one run. The values below are the saved
+                configuration, and nothing here can be written while the panel
+                is locked.
               </AlertDescription>
             </Alert>
           ) : null}
@@ -623,6 +838,11 @@ export function GithubSourceCard({
                         </a>
                       </StatusField>
                     </dl>
+                    <DispatchControl
+                      os={os}
+                      locked={locked}
+                      dispatchNow={dispatchNow}
+                    />
                   </li>
                 );
               })}
