@@ -1,16 +1,8 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import {
-  AlertCircle,
-  ExternalLink,
-  LockKeyhole,
-  Zap,
-} from "lucide-react";
-import {
-  FeedbackAlert,
-  ManualRunFallback,
-} from "@/components/action-feedback";
+import { AlertCircle, LockKeyhole, Zap } from "lucide-react";
+import { copyCommand, useActionToast } from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import { SourceCard } from "@/components/source-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -76,38 +68,6 @@ const BURST_SUCCESS_DEFAULT =
   "The workflow is queued. It appears on the run page once GitHub starts it.";
 
 /**
- * The burst outcome in words. The success shape carries a run link, which the
- * shared alert renders under its description; the titles stay this card's own.
- */
-function BurstFeedback({ state }: { state: BurstState }) {
-  if (!state.error && !state.ok) return null;
-
-  return (
-    <FeedbackAlert
-      state={{
-        error: state.error,
-        message: state.ok ? (state.message ?? BURST_SUCCESS_DEFAULT) : null,
-      }}
-      errorTitle="Burst not dispatched"
-      successTitle="Burst dispatched"
-    >
-      {state.runUrl ? (
-        <a
-          className="mt-1 inline-flex items-center gap-1 font-medium underline underline-offset-4"
-          href={state.runUrl}
-          target="_blank"
-          rel="noreferrer"
-          data-testid="email-burst-run-link"
-        >
-          View the run on GitHub
-          <ExternalLink className="size-3" />
-        </a>
-      ) : null}
-    </FeedbackAlert>
-  );
-}
-
-/**
  * The VU-hours share of the month, as a thin bar. The generated Progress
  * primitive owns the fill geometry, so no inline style is needed here.
  */
@@ -124,31 +84,32 @@ function BudgetBar({ vuHours }: { vuHours: number }) {
   );
 }
 
-/**
- * The manual run, when no `GITHUB_BURST_TOKEN` is configured. This is a normal
- * outcome — the repo's k6 Cloud token already exists — so it is plain paper,
- * not a destructive Alert.
- */
-function FallbackPanel({ command }: { command: string }) {
-  return (
-    <ManualRunFallback
-      command={command}
-      testId="email-burst-fallback"
-      copyTestId="email-burst-copy-command"
-      note={
-        <>
-          It needs <code className="font-mono">K6_CLOUD_TOKEN</code> set (already
-          a repository secret); this line never carries it. The zone split
-          applies to the workflow path — a manual run uses k6&apos;s default
-          zone.
-        </>
-      }
-    />
-  );
-}
-
 export function BurstCard({ locked, action, defaultZones }: BurstCardProps) {
   const [state, formAction, pending] = useActionState(action, INITIAL);
+
+  // One toast per burst outcome: an error, a queued run with a "View run"
+  // action, or the exact manual line with a copy action. The manual line gets a
+  // longer timeout so it can be read and copied before it disappears.
+  const command = state.fallback?.command;
+  useActionToast(state, "Burst not dispatched", {
+    successTitle: command ? "Run it yourself" : "Burst dispatched",
+    timeout: command ? 12_000 : undefined,
+    description: command ? (
+      <>
+        {state.message}{" "}
+        <code className="mt-1 block font-mono text-xs break-all whitespace-pre-wrap">
+          {command}
+        </code>
+      </>
+    ) : (
+      state.message ?? BURST_SUCCESS_DEFAULT
+    ),
+    action: command
+      ? { label: "Copy", onClick: () => copyCommand(command) }
+      : state.runUrl
+        ? { label: "View run", href: state.runUrl }
+        : undefined,
+  });
   const [clicksText, setClicksText] = useState(DEFAULT_CLICKS);
   const [minutesText, setMinutesText] = useState(DEFAULT_MINUTES);
   const [selected, setSelected] = useState<string[]>(() => initialZones(defaultZones));
@@ -308,12 +269,6 @@ export function BurstCard({ locked, action, defaultZones }: BurstCardProps) {
           <p className="text-muted-foreground text-sm">
             The panel is read-only. Unlock it to dispatch a burst.
           </p>
-        ) : null}
-
-        <BurstFeedback state={state} />
-
-        {state.fallback ? (
-          <FallbackPanel command={state.fallback.command} />
         ) : null}
 
         <div>

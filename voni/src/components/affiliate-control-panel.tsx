@@ -24,11 +24,7 @@ import {
   unlockControl,
   type ControlState,
 } from "@/app/email/actions";
-import {
-  FeedbackAlert,
-  formatCount,
-  useActionToast,
-} from "@/components/action-feedback";
+import { formatCount, useActionToast } from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import {
   SourceCard,
@@ -529,7 +525,9 @@ function UnlockSubmitButton() {
 
 function UnlockForm() {
   const [state, action, pending] = useActionState(unlockControl, INITIAL);
-  useActionToast(state);
+  useActionToast(state, "Could not unlock the controls", {
+    successTitle: "Controls unlocked",
+  });
 
   return (
     <form action={action} className="grid max-w-md gap-4">
@@ -548,7 +546,6 @@ function UnlockForm() {
           configured for this deployment.
         </FieldDescription>
       </Field>
-      <FeedbackAlert state={state} />
       <div>
         <UnlockSubmitButton />
       </div>
@@ -662,9 +659,15 @@ function ControlsForm({
   );
   const [locking, setLocking] = useState(false);
 
-  useActionToast(saveState);
-  useActionToast(toggleState);
-  useActionToast(clickState);
+  useActionToast(saveState, "Could not save the volume", {
+    successTitle: "Volume saved",
+  });
+  useActionToast(toggleState, "Could not update the check", {
+    successTitle: "Check updated",
+  });
+  useActionToast(clickState, "Could not run the click", {
+    successTitle: "Click ran",
+  });
 
   // A selected id can be missing from the probe list when Grafana's probe read
   // failed; render it rather than silently dropping it from the next save.
@@ -867,7 +870,6 @@ function ControlsForm({
           )}
         </FieldGroup>
 
-        <FeedbackAlert state={saveState} />
         <div>
           <SaveSubmitButton disabled={!check || !clicksValid} />
         </div>
@@ -891,7 +893,6 @@ function ControlsForm({
               : "Starts the check again with its saved interval and probes."}
           </span>
         </form>
-        <FeedbackAlert state={toggleState} />
 
         <form action={clickAction} className="grid gap-3">
           {/* No picker when there is nothing enabled: the server already
@@ -968,7 +969,6 @@ function ControlsForm({
             </span>
           </div>
         </form>
-        <FeedbackAlert state={clickState} />
 
         <div className="flex flex-wrap items-center gap-3">
           <LoadingButton
