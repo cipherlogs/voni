@@ -15,7 +15,14 @@ import { EmailGateForm } from "@/components/email-gate-form";
 import { BurstCard } from "@/components/burst-card";
 import { GithubSourceCard } from "@/components/github-source-card";
 import { TargetsCard } from "@/components/targets-card";
-import { addTarget, removeTarget, runBurst, toggleTarget } from "@/app/email/actions";
+import {
+  addTarget,
+  removeTarget,
+  runBurst,
+  saveGithubSchedule,
+  setGithubSourceEnabled,
+  toggleTarget,
+} from "@/app/email/actions";
 import { US_ZONES } from "@/lib/burst/plan";
 import { GateFrame, GateSkeleton } from "@/components/email-gate-skeleton";
 import { CardListSkeleton, TableSkeleton } from "@/components/page-skeletons";
@@ -390,6 +397,7 @@ async function EmailControlData({
           }}
         />
         <GithubSourceCard
+          locked={locked}
           config={githubConfig}
           targetCount={targets.length}
           newestByOs={githubNewest}
@@ -401,6 +409,8 @@ async function EmailControlData({
           }
           workflowUrl={BROWSER_CHECK_RUN_URL}
           now={now}
+          setEnabled={setGithubSourceEnabled}
+          saveSchedule={saveGithubSchedule}
         />
         <BurstCard
           locked={locked}

@@ -2,7 +2,7 @@
  * The ticker's database boundary: what a source is configured to do, whether
  * its runners are still clicking, and how a dispatch is recorded.
  *
- * Four plain functions and no policy. The decision lives in `./sources`
+ * Plain functions and no policy. The decision lives in `./sources`
  * (pure, no database) and the dispatch lives in `@/lib/github/dispatch`, so
  * this module only translates rows to values and back. That keeps the
  * interesting logic testable without Postgres and stops a query change from
@@ -90,6 +90,49 @@ export async function newestClickByOs(
     newest[os] = at;
   }
   return newest;
+}
+
+/** The schedule an operator may change; the parser in `./sources` is the gate. */
+export type SourceSchedule = {
+  intervalSeconds: number;
+  windowSeconds: number;
+  windowStartHour: number;
+};
+
+/**
+ * Turn a source on or off. A missing row stays missing: the console says
+ * "not configured" instead of pretending a write landed.
+ */
+export async function setSourceEnabled(
+  producer: string,
+  enabled: boolean,
+): Promise<void> {
+  const now = new Date();
+  await db
+    .update(emailSources)
+    .set({ enabled, updatedAt: now })
+    .where(eq(emailSources.producer, producer));
+}
+
+/**
+ * Replace interval, window and start hour in one write, so the ticker can
+ * never read a half-applied schedule (a 15 s interval against last week's
+ * window).
+ */
+export async function saveSourceSchedule(
+  producer: string,
+  schedule: SourceSchedule,
+): Promise<void> {
+  const now = new Date();
+  await db
+    .update(emailSources)
+    .set({
+      intervalSeconds: schedule.intervalSeconds,
+      windowSeconds: schedule.windowSeconds,
+      windowStartHour: schedule.windowStartHour,
+      updatedAt: now,
+    })
+    .where(eq(emailSources.producer, producer));
 }
 
 /**
