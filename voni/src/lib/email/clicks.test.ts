@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   AFFILIATE_CLICK_DEFAULT_LIMIT,
   AFFILIATE_CLICK_MAX_LIMIT,
+  affiliateClicksPage,
   assertClickTarget,
   clampClickLimit,
   recordAffiliateClick,
@@ -54,6 +55,8 @@ test("target guard: a rejected target never reaches the insert", async () => {
       userAgent: null,
       device: null,
       browser: null,
+      producer: "grafana",
+      runnerOs: null,
       ranAt: new Date(),
     }),
     /absolute http\(s\) URL/,
@@ -81,4 +84,33 @@ test("limit: non-finite input falls back to the default page, not a giant query"
   for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
     assert.equal(clampClickLimit(bad), AFFILIATE_CLICK_DEFAULT_LIMIT);
   }
+});
+
+test("history rows carry the producer and runner OS", () => {
+  const { sql } = affiliateClicksPage(10).toSQL();
+
+  assert.match(sql, /select .*"producer"/);
+  assert.match(sql, /select .*"runner_os"/);
+});
+
+test("history is newest first and a producer filter narrows it, still newest first", () => {
+  const { sql } = affiliateClicksPage(10, "github").toSQL();
+
+  assert.match(
+    sql,
+    /where\s+"affiliate_clicks"\."producer"\s*=\s*\$\d+/i,
+    "the filter is a producer predicate, so the (producer, ran_at desc) index can serve it",
+  );
+  assert.match(
+    sql,
+    /order by\s+"affiliate_clicks"\."ran_at"\s+desc/i,
+    "the newest click in the narrowed set comes first",
+  );
+  assert.match(sql, /\blimit\s+\$\d+/i);
+});
+
+test("an unfiltered history has no producer predicate", () => {
+  const { sql } = affiliateClicksPage(10).toSQL();
+
+  assert.doesNotMatch(sql, /where\s+.*"producer"\s*=/i);
 });

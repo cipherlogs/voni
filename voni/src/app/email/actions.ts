@@ -762,6 +762,8 @@ export async function runOneOffClick(
       userAgent,
       device,
       browser,
+      producer: "oneoff",
+      runnerOs: null,
     });
   } catch {
     return {

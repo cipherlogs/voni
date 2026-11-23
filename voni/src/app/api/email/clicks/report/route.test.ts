@@ -73,7 +73,12 @@ const VALID = {
   browser: "chromium",
   ranAt: RAN_AT,
 };
-const PARSED: ClickReportInput = { ...VALID, ranAt: new Date(RAN_AT) };
+const PARSED: ClickReportInput = {
+  ...VALID,
+  producer: "grafana",
+  runnerOs: null,
+  ranAt: new Date(RAN_AT),
+};
 
 process.env.EMAIL_CLICK_REPORT_SECRET = SECRET;
 test.after(() => {
@@ -238,6 +243,56 @@ test("a valid report is stored once, in the shape the parser produced", async ()
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0], PARSED);
+});
+
+test("a GitHub click is stored with its producer and runner OS", async () => {
+  const calls = recordWrites();
+  const body = JSON.stringify({
+    ...VALID,
+    producer: "github",
+    runnerOs: "ubuntu",
+  });
+  const response = await POST(postRequest({ body }));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].producer, "github");
+  assert.equal(calls[0].runnerOs, "ubuntu");
+});
+
+test("an unknown producer is refused and nothing is written", async () => {
+  const calls = recordWrites();
+  const response = await POST(
+    postRequest({ body: JSON.stringify({ ...VALID, producer: "selenium" }) }),
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    reason: "bad_producer",
+  });
+  assert.equal(calls.length, 0);
+});
+
+test("an OS outside the allowlist is refused and nothing is written", async () => {
+  const calls = recordWrites();
+  const response = await POST(
+    postRequest({
+      body: JSON.stringify({
+        ...VALID,
+        producer: "github",
+        runnerOs: "linux",
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    reason: "bad_runner_os",
+  });
+  assert.equal(calls.length, 0);
 });
 
 test("a failed write is a 502 and logs a fixed string, never the error message", async () => {
