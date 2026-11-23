@@ -25,6 +25,16 @@ import {
 } from "@/lib/email/page-gate";
 import { nextEmailProvider, baseTargetUrl, resolveTarget } from "@/lib/email/pool";
 import {
+  GITHUB_SOURCE_PRODUCER,
+  saveSourceSchedule,
+  setSourceEnabled,
+} from "@/lib/email/source-config";
+import {
+  parseInterval,
+  parseWindowSeconds,
+  parseWindowStartHour,
+} from "@/lib/email/sources";
+import {
   TARGET_SELECTION_DEFAULT,
   TARGET_SELECTION_LEGACY,
   parseTargetSelection,
@@ -883,5 +893,83 @@ export async function runBurst(
     message:
       `${describePlan(planned.plan)}. The workflow is queued; its progress is in the run list.`,
     runUrl: result.runUrl,
+  };
+}
+
+/**
+ * The one refusal an enable/disable form can produce.
+ *
+ * A checkbox would always send a legal value; this form posts the state it
+ * wants explicitly so a hand-crafted request cannot flip the source by posting
+ * nothing, and so "true"/"false" stays the whole vocabulary.
+ */
+const SOURCE_STATE_REASON = "Source state must be on or off.";
+
+/**
+ * Turn the GitHub source on or off.
+ *
+ * Only the flag moves. The schedule stays exactly as it was, so resuming a
+ * source after a pause does not silently re-time it.
+ */
+export async function setGithubSourceEnabled(
+  _previous: ControlState,
+  formData: FormData,
+): Promise<ControlState> {
+  void _previous;
+  if (!(await requireControl())) return locked();
+
+  const raw = formData.get("enabled");
+  if (raw !== "true" && raw !== "false") {
+    return { ok: false, error: SOURCE_STATE_REASON };
+  }
+  const enabled = raw === "true";
+
+  await setSourceEnabled(GITHUB_SOURCE_PRODUCER, enabled);
+  revalidatePath("/email");
+
+  return {
+    ok: true,
+    message: enabled
+      ? "GitHub source enabled. It starts clicking on the next tick, inside its window."
+      : "GitHub source disabled. Nothing clicks from GitHub until it is enabled again.",
+  };
+}
+
+/**
+ * Save the interval, window and start hour in one write.
+ *
+ * The parsers in `@/lib/email/sources` are the only gate — the same ones the
+ * card draws its preview from and the ticker reads back — so a hand-crafted
+ * interval outside the offered set is refused with the sentence that names the
+ * legal values, and nothing is written. All three are parsed before the row is
+ * touched, so a bad start hour cannot leave a half-applied schedule behind.
+ */
+export async function saveGithubSchedule(
+  _previous: ControlState,
+  formData: FormData,
+): Promise<ControlState> {
+  void _previous;
+  if (!(await requireControl())) return locked();
+
+  const interval = parseInterval(formData.get("interval"));
+  if (!interval.ok) return { ok: false, error: interval.reason };
+
+  const activeWindow = parseWindowSeconds(formData.get("window"));
+  if (!activeWindow.ok) return { ok: false, error: activeWindow.reason };
+
+  const startHour = parseWindowStartHour(formData.get("startHour"));
+  if (!startHour.ok) return { ok: false, error: startHour.reason };
+
+  await saveSourceSchedule(GITHUB_SOURCE_PRODUCER, {
+    intervalSeconds: interval.value,
+    windowSeconds: activeWindow.value,
+    windowStartHour: startHour.value,
+  });
+  revalidatePath("/email");
+
+  return {
+    ok: true,
+    message:
+      "Schedule saved. The new interval, window and start hour apply on the next dispatch.",
   };
 }

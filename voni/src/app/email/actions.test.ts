@@ -1118,3 +1118,128 @@ test("a burst refuses an empty active list instead of falling back to the seed",
     "an all-paused list must not dispatch the committed seed",
   );
 });
+
+const GITHUB_ACTIONS = ["setGithubSourceEnabled", "saveGithubSchedule"];
+
+test("the GitHub source actions gate inside the body, before reading the form", () => {
+  for (const name of GITHUB_ACTIONS) {
+    const body = fnBody(name);
+    assert.match(
+      body,
+      /if \(!\(await requireControl\(\)\)\) return locked\(\);/,
+      `${name} refuses before it parses anything`,
+    );
+    assert.ok(
+      body.indexOf("requireControl()") < body.indexOf("formData.get("),
+      `${name} authorises before the first field read`,
+    );
+  }
+});
+
+test("an illegal schedule value is refused by the shared parser and nothing is written", () => {
+  const body = fnBody("saveGithubSchedule");
+
+  assert.match(body, /parseInterval\(formData\.get\("interval"\)\)/);
+  assert.match(body, /parseWindowSeconds\(formData\.get\("window"\)\)/);
+  assert.match(body, /parseWindowStartHour\(formData\.get\("startHour"\)\)/);
+
+  for (const parsed of ["interval", "activeWindow", "startHour"]) {
+    assert.match(
+      body,
+      new RegExp(
+        `if \\(!${parsed}\\.ok\\) return \\{ ok: false, error: ${parsed}\\.reason \\}`,
+      ),
+      `${parsed} refuses with the parser's fixed sentence`,
+    );
+  }
+
+  // Every value is parsed before the row is touched: a bad start hour must not
+  // leave a new interval behind.
+  assert.ok(body.indexOf("interval.ok") < body.indexOf("activeWindow.ok"));
+  assert.ok(body.indexOf("activeWindow.ok") < body.indexOf("startHour.ok"));
+  assert.ok(
+    body.indexOf("startHour.ok") < body.indexOf("saveSourceSchedule("),
+    "the write is the last step after all three gates",
+  );
+});
+
+test("the source actions take their rules from the schedule domain and its DB boundary", () => {
+  assert.match(
+    source,
+    /import \{\s*parseInterval,\s*parseWindowSeconds,\s*parseWindowStartHour,\s*\} from "@\/lib\/email\/sources";/,
+    "the parsers are the same ones the card and ticker use",
+  );
+  assert.match(
+    source,
+    /import \{\s*GITHUB_SOURCE_PRODUCER,\s*saveSourceSchedule,\s*setSourceEnabled,\s*\} from "@\/lib\/email\/source-config";/,
+  );
+
+  const toggle = fnBody("setGithubSourceEnabled");
+  assert.match(toggle, /setSourceEnabled\(GITHUB_SOURCE_PRODUCER, enabled\)/);
+  assert.match(toggle, /const raw = formData\.get\("enabled"\)/);
+  assert.match(
+    toggle,
+    /raw !== "true" && raw !== "false"/,
+    "only the two words a form may post are accepted",
+  );
+
+  const schedule = fnBody("saveGithubSchedule");
+  assert.match(
+    schedule,
+    /saveSourceSchedule\(GITHUB_SOURCE_PRODUCER, \{/,
+    "the row is written through the one source-config boundary",
+  );
+});
+
+test("every source action ends in a fixed sentence, and a refusal writes nothing", () => {
+  const toggle = fnBody("setGithubSourceEnabled");
+  assert.match(
+    source,
+    /const SOURCE_STATE_REASON = "Source state must be on or off\.";/,
+  );
+  assert.match(toggle, /return \{ ok: false, error: SOURCE_STATE_REASON \}/);
+  assert.match(
+    toggle,
+    /"GitHub source enabled\. It starts clicking on the next tick, inside its window\."/,
+  );
+  assert.match(
+    toggle,
+    /"GitHub source disabled\. Nothing clicks from GitHub until it is enabled again\."/,
+  );
+
+  const schedule = fnBody("saveGithubSchedule");
+  assert.match(
+    schedule,
+    /"Schedule saved\. The new interval, window and start hour apply on the next dispatch\."/,
+  );
+});
+
+test("a successful source save revalidates, and no refusal does", () => {
+  const writeFor: Record<string, string> = {
+    setGithubSourceEnabled: "await setSourceEnabled(",
+    saveGithubSchedule: "await saveSourceSchedule(",
+  };
+  for (const name of GITHUB_ACTIONS) {
+    const body = fnBody(name);
+    const writes = body.match(/revalidatePath\("\/email"\)/g) ?? [];
+    assert.equal(writes.length, 1, `${name} revalidates once`);
+    assert.ok(
+      body.indexOf("revalidatePath(") > body.indexOf(writeFor[name]),
+      `${name} revalidates only after the write`,
+    );
+    assert.match(
+      body,
+      /revalidatePath\("\/email"\);\s*\n\s*return \{\s*\n\s*ok: true,/,
+      `${name} revalidates on the success path, not on a refusal`,
+    );
+  }
+});
+
+test("the source actions never echo the control secret or a submitted value", () => {
+  for (const name of GITHUB_ACTIONS) {
+    const body = fnBody(name);
+    assert.doesNotMatch(body, /EMAIL_CONTROL_SECRET|controlCookie|safeSecretEqual/);
+    assert.doesNotMatch(body, /\$\{formData|\$\{raw\}/);
+    assert.doesNotMatch(body, /console\.(log|error)/);
+  }
+});

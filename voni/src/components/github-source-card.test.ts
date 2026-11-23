@@ -110,12 +110,12 @@ test("honest states: a never-run OS and a disabled source are words, not zeroes"
   );
 });
 
-test("read-only: no mutation import, no server action, no form", () => {
-  assert.doesNotMatch(card, /@\/app\/email\/actions/);
+test("controls arrive as props and no server action is imported", () => {
+  assert.match(card, /["']use client["']/, "the card is interactive now");
+  assert.match(card, /setEnabled:/, "enable/disable arrives as a prop");
+  assert.match(card, /saveSchedule:/, "the schedule action arrives as a prop");
+  assert.doesNotMatch(card, /from "@\/app\/email\/actions"/);
   assert.doesNotMatch(card, /["']use server["']/);
-  assert.doesNotMatch(card, /useActionState|useFormStatus/);
-  assert.doesNotMatch(card, /<form\b/);
-  assert.doesNotMatch(card, /action=\{/);
 });
 
 test("volume is the one formula from the schedule domain", () => {
@@ -188,4 +188,103 @@ test("every read happens inside EmailControlData, behind the page boundary", () 
     "the GitHub card sits between Grafana and Burst",
   );
   assert.match(page, /workflowUrl=\{BROWSER_CHECK_RUN_URL\}/);
+});
+
+test("each write control owns its pending state and its own changed text", () => {
+  assert.match(
+    card,
+    /useActionState\(\s*saveSchedule,\s*INITIAL,?\s*\)/,
+    "the schedule form tracks its own submission",
+  );
+  assert.match(
+    card,
+    /useActionState\(\s*setEnabled,\s*INITIAL,?\s*\)/,
+    "enable/disable tracks a second, independent submission",
+  );
+  assert.match(card, /pending=\{savingSchedule\}/);
+  assert.match(card, /pendingText="Saving…"/);
+  assert.match(card, /pending=\{togglingSource\}/);
+  assert.match(card, /pendingText=\{enabled \? "Disabling…" : "Enabling…"\}/);
+  assert.match(
+    card,
+    /import \{ LoadingButton \} from "@\/components\/loading-button"/,
+    "the house pending button, not a hand-rolled spinner",
+  );
+
+  // The two forms are separate: no shared boolean disables both controls.
+  assert.doesNotMatch(card, /const \[pending/);
+  assert.match(card, /<form action=\{saveScheduleAction\}/);
+  assert.match(card, /<form\s+action=\{setEnabledAction\}/);
+});
+
+test("the preview is computed from the draft, before anything is saved", () => {
+  assert.match(
+    card,
+    /clicksPerDay\(\s*draftInterval,\s*draftWindow,\s*targetCount,\s*RUNNER_OSES\.length,?\s*\)/,
+    "the preview reads the form values, not the saved row",
+  );
+  assert.match(
+    card,
+    /data-testid="email-github-preview"[\s\S]*?formatCount\(previewPerDay\)/,
+    "the number rendered is the draft's",
+  );
+  assert.match(
+    card,
+    /data-testid="email-github-preview"[\s\S]*?clicks\/day with this schedule/,
+  );
+  // The header stays the saved row's number.
+  assert.match(card, /perDay === null \? "—" : formatCount\(perDay\)/);
+});
+
+test("success and failure surface an inline alert and a toast, for both controls", () => {
+  assert.match(card, /function FeedbackAlert/);
+  assert.equal(
+    (card.match(/<FeedbackAlert state=\{/g) ?? []).length,
+    2,
+    "one alert under each control",
+  );
+  assert.match(card, /state\.error \? <AlertCircle \/> : <CheckCircle2 \/>/);
+  assert.match(card, /variant=\{state\.error \? "destructive" : "default"\}/);
+  assert.match(card, /type: "error"/);
+  assert.match(card, /type: "success"/);
+  assert.match(card, /useActionToast\(scheduleState\)/);
+  assert.match(card, /useActionToast\(enabledState\)/);
+});
+
+test("locked disables every write and says why", () => {
+  const disabled = (card.match(/disabled=\{locked/g) ?? []).length;
+  assert.ok(disabled >= 5, "three selects, the save button and the toggle");
+  assert.match(card, /data-testid="email-github-locked"/);
+  assert.match(card, /Controls are locked/);
+  assert.match(card, /Unlock the panel above to enable this source or change its/);
+  assert.match(
+    card,
+    /disabled=\{locked \|\| savingSchedule\}/,
+    "a save in flight does not disable the enable button",
+  );
+});
+
+test("the form fields are the actions' contract", () => {
+  for (const field of ["interval", "window", "startHour", "enabled"]) {
+    assert.match(
+      card,
+      new RegExp(`name="${field}"`),
+      `${field} is posted under the name the action reads`,
+    );
+  }
+  assert.match(card, /name="enabled"[\s\S]*?value=\{enabled \? "false" : "true"\}/);
+  assert.match(card, /INTERVAL_SECONDS\.map/);
+  assert.match(card, /WINDOW_SECONDS\.map/);
+});
+
+test("the page passes the lock and both actions to the card", () => {
+  assert.match(
+    page,
+    /<GithubSourceCard[\s\S]*?locked=\{locked\}[\s\S]*?setEnabled=\{setGithubSourceEnabled\}[\s\S]*?saveSchedule=\{saveGithubSchedule\}/,
+    "the card gets the panel's lock state and the two server actions",
+  );
+  assert.match(
+    page,
+    /import \{[^}]*saveGithubSchedule[^}]*\} from "@\/app\/email\/actions"/,
+  );
 });
