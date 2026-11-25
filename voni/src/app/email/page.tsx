@@ -12,10 +12,6 @@ import {
   type ProbeView,
 } from "@/components/affiliate-control-panel";
 import { EmailGateForm } from "@/components/email-gate-form";
-import {
-  ControlNoticeToast,
-  type ControlNotice,
-} from "@/components/control-notice-toast";
 import { BurstCard } from "@/components/burst-card";
 import { GithubSourceCard } from "@/components/github-source-card";
 import { TargetsCard } from "@/components/targets-card";
@@ -44,10 +40,6 @@ import {
   runnerClicksSince,
   summariseRunnerClicks,
 } from "@/lib/email/clicks";
-import {
-  EMAIL_CONTROL_COOKIE,
-  controlCookieMatches,
-} from "@/lib/email/control";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
 import {
   GITHUB_SOURCE_PRODUCER,
@@ -74,13 +66,10 @@ import {
  * from every edge Worker on load; it now shows and edits the Grafana synthetic
  * check that sends the clicks, plus the click history that check produces.
  *
- * Two locks, in this order:
- *
- *   1. the page password (`EMAIL_PAGE_PASSWORD`) decides whether the page
- *      renders at all. Until it is satisfied the response contains the gate
- *      screen and nothing else — no check, no probes, no click history;
- *   2. the control secret (`EMAIL_CONTROL_SECRET`) only decides whether the
- *      panel it renders is read-only.
+ * One lock. The page password (`EMAIL_PAGE_PASSWORD`) decides whether the page
+ * renders at all, and the same grant authorizes every write: until it is
+ * satisfied the response contains the gate screen and nothing else — no check,
+ * no probes, no click history, and no action that would accept a write.
  *
  * `noindex` so it never shows up in search, and nothing on load sends a click.
  */
@@ -161,28 +150,11 @@ function toClickRow(row: {
 }
 
 /**
- * The query string only selects one of two fixed notices. Nothing from the URL
- * is echoed — the union is closed, and the sentences live in the toast
- * component — so `?notice=<anything>` cannot put attacker copy on the page.
- */
-function noticeCopy(value: string | undefined): ControlNotice | null {
-  switch (value) {
-    case "unlocked":
-      return "unlocked";
-    case "locked":
-      return "locked";
-    default:
-      return null;
-  }
-}
-
-/**
  * The page's search params. `source` is the shared table's filter and is
  * resolved against the stored producer here, in the request-time boundary: the
  * chips are links, not client state, so a copied URL opens the same table.
  */
 type EmailSearchParams = {
-  notice?: string;
   source?: string | string[];
 };
 
@@ -292,9 +264,15 @@ function PanelSkeleton() {
 }
 
 /**
- * The lock state and the four reads share the same boundary. Cookies make this
- * subtree dynamic, so it streams behind the static shell instead of blocking
- * the page's first paint (and `cacheComponents` requires the boundary).
+ * The console's data. Reaching this function means `EmailPageGate` already
+ * proved the page grant, so the console is writable: a locked or expired page
+ * renders the gate screen instead and never arrives here. The cards keep their
+ * `locked` prop as a presentation guard (it disables every write control), and
+ * it is `false` for the life of an unlocked page.
+ *
+ * The four reads share this boundary. Cookies make this subtree dynamic, so it
+ * streams behind the static shell instead of blocking the page's first paint
+ * (and `cacheComponents` requires the boundary).
  *
  * `connection()` is what makes that true for the clock too: without it the
  * subtree is still attempted at prerender time, and the `new Date()` below is
@@ -307,12 +285,7 @@ async function EmailControlData({
 }) {
   await connection();
   const params = await searchParams;
-  const cookieStore = await cookies();
-  const expected = await secret("EMAIL_CONTROL_SECRET");
-  const locked = !controlCookieMatches(
-    cookieStore.get(EMAIL_CONTROL_COOKIE)?.value,
-    expected,
-  );
+  const locked = false;
 
   // The table's filter is resolved here, against the stored producer, rather
   // than in the page shell or a client component: the narrowed query and the
@@ -401,11 +374,8 @@ async function EmailControlData({
   const totalClicksPerDay =
     grafanaVolume === null ? null : grafanaVolume + githubVolume;
 
-  const notice = noticeCopy(params.notice);
-
   return (
     <div className="grid gap-6">
-      {notice ? <ControlNoticeToast notice={notice} /> : null}
       {/* Targets first: one list, every source. The card's own add, pause,
           resume and remove controls are the only target controls on the page. */}
       <TargetsCard
@@ -439,7 +409,6 @@ async function EmailControlData({
           Sources
         </h2>
         <AffiliateControlPanel
-          locked={locked}
           check={checkResult.ok ? toCheckView(checkResult.data) : null}
           checkError={checkResult.ok ? null : checkResult.message}
           probes={probesResult.ok ? toProbeViews(probesResult.data) : []}

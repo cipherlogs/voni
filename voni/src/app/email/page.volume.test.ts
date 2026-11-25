@@ -105,7 +105,8 @@ test("a paused target lowers both the aggregate and the card's denominator", () 
 test("the page adds no second day arithmetic and Burst adds no daily volume", () => {
   const volumeBlock = controlData.slice(
     controlData.indexOf("const grafanaVolume"),
-    controlData.indexOf("const notice ="),
+    // Up to the render: the aggregate ends with `totalClicksPerDay`.
+    controlData.indexOf("  return ("),
   );
   assert.ok(volumeBlock.length > 0, "the aggregate is computed in EmailControlData");
   assert.doesNotMatch(

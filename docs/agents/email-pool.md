@@ -502,7 +502,7 @@ and performs no dispatch and no `last_dispatched_at` write. The worker always
 sends `{}`, so a dry run is an operator pressing the route by hand.
 
 There is no durable job kind for a dispatch. The job system is session- and
-creator-scoped, `/email` authorises with a control cookie and no session, and a
+creator-scoped, `/email` authorises with the page cookie and no session, and a
 dispatch is one bounded HTTP call. The durable part is the runner, and its
 durability is GitHub's; the app's obligation is to notice when it stops.
 
@@ -515,7 +515,6 @@ Four credentials matter here. They must never share a value.
 | Dispatch token | `GITHUB_BURST_TOKEN` | `Authorization: Bearer` on the GitHub dispatch request; a Worker secret | Starts one workflow run on `cipherlogs/voni`. One token dispatches both Burst and the browser check. Never sent to a browser, never logged, redacted from every returned string. |
 | Click-report secret | `EMAIL_CLICK_REPORT_SECRET` | `x-voni-click-secret` on `POST /api/email/clicks/report`; in the Grafana check script and in the repository's Actions secrets | One append to `affiliate_clicks`, and nothing else. |
 | Worker secret | `JOB_WORKER_SECRET` | `x-voni-worker-secret` from the Cloudflare scheduled handler | The worker-only internal routes, including the source ticker. A missing or wrong value answers `403`. |
-| Control secret | `EMAIL_CONTROL_SECRET` | cookie `voni_email_control` | The console's mutations. See **Locks**. |
 
 ### The token is scoped to this repository
 
@@ -539,36 +538,37 @@ every string the dispatcher returns.
 
 ## Locks
 
-Two credentials gate the page itself. Two more are machine credentials: the
-report secret and the worker token above. None of them may share a value.
+One credential gates the page itself and authorizes everything the page can
+write. Two more are machine credentials: the report secret and the worker token
+above. None of them may share a value.
 
 | Lock | Env var | Carried by | Lifetime | Protects |
 | --- | --- | --- | --- | --- |
-| Page password | `EMAIL_PAGE_PASSWORD` | cookie `voni_email_view`, value `sha256("voni:email-page:" + password)` in hex | 12 h; `path=/email`, `httpOnly`, `SameSite=Lax`, `Secure` in production | Whether the page renders at all. Until it is satisfied the response carries the gate screen and nothing else — no check, no probes, no click history. |
-| Control secret | `EMAIL_CONTROL_SECRET` | cookie `voni_email_control`, value `sha256(secret)` in hex | 12 h; `path=/email`, `httpOnly`, `SameSite=Lax`, `Secure` in production | The mutations: save the Grafana interval/probes/clicks, pause/resume the check, add/pause/remove a target, run one click now, run a burst, enable/disable GitHub, save the GitHub schedule, dispatch one OS, and Pause all. A locked console still renders its data; it is read-only. |
+| Page password | `EMAIL_PAGE_PASSWORD` | cookie `voni_email_view`, value `sha256("voni:email-page:" + password)` in hex | 12 h; `path=/email`, `httpOnly`, `SameSite=Lax`, `Secure` in production | Whether the page renders, and whether any console write is accepted: save the Grafana interval/probes/clicks, pause/resume the check, add/pause/remove a target, run one click now, run a burst, enable/disable GitHub, save the GitHub schedule, dispatch one OS, and Pause all. Until it is satisfied the response carries the gate screen and nothing else — no check, no probes, no click history. |
 | Click-report secret | `EMAIL_CLICK_REPORT_SECRET` | request header `x-voni-click-secret` on `POST /api/email/clicks/report` | per request; no cookie | One append to `affiliate_clicks`, and nothing else. |
-| Unlock throttle | (none — no secret to send) | Postgres bucket per hashed IP plus one deployment-wide bucket, via `bumpRateBucket` | fixed 15-minute window | Both password forms: 10 attempts per IP per window and 300 per deployment per window, spent **before** the comparison. Per-IP is bumped first and alone decides whether the attempt may spend global budget, so one anonymous address can burn only its own ten and never the ceiling the operator needs. Fail-closed: if Postgres cannot answer the form refuses with `Could not check attempts right now. Try again in a moment.` instead of rejecting the action, so a database outage is visible and never reads as a wrong password. An unresolved client IP (`"unknown"`) spends the global bucket only. The policy lives in `voni/src/lib/email/unlock-throttle.ts`. |
+| Unlock throttle | (none — no secret to send) | Postgres bucket per hashed IP plus one deployment-wide bucket, via `bumpRateBucket` | fixed 15-minute window | The password form: 10 attempts per IP per window and 300 per deployment per window, spent **before** the comparison. Per-IP is bumped first and alone decides whether the attempt may spend global budget, so one anonymous address can burn only its own ten and never the ceiling the operator needs. Fail-closed: if Postgres cannot answer the form refuses with `Could not check attempts right now. Try again in a moment.` instead of rejecting the action, so a database outage is visible and never reads as a wrong password. An unresolved client IP (`"unknown"`) spends the global bucket only. The policy lives in `voni/src/lib/email/unlock-throttle.ts`. |
 
-Two controls mirror the first two rows: **Lock panel** drops only the control
-cookie (the panel stays visible, read-only), and **Lock page** — `lockPage` —
-drops both and returns to the gate screen. A page lock that kept the control
-cookie would still accept writes from anyone who re-entered the page password,
-so the two are never dropped separately.
+There is one password, so there is one lock control: **Lock page** —
+`lockPage` — drops the page cookie and returns to the gate screen. The same
+cookie is the write grant, so a locked or expired page is refused by the same
+predicate that hides the panel: the actions re-check it inside their own bodies
+and answer `Controls are locked. Unlock the panel first.` A separate control
+secret and its cookie are gone, and no operator sets one any more.
 
 `EMAIL_CLICK_CHECK_ID` is *not* a lock: it names the Grafana check the panel
 edits and defaults to `68584` through `resolveCheckId()`, so an unset value
 edits the default check rather than refusing.
 
-The page digest is domain-separated (`voni:email-page:` prefix) so it can never
-equal the control digest: a control cookie cannot open the page gate, and a page
-cookie cannot unlock a mutation. Both cookies carry a digest rather than the
-secret, and both comparisons are constant-time over fixed-length SHA-256
-buffers, so neither a short nor a malformed cookie can throw or leak length.
+The page digest is domain-separated (`voni:email-page:` prefix) — not because a
+second cookie exists any more, but because changing the format would invalidate
+every live grant for no security gain. The cookie carries a digest rather than
+the password, and the comparison is constant-time over fixed-length SHA-256
+buffers, so a short or malformed cookie can neither throw nor leak its length.
 
 Every lock is closed when its variable is unset. The page answers "This page is
-not configured" without naming the variable, the control panel stays locked, and
-the report route answers `503 not_configured`. A wrong password and a missing
-one are deliberately indistinguishable to the caller.
+not configured" without naming the variable and accepts no write, and the report
+route answers `503 not_configured`. A wrong password and a missing one are
+deliberately indistinguishable to the caller.
 
 The report secret is **low privilege by design**. It is stored inside the
 Grafana check script, where any operator who can read the check can read it, and
@@ -678,13 +678,13 @@ nothing at all — it logs one line saying so.
   the three source cards, and the reads (check, probes, targets, 24 h stats,
   recent clicks, GitHub config, newest click per OS, GitHub click samples).
   Nothing on load sends a click.
-- `voni/src/app/email/actions.ts` — page unlock, page lock (`lockPage`, drops
-  both cookies), control unlock/lock, `saveVolume`, `toggleCheck`,
+- `voni/src/app/email/actions.ts` — page unlock, page lock (`lockPage`), and
+  the console writes: `saveVolume`, `toggleCheck`,
   `addTarget`, `toggleTarget`, `removeTarget`, `runOneOffClick`, `runBurst`,
   `setGithubSourceEnabled`, `saveGithubSchedule`, `dispatchGithubNow`,
-  `pauseAllSources`. Every exported action authorises inside its own body; the
-  client's locked rendering is never a gate. The unlock throttle's policy lives
-  in `voni/src/lib/email/unlock-throttle.ts`.
+  `pauseAllSources`. Every exported action authorises inside its own body
+  against the page grant; the client's rendering is never a gate. The unlock
+  throttle's policy lives in `voni/src/lib/email/unlock-throttle.ts`.
 - `voni/src/app/api/email/clicks/report/route.ts` — machine intake for every
   producer. One shared secret, append-only.
 - `voni/src/app/api/internal/sources/tick/route.ts` — worker-only ticker that
@@ -713,10 +713,10 @@ nothing at all — it logs one line saying so.
 - `voni/src/lib/email/clicks.ts` — `recordAffiliateClick`, the reads and stats
   the console renders, the source chips, and `summariseRunnerClicks`; schema in
   `src/lib/db/schema`.
-- `voni/src/lib/email/page-gate.ts`, `control.ts` — the two cookies and their
-  comparisons.
-- `voni/src/lib/email/unlock-throttle.ts` — the attempt budget both password
-  forms spend: per-IP first, then the global ceiling, 15-minute fixed window,
+- `voni/src/lib/email/page-gate.ts` — the one `/email` cookie (the render gate
+  and the write grant), its digest and its comparison.
+- `voni/src/lib/email/unlock-throttle.ts` — the attempt budget the password
+  form spends: per-IP first, then the global ceiling, 15-minute fixed window,
   fail-closed with a message the form can render.
 - `voni/src/lib/email/pool.ts` — the provider bag, the per-provider campaign
   map (`campaignForProvider`), `resolveTarget()` utm stamping, `baseTargetUrl()`

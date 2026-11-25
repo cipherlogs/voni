@@ -366,13 +366,12 @@ overview page. Check with `npx wrangler whoami`.
 ## Email clicks (`/email`)
 
 `voni.cc/email` is a password-gated control page over the Grafana synthetic
-check that sends the affiliate clicks; the click path and the three locks are
+check that sends the affiliate clicks; the click path and the lock are
 described in `docs/agents/email-pool.md`.
 
 | Variable | Purpose |
 | --- | --- |
-| `EMAIL_PAGE_PASSWORD` | Password for the page gate. Any long random string. The cookie holds `sha256("voni:email-page:" + password)`, never the password, and expires after 12 h. Unset = the page answers "This page is not configured" to everyone. |
-| `EMAIL_CONTROL_SECRET` | Unlocks the panel's mutations (save interval/probes, pause/resume the check, run one click now). A different value from the page password; the two cookies are domain-separated so one can never open the other's lock. Unset = the panel stays read-only. |
+| `EMAIL_PAGE_PASSWORD` | Password for the page gate, and the only authorization on `/email`: it decides whether the page renders and every console write it offers. Any long random string. The cookie holds `sha256("voni:email-page:" + password)`, never the password, and expires after 12 h. Unset = the page answers "This page is not configured" to everyone and no write is accepted. |
 | `EMAIL_CLICK_REPORT_SECRET` | Shared secret the check script sends as `x-voni-click-secret` on `POST /api/email/clicks/report`. Low privilege: it may append one click row and nothing else. Unset = that route answers `503 not_configured`. It must match the value injected into the uploaded check script — see below. |
 | `EMAIL_CLICK_CHECK_ID` | Grafana Synthetic Monitoring check id the panel reads and edits. Defaults to `68584` when unset or not a positive integer. |
 | `GRAFANA_SM_URL` | Synthetic Monitoring API base for the stack: a host with an optional path, scheme optional (`https://` is assumed). A bare word or `localhost` is refused as malformed. Without it the panel still renders click history; check reads and edits report "not configured". |

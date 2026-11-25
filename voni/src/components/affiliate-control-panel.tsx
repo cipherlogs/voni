@@ -16,12 +16,10 @@ import {
   Unlock,
 } from "lucide-react";
 import {
-  lockControl,
   lockPage,
   runOneOffClick,
   saveVolume,
   toggleCheck,
-  unlockControl,
   type ControlState,
 } from "@/app/email/actions";
 import { formatCount, useActionToast } from "@/components/action-feedback";
@@ -78,10 +76,10 @@ import {
  * The Grafana source on the `/email` console, and the shared click surface that
  * used to live inside it.
  *
- * Read-only until the server-side unlock action accepts the control secret —
- * the locked/unlocked split here is presentation only. Every action re-checks
- * the cookie inside its own body, so a hand-crafted request that skips this
- * component entirely still gets refused.
+ * The card is only rendered once the page password has been accepted, and that
+ * same grant is what the server-side actions re-check inside their own bodies —
+ * so a hand-crafted request that skips this component entirely still gets
+ * refused. There is no second secret to unlock the forms with.
  *
  * Plain, serialisable view shapes: the page converts Grafana's epoch
  * milliseconds and the database's `Date` values to strings before they cross
@@ -162,7 +160,6 @@ export type ClickSourceChipView = {
 };
 
 export type AffiliateControlPanelProps = {
-  locked: boolean;
   check: CheckView | null;
   probes: ProbeView[];
   /**
@@ -509,60 +506,14 @@ function SourceStatsSection({ stats }: { stats: StatsView }) {
   );
 }
 
-function UnlockSubmitButton() {
-  const { pending } = useFormStatus();
-  return (
-    <LoadingButton
-      type="submit"
-      pending={pending}
-      pendingText="Unlocking…"
-      icon={<Unlock />}
-    >
-      Unlock
-    </LoadingButton>
-  );
-}
-
-function UnlockForm() {
-  const [state, action, pending] = useActionState(unlockControl, INITIAL);
-  useActionToast(state, "Could not unlock the controls", {
-    successTitle: "Controls unlocked",
-  });
-
-  return (
-    <form action={action} className="grid max-w-md gap-4">
-      <Field>
-        <FieldLabel htmlFor="email-control-secret">Control secret</FieldLabel>
-        <Input
-          id="email-control-secret"
-          name="secret"
-          type="password"
-          autoComplete="current-password"
-          disabled={pending}
-          required
-        />
-        <FieldDescription>
-          The panel is read-only until this matches the control secret
-          configured for this deployment.
-        </FieldDescription>
-      </Field>
-      <div>
-        <UnlockSubmitButton />
-      </div>
-    </form>
-  );
-}
-
 /**
- * Drop both grants and return to the password screen.
+ * Drop the page grant and return to the password screen.
  *
- * `lockPage` — not `lockControl` — because the two cookies protect different
- * things: leaving the page cookie behind would keep the panel visible to
- * whoever re-enters the page password, and leaving the control cookie behind
- * would keep it writable. Success redirects, and that redirect rejects this
- * call on purpose, so the rejection is swallowed exactly as it already is for
- * `lockControl`; a real failure still surfaces through the route's error
- * boundary rather than being reported as a locked page.
+ * The page cookie is also the write grant, so clearing it makes the console
+ * read-only in the same step it stops rendering. Success redirects, and that
+ * redirect rejects this call on purpose, so the rejection is swallowed; a real
+ * failure still surfaces through the route's error boundary rather than being
+ * reported as a locked page.
  */
 function LockPageButton() {
   const [locking, setLocking] = useState(false);
@@ -657,7 +608,6 @@ function ControlsForm({
     runOneOffClick,
     INITIAL,
   );
-  const [locking, setLocking] = useState(false);
 
   useActionToast(saveState, "Could not save the volume", {
     successTitle: "Volume saved",
@@ -707,18 +657,6 @@ function ControlsForm({
     selection === "random"
       ? "Draw targets at random"
       : "Rotate through every target";
-
-  async function handleLock() {
-    setLocking(true);
-    try {
-      // Success redirects to `/email?notice=locked`. That redirect rejects this
-      // call on purpose — RedirectBoundary needs to see it — so it is not
-      // caught and reported as a failure here.
-      await lockControl();
-    } finally {
-      setLocking(false);
-    }
-  }
 
   return (
     <div className="grid gap-6">
@@ -971,22 +909,10 @@ function ControlsForm({
         </form>
 
         <div className="flex flex-wrap items-center gap-3">
-          <LoadingButton
-            type="button"
-            variant="outline"
-            pending={locking}
-            pendingText="Locking…"
-            icon={<LockKeyhole />}
-            onClick={() => {
-              void handleLock().catch(() => {});
-            }}
-          >
-            Lock panel
-          </LoadingButton>
           <LockPageButton />
           <span className="text-muted-foreground text-sm">
-            Lock panel clears the control cookie only; lock page clears both and
-            returns to the password screen.
+            The page password also authorizes these changes; locking the page
+            clears it and returns to the password screen.
           </span>
         </div>
       </div>
@@ -1187,14 +1113,15 @@ export function ClickSurface({
   );
 }
 
-/** The lock state of the controls, and the forms once unlocked. */
+/**
+ * The controls. There is no locked state here: the page gate is the only
+ * authorization, and this card is only rendered once it has been proven.
+ */
 function ControlsSection({
-  locked,
   check,
   probes,
   oneOffTargets,
 }: {
-  locked: boolean;
   check: CheckView | null;
   probes: ProbeView[];
   oneOffTargets: OneOffTargetView[];
@@ -1203,36 +1130,18 @@ function ControlsSection({
     <section className="grid gap-4 border-t pt-5">
       <div className="grid gap-1">
         <h4 className="flex items-center gap-2 font-medium">
-          {locked ? (
-            <LockKeyhole className="size-4" aria-hidden />
-          ) : (
-            <Unlock className="size-4" aria-hidden />
-          )}
+          <Unlock className="size-4" aria-hidden />
           Controls
         </h4>
         <p className="text-muted-foreground text-sm">
-          {locked
-            ? "The panel is read-only. Unlock it to change the check or run a click."
-            : "Changes apply to the Grafana check on the next run."}
+          Changes apply to the Grafana check on the next run.
         </p>
       </div>
-      {locked ? (
-        <div className="grid gap-5">
-          <UnlockForm />
-          <div className="flex flex-wrap items-center gap-3 border-t pt-4">
-            <LockPageButton />
-            <span className="text-muted-foreground text-sm">
-              Clears both cookies and returns to the password screen.
-            </span>
-          </div>
-        </div>
-      ) : (
-        <ControlsForm
-          check={check}
-          probes={probes}
-          oneOffTargets={oneOffTargets}
-        />
-      )}
+      <ControlsForm
+        check={check}
+        probes={probes}
+        oneOffTargets={oneOffTargets}
+      />
     </section>
   );
 }
@@ -1263,7 +1172,6 @@ function worstHealth(byStatus: StatsView["byStatus"]): SourceCardSummary["health
 }
 
 export function AffiliateControlPanel({
-  locked,
   check,
   probes,
   oneOffTargets,
@@ -1304,7 +1212,6 @@ export function AffiliateControlPanel({
         <StatusSection check={check} checkError={checkError} />
         <SourceStatsSection stats={stats} />
         <ControlsSection
-          locked={locked}
           check={check}
           probes={probes}
           oneOffTargets={oneOffTargets}

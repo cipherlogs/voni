@@ -21,10 +21,6 @@ const githubCard = readFileSync(
   new URL("../github-source-card.tsx", import.meta.url),
   "utf8",
 );
-const noticeToast = readFileSync(
-  new URL("../control-notice-toast.tsx", import.meta.url),
-  "utf8",
-);
 const emailPage = readFileSync(
   new URL("../../app/email/page.tsx", import.meta.url),
   "utf8",
@@ -143,19 +139,16 @@ test("a refused clipboard is a toast too, not an unhandled rejection", () => {
   assert.match(feedback, /description: "Select the command and copy it by hand\."/);
 });
 
-test("the control notice is a toast once, then the URL is cleaned", () => {
-  assert.match(
-    noticeToast,
-    /toast\.add\(\{[\s\S]*?title,[\s\S]*?description,[\s\S]*?timeout: 6_000,/,
-  );
-  assert.match(noticeToast, /router\.replace\("\/email", \{ scroll: false \}\)/);
-  assert.match(noticeToast, /announced\.current = true/);
-  assert.match(noticeToast, /Controls locked\. This panel is read-only again\./);
-  assert.match(emailPage, /<ControlNoticeToast notice=\{notice\} \/>/);
+test("/email keeps the floating toast as its only action-result surface", () => {
   assert.doesNotMatch(
     emailPage,
     /<Alert[\s>]/,
     "no inline result Alert survives on /email",
+  );
+  assert.doesNotMatch(
+    emailPage,
+    /ControlNoticeToast/,
+    "the control secret's unlock/lock notices went with the second lock",
   );
 });
 
