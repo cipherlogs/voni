@@ -380,6 +380,7 @@ test("the dispatcher sends those inputs, on main, as strings", async () => {
     targets: ["https://voni.cc/test", "https://cipherlogs.github.io/print/"],
     intervalSeconds: 60,
     windowSeconds: 3_600,
+    selection: "rotate",
   };
   const result = await dispatchBrowserCheck(input, {
     fetcher,
@@ -406,6 +407,11 @@ test("the dispatcher sends those inputs, on main, as strings", async () => {
   assert.equal(body.inputs[BROWSER_CHECK_INPUTS.os], "ubuntu");
   assert.equal(body.inputs[BROWSER_CHECK_INPUTS.interval], "60");
   assert.equal(body.inputs[BROWSER_CHECK_INPUTS.window], "3600");
+  assert.equal(
+    body.inputs[BROWSER_CHECK_INPUTS.selection],
+    "rotate",
+    "the rotation mode rides the dispatch, so the runner and Grafana cannot disagree",
+  );
   assert.deepEqual(
     JSON.parse(body.inputs[BROWSER_CHECK_INPUTS.targets]!),
     input.targets,
@@ -423,6 +429,7 @@ test("no token hands back the manual command and makes no request", async () => 
       targets: ["https://voni.cc/test"],
       intervalSeconds: 60,
       windowSeconds: 3_600,
+      selection: "random",
     },
     { fetcher, readSecret: async () => undefined },
   );
@@ -435,6 +442,11 @@ test("no token hands back the manual command and makes no request", async () => 
   assert.match(result.fallback.command, /-f os=macos/);
   assert.match(result.fallback.command, /-f interval=60/);
   assert.match(result.fallback.command, /-f window=3600/);
+  assert.match(
+    result.fallback.command,
+    /-f selection=random/,
+    "a hand-run dispatch names the mode too, or the run would not match the setting",
+  );
 });
 
 test("an impossible request is refused before it reaches GitHub", async () => {
@@ -447,6 +459,7 @@ test("an impossible request is refused before it reaches GitHub", async () => {
     targets: ["https://voni.cc/test"],
     intervalSeconds: 60,
     windowSeconds: 3_600,
+    selection: "random",
   };
 
   const badOs = await dispatchBrowserCheck(
@@ -458,10 +471,21 @@ test("an impossible request is refused before it reaches GitHub", async () => {
     { ...base, windowSeconds: MAX_JOB_SECONDS + 1 },
     deps,
   );
+  // The mode is one of two names, never a free string: a dispatch carrying
+  // anything else would land on the runner as an unknown mode.
+  const badSelection = await dispatchBrowserCheck(
+    { ...base, selection: "shuffle" as BrowserCheckInput["selection"] },
+    deps,
+  );
 
-  for (const result of [badOs, noTargets, longWindow]) {
+  for (const result of [badOs, noTargets, longWindow, badSelection]) {
     assert.equal(result.ok, false);
     if (result.ok) throw new Error("unreachable");
     assert.match(result.error, /^The browser check was not dispatched: /);
   }
+  assert.match(
+    badSelection.ok ? "" : badSelection.error,
+    /"shuffle" is not one of random, rotate/,
+    "the refusal names the two modes",
+  );
 });

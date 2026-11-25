@@ -61,58 +61,19 @@ test("the click table shows the User-Agent it already stores", () => {
   assert.match(panel, /\{click\.userAgent \?\? "—"\}/);
 });
 
-test("the save form posts the target mode as a field, not through the Switch", () => {
-  // The Switch is a button-style Base UI control with no form value of its own,
-  // and `saveVolume` refuses a request without a mode rather than guessing the
-  // default. So a hidden field carries the value, and the Switch must not be
-  // trusted to submit one.
-  assert.match(
-    panel,
-    /<input type="hidden" name="selection" value=\{selection\} \/>/,
-  );
-  assert.match(panel, /import \{ Switch \} from "@\/components\/ui\/switch";/);
-
-  const switchBlock = /<Switch[\s\S]*?\/>/.exec(panel)?.[0] ?? "";
-  assert.ok(switchBlock, "the selection Switch is rendered");
-  assert.doesNotMatch(
-    switchBlock,
-    /name="selection"/,
-    "the Switch posts nothing, so the hidden field is the submission",
-  );
-  assert.match(
-    switchBlock,
-    /disabled=\{disabled\}/,
-    "same save-in-flight / check-unavailable gate as the interval and clicks",
-  );
+test("the Grafana card no longer chooses the rotation mode", () => {
+  // The mode moved to the page-level `RotationCard` because every producer
+  // reads it. Keeping a switch here would be a second control for one setting,
+  // and the two Sources could then disagree about how a click picks a target.
+  assert.doesNotMatch(panel, /name="selection"/);
+  assert.doesNotMatch(panel, /email-control-selection/);
+  assert.doesNotMatch(panel, /import \{ Switch \}/);
 });
 
-test("the mode shown is the one the stored script runs, read through its vocabulary", () => {
-  // A mode held only in local state would let the panel show a preference the
-  // deployed script never applied. An unmarked script is "no choice yet": the
-  // switch opens on the new default and the copy says the live script still
-  // rotates, so the display stays honest until Save writes the new script.
-  assert.match(panel, /targetSelection: TargetSelection \| null;/);
-  assert.match(
-    panel,
-    /useState<TargetSelection>\(\s*\(\) => check\?\.targetSelection \?\? TARGET_SELECTION_DEFAULT,/,
-  );
-  assert.match(panel, /checked=\{selection === "random"\}/);
-  assert.match(panel, /from "@\/lib\/email\/target-selection"/);
-  assert.match(panel, /TARGET_SELECTION_LABELS\[selection\]/);
-  assert.match(panel, /TARGET_SELECTION_DESCRIPTIONS\[selection\]/);
-  // The migration note names the real behaviour of an unmarked script, so the
-  // switch never claims a mode the live check is not running.
-  assert.match(panel, /selectionUnmarked/);
-  assert.match(
-    panel,
-    /still rotating through every target; saving now applies your choice/,
-  );
-  // Copy that describes the current check (the one-off note) still reads the
-  // live behaviour, where an unmarked script is rotate.
-  assert.match(
-    panel,
-    /check\?\.targetSelection \?\? TARGET_SELECTION_LEGACY/,
-  );
+test("the one-off note describes the mode the console resolved", () => {
+  // `targetSelection` is now the page's answer (setting first, script second),
+  // not the script's marker, so the note and the click cannot disagree.
+  assert.match(panel, /targetSelection: TargetSelection;/);
 });
 
 test("the one-off click ticks enabled targets and names their hosts", () => {
@@ -219,12 +180,15 @@ test("save, toggle and one-off results are toasts only", () => {
   assert.doesNotMatch(panel, /<FeedbackAlert/, "no duplicate inline surface");
 });
 
-test("the rotate note follows the saved script, not the unsaved switch", () => {
+test("the rotate note follows the mode the console resolved", () => {
+  // The page resolves the mode once (setting, else the script's marker) and
+  // passes it to this card, so the note cannot describe a mode the click will
+  // not use.
   assert.match(panel, /const savedSelection: TargetSelection =/);
   assert.match(
     panel,
     /savedSelection === "rotate"/,
-    "the server reads the mode from the stored check, so the copy must too",
+    "the one-off click resolves the same value server-side, so the copy must match it",
   );
   assert.match(
     panel,

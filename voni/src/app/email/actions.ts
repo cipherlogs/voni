@@ -35,9 +35,8 @@ import {
   type RunnerOs,
 } from "@/lib/email/sources";
 import { dispatchBrowserCheck } from "@/lib/github/dispatch";
+import { currentRotation, saveRotationSetting } from "@/lib/email/rotation";
 import {
-  TARGET_SELECTION_DEFAULT,
-  TARGET_SELECTION_LEGACY,
   parseTargetSelection,
   pickTarget,
   type TargetSelection,
@@ -259,15 +258,56 @@ export async function lockPage(): Promise<void> {
   redirect("/email");
 }
 
-export async function saveVolume(
+/**
+ * The Grafana script's own `TARGET_SELECTION` marker, or `null` when the check
+ * carries none or cannot be read.
+ *
+ * Only the migration path calls this: once the operator saves a mode on the
+ * page, the stored setting answers for every producer and the script's copy is
+ * never consulted. Reading it here rather than in each caller is what stops a
+ * second rule growing beside the setting.
+ */
+async function scriptSelection(): Promise<TargetSelection | null> {
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+  const current = await getCheck(id);
+  return current.ok ? current.data.targetSelection : null;
+}
+
+/**
+ * The mode every producer runs with today: the page's setting, or — until that
+ * setting is written for the first time — whatever the saved script carries.
+ */
+async function liveSelection(): Promise<TargetSelection> {
+  return currentRotation(scriptSelection);
+}
+
+/** One sentence for a mode, used by the save messages. */
+function describeSelection(selection: TargetSelection): string {
+  return selection === "random"
+    ? "draw each click's target at random"
+    : "rotate through every active target once per pass";
+}
+
+/**
+ * Save the rotation mode: one setting, read by every producer.
+ *
+ * The setting is written first, because it is the source of truth — Grafana's
+ * script and the next GitHub dispatch both read it. The script is then rebuilt
+ * from the value just written rather than re-read, so a concurrent change
+ * cannot leave the two disagreeing.
+ *
+ * A failure after the write is reported as what it is: the choice is stored and
+ * the dispatch will carry it, but Grafana is still running the old mode until
+ * the rebuild lands. Saving again retries that, so the two converge rather than
+ * one silently losing.
+ */
+export async function saveRotation(
   _previous: ControlState,
   formData: FormData,
 ): Promise<ControlState> {
+  void _previous;
   if (!(await requirePageUnlock())) return locked();
 
-  // The mode is the operator's choice, so a request without one is a refusal,
-  // not a reason to save the default: a stale or hand-built form would
-  // otherwise flip a rotating check to random while claiming success.
   const selection = parseTargetSelection(formData.get("selection"));
   if (selection === null) {
     return {
@@ -275,6 +315,63 @@ export async function saveVolume(
       error: "Choose how each click picks its target: Random or Rotate through all.",
     };
   }
+
+  try {
+    await saveRotationSetting(selection);
+  } catch {
+    return {
+      ok: false,
+      error:
+        "The rotation setting could not be saved, so nothing changed. Try again.",
+    };
+  }
+
+  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+  const current = await getCheck(id);
+  const storedForGithub =
+    `The setting is saved, so the next GitHub dispatch will ` +
+    `${describeSelection(selection)}.`;
+
+  if (!current.ok) {
+    revalidatePath("/email");
+    return {
+      ok: false,
+      error:
+        `${storedForGithub} Grafana's check could not be read, so its script ` +
+        `still runs the previous mode: ${describeSyntheticFailure(current)} ` +
+        "Save again to retry.",
+    };
+  }
+
+  const uploadError = await uploadRebuiltCheck({
+    clicksPerRun: current.data.clicksPerRun,
+    targets: await activeTargetUrls(),
+    selection,
+  });
+  revalidatePath("/email");
+
+  if (uploadError !== null) {
+    return {
+      ok: false,
+      error:
+        `${storedForGithub} Grafana's script could not be rebuilt, so it still ` +
+        `runs the previous mode: ${uploadError} Save again to retry.`,
+    };
+  }
+
+  return {
+    ok: true,
+    message:
+      `Saved. Grafana's script and every GitHub dispatch now ` +
+      `${describeSelection(selection)}.`,
+  };
+}
+
+export async function saveVolume(
+  _previous: ControlState,
+  formData: FormData,
+): Promise<ControlState> {
+  if (!(await requirePageUnlock())) return locked();
 
   const frequencyMinutes = Number(formData.get("frequency"));
   const probeIds = formData.getAll("probe").map((value) => Number(value));
@@ -305,6 +402,9 @@ export async function saveVolume(
   // uses, so the uploaded copy and the committed one cannot drift. The target
   // list is read fresh: the same script inlines it, and defaulting to the seed
   // here would resurrect every paused or removed target on a volume save.
+  // The mode is the page's setting, not this form's: the switch moved out of
+  // this card, and the script only ever carries a copy of that choice.
+  const selection = await liveSelection();
   const targets = await activeTargetUrls();
   const uploadError = await uploadRebuiltCheck({
     clicksPerRun: volume.value.clicksPerRun,
@@ -427,11 +527,10 @@ async function pushTargetsToCheck(
   return uploadRebuiltCheck({
     clicksPerRun: current.data.clicksPerRun,
     targets,
-    // The mode lives in the same stored script as the count. An unmarked script
-    // is "no choice yet", so this rebuild applies the new default (random); a
-    // marked one is preserved, because a target add or pause must not silently
-    // flip the mode the operator chose.
-    selection: current.data.targetSelection ?? TARGET_SELECTION_DEFAULT,
+    // The mode is the page's setting. The script's own copy is only what a
+    // deployment that has never saved a setting still reports, so a target add
+    // or pause can neither flip the operator's choice nor invent one.
+    selection: await liveSelection(),
   });
 }
 
@@ -655,16 +754,12 @@ export async function runOneOffClick(
   // draw from exactly the operator's ticked subset — never the whole list.
   const candidates = chosen.map((target) => target.url);
 
-  // The mode is the live check's, not a form field: the scheduled clicks and
-  // this button must pick targets the same way. An unmarked script is still
-  // rotating, so it reads as rotate here; a failed read falls back to the
-  // default — the mode only decides which of the same URLs goes next, and a
-  // Grafana outage must not cost the operator the click they asked for.
-  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
-  const current = await getCheck(id);
-  const selection = current.ok
-    ? (current.data.targetSelection ?? TARGET_SELECTION_LEGACY)
-    : TARGET_SELECTION_DEFAULT;
+  // The mode is the page's setting, not a form field: the scheduled clicks and
+  // this button must pick targets the same way. Until the operator saves a
+  // mode, the live script's own mode is the answer, and a Grafana read failure
+  // at that point is tolerated — the mode only decides which of the same URLs
+  // goes next, so an outage must not cost the operator the click they asked for.
+  const selection = await liveSelection();
 
   // `lastClickByTargetUrl` keys by the *base* URL — the stamped click with its
   // utm params removed. A row's canonical URL is normally that key already,
@@ -800,16 +895,12 @@ export async function runBurst(
     };
   }
 
-  // The burst clicks the same list the check does, so it should split those
-  // clicks the same way. A burst rebuilds the script, so an unmarked script
-  // takes the new default (random); a failed read falls back to it too, because
-  // the mode only decides which of the same URLs each click takes and a
-  // Grafana outage must not cost the operator a burst.
-  const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
-  const current = await getCheck(id);
-  const selection = current.ok
-    ? (current.data.targetSelection ?? TARGET_SELECTION_DEFAULT)
-    : TARGET_SELECTION_DEFAULT;
+  // The burst clicks the same list the check does, so it splits those clicks
+  // the same way — the page's setting, not a copy of it. Until a mode is saved,
+  // the live script's own mode is the answer; a Grafana outage at that point is
+  // tolerated, because the mode only decides which of the same URLs each click
+  // takes and an outage must not cost the operator a burst.
+  const selection = await liveSelection();
 
   const result = await dispatchBurst(planned.plan, { targets, selection });
   if (!result.ok) return { ok: false, error: result.error };
@@ -984,6 +1075,9 @@ export async function dispatchGithubNow(
     targets,
     intervalSeconds: config.intervalSeconds,
     windowSeconds: segment,
+    // The rotation mode is the page's setting, the same one Grafana runs: a
+    // dispatch must never leave with a mode the operator did not choose.
+    selection: await liveSelection(),
   });
 
   // The dispatcher owns every sentence — 401, 403, 404, transport, other — and

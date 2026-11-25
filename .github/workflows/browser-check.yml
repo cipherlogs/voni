@@ -32,6 +32,10 @@ on:
         description: "How long this segment runs, in seconds (at most 20000, i.e. ~5.6 hours)."
         required: true
         type: string
+      selection:
+        description: 'Rotation mode set on /email, shared with Grafana: "random" or "rotate".'
+        required: true
+        type: string
 
 # The OS is part of the workflow's name on purpose: the card reads the run list
 # for this workflow and needs to tell an ubuntu run from a macos one.
@@ -64,6 +68,9 @@ jobs:
       BROWSER_CHECK_TARGETS: ${{ inputs.targets }}
       BROWSER_CHECK_INTERVAL: ${{ inputs.interval }}
       BROWSER_CHECK_WINDOW: ${{ inputs.window }}
+      # The rotation mode is chosen once on /email and shared with Grafana; the
+      # runner reads it, it never decides it.
+      BROWSER_CHECK_SELECTION: ${{ inputs.selection }}
       # Low-privilege by design (the intake may append one click row and
       # nothing else), and never printed: the runner sends it as a header only.
       EMAIL_CLICK_REPORT_SECRET: ${{ secrets.EMAIL_CLICK_REPORT_SECRET }}

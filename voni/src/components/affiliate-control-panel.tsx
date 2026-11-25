@@ -54,12 +54,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import {
   TARGET_SELECTION_DEFAULT,
-  TARGET_SELECTION_DESCRIPTIONS,
-  TARGET_SELECTION_LABELS,
-  TARGET_SELECTION_LEGACY,
   type TargetSelection,
 } from "@/lib/email/target-selection";
 import { targetHost } from "@/lib/email/target-url";
@@ -96,12 +92,13 @@ export type CheckView = {
   /** Clicks one run sends, read from the stored script by the page. */
   clicksPerRun: number;
   /**
-   * How the stored script picks a target, read from its `TARGET_SELECTION`
-   * marker. `null` means the script predates the setting — "no choice yet", not
-   * "rotate": the panel opens its switch on the new default while the copy
-   * beside it says the live script is still rotating.
+   * The rotation mode every producer runs with, resolved by the page from the
+   * shared setting (and, until that is written, from the script's own marker).
+   * The card shows it; it no longer sets it — the page-level `RotationCard`
+   * does, because Grafana, GitHub, the one-off click and the burst all read the
+   * same value.
    */
-  targetSelection: TargetSelection | null;
+  targetSelection: TargetSelection;
   modified: string | null;
 };
 
@@ -580,18 +577,6 @@ function ControlsForm({
   const [clicksText, setClicksText] = useState<string>(() =>
     String(check?.clicksPerRun ?? 1),
   );
-  // Initialised from the stored choice, and from the new default when the
-  // script predates the setting (null = "no choice yet"). The description below
-  // says what the live script is still doing in that case, so the switch never
-  // claims a mode the deployed check is not running without explaining why.
-  // A flip is a pending save, so `savedSelection` below stays the read-back for
-  // any copy that describes the current check rather than the unsaved switch.
-  const [selection, setSelection] = useState<TargetSelection>(
-    () => check?.targetSelection ?? TARGET_SELECTION_DEFAULT,
-  );
-  // Whether the switch opens on the default because the stored script has no
-  // marker yet; drives the one-line migration note.
-  const selectionUnmarked = check !== null && check.targetSelection === null;
   // Every enabled target starts ticked: a one-off click usually means "do the
   // check's work once", and an unticked default would leave the button dead
   // with no hint why. Nothing persists — a reload ticks all of them again.
@@ -640,10 +625,12 @@ function ControlsForm({
   const previewClicks = clicksValid ? clicks : 0;
   const previewProbes = selected.length;
   const disabled = !check || saving;
-  // What the running script does, as opposed to what the switch is about to
-  // save. The one-off click reads its mode server-side from this same value.
+  // The mode is the page's rotation setting, not this card's: it moved out to
+  // `RotationCard` because every producer reads it, and this form no longer
+  // submits one. `check?.` is only the "check could not be read" case, where a
+  // note about the mode has nothing to say, so it falls back to the default.
   const savedSelection: TargetSelection =
-    check?.targetSelection ?? TARGET_SELECTION_LEGACY;
+    check?.targetSelection ?? TARGET_SELECTION_DEFAULT;
   const hasOneOffTargets = oneOffTargets.length > 0;
   // The server refuses an empty subset; this only makes the refusal visible
   // immediately instead of after a round trip. Count the *rendered* ticks, not
@@ -653,10 +640,6 @@ function ControlsForm({
     oneOffSelected.includes(target.id),
   ).length;
   const oneOffReady = !hasOneOffTargets || tickedCount > 0;
-  const selectionLabel =
-    selection === "random"
-      ? "Draw targets at random"
-      : "Rotate through every target";
 
   return (
     <div className="grid gap-6">
@@ -732,39 +715,6 @@ function ControlsForm({
             )}
           </Field>
         </FieldGroup>
-
-        {/* Full width: the mode is one choice for the whole check, so it must
-            not look like a peer of the interval or the click count. The hidden
-            field is the submission: the Switch is a button-style Base UI
-            control that posts nothing on its own, and the server refuses a
-            request with no `selection` rather than guessing the default. */}
-        <Field>
-          <input type="hidden" name="selection" value={selection} />
-          <div className="flex items-center justify-between gap-3">
-            <FieldLabel htmlFor="email-control-selection">
-              {selectionLabel}
-            </FieldLabel>
-            <Switch
-              id="email-control-selection"
-              checked={selection === "random"}
-              onCheckedChange={(next: boolean) => {
-                setSelection(next ? "random" : "rotate");
-              }}
-              disabled={disabled}
-              data-testid="email-control-selection"
-            />
-          </div>
-          <FieldDescription>
-            <span className="text-foreground font-medium">
-              {TARGET_SELECTION_LABELS[selection]}
-            </span>{" "}
-            — {TARGET_SELECTION_DESCRIPTIONS[selection]} This is the mode stored
-            in the saved script; flipping the switch applies it when you save.
-            {selectionUnmarked
-              ? " The saved script predates this setting and is still rotating through every target; saving now applies your choice."
-              : null}
-          </FieldDescription>
-        </Field>
 
         <VolumePreview
           probes={previewProbes}
