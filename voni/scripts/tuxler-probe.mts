@@ -54,7 +54,7 @@ function xor73(bytes: Buffer): Buffer {
 }
 
 class XorSocket extends Duplex {
-  constructor(private readonly inner: net.Socket) {
+  constructor(private readonly inner: Duplex) {
     super();
     inner.on("data", (chunk: Buffer) => this.push(chunk));
     inner.on("end", () => this.push(null));
@@ -508,7 +508,7 @@ export async function fetchThroughTunnel(
 
   const secure = parsed.protocol === "https:";
   const stream = secure
-    ? tls.connect({ socket: tunnel, servername: targetHost, rejectUnauthorized: false })
+    ? tls.connect({ socket: tunnel as unknown as net.Socket, servername: targetHost, rejectUnauthorized: false })
     : tunnel;
   if (secure) await once(stream, "secureConnect");
 
@@ -678,7 +678,7 @@ async function fetchNested(
   const inner = new XorSocket(outer);
   inner.write(Buffer.from(`<h>${parsed.hostname}<p>${targetPort}</p></h>`, "latin1"));
   const stream = parsed.protocol === "https:"
-    ? tls.connect({ socket: inner, servername: parsed.hostname, rejectUnauthorized: false })
+    ? tls.connect({ socket: inner as unknown as net.Socket, servername: parsed.hostname, rejectUnauthorized: false })
     : inner;
   if (parsed.protocol === "https:") await once(stream, "secureConnect");
   stream.write(
