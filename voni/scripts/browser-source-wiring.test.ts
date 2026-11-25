@@ -17,6 +17,7 @@ import {
   exitContextProxy,
   launchOptionsFor,
 } from "./browser-egress.mjs";
+import { POOL_GATE_MIN_READY, POOL_REPORT_PATH } from "./browser-pool-gate.mjs";
 
 /**
  * The browser-check workflow is a contract with a file this test cannot run: a
@@ -186,8 +187,11 @@ test("the report secret comes from repository secrets and no literal is committe
       "BROWSER_PROXY_SERVER",
       "BROWSER_PROXY_USERNAME",
       "BROWSER_PROXY_PASSWORD",
+      // The pool account: the two secrets the client logs in with.
+      "TUXLER_USERNAME",
+      "TUXLER_PASSWD",
     ],
-    "the workflow reads the report secret and the optional proxy only",
+    "the workflow reads the report secret, the optional proxy and the pool account only",
   );
 
   assert.doesNotMatch(
@@ -529,6 +533,182 @@ test("the runner labels every click with its pass and reports the final pass", (
   );
   assert.match(RUNNER, /final pass no response from/, "the verdict names the final pass");
   assert.match(RUNNER, /report not stored for/, "and every report that never landed");
+});
+
+const POOL_START = "Start the exit pool";
+const POOL_GATE = "Wait for the exit pool";
+const POOL_FINAL = "Final pool report";
+const POOL_UPLOAD = "Pool report";
+
+test("the client starts before the clicks and the gate fails before them", () => {
+  const start = step(POOL_START);
+  assert.match(
+    start,
+    /if: env\.TUXLER_ENABLED == 'true'/,
+    "the start step is gated on the same flag the runner reads",
+  );
+  assert.match(start, /scripts\/tuxler-proxy\.mts/, "the client is the app's own CLI");
+  assert.match(
+    start,
+    /> tuxler-client\.log 2>&1 < \/dev\/null &/,
+    "the client outlives the step without holding the step's output open",
+  );
+
+  const gate = step(POOL_GATE);
+  assert.match(gate, /if: env\.TUXLER_ENABLED == 'true'/);
+  assert.match(gate, /node --import tsx scripts\/browser-pool-gate\.mjs/, "the gate is a script, not a sleep");
+  assert.equal(POOL_GATE_MIN_READY, 3, "three ready exits is the gate");
+
+  const order = [POOL_START, POOL_GATE, "Click every target"].map((name) =>
+    WORKFLOW.indexOf(`      - name: ${name}\n`),
+  );
+  for (const index of order) assert.notEqual(index, -1);
+  assert.ok(order[0]! < order[1]!, "the client is started before the gate reads it");
+  assert.ok(
+    order[1]! < order[2]!,
+    "the gate runs before the clicks: a failed step skips the click step, so it writes no rows",
+  );
+});
+
+test("the flag defaults off: no variable, no client, no pool", () => {
+  assert.match(
+    WORKFLOW,
+    /TUXLER_ENABLED: \$\{\{ vars\.TUXLER_ENABLED \}\}/,
+    "the switch is a repository variable, which an unset merge leaves empty",
+  );
+  assert.doesNotMatch(
+    WORKFLOW,
+    /TUXLER_ENABLED:[^\n]*\|\|[^\n]*/,
+    "no fallback may turn the pool on for a run nobody enabled",
+  );
+
+  const { names } = declaredInputs(WORKFLOW);
+  assert.ok(
+    !names.some((name) => /tuxler|pool|proxy|enabled/.test(name)),
+    "a dispatch cannot switch the pool on; it is not an input",
+  );
+
+  // The flag off is the pre-pool behaviour: the click step still runs, and the
+  // runner ignores a control address that is set for the pooled path.
+  const click = step("Click every target");
+  assert.doesNotMatch(click, /if:/, "with the pool off the segment clicks exactly as before");
+  assert.match(RUNNER, /readEnv\("TUXLER_ENABLED"\)/, "the runner reads the flag itself");
+  const readPool = RUNNER.slice(
+    RUNNER.indexOf("function readPoolEnabled()"),
+    RUNNER.indexOf("function readSelection()"),
+  );
+  assert.match(
+    readPool,
+    /if \(!readPoolEnabled\(\)\) return undefined;/,
+    "the pool is only consulted while the flag is on, whatever the workflow sets",
+  );
+  assert.match(
+    readPool,
+    /TUXLER_ENABLED must be "true" or "false"/,
+    "a mistyped flag is a refusal, not a quiet off",
+  );
+});
+
+test("the account is two secrets on the client step and nowhere else", () => {
+  const start = step(POOL_START);
+  for (const name of ["TUXLER_USERNAME", "TUXLER_PASSWD"]) {
+    assert.ok(
+      start.includes(`${name}: \${{ secrets.${name} }}`),
+      `${name} reaches the client from the repository secret of the same name`,
+    );
+    assert.ok(
+      !step("Click every target").includes(name) && !step(POOL_GATE).includes(name),
+      `${name} must not reach a step that does not log in`,
+    );
+  }
+
+  assert.doesNotMatch(
+    WORKFLOW,
+    /TUXLER_(?:USERNAME|PASSWD|PASSWORD):\s*["']?[A-Za-z0-9._~+@/=-]{4,}[ \t]*$/m,
+    "a literal account or password in the workflow is a credential in git",
+  );
+  assert.doesNotMatch(
+    WORKFLOW,
+    /echo[^\n]*TUXLER|set -x/,
+    "the shell must not print the step's environment",
+  );
+  assert.doesNotMatch(
+    RUNNER,
+    /console\.[a-z]+\([^)]*TUXLER_(?:USERNAME|PASSWD|PASSWORD)/i,
+    "the runner prints no account line",
+  );
+});
+
+test("the pool report is an artifact of every run that reached the clicks", () => {
+  const upload = step(POOL_UPLOAD);
+  assert.match(upload, /uses: actions\/upload-artifact@v4/);
+  assert.match(upload, /if: always\(\)/, "a failed gate's reason is the artifact");
+  assert.match(upload, /name: browser-pool-report-\$\{\{ inputs\.os \}\}/);
+  assert.match(upload, new RegExp(`path: voni/${POOL_REPORT_PATH.replace(".", "\\.")}`));
+  assert.match(upload, /if-no-files-found: ignore/, "a run with the flag off writes no report");
+
+  const final = step(POOL_FINAL);
+  assert.match(final, /if: always\(\)/);
+  assert.match(final, /browser-pool-gate\.mjs --final/, "the end-of-run counts are read once the clicks stop");
+  assert.ok(
+    WORKFLOW.indexOf(`      - name: ${POOL_FINAL}\n`) <
+      WORKFLOW.indexOf(`      - name: ${POOL_UPLOAD}\n`),
+    "the final snapshot is in the file before it is uploaded",
+  );
+
+  // The screenshots artifact stays, exactly as it was.
+  const shots = step("Failure screenshots");
+  assert.match(shots, /name: browser-check-screenshots-\$\{\{ inputs\.os \}\}/);
+  assert.match(shots, /path: voni\/screenshots\//);
+});
+
+test("the pool changes no rhythm: interval, window, segment length and the OS lock are as before", () => {
+  assert.match(
+    WORKFLOW,
+    /interval:\n {8}description: "Seconds between passes \(15-3600\)\."/,
+    "the interval input is unchanged",
+  );
+  assert.match(
+    WORKFLOW,
+    /window:\n {8}description: "How long this segment runs, in seconds \(at most 20000, i\.e\. ~5\.6 hours\)\."/,
+    "the segment length input is unchanged",
+  );
+  assert.match(WORKFLOW, /BROWSER_CHECK_INTERVAL: \$\{\{ inputs\.interval \}\}/);
+  assert.match(WORKFLOW, /BROWSER_CHECK_WINDOW: \$\{\{ inputs\.window \}\}/);
+
+  assert.match(
+    WORKFLOW,
+    /concurrency:\n {2}group: browser-check-\$\{\{ inputs\.os \}\}\n {2}cancel-in-progress: false/,
+    "one queued Segment per OS, as before",
+  );
+  assert.match(WORKFLOW, /timeout-minutes: 350/);
+
+  const poolSteps = step(POOL_START) + step(POOL_GATE) + step(POOL_FINAL);
+  assert.doesNotMatch(
+    poolSteps,
+    /BROWSER_CHECK_(?:INTERVAL|WINDOW)|sleep \d/,
+    "the pool adds no pacing of its own: the interval is the dispatched one",
+  );
+});
+
+test("the manual override stays usable and the pooled steps never set one", () => {
+  const poolSteps = step(POOL_START) + step(POOL_GATE) + step(POOL_FINAL) + step(POOL_UPLOAD);
+  assert.doesNotMatch(
+    poolSteps,
+    /BROWSER_PROXY_/,
+    "a pooled run takes its addresses from the pool; the override is for an emergency",
+  );
+  // The three override variables stay job-level secret references, so an
+  // operator can still set them for a manual run and empty them for a pooled one.
+  assert.match(
+    WORKFLOW,
+    /BROWSER_PROXY_SERVER: \$\{\{ secrets\.BROWSER_PROXY_SERVER \}\}/,
+  );
+  assert.match(
+    RUNNER,
+    /a pooled run must have BROWSER_PROXY_SERVER, BROWSER_PROXY_USERNAME and BROWSER_PROXY_PASSWORD empty/,
+    "the refusal still names the three variables a pooled run must leave empty",
+  );
 });
 
 test("the dispatcher sends those inputs, on main, as strings", async () => {

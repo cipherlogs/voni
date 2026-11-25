@@ -49,6 +49,8 @@ export interface HealthPool {
   exits: HealthExit[];
   /** Every bucket the pool can spend from; the root bucket first. */
   buckets: HealthBucket[];
+  /** Change attempts the pool has made since it started. */
+  refills: number;
   /** Sessions replaced after silence or a close, since the pool started. */
   reconnects: number;
   /** The last replacement, so health can name the reconnect rather than guess. */
@@ -62,6 +64,8 @@ export interface TuxlerHealth {
   /** Exits usable by a Click. Empty until a change reply names a port. */
   pool: HealthExit[];
   buckets: HealthBucket[];
+  /** Change attempts the pool has made. The run artifact's refill count. */
+  refills: number;
   /** Sessions the pool replaced after silence or a close. */
   reconnects: number;
   lastError: { reason: string; message: string } | null;
@@ -136,6 +140,7 @@ export function buildHealth(input: HealthInput): TuxlerHealth {
     ready: pool === undefined ? ok : ok && pool.ready > 0,
     pool: pool?.exits ?? [],
     buckets,
+    refills: pool?.refills ?? 0,
     reconnects: pool?.reconnects ?? 0,
 
     lastError: failure,

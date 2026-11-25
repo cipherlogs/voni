@@ -81,6 +81,16 @@ jobs:
       BROWSER_PROXY_SERVER: ${{ secrets.BROWSER_PROXY_SERVER }}
       BROWSER_PROXY_USERNAME: ${{ secrets.BROWSER_PROXY_USERNAME }}
       BROWSER_PROXY_PASSWORD: ${{ secrets.BROWSER_PROXY_PASSWORD }}
+      # Phase 0 of the exit pool ships behind a repository variable, default
+      # off. An unset variable is an empty string, which the runner reads as
+      # "no pool", so a mis-merge cannot start spending account changes or send
+      # a Click through a client nobody enabled. Only the exact value "true"
+      # turns it on, and it is deliberately not a dispatch input.
+      TUXLER_ENABLED: ${{ vars.TUXLER_ENABLED }}
+      # The client's loopback control API. Mapped even when the pool is off so
+      # the pooled steps have one address; the runner ignores it unless the
+      # flag above is exactly "true".
+      TUXLER_CONTROL_URL: http://127.0.0.1:41000
     steps:
       - uses: actions/checkout@v4
 
@@ -97,8 +107,58 @@ jobs:
       - name: Install Chrome
         run: npx playwright install --with-deps chrome
 
+      # The client starts before any Click and logs in from two repository
+      # secrets, scoped to this step so the click step never sees them. It is
+      # backgrounded with its output in a file: a step that held the client's
+      # stdout open would never end, and the file is not uploaded because a
+      # relay error is the one place an account could reach an artifact.
+      - name: Start the exit pool
+        if: env.TUXLER_ENABLED == 'true'
+        env:
+          TUXLER_USERNAME: ${{ secrets.TUXLER_USERNAME }}
+          TUXLER_PASSWD: ${{ secrets.TUXLER_PASSWD }}
+          TUXLER_HEALTH_PORT: "41000"
+        run: |
+          nohup node --import tsx scripts/tuxler-proxy.mts \
+            > tuxler-client.log 2>&1 < /dev/null &
+          echo $! > tuxler-client.pid
+
+      # The refusal, before Chrome exists: three ready US exits or this step
+      # fails. A failed step skips the click step below by default, so a pool
+      # that is broken or short of exits writes no click row at all, and the
+      # pool report artifact says why. Bounded at three minutes.
+      - name: Wait for the exit pool
+        if: env.TUXLER_ENABLED == 'true'
+        run: node --import tsx scripts/browser-pool-gate.mjs
+
       - name: Click every target
         run: node --import tsx scripts/browser-click.mjs
+
+      # After the clicks: one read of the pool, merged into the same report, so
+      # a five-hour segment records the refills and exits it ended with. It
+      # never fails the run — the click step already decided that.
+      - name: Final pool report
+        if: always() && env.TUXLER_ENABLED == 'true'
+        run: node --import tsx scripts/browser-pool-gate.mjs --final
+
+      - name: Stop the exit pool
+        if: always() && env.TUXLER_ENABLED == 'true'
+        run: |
+          if [ -f tuxler-client.pid ]; then
+            kill "$(cat tuxler-client.pid)" 2>/dev/null || true
+          fi
+
+      # Exits, cities, ASNs, refill counts and the failure when there was one.
+      # A run with the flag off writes no report and uploads nothing; a run
+      # whose gate failed uploads the reason.
+      - name: Pool report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-pool-report-${{ inputs.os }}
+          path: voni/pool-report.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       # A failed click is evidence, so the image is kept even when the job is
       # red. A green run writes nothing here and that is normal.

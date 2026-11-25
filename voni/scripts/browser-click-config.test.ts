@@ -28,6 +28,7 @@ function run(env: Record<string, string | undefined>) {
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ...BASE_ENV };
   // The parent's environment must not decide these cases.
   for (const name of [
+    "TUXLER_ENABLED",
     "TUXLER_CONTROL_URL",
     "BROWSER_PROXY_SERVER",
     "BROWSER_PROXY_USERNAME",
@@ -50,6 +51,7 @@ function run(env: Record<string, string | undefined>) {
 
 test("the pool and the manual override together are refused before any click", () => {
   const result = run({
+    TUXLER_ENABLED: "true",
     TUXLER_CONTROL_URL: "http://127.0.0.1:41000",
     BROWSER_PROXY_SERVER: "http://proxy.example.com:8080",
   });
@@ -68,11 +70,41 @@ test("a control URL that is not loopback is refused", () => {
     "https://127.0.0.1:41000",
     "127.0.0.1:41000",
   ]) {
-    const result = run({ TUXLER_CONTROL_URL: controlUrl });
+    const result = run({ TUXLER_ENABLED: "true", TUXLER_CONTROL_URL: controlUrl });
     assert.equal(result.status, 2, `${controlUrl} was accepted`);
     assert.match(result.stderr, /TUXLER_CONTROL_URL/);
     assert.doesNotMatch(result.stderr, /pass 1 click/);
   }
+});
+
+test("with the flag off a control address is ignored, so the run is the pre-pool one", () => {
+  // The malformed targets stop the run in `readConfig`, before a browser or a
+  // Click: if the pool were consulted first, its refusal would be the message.
+  for (const env of [
+    { TUXLER_ENABLED: "false" },
+    // Unset is off: a workflow variable nobody created must not enable a pool.
+    {},
+  ]) {
+    const result = run({
+      ...env,
+      TUXLER_CONTROL_URL: "https://127.0.0.1:41000",
+      BROWSER_CHECK_TARGETS: "not json",
+    });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /BROWSER_CHECK_TARGETS is not valid JSON/);
+    assert.doesNotMatch(
+      result.stderr,
+      /TUXLER_CONTROL_URL/,
+      "a control address set while the flag is off must never be read",
+    );
+  }
+});
+
+test("the flag is only true or false, never a guess", () => {
+  const result = run({ TUXLER_ENABLED: "yes", TUXLER_CONTROL_URL: "http://127.0.0.1:41000" });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /TUXLER_ENABLED must be "true" or "false"/);
+  assert.doesNotMatch(result.stderr, /pass 1 click/);
 });
 
 test("an unknown rotation mode is refused, not replaced by a default", () => {

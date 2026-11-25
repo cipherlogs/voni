@@ -816,6 +816,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
         ready: readyCount(),
         exits,
         buckets: reportBuckets(),
+        refills,
         reconnects,
         lastReconnect,
       };

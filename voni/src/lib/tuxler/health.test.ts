@@ -80,6 +80,44 @@ test("a live session reports the account's own limit, usage and reset time", () 
   assert.equal(health.session.handshakeMs, 812);
 });
 
+test("a pooled client reports its exits and the refills it spent reaching them", () => {
+  // The run artifact names exits, cities, ASNs and refill counts; refills are
+  // the pool's own counter, so health has to carry it rather than the runner
+  // inferring one from reconnects.
+  const health = buildHealth(
+    input({
+      pool: {
+        ready: 1,
+        exits: [
+          {
+            exitId: "198.51.100.24:4107",
+            ip: "198.51.100.24",
+            country: "US",
+            asn: "7018",
+            city: "Dallas",
+            state: "Texas",
+          },
+        ],
+        buckets: [
+          {
+            clientIpHash: bucketId(EMAIL, CLIENT_IP),
+            used: 4,
+            limit: 7,
+            remaining: 3,
+            resetAt: "2026-11-26T13:26:00.000Z",
+          },
+        ],
+        refills: 6,
+        reconnects: 1,
+      },
+    }),
+  );
+  assert.equal(health.refills, 6);
+  assert.equal(health.reconnects, 1);
+  assert.equal(health.ready, true);
+  assert.equal(health.pool[0].city, "Dallas");
+});
+
 test("an unlimited meter reports no limit and no remaining count", () => {
   const health = buildHealth(
     input({ snapshot: snapshot({ account: account({ changesLimit: -1 }) }) }),

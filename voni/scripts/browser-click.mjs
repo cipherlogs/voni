@@ -24,6 +24,10 @@
  *     and is refused outright when the pool is configured, because silently
  *     preferring one over the other is the leak this path exists to prevent.
  *     With neither, a click is direct, as it was before the pool.
+ *   - The pool is Phase 0 behind `TUXLER_ENABLED`, default off: an unset flag
+ *     is off, and while it is off the control address is not read at all, so
+ *     the run is the pre-pool one. The workflow starts the client and gates on
+ *     three ready US exits before this script is allowed to click.
  *   - QUIC and non-proxied WebRTC are disabled at launch: each is a path around
  *     the proxy that survives an otherwise correct per-context setting.
  *   - Per pass, the dispatched list is shuffled and ALL of it is clicked. The
@@ -218,11 +222,30 @@ function egressKind(config) {
 }
 
 /**
+ * The pool's enable flag, default off. Phase 0 of the pool ships behind it, so
+ * a mis-merged workflow cannot start spending account changes or send a Click
+ * through a client nobody enabled. An unset flag is off; only the exact string
+ * `"true"` turns the pool on, and anything else is a refusal rather than a
+ * quiet guess.
+ */
+function readPoolEnabled() {
+  const raw = readEnv("TUXLER_ENABLED");
+  if (raw === undefined) return false;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  stop(`TUXLER_ENABLED must be "true" or "false", got ${JSON.stringify(raw)}`);
+  return false;
+}
+
+/**
  * The client's loopback control address; unset means the pool is off. The
  * address is refused here rather than at the first Click: a segment that
  * started with a mistyped URL would click for hours with a failure per target.
+ * With the flag off the address is not read at all, so the run is exactly the
+ * pre-pool one even if the workflow still maps the variable.
  */
 function readPool() {
+  if (!readPoolEnabled()) return undefined;
   const raw = readEnv("TUXLER_CONTROL_URL");
   if (raw === undefined) return undefined;
   const parsed = parseControlUrl(raw);

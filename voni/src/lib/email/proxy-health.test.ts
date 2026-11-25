@@ -197,6 +197,7 @@ test("the real client's health JSON is what the console reads", async () => {
             { clientIpHash: "abc", used: 4, limit: 7, remaining: 3, resetAt: "2026-11-26T13:26:00.000Z" },
           ],
           reconnects: 0,
+          refills: 6,
           lastReconnect: null,
         },
       }),
