@@ -29,6 +29,8 @@ All numbers below were produced by `scripts/tuxler-probe.mts` against the live r
 | Fact | Value | How measured |
 |---|---|---|
 | Handshake, direct | ~2.4 s | 8+ sessions |
+| Handshake from a GitHub runner | **581 ms** | workflow run 45683207400 |
+| Datacenter client accepted | yes, `UNBANNED_IP_HOSTING` | same run |
 | Handshake, through a parent exit | ~2.5 s | `--chain-test` |
 | IP change | 0.6–1.5 s | 4 consecutive changes |
 | Request through depth-1 exit | ~2.1 s | `--pool-test` |
@@ -384,6 +386,22 @@ exact case it can reject. The test is cheap and decides the client's placement:
      changes, pool/rotation/console stay the same.
 
 The test spends **no IP changes** — it is a login only.
+
+### 19.1 Result (2026-11-25, run 45683207400)
+
+`ubuntu-latest`, runner egress `54.211.170.155`:
+
+```
+client public IP: 54.211.170.155
+login ok, handshake 581 ms (no IP change spent)
+<= UNBANNED_IP_HOSTING
+RESULT: UNBANNED_IP_HOSTING - the relay explicitly unbanned this address
+```
+
+**Not banned.** The relay accepts a GitHub-hosted runner as a client, and the
+handshake from the datacenter is ~4x faster than from the operator's home
+connection (581 ms vs 2.3 s). Phase 1 proceeds with the client inside the runner;
+the tunnel fallback stays documented but is not required.
 
 ## 20. Appendix — protocol essentials
 
