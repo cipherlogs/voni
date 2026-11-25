@@ -12,6 +12,11 @@ import {
 } from "../src/lib/github/dispatch";
 import { MAX_JOB_SECONDS } from "../src/lib/email/sources";
 import type { RunnerOs } from "../src/lib/email/click-report";
+import {
+  EGRESS_LAUNCH_ARGS,
+  exitContextProxy,
+  launchOptionsFor,
+} from "./browser-egress.mjs";
 
 /**
  * The browser-check workflow is a contract with a file this test cannot run: a
@@ -233,8 +238,13 @@ test("the optional proxy comes from repository secrets, never a literal", () => 
   }
   assert.match(
     RUNNER,
-    /if \(config\.proxy !== undefined\) launchOptions\.proxy = config\.proxy;/,
+    /launchOptionsFor\(\{ proxy: config\.proxy \}\)/,
     "the manual override stays one launch option, and absent means no proxy",
+  );
+  assert.equal(
+    launchOptionsFor({}).proxy,
+    undefined,
+    "absent means no proxy at all, not an empty one",
   );
   assert.match(
     RUNNER,
@@ -271,9 +281,15 @@ test("a Click takes its own exit from the control port, never a launch proxy", (
   );
   assert.match(
     RUNNER,
-    /contextOptions\.proxy = \{ server: exit\.socksUrl \}/,
+    /Object\.assign\(contextOptions, exitContextProxy\(exit\)\)/,
     "the exit is bound to the context, so each Click leaves from its own address",
   );
+  assert.deepEqual(
+    exitContextProxy({ socksUrl: "socks5://127.0.0.1:1080" }),
+    { proxy: { server: "socks5://127.0.0.1:1080" } },
+    "the context proxy is the lease's SOCKS port",
+  );
+  assert.deepEqual(exitContextProxy(undefined), {}, "no exit means no context proxy");
   assert.match(
     RUNNER,
     /await acquireExit\(config\.poolUrl\)/,
@@ -321,17 +337,32 @@ test("the pool and the manual override cannot both be configured", () => {
 });
 
 test("the launch closes the QUIC and WebRTC leak paths", () => {
-  const launch = RUNNER.slice(
-    RUNNER.indexOf("const launchOptions"),
-    RUNNER.indexOf("chromium.launch("),
-  );
-  assert.match(launch, /args:\s*\[/, "the launch passes Chrome flags");
-  assert.match(launch, /"--disable-quic"/, "QUIC is a path around an HTTP proxy");
+  // The flags live in `browser-egress.mjs` so the leak check launches a browser
+  // with the very same settings the runner uses.
   assert.match(
-    launch,
-    /"--force-webrtc-ip-handling-policy=disable_non_proxied_udp"/,
+    RUNNER,
+    /from "\.\/browser-egress\.mjs"/,
+    "the runner imports the shared egress settings",
+  );
+  assert.match(RUNNER, /launchOptionsFor\(/, "the launch options come from the module");
+  assert.doesNotMatch(
+    RUNNER,
+    /--disable-quic/,
+    "a second copy of a flag would let the runner and the leak check drift",
+  );
+
+  const launch = launchOptionsFor({});
+  assert.ok(Array.isArray(launch.args), "the launch passes Chrome flags");
+  assert.ok(
+    EGRESS_LAUNCH_ARGS.includes("--disable-quic"),
+    "QUIC is a path around an HTTP proxy",
+  );
+  assert.ok(
+    EGRESS_LAUNCH_ARGS.includes("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"),
     "WebRTC must not send non-proxied UDP",
   );
+  assert.equal(launch.channel, "chrome", "the runner still clicks with real Chrome");
+  assert.equal(launch.headless, true);
 });
 
 test("the rotation mode comes from the shared setting, and both modes are honoured", () => {
@@ -404,7 +435,16 @@ test("the runner launches Chrome once, isolates every click, and names its misse
     1,
     "one launch per segment, not one per click",
   );
-  assert.match(RUNNER, /channel: "chrome"/);
+  assert.equal(
+    launchOptionsFor({}).channel,
+    "chrome",
+    "the runner clicks with real Chrome, from the shared egress settings",
+  );
+  assert.match(
+    RUNNER,
+    /launchOptionsFor\(\{ proxy: config\.proxy \}\)/,
+    "the runner's launch is the shared egress launch",
+  );
   assert.match(RUNNER, /browser\.newContext\(/, "a fresh context per click");
   assert.match(RUNNER, /context\.close\(/, "a context is closed before the next");
   assert.match(RUNNER, /page\.screenshot\(/, "a failed click leaves an image");

@@ -32,6 +32,11 @@ jobs:
       # ffmpeg and fails (not skips) in CI when the tool is absent.
       - name: ffmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      # Ticket 08: the leak check drives a real browser through the runner's own
+      # egress settings. The bundled Chromium is enough — the claim is about the
+      # proxy, not the Chrome build — and `npm test` would fail without it.
+      - name: Chromium
+        run: npx playwright install --with-deps chromium
       # npm test runs the manifest check and every auto-discovered unit test.
       - name: Tests
         run: npm test
@@ -46,6 +51,14 @@ jobs:
       # branch or the flag/stream refusal fails this step by name.
       - name: Anti-lie contaminated run
         run: node --import tsx --test src/lib/demo/anti-lie-contaminated-run.test.ts
+      # Ticket 08 (Tuxler): a real browser, the runner's own launch flags and
+      # per-context proxy, and the runner's control client against a local fake
+      # client. The page reports the address that reached it and it must be the
+      # exit's exact address; a direct connection, the derived port, a wrong
+      # exit or a dead listener exits 1. Naming the test here means deleting or
+      # renaming it fails this step by name, not silently loses the check.
+      - name: Tuxler exit leak
+        run: node --import tsx --test scripts/tuxler-exit-leak.test.ts
 
   # Seam 4 (ticket 149): a real Chromium runs the real browser client, the real
   # mic path and the real playout worklet against a deterministic fake

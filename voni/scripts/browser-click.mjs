@@ -69,6 +69,7 @@ import {
   parseControlUrl,
   releaseExit,
 } from "./browser-exit-pool.mjs";
+import { exitContextProxy, launchOptionsFor } from "./browser-egress.mjs";
 import { redactProxyText } from "./browser-proxy-redaction.mjs";
 
 /** The one intake both producers write through. */
@@ -484,7 +485,7 @@ async function clickOnce(browser, target, config, passId, exit) {
   };
   // The exit belongs to this context, not to the launch: the next Click may
   // leave from a different address without restarting Chrome.
-  if (exit !== undefined) contextOptions.proxy = { server: exit.socksUrl };
+  Object.assign(contextOptions, exitContextProxy(exit));
 
   let context;
   try {
@@ -608,17 +609,10 @@ async function main() {
   // launch option for the whole run. A pooled segment puts its proxy on each
   // context instead, and the two are refused together above.
   //
-  // QUIC and non-proxied WebRTC are disabled for every segment: each is a path
-  // around the proxy, and a Click whose address is not its exit is a leak.
-  const launchOptions = {
-    channel: "chrome",
-    headless: true,
-    args: [
-      "--disable-quic",
-      "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-    ],
-  };
-  if (config.proxy !== undefined) launchOptions.proxy = config.proxy;
+  // The launch flags come from `browser-egress.mjs` so the leak check launches
+  // Chrome with the same QUIC and WebRTC settings: each flag is a path around
+  // the proxy, and a Click whose address is not its exit is a leak.
+  const launchOptions = launchOptionsFor({ proxy: config.proxy });
 
   // Chrome starts on the first Click that has an egress (or immediately when no
   // pool is configured). A pool that never supplies an exit therefore leaves no
