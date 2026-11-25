@@ -25,6 +25,10 @@ export interface HealthBucket {
   limit: number | null;
   remaining: number | null;
   resetAt: string | null;
+  /** 0 is the root bucket; a child bucket is 1 or deeper. Absent outside a pool. */
+  depth?: number;
+  /** The bucket this one was opened through, by `clientIpHash`. */
+  parentId?: string | null;
 }
 
 export interface HealthExit {
@@ -45,6 +49,10 @@ export interface HealthPool {
   exits: HealthExit[];
   /** Every bucket the pool can spend from; the root bucket first. */
   buckets: HealthBucket[];
+  /** Sessions replaced after silence or a close, since the pool started. */
+  reconnects: number;
+  /** The last replacement, so health can name the reconnect rather than guess. */
+  lastReconnect?: { at: string; depth: number; reason: string } | null;
 }
 
 export interface TuxlerHealth {
@@ -54,6 +62,8 @@ export interface TuxlerHealth {
   /** Exits usable by a Click. Empty until a change reply names a port. */
   pool: HealthExit[];
   buckets: HealthBucket[];
+  /** Sessions the pool replaced after silence or a close. */
+  reconnects: number;
   lastError: { reason: string; message: string } | null;
   account: {
     tier: TuxlerAccountState["tier"];
@@ -87,8 +97,8 @@ export function bucketId(account: string, clientIp: string): string {
 
 /**
  * The buckets the account's own figures describe. Empty until `LIMITS_INFO`
- * arrives, because a limit nobody reported is not a limit of ten. Ticket 06 adds
- * child buckets; each one keeps its own `clientIpHash` and its own counts.
+ * arrives, because a limit nobody reported is not a limit of ten. A pool adds its
+ * child buckets itself; each one keeps its own `clientIpHash` and its own counts.
  */
 export function bucketReport(
   clientIpHash: string | null,
@@ -126,6 +136,7 @@ export function buildHealth(input: HealthInput): TuxlerHealth {
     ready: pool === undefined ? ok : ok && pool.ready > 0,
     pool: pool?.exits ?? [],
     buckets,
+    reconnects: pool?.reconnects ?? 0,
 
     lastError: failure,
     account: {

@@ -91,6 +91,11 @@ export interface SessionOptions {
   stageTimeoutMs?: number;
   /** How long a change may take before the session counts as silent. */
   changeTimeoutMs?: number;
+  /**
+   * Where this session dials from, per relay host. Absent dials directly; a child
+   * bucket passes a factory that tunnels through its parent exit.
+   */
+  transport?: (host: string) => Transport;
   onFrame?: (frame: Frame) => void;
 }
 
@@ -461,6 +466,9 @@ function asSessionError(error: unknown, stage: SessionFailureReason): TuxlerSess
 }
 
 async function dialSecond(options: SessionOptions, port: number): Promise<Duplex> {
+  if (options.transport !== undefined) {
+    return options.transport(options.host).openSecond(port);
+  }
   const transport = directTransport({
     host: options.host,
     port: options.port,
@@ -476,11 +484,13 @@ async function openControl(
   let host = options.host;
   const redirects: string[] = [];
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    const transport: Transport = directTransport({
-      host,
-      port: options.port,
-      resolve: options.resolveEndpoint,
-    });
+    const transport: Transport =
+      options.transport?.(host) ??
+      directTransport({
+        host,
+        port: options.port,
+        resolve: options.resolveEndpoint,
+      });
     const socket = await transport.openControl().catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       throw new TuxlerSessionError(hop === 0 ? "connect-failed" : "redirect-failed", message);

@@ -7,12 +7,13 @@
  * spends nothing and serves nothing.
  */
 import { startSession, TuxlerSessionError, type SessionSnapshot, type TuxlerSession } from "./control";
-import type { EndpointResolver } from "./transport";
+import { tunneledTransport, type EndpointResolver } from "./transport";
 import type { AsnLookup } from "./validate";
 import type { TunnelDialer } from "./socks";
 import {
   PoolUnavailableError,
   startExitPool,
+  type BucketLink,
   type ExitLease,
   type ExitPool,
 } from "./pool";
@@ -32,9 +33,16 @@ export interface TuxlerPoolOptions {
   target?: number;
   refillBelow?: number;
   max?: number;
+  /** Child buckets the refill tree may grow through, defaulting to three. */
+  depth?: number;
   acquireWaitMs?: number;
   retryDelayMs?: number;
   changeTimeoutMs?: number;
+  /** Changes one session sends in a row before a cooldown, defaulting to five. */
+  paceBurst?: number;
+  paceCooldownMs?: number;
+  /** Silence after which a session is reconnected, defaulting to twenty seconds. */
+  silenceMs?: number;
   /** The ASN classifier; defaults to the real Team Cymru lookup. */
   lookup?: AsnLookup;
   /** Override the tunnel to an exit — a parent-exit dial, for example. */
@@ -141,18 +149,23 @@ export async function startTuxlerClient(options: TuxlerClientOptions = {}): Prom
     settle = resolve;
   });
 
+  /** Every session this client dials, direct for the root and through an exit for a child. */
+  const dialSession = async (link: BucketLink | null): Promise<TuxlerSession> =>
+    startSession({
+      host: options.controlHost ?? "server1.ipsharkk.com",
+      port: options.controlPort ?? 29_990,
+      email,
+      password,
+      resolveEndpoint: options.resolveEndpoint,
+      silenceMs: options.silenceMs,
+      heartbeatSeconds: options.heartbeatSeconds,
+      stageTimeoutMs: options.stageTimeoutMs,
+      transport: link === null ? undefined : tunneledTransport(link.dial),
+    });
+
   const attempt = async (): Promise<void> => {
     try {
-      const session = await startSession({
-        host: options.controlHost ?? "server1.ipsharkk.com",
-        port: options.controlPort ?? 29_990,
-        email,
-        password,
-        resolveEndpoint: options.resolveEndpoint,
-        silenceMs: options.silenceMs,
-        heartbeatSeconds: options.heartbeatSeconds,
-        stageTimeoutMs: options.stageTimeoutMs,
-      });
+      const session = await dialSession(null);
       if (state.closed) {
         session.stop();
         return;
@@ -171,18 +184,26 @@ export async function startTuxlerClient(options: TuxlerClientOptions = {}): Prom
           session,
           relayHost: session.snapshot().host,
           resolveEndpoint: options.resolveEndpoint,
-          bucketId: () => {
-            const clientIp = state.session?.snapshot().clientIp ?? null;
-            return clientIp === null ? null : bucketId(email, clientIp);
-          },
+          bucketId: (clientIp) => (clientIp === null ? null : bucketId(email, clientIp)),
           target: options.pool?.target,
           refillBelow: options.pool?.refillBelow,
           max: options.pool?.max,
+          depth: options.pool?.depth,
           acquireWaitMs: options.pool?.acquireWaitMs,
           retryDelayMs: options.pool?.retryDelayMs,
           changeTimeoutMs: options.pool?.changeTimeoutMs,
+          paceBurst: options.pool?.paceBurst,
+          paceCooldownMs: options.pool?.paceCooldownMs,
+          silenceMs: options.pool?.silenceMs,
           lookup: options.pool?.lookup,
           dial: options.pool?.dial,
+          // A child is dialled through the exit it is opened over; a silent root is
+          // replaced here, so the pool's replacement is the client's session too.
+          openSession: async (link) => {
+            const replacement = await dialSession(link);
+            if (link === null) state.session = replacement;
+            return replacement;
+          },
         });
       }
     } catch (error) {
