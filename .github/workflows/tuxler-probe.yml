@@ -1,0 +1,44 @@
+name: Tuxler probe
+
+# Checks whether the relay accepts a GitHub-hosted runner as a client.
+# Spending: login only - no IP changes, no clicks.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Probe mode (ban-check or pool-scan)
+        required: true
+        default: ban-check
+        type: choice
+        options: [ban-check, pool-scan]
+
+run-name: Tuxler probe (${{ inputs.mode }})
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voni/package-lock.json
+      - name: Install
+        working-directory: voni
+        run: npm ci
+      - name: Runner egress
+        run: |
+          curl -s --max-time 10 https://api.ipify.org || true
+          echo
+      - name: Probe
+        working-directory: voni
+        env:
+          TUXLER_USERNAME: ${{ secrets.TUXLER_USERNAME }}
+          TUXLER_PASSWD: ${{ secrets.TUXLER_PASSWD }}
+        run: |
+          node --import tsx scripts/tuxler-probe.mts --${{ inputs.mode }}
