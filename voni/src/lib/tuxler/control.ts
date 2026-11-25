@@ -14,6 +14,13 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import { ControlReader, encodeClientFrame, type Frame } from "./frames";
 import {
+  encodeChangeRequest,
+  isChangeReplyTag,
+  parseChangeReply,
+  type ChangeOutcome,
+  type ChangeRequest,
+} from "./change";
+import {
   applyAccountFrame,
   emptyAccountState,
   type TuxlerAccountState,
@@ -58,6 +65,14 @@ export interface SessionSnapshot {
 
 export interface TuxlerSession {
   snapshot(): SessionSnapshot;
+  /**
+   * Spend one location change and return the relay's own classification of the
+   * reply. The port in a `changed` outcome is the relay's; this session offers no
+   * other, because the handshake's derived port is not a proxy.
+   */
+  requestChange: (request?: ChangeRequest, timeoutMs?: number) => Promise<ChangeOutcome>;
+  /** Wait for the next frame the pump delivers that matches. */
+  waitForFrame: (predicate: (frame: Frame) => boolean, timeoutMs?: number) => Promise<Frame>;
   stop(): void;
 }
 
@@ -74,6 +89,8 @@ export interface SessionOptions {
   heartbeatSeconds?: number;
   /** Timeout for each handshake stage; the pump waits longer. */
   stageTimeoutMs?: number;
+  /** How long a change may take before the session counts as silent. */
+  changeTimeoutMs?: number;
   onFrame?: (frame: Frame) => void;
 }
 
@@ -150,6 +167,13 @@ interface OpenedControl {
   reader: ControlReader;
   /** `CONNECT_LIST` tags followed to reach `host`. */
   redirects: string[];
+}
+
+/** A caller waiting for the pump to deliver a particular frame. */
+interface FrameWaiter {
+  predicate: (frame: Frame) => boolean;
+  settle: (frame: Frame) => void;
+  fail: (error: Error) => void;
 }
 
 export async function startSession(options: SessionOptions): Promise<TuxlerSession> {
@@ -248,6 +272,38 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
   // design: read the bytes, discard them, dial nothing.
   secondSocket.on("data", () => {});
 
+  const waiters = new Set<FrameWaiter>();
+
+  /**
+   * Resolves with the next frame the pump delivers that matches. Frames before the
+   * call are not replayed: a caller asks, then acts, then waits.
+   */
+  const waitForFrame = (
+    predicate: (frame: Frame) => boolean,
+    timeoutMs = options.changeTimeoutMs ?? 25_000,
+  ): Promise<Frame> =>
+    new Promise<Frame>((resolve, reject) => {
+      const waiter: FrameWaiter = {
+        predicate,
+        settle: (frame) => {
+          clearTimeout(timer);
+          waiters.delete(waiter);
+          resolve(frame);
+        },
+        fail: (error) => {
+          clearTimeout(timer);
+          waiters.delete(waiter);
+          reject(error);
+        },
+      };
+      const timer = setTimeout(() => {
+        waiters.delete(waiter);
+        reject(new Error(`the relay sent no matching frame within ${timeoutMs} ms`));
+      }, Math.max(1, timeoutMs));
+      (timer as unknown as { unref?: () => void }).unref?.();
+      waiters.add(waiter);
+    });
+
   const record = (frame: Frame): void => {
     state.lastFrameAt = Date.now();
     if (!state.frames.includes(frame.tag) && state.frames.length < MAX_RECORDED_FRAMES) {
@@ -264,6 +320,9 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
         state.timevalSeconds = seconds;
         scheduleHeartbeat();
       }
+    }
+    for (const waiter of [...waiters]) {
+      if (waiter.predicate(frame)) waiter.settle(frame);
     }
     options.onFrame?.(frame);
   };
@@ -296,6 +355,14 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
     if (watchdog !== null) clearInterval(watchdog);
     heartbeat = null;
     watchdog = null;
+    for (const waiter of [...waiters]) {
+      waiter.fail(
+        new TuxlerSessionError(
+          state.failure?.reason ?? "socket-closed",
+          state.failure?.message ?? "the relay session closed",
+        ),
+      );
+    }
     reader.destroy();
     socket.destroy();
     secondSocket.destroy();
@@ -304,6 +371,35 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
   const stop = (): void => {
     if (state.phase === "connected") state.phase = "stopped";
     cleanup();
+  };
+
+  /**
+   * Spend one change and return the reply. A change the relay never answers is the
+   * relay's silence — the session is marked unhealthy so a caller cannot mistake it
+   * for thin US supply and start retrying into a dead socket.
+   */
+  const requestChange = async (
+    request: ChangeRequest = {},
+    timeoutMs = options.changeTimeoutMs ?? 25_000,
+  ): Promise<ChangeOutcome> => {
+    if (state.phase !== "connected") {
+      throw new TuxlerSessionError(
+        "socket-closed",
+        "the relay session is not connected; no change was sent",
+      );
+    }
+    const pending = waitForFrame((frame) => isChangeReplyTag(frame.tag), timeoutMs);
+    socket.write(encodeClientFrame("CHANGE_IP_COUNTRY_CITY", encodeChangeRequest(request)));
+    let frame: Frame;
+    try {
+      frame = await pending;
+    } catch (error) {
+      if (error instanceof TuxlerSessionError) throw error;
+      const message = `the relay did not answer the change within ${timeoutMs} ms`;
+      fail("relay-silent", message);
+      throw new TuxlerSessionError("relay-silent", message);
+    }
+    return parseChangeReply(frame);
   };
 
   reader.onClose(() => fail("socket-closed", "the relay closed the control socket"));
@@ -347,6 +443,8 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
         failure: state.failure,
       };
     },
+    requestChange,
+    waitForFrame,
     stop,
   };
 }
