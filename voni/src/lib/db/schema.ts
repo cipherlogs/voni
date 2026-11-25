@@ -922,5 +922,9 @@ export const emailSettings = pgTable("email_settings", {
   id: text("id").primaryKey().default("default"),
   /** `random` or `rotate`; `null` until the operator chooses on `/email`. */
   targetSelection: text("target_selection"),
+  /** Always `US`: the proxy client refuses any other country, so this is a constraint. */
+  proxyCountry: text("proxy_country"),
+  /** The pool's target size, 3–8; `null` until the operator chooses. */
+  proxyPoolTarget: integer("proxy_pool_target"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

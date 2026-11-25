@@ -36,6 +36,8 @@ import {
 } from "@/lib/email/sources";
 import { dispatchBrowserCheck } from "@/lib/github/dispatch";
 import { currentRotation, saveRotationSetting } from "@/lib/email/rotation";
+import { parseProxyCountry, parseProxyPoolTarget } from "@/lib/email/proxy-policy";
+import { writeProxySettings } from "@/lib/email/proxy-settings";
 import {
   parseTargetSelection,
   pickTarget,
@@ -364,6 +366,62 @@ export async function saveRotation(
     message:
       `Saved. Grafana's script and every GitHub dispatch now ` +
       `${describeSelection(selection)}.`,
+  };
+}
+
+/**
+ * Save the proxy card: US, and a pool target from three to eight.
+ *
+ * The country is validated first because it is the constraint the whole exit
+ * layer rests on: a request that names another country is refused before the
+ * input is read further and before anything is written, so it is never stored
+ * and never passed down. The target is validated next and refused with the range
+ * in the message. Only then does the single settings write run.
+ *
+ * A failed write says so plainly; a successful one names both facts, so the
+ * toast is a receipt for what actually changed.
+ */
+export async function saveProxy(
+  _previous: ControlState,
+  formData: FormData,
+): Promise<ControlState> {
+  void _previous;
+  if (!(await requirePageUnlock())) return locked();
+
+  const country = parseProxyCountry(formData.get("country"));
+  if (country === null) {
+    return {
+      ok: false,
+      error:
+        "The proxy country must be US. An exit in any other country is never " +
+        "used, so nothing was saved.",
+    };
+  }
+
+  const poolTarget = parseProxyPoolTarget(formData.get("poolTarget"));
+  if (poolTarget === null) {
+    return {
+      ok: false,
+      error:
+        "The pool target must be a whole number from 3 to 8. Nothing was saved.",
+    };
+  }
+
+  try {
+    await writeProxySettings({ country, poolTarget });
+  } catch {
+    return {
+      ok: false,
+      error: "The proxy settings could not be saved, so nothing changed. Try again.",
+    };
+  }
+
+  revalidatePath("/email");
+  return {
+    ok: true,
+    message:
+      `Saved. The pool holds ${poolTarget} US exits; the next client start ` +
+      `fills to ${poolTarget}.`,
   };
 }
 

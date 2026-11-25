@@ -14,6 +14,7 @@ import {
 import { EmailGateForm } from "@/components/email-gate-form";
 import { BurstCard } from "@/components/burst-card";
 import { GithubSourceCard } from "@/components/github-source-card";
+import { ProxyCard } from "@/components/proxy-card";
 import { RotationCard } from "@/components/rotation-card";
 import { TargetsCard } from "@/components/targets-card";
 import {
@@ -23,6 +24,7 @@ import {
   removeTarget,
   runBurst,
   saveGithubSchedule,
+  saveProxy,
   saveRotation,
   setGithubSourceEnabled,
   toggleTarget,
@@ -44,6 +46,8 @@ import {
 } from "@/lib/email/clicks";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
 import { readRotationSetting } from "@/lib/email/rotation";
+import { readProxyHealth } from "@/lib/email/proxy-health";
+import { readProxySettings } from "@/lib/email/proxy-settings";
 import {
   resolveTargetSelection,
   type TargetSelection,
@@ -145,6 +149,11 @@ function toClickRow(row: {
   userAgent: string | null;
   device: string | null;
   browser: string | null;
+  exitIp?: string | null;
+  exitCountry?: string | null;
+  exitAsn?: string | null;
+  proxyKind?: string | null;
+  failureReason?: string | null;
 }): ClickRowView {
   return {
     id: row.id,
@@ -157,6 +166,11 @@ function toClickRow(row: {
     userAgent: row.userAgent,
     device: row.device,
     browser: row.browser,
+    exitIp: row.exitIp ?? null,
+    exitCountry: row.exitCountry ?? null,
+    exitAsn: row.exitAsn ?? null,
+    proxyKind: row.proxyKind ?? null,
+    failureReason: row.failureReason ?? null,
   };
 }
 
@@ -326,6 +340,8 @@ async function EmailControlData({
     githubNewest,
     githubClicks,
     rotationSetting,
+    proxySettings,
+    proxyHealth,
   ] = await Promise.all([
     getCheck(id),
     listProbes(),
@@ -349,6 +365,11 @@ async function EmailControlData({
     // The page-level rotation setting every producer reads. `null` is "nobody
     // has chosen yet", which is what keeps an existing script's mode reported.
     readRotationSetting(),
+    // The proxy card's two facts: what the operator chose, and what the live
+    // client reports. The read is a plain GET /health on the configured
+    // control address; an absent client is a state, not an error.
+    readProxySettings(),
+    readProxyHealth(),
   ]);
 
   // One resolution rule for the whole console: the setting when it exists, else
@@ -431,6 +452,15 @@ async function EmailControlData({
         mode={rotation}
         chosen={rotationSetting !== null}
         action={saveRotation}
+      />
+      {/* The exit layer sits beside the targets and before the sources: it is
+          shared by every click, and an operator should see whether the pool can
+          serve a click before reading any source that claims to send them. */}
+      <ProxyCard
+        locked={locked}
+        settings={proxySettings}
+        health={proxyHealth}
+        action={saveProxy}
       />
       <section className="grid gap-6" aria-labelledby="email-sources-heading">
         <h2

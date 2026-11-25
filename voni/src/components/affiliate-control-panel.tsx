@@ -24,6 +24,7 @@ import {
 } from "@/app/email/actions";
 import { formatCount, useActionToast } from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
+import { describeClickExit } from "@/lib/email/click-exit";
 import {
   SourceCard,
   type SourceCardSummary,
@@ -141,6 +142,13 @@ export type ClickRowView = {
   userAgent?: string | null;
   device?: string | null;
   browser?: string | null;
+  /** The exit the click left from, for rows written after the pool existed. */
+  exitIp?: string | null;
+  exitCountry?: string | null;
+  exitAsn?: string | null;
+  proxyKind?: string | null;
+  /** Why no page was opened, for a click that failed before a browser started. */
+  failureReason?: string | null;
 };
 
 /** The view shape of one `?source=` chip, built by the page's data boundary. */
@@ -1000,6 +1008,7 @@ export function ClickSurface({
                   <th className="py-2 pr-3 font-medium">Time</th>
                   <th className="py-2 pr-3 font-medium">Target host</th>
                   <th className="py-2 pr-3 font-medium">Source</th>
+                  <th className="py-2 pr-3 font-medium">Exit</th>
                   <th className="py-2 pr-3 font-medium">Device</th>
                   <th className="py-2 pr-3 font-medium">Browser</th>
                   <th className="py-2 pr-3 font-medium">User-Agent</th>
@@ -1019,6 +1028,9 @@ export function ClickSurface({
                     </td>
                     <td className="py-2 pr-3 font-mono text-xs">
                       {click.source ?? "—"}
+                    </td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {describeClickExit(click)}
                     </td>
                     <td
                       className="py-2 pr-3 font-mono text-xs"
