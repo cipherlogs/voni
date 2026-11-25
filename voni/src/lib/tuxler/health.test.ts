@@ -8,7 +8,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { emptyAccountState, type TuxlerAccountState } from "./account";
-import { buildHealth, bucketId, startHealthServer, type HealthInput } from "./health";
+import { buildHealth, bucketId, startHealthServer, type ControlExit, type HealthInput } from "./health";
+import { PoolUnavailableError } from "./pool";
 import type { SessionSnapshot } from "./control";
 
 const EMAIL = "operator@example.test";
@@ -151,9 +152,119 @@ test("the health endpoint answers on loopback and refuses any other bind", async
     const body = (await response.json()) as ReturnType<typeof buildHealth>;
     assert.equal(body.session.state, "connected");
     assert.equal(body.buckets[0].limit, 7);
-    assert.equal((await fetch(`${server.url}/acquire`)).status, 404);
+    assert.equal(
+      (await fetch(`${server.url}/acquire`)).status,
+      503,
+      "a client without a pool says it is not ready instead of leaking a 404",
+    );
     assert.equal((await fetch(`${server.url}/health`, { method: "POST" })).status, 405);
     assert.equal((await fetch(`${server.url}/health`)).headers.get("cache-control"), "no-store");
+  } finally {
+    await server.close();
+  }
+});
+
+const CONTROL_EXIT: ControlExit = {
+  exitId: "198.51.100.24:4107",
+  server: "server1.ipsharkk.com",
+  ip: "198.51.100.24",
+  country: "US",
+  asn: "7018",
+  city: "Dallas",
+  state: "Texas",
+  socksUrl: "socks5h://127.0.0.1:4107",
+  localPort: 4107,
+};
+
+test("the control API hands one exit out and takes it back with its outcome", async () => {
+  const waits: number[] = [];
+  const released: Array<{ exitId: string; outcome: string }> = [];
+  const server = await startHealthServer({
+    port: 0,
+    snapshot: () => buildHealth(input()),
+    acquire: async ({ waitMs }) => {
+      waits.push(waitMs);
+      return CONTROL_EXIT;
+    },
+    release: async (exitId, outcome) => {
+      released.push({ exitId, outcome });
+    },
+  });
+  try {
+    const response = await fetch(`${server.url}/acquire?waitMs=9000`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), CONTROL_EXIT);
+    assert.deepEqual(waits, [9000], "the Click's own bounded wait reaches the pool");
+
+    const release = await fetch(`${server.url}/release`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ exitId: CONTROL_EXIT.exitId, ok: false }),
+    });
+    assert.equal(release.status, 204);
+    assert.equal(await release.text(), "");
+    assert.deepEqual(released, [{ exitId: CONTROL_EXIT.exitId, outcome: "failed" }]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("an acquire the pool cannot serve is a 503 with the reason, not a Click", async () => {
+  const server = await startHealthServer({
+    port: 0,
+    snapshot: () => buildHealth(input()),
+    acquire: async () => {
+      throw new PoolUnavailableError("no-us-exit", "no US exit could be obtained");
+    },
+    release: async () => {},
+  });
+  try {
+    const response = await fetch(`${server.url}/acquire?waitMs=10000`);
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { reason: "no-us-exit" });
+  } finally {
+    await server.close();
+  }
+});
+
+test("the control API refuses a malformed acquire wait or release body", async () => {
+  const server = await startHealthServer({
+    port: 0,
+    snapshot: () => buildHealth(input()),
+    acquire: async () => CONTROL_EXIT,
+    release: async () => {},
+  });
+  try {
+    assert.equal((await fetch(`${server.url}/acquire?waitMs=soon`)).status, 400);
+    assert.equal((await fetch(`${server.url}/acquire`, { method: "POST" })).status, 405);
+    assert.equal((await fetch(`${server.url}/release`)).status, 405);
+
+    const notJson = await fetch(`${server.url}/release`, {
+      method: "POST",
+      body: "{",
+    });
+    assert.equal(notJson.status, 400);
+
+    for (const body of [
+      {},
+      { exitId: "", ok: true },
+      { exitId: "198.51.100.24:4107", ok: "yes" },
+      { exitId: 42, ok: true },
+    ]) {
+      const response = await fetch(`${server.url}/release`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 400, `${JSON.stringify(body)} was accepted`);
+    }
+
+    const oversized = await fetch(`${server.url}/release`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ exitId: "x".repeat(2_000), ok: true }),
+    });
+    assert.equal(oversized.status, 413, "a release body is bounded, not buffered");
   } finally {
     await server.close();
   }

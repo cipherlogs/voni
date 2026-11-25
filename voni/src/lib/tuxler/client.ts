@@ -134,6 +134,10 @@ export async function startTuxlerClient(options: TuxlerClientOptions = {}): Prom
     host: options.health?.host,
     port: options.health?.port ?? 41000,
     snapshot: current,
+    // The runner's only way in: the same bounded acquire and the same release
+    // the pool exposes, never a second copy of the pool behind the port.
+    acquire: async ({ waitMs }) => requirePool().acquire({ waitMs }),
+    release: (exitId, outcome) => requirePool().release(exitId, outcome),
   });
 
   let settle: (health: TuxlerHealth) => void = () => {};

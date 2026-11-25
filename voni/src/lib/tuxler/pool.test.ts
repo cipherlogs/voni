@@ -164,6 +164,31 @@ test("the pool reaches five ready exits on its own, one change each", async () =
   });
 });
 
+test("a good release sends its exit to the back, so consecutive clicks differ", async () => {
+  await withRelay({ changes: distinctChanges() }, async (relay) => {
+    const session = await connect(relay);
+    const pool = makePool(relay, session, { target: 3, refillBelow: 1 });
+    try {
+      pool.start();
+      await waitFor(pool, (seen) => seen.ready === 3);
+      const used: string[] = [];
+      for (let click = 0; click < 3; click += 1) {
+        const lease = await pool.acquire();
+        used.push(lease.exitId);
+        await pool.release(lease.exitId, "good");
+      }
+      assert.equal(
+        new Set(used).size,
+        3,
+        "three clicks that each released good still used three addresses",
+      );
+    } finally {
+      await pool.close();
+      session.stop();
+    }
+  });
+});
+
 test("five acquires hand out five different exits without a change per acquire", async () => {
   await withRelay({ changes: distinctChanges() }, async (relay) => {
     const session = await connect(relay);
@@ -342,8 +367,14 @@ test("a failed release counts a strike, the second kills the exit and its listen
       assert.equal(await unreachable(lease.localPort), false, "its listener stays open");
       assert.equal(relay.stats().changeRequests, 5, "a strike spends nothing");
 
-      const same = await pool.acquire();
-      assert.equal(same.exitId, lease.exitId, "the struck exit is handed out again");
+      const offered = pool
+        .snapshot()
+        .exits.filter((exit) => exit.status === "ready")
+        .map((exit) => exit.exitId);
+      assert.ok(
+        offered.includes(lease.exitId),
+        "one strike keeps the exit in the pool, behind the others",
+      );
       await pool.release(lease.exitId, "good");
       const forgiven = pool.snapshot().exits.find((exit) => exit.exitId === lease.exitId);
       assert.equal(forgiven?.strikes, 0, "a good release clears the strike");

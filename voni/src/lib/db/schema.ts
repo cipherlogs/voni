@@ -781,6 +781,30 @@ export const clickProducerEnum = pgEnum("click_producer", [
 ]);
 
 /**
+ * How a click reached the target. Closed for the same reason the producer is:
+ * the proxy card groups and filters on this value, and a fourth spelling would
+ * be a bucket no card can name. `none` is the backfill — every row written
+ * before the pool existed left directly.
+ */
+export const clickProxyKindEnum = pgEnum("click_proxy_kind", [
+  "pool",
+  "manual",
+  "none",
+]);
+
+/**
+ * Why a click never opened a page. Closed so "no US exit" is one group and not
+ * one per wording; a browser's own error is represented by a null `status`.
+ */
+export const clickFailureReasonEnum = pgEnum("click_failure_reason", [
+  "no-us-exit",
+  "quota-spent",
+  "relay-silent",
+  "not-ready",
+  "exit-unavailable",
+]);
+
+/**
  * One affiliate click the `/email` control panel recorded: the target that was
  * drawn, the claimed source, where the redirect chain ended, the status the
  * edge saw and how long it took.
@@ -834,6 +858,20 @@ export const affiliateClicks = pgTable(
      * Grafana/one-off rows and for reports written before the field existed.
      */
     passId: text("pass_id"),
+    /**
+     * The exit that carried this click: its address, the change reply's country
+     * and its consumer ASN. Null when no exit was handed out — a Grafana or
+     * one-off click, a report written before the pool, or a pooled click that
+     * failed while the pool had none. The address is an observation, never a
+     * foreign key: an exit dies, and the row must keep saying where it went.
+     */
+    exitIp: text("exit_ip"),
+    exitCountry: text("exit_country"),
+    exitAsn: text("exit_asn"),
+    /** Pool, manual override or direct. The default is the pre-pool backfill. */
+    proxyKind: clickProxyKindEnum("proxy_kind").notNull().default("none"),
+    /** Why no page was opened; null whenever a page was attempted. */
+    failureReason: clickFailureReasonEnum("failure_reason"),
     ranAt: timestamp("ran_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

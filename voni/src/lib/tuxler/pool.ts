@@ -224,11 +224,24 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
     signalClose = resolve;
   });
 
+  /**
+   * The exit handed out last. The next acquire starts after it, so a Click that
+   * releases good sends its address to the back of the queue instead of being
+   * offered to the very next Click: consecutive Clicks never share an address
+   * while two exits are ready.
+   */
+  let lastLeased: string | null = null;
+
   const idle = (): Entry | undefined => {
-    for (const entry of entries.values()) {
-      if (!entry.leased && entry.exit.state === "ready") return entry;
-    }
-    return undefined;
+    const ready = [...entries.values()].filter(
+      (entry) => !entry.leased && entry.exit.state === "ready",
+    );
+    if (ready.length === 0) return undefined;
+    const at =
+      lastLeased === null
+        ? -1
+        : ready.findIndex((entry) => entry.exit.id === lastLeased);
+    return ready[(at + 1) % ready.length];
   };
 
   const readyCount = (): number => {
@@ -276,6 +289,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       return;
     }
     if (waiter.timer !== null) clearTimeout(waiter.timer);
+    lastLeased = entry.exit.id;
     waiter.resolve(leaseOf(entry));
   }
 
@@ -431,6 +445,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       const entry = idle();
       if (entry !== undefined) {
         entry.leased = true;
+        lastLeased = entry.exit.id;
         evaluate();
         return Promise.resolve(leaseOf(entry));
       }

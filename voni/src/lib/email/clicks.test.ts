@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { count } from "drizzle-orm";
+import { count, getTableColumns } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { affiliateClicks } from "@/lib/db/schema";
 import {
@@ -53,6 +53,20 @@ test("target guard: path-only, non-http schemes and garbage throw by value", () 
   }
 });
 
+test("attribution: a row written without a pool reads as no proxy", () => {
+  const columns = getTableColumns(affiliateClicks);
+  assert.equal(columns.exitIp.notNull, false, "an exit address is an observation, not a requirement");
+  assert.equal(columns.exitCountry.notNull, false);
+  assert.equal(columns.exitAsn.notNull, false);
+  assert.equal(
+    columns.proxyKind.default,
+    "none",
+    "the default is the backfill: every pre-pool row is a direct click",
+  );
+  assert.equal(columns.proxyKind.notNull, true);
+  assert.equal(columns.failureReason.notNull, false);
+});
+
 test("target guard: a rejected target never reaches the insert", async () => {
   await assert.rejects(
     recordAffiliateClick({
@@ -67,6 +81,11 @@ test("target guard: a rejected target never reaches the insert", async () => {
       producer: "grafana",
       runnerOs: null,
       passId: null,
+      exitIp: null,
+      exitCountry: null,
+      exitAsn: null,
+      proxyKind: "none",
+      failureReason: null,
       ranAt: new Date(),
     }),
     /absolute http\(s\) URL/,

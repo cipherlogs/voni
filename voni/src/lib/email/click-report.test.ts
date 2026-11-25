@@ -206,6 +206,132 @@ test("a malformed or oversized pass id is refused with a fixed reason", () => {
   }
 });
 
+test("a report with no proxy reads as no proxy", () => {
+  const result = parseClickReport({ target: "https://voni.cc/landing" }, NOW);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.proxyKind, "none");
+  assert.equal(result.value.exitIp, null);
+  assert.equal(result.value.exitCountry, null);
+  assert.equal(result.value.exitAsn, null);
+  assert.equal(result.value.failureReason, null);
+});
+
+test("a pooled click keeps the exit it used and its proxy kind", () => {
+  const result = parseClickReport(
+    {
+      target: "https://voni.cc/landing",
+      producer: "github",
+      runnerOs: "ubuntu",
+      passId: "2f3a9c7e-1b2d-4c5e-8f90-abcdef123456",
+      exitIp: "198.51.100.24",
+      exitCountry: "us",
+      exitAsn: "AS7018",
+      proxyKind: "pool",
+    },
+    NOW,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.exitIp, "198.51.100.24");
+  assert.equal(result.value.exitCountry, "US", "the country is stored as an alpha-2 code");
+  assert.equal(result.value.exitAsn, "7018", "an AS prefix is normalised away");
+  assert.equal(result.value.proxyKind, "pool");
+});
+
+test("a manual override is distinguishable from a pool exit", () => {
+  for (const proxyKind of ["manual", "none", "POOL"] as const) {
+    const result = parseClickReport(
+      { target: "https://voni.cc/landing", proxyKind },
+      NOW,
+    );
+    assert.equal(result.ok, true, `${proxyKind} must parse`);
+    if (!result.ok) return;
+    assert.equal(
+      result.value.proxyKind,
+      proxyKind.toLowerCase(),
+      "the stored value is the lower-cased allowlist member",
+    );
+  }
+});
+
+test("an unknown proxy kind is refused with a fixed reason", () => {
+  for (const proxyKind of ["tuxler", "residential", "", 42, {}]) {
+    const result = parseClickReport(
+      { target: "https://voni.cc/landing", proxyKind },
+      NOW,
+    );
+    assert.equal(result.ok, false, `${JSON.stringify(proxyKind)} was accepted`);
+    if (result.ok) return;
+    assert.equal(result.reason, "bad_proxy_kind");
+  }
+});
+
+test("an exit address that is not an address is refused", () => {
+  for (const exitIp of ["not-an-ip", "198.51.100.999", "example.com", 42]) {
+    const result = parseClickReport(
+      { target: "https://voni.cc/landing", exitIp },
+      NOW,
+    );
+    assert.equal(result.ok, false, `${JSON.stringify(exitIp)} was accepted`);
+    if (result.ok) return;
+    assert.equal(result.reason, "bad_exit_ip");
+  }
+  const ipv6 = parseClickReport(
+    { target: "https://voni.cc/landing", exitIp: "2001:db8::1" },
+    NOW,
+  );
+  assert.equal(ipv6.ok, true, "an IPv6 exit is still an address");
+});
+
+test("an exit country must be a two-letter code", () => {
+  for (const exitCountry of ["USA", "U", "U1", 42]) {
+    const result = parseClickReport(
+      { target: "https://voni.cc/landing", exitCountry },
+      NOW,
+    );
+    assert.equal(result.ok, false, `${JSON.stringify(exitCountry)} was accepted`);
+    if (result.ok) return;
+    assert.equal(result.reason, "bad_exit_country");
+  }
+});
+
+test("an exit ASN must be digits, with an optional AS prefix", () => {
+  for (const exitAsn of ["AS", "AS-7018", "ATT", 42]) {
+    const result = parseClickReport(
+      { target: "https://voni.cc/landing", exitAsn },
+      NOW,
+    );
+    assert.equal(result.ok, false, `${JSON.stringify(exitAsn)} was accepted`);
+    if (result.ok) return;
+    assert.equal(result.reason, "bad_exit_asn");
+  }
+});
+
+test("a stored failure reason is one of the pool's own reasons", () => {
+  const failed = parseClickReport(
+    {
+      target: "https://voni.cc/landing",
+      proxyKind: "pool",
+      failureReason: "no-us-exit",
+    },
+    NOW,
+  );
+  assert.equal(failed.ok, true);
+  if (!failed.ok) return;
+  assert.equal(failed.value.failureReason, "no-us-exit");
+
+  for (const failureReason of ["net::ERR_FAILED", "", 42]) {
+    const result = parseClickReport(
+      { target: "https://voni.cc/landing", failureReason },
+      NOW,
+    );
+    assert.equal(result.ok, false, `${JSON.stringify(failureReason)} was accepted`);
+    if (result.ok) return;
+    assert.equal(result.reason, "bad_failure_reason");
+  }
+});
+
 test("an absent producer is Grafana, and the old Grafana payload is unchanged", () => {
   const grafana = {
     target: "https://voni.cc/landing",
@@ -224,7 +350,7 @@ test("an absent producer is Grafana, and the old Grafana payload is unchanged", 
   assert.equal(result.value.producer, "grafana");
   assert.equal(result.value.runnerOs, null);
   // Every field the old reporter sent still parses to exactly what it did
-  // before the two new columns existed.
+  // before the producer, pass and attribution columns existed.
   assert.deepEqual(
     {
       ...result.value,
@@ -245,6 +371,12 @@ test("an absent producer is Grafana, and the old Grafana payload is unchanged", 
       producer: undefined,
       runnerOs: undefined,
       passId: undefined,
+      // A reporter that predates the proxy columns read as no proxy.
+      exitIp: null,
+      exitCountry: null,
+      exitAsn: null,
+      proxyKind: "none",
+      failureReason: null,
     },
   );
 });
@@ -359,10 +491,15 @@ test("unknown extra keys are ignored", () => {
   assert.deepEqual(Object.keys(result.value).sort(), [
     "browser",
     "device",
+    "exitAsn",
+    "exitCountry",
+    "exitIp",
+    "failureReason",
     "finalUrl",
     "ms",
     "passId",
     "producer",
+    "proxyKind",
     "ranAt",
     "runnerOs",
     "source",

@@ -12,7 +12,9 @@ import { db } from "@/lib/db";
 import { affiliateClicks } from "@/lib/db/schema";
 import {
   CLICK_PRODUCERS,
+  type ClickFailureReason,
   type ClickProducer,
+  type ClickProxyKind,
   type RunnerOs,
 } from "@/lib/email/click-report";
 import { baseTargetUrl } from "@/lib/email/pool";
@@ -35,6 +37,14 @@ export type AffiliateClickReport = {
   runnerOs: RunnerOs | null;
   /** The browser pass this click belonged to; null for other producers. */
   passId: string | null;
+  /** The exit that carried the click; null when no exit was handed out. */
+  exitIp: string | null;
+  exitCountry: string | null;
+  exitAsn: string | null;
+  /** Pool, manual override or direct. `none` is every pre-pool row. */
+  proxyKind: ClickProxyKind;
+  /** Why no page was opened; null whenever a page was attempted. */
+  failureReason: ClickFailureReason | null;
   ranAt: Date;
 };
 
@@ -177,6 +187,11 @@ export async function recordAffiliateClick(
     producer: input.producer,
     runnerOs: input.runnerOs,
     passId: input.passId,
+    exitIp: input.exitIp,
+    exitCountry: input.exitCountry,
+    exitAsn: input.exitAsn,
+    proxyKind: input.proxyKind,
+    failureReason: input.failureReason,
     ranAt: input.ranAt,
   });
 }
@@ -208,6 +223,11 @@ export function affiliateClicksPage(
       producer: affiliateClicks.producer,
       runnerOs: affiliateClicks.runnerOs,
       passId: affiliateClicks.passId,
+      exitIp: affiliateClicks.exitIp,
+      exitCountry: affiliateClicks.exitCountry,
+      exitAsn: affiliateClicks.exitAsn,
+      proxyKind: affiliateClicks.proxyKind,
+      failureReason: affiliateClicks.failureReason,
       ranAt: affiliateClicks.ranAt,
     })
     .from(affiliateClicks)

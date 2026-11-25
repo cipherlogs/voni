@@ -112,6 +112,53 @@ test("a client hands out a pooled exit and takes it back", async () => {
   }
 });
 
+test("the control port hands out one exit per Click and takes it back", async () => {
+  const relay = await FakeRelay.start({});
+  const client = await startTuxlerClient({
+    email: EMAIL,
+    password: PASSWORD,
+    resolveEndpoint: relay.resolve,
+    health: { port: 0 },
+    pool: { target: 3, refillBelow: 1, retryDelayMs: 100, lookup: async () => CONSUMER },
+  });
+  try {
+    await waitForHealth(client, (seen) => seen.pool.length === 3);
+    const seen = new Set<string>();
+    for (let click = 0; click < 3; click += 1) {
+      const acquired = await fetch(`${client.url}/acquire?waitMs=1000`);
+      assert.equal(acquired.status, 200);
+      const exit = (await acquired.json()) as {
+        exitId: string;
+        ip: string;
+        country: string;
+        asn: string;
+        socksUrl: string;
+      };
+      assert.equal(exit.country, "US");
+      assert.equal(exit.asn, "7018");
+      assert.match(exit.ip, /^198\.51\.100\.\d+$/);
+      assert.match(
+        exit.socksUrl,
+        /^socks5h?:\/\/127\.0\.0\.1:\d+$/,
+        "the Click is handed a loopback SOCKS port, never the relay's host",
+      );
+      assert.equal(seen.has(exit.exitId), false, "a second Click gets a different exit");
+      seen.add(exit.exitId);
+
+      const released = await fetch(`${client.url}/release`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ exitId: exit.exitId, ok: true }),
+      });
+      assert.equal(released.status, 204);
+    }
+    assert.equal(seen.size, 3, "three Clicks used three exits");
+  } finally {
+    await client.close();
+    await relay.close();
+  }
+});
+
 test("a missing credential fails the health state without opening a socket", async () => {
   const relay = await FakeRelay.start({});
   const client = await startTuxlerClient({
