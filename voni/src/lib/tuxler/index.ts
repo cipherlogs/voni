@@ -5,23 +5,43 @@
  * `GET /health`, and close it on shutdown. Everything below that is the protocol:
  * `control` runs one session, `frames` speaks the wire format, `change` reads what
  * the relay answers a change with, `validate` decides whether the address may be
- * used, `socks` serves one exit on a loopback port, and `exit` is the four together.
+ * used, `socks` serves one exit on a loopback port, `exit` is the four together,
+ * and `pool` keeps five of those exits ready and hands them out one Click at a time.
  */
 export {
   startTuxlerClient,
   type TuxlerClient,
   type TuxlerClientOptions,
   type TuxlerHealth,
+  type TuxlerPoolOptions,
 } from "./client";
 export {
   buildHealth,
   bucketId,
+  bucketReport,
   startHealthServer,
   type HealthBucket,
   type HealthExit,
+  type HealthPool,
   type HealthServer,
   type TuxlerHealthState,
 } from "./health";
+export {
+  POOL_ACQUIRE_WAIT_MS,
+  POOL_MAX,
+  POOL_REFILL_BELOW,
+  POOL_TARGET,
+  PoolUnavailableError,
+  createExitPool,
+  startExitPool,
+  type ExitLease,
+  type ExitPool,
+  type ExitPoolOptions,
+  type PoolExitReport,
+  type PoolSession,
+  type PoolSnapshot,
+  type PoolUnavailableReason,
+} from "./pool";
 export {
   TuxlerSessionError,
   startSession,

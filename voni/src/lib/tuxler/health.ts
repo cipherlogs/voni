@@ -30,9 +30,21 @@ export interface HealthBucket {
 export interface HealthExit {
   exitId: string;
   ip: string;
+  /** ISO-3166 alpha-2, from the change reply. Always `US` for a pooled exit. */
   country: string;
   asn: string | null;
   city: string | null;
+  /** The US state, from the reply's region. */
+  state: string | null;
+}
+
+/** What the pool reports about itself. Read, never a reason to refill. */
+export interface HealthPool {
+  /** Exits a Click can take right now. */
+  ready: number;
+  exits: HealthExit[];
+  /** Every bucket the pool can spend from; the root bucket first. */
+  buckets: HealthBucket[];
 }
 
 export interface TuxlerHealth {
@@ -64,6 +76,8 @@ export interface HealthInput {
   snapshot: SessionSnapshot | null;
   bucketId: string | null;
   lastError: { reason: string; message: string } | null;
+  /** The pool's report. Absent while the client has no live session to pool. */
+  pool?: HealthPool;
 }
 
 /** A stable, non-reversible meter key: the relay meters per account and egress IP. */
@@ -71,32 +85,48 @@ export function bucketId(account: string, clientIp: string): string {
   return createHash("sha256").update(`${account}\u0000${clientIp}`).digest("hex").slice(0, 16);
 }
 
+/**
+ * The buckets the account's own figures describe. Empty until `LIMITS_INFO`
+ * arrives, because a limit nobody reported is not a limit of ten. Ticket 06 adds
+ * child buckets; each one keeps its own `clientIpHash` and its own counts.
+ */
+export function bucketReport(
+  clientIpHash: string | null,
+  account: TuxlerAccountState,
+): HealthBucket[] {
+  if (account.changesLimit === null) return [];
+  return [
+    {
+      clientIpHash,
+      used: account.changesUsed,
+      limit: account.changesLimit < 0 ? null : account.changesLimit,
+      remaining: changesRemaining(account),
+      resetAt: account.resetAt,
+    },
+  ];
+}
+
 export function buildHealth(input: HealthInput): TuxlerHealth {
   const snapshot = input.snapshot;
   const account = snapshot?.account ?? null;
   const state = snapshot?.state ?? input.state;
-  const limit = account?.changesLimit ?? null;
+  const pool = input.pool;
   const buckets: HealthBucket[] =
-    account !== null && limit !== null
-      ? [
-          {
-            clientIpHash: input.bucketId,
-            used: account.changesUsed,
-            limit: limit < 0 ? null : limit,
-            remaining: changesRemaining(account),
-            resetAt: account.resetAt,
-          },
-        ]
-      : [];
+    pool !== undefined
+      ? pool.buckets
+      : account === null
+        ? []
+        : bucketReport(input.bucketId, account);
   const failure = input.lastError ?? snapshot?.failure ?? null;
   const ok = state === "connected" && failure === null;
   return {
     ok,
-    // A live session is the most this layer can promise. The pool ticket narrows
-    // readiness to "at least one validated US exit".
-    ready: ok,
-    pool: [],
+    // A live session alone does not make the client usable: with a pool, a Click
+    // needs at least one validated US exit to take.
+    ready: pool === undefined ? ok : ok && pool.ready > 0,
+    pool: pool?.exits ?? [],
     buckets,
+
     lastError: failure,
     account: {
       tier: account?.tier ?? "unknown",

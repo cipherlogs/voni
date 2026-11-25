@@ -8,7 +8,12 @@
  * Usage:
  *   node --import tsx scripts/tuxler-proxy.mts
  *   node --import tsx scripts/tuxler-proxy.mts --once --port 41000
+ *   node --import tsx scripts/tuxler-proxy.mts --once --no-pool
  *   curl -s http://127.0.0.1:41000/health | jq
+ *
+ * The client fills a pool of five exits as soon as it is logged in; `/health`
+ * reports them and `ready` means "a Click can take an exit right now". `--no-pool`
+ * runs the session alone, for a diagnostic probe that must not spend a change.
  *
  * Environment:
  *   TUXLER_EMAIL | TUXLER_USERNAME      account login
@@ -22,6 +27,8 @@ import { startTuxlerClient, type TuxlerClient } from "../src/lib/tuxler";
 
 interface CliOptions {
   once: boolean;
+  /** `true` runs the session alone: a probe must not spend a change. */
+  noPool: boolean;
   port: number;
   host: string;
   controlHost: string;
@@ -40,6 +47,7 @@ function readOptions(argv: string[]): CliOptions {
   const silence = flag("silence-ms") ?? process.env.TUXLER_SILENCE_MS;
   return {
     once: argv.includes("--once"),
+    noPool: argv.includes("--no-pool"),
     port: Number(flag("port") ?? process.env.TUXLER_HEALTH_PORT ?? 41_000),
     host: flag("bind") ?? "127.0.0.1",
     controlHost: flag("relay-host") ?? process.env.TUXLER_HOST ?? "server1.ipsharkk.com",
@@ -76,6 +84,7 @@ async function main(): Promise<number> {
       controlPort: options.controlPort,
       silenceMs: options.silenceMs,
       health: { host: options.host, port: options.port },
+      pool: options.noPool ? false : undefined,
     });
   } catch (error) {
     console.error(`tuxler-proxy: ${error instanceof Error ? error.message : String(error)}`);

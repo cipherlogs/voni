@@ -64,6 +64,9 @@ test("a client that logs in prints its health and exits zero", async () => {
     const result = await run(
       [
         "--once",
+        // A session probe: the pool is covered by the client tests, and it would
+        // need a real ASN lookup to fill.
+        "--no-pool",
         "--relay-host",
         "127.0.0.1",
         "--relay-port",
