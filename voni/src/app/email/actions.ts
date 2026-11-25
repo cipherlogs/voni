@@ -12,12 +12,6 @@ import type { TargetState } from "@/lib/email/target-state";
 import { lastClickByTargetUrl, recordAffiliateClick } from "@/lib/email/clicks";
 import { simulateOneClick } from "@/lib/email/click-simulator";
 import {
-  EMAIL_CONTROL_COOKIE,
-  controlCookieMatches,
-  controlCookieValue,
-  safeSecretEqual,
-} from "@/lib/email/control";
-import {
   PAGE_COOKIE,
   isPageUnlocked,
   pageGateCookieOptions,
@@ -81,26 +75,27 @@ import {
  * Mutations for the `/email` affiliate click control panel.
  *
  * Every action is a public endpoint once it is exported from a `"use server"`
- * file, so authorisation happens *inside each body*: the client's locked /
- * unlocked rendering is a convenience, never a gate. A request that reaches
- * `saveVolume` without the control cookie gets the same refusal as one that
- * never rendered the panel at all.
+ * file, so authorisation happens *inside each body*: the client's rendering is
+ * a convenience, never a gate. A request that reaches `saveVolume` without the
+ * page grant gets the same refusal as one that never rendered the panel at all.
  *
- * The two password forms are the only paths that run before any cookie exists,
- * so they are the only ones a stranger can hammer; both spend a DB-backed
- * attempt budget *before* comparing anything (see `throttleUnlocks`).
+ * There is one password. The page password decides whether the console
+ * renders, and that same grant is what authorises its writes: a locked or
+ * expired page has no cookie, so every write is refused. The gate is minted and
+ * verified through `@/lib/email/page-gate`, the same module the page reads
+ * with — a local copy of the digest here could drift from the page's and render
+ * the panel unlocked while every write refuses.
  *
- * The control cookie is minted and verified through `@/lib/email/control`, the
- * same module the page reads with. A local copy of the digest here could drift
- * from the page's and render the panel unlocked while every write refuses.
+ * `unlockPage` is the only path that runs before any cookie exists, so it is
+ * the only one a stranger can hammer; it spends a DB-backed attempt budget
+ * *before* comparing anything (see `throttleUnlocks`).
  *
- * What is deliberately absent: the submitted secret is never logged, a failed
- * unlock never says whether `EMAIL_CONTROL_SECRET` is set, and no Grafana or
+ * What is deliberately absent: the submitted password is never logged, a failed
+ * unlock never says whether `EMAIL_PAGE_PASSWORD` is set, and no Grafana or
  * target response body is read into a result. The panel shows curated messages,
  * not upstream text that may quote a token or an arbitrary URL.
  */
 
-const WRONG_SECRET = "Wrong secret.";
 const WRONG_PASSWORD = "Wrong password.";
 
 /**
@@ -159,22 +154,21 @@ function targetLocked(): TargetState {
 }
 
 /**
- * Server-side gate. The cookie holds `sha256(secret)`, so the comparison is
- * between fixed-length digests and the secret itself never travels back to the
- * browser. An unset env secret is indistinguishable from a wrong cookie: both
- * mean "locked", and neither is logged.
+ * The write gate. The page password is the only authorization on `/email`, so a
+ * write is allowed exactly when the presentation gate in `EmailPageGate` is:
+ * the same cookie, the same password, the same predicate from
+ * `@/lib/email/page-gate`.
  *
- * The predicate is `controlCookieMatches`, the same one the page renders the
- * lock state with — not a second copy of the rule.
+ * A missing cookie is a locked or expired page; an unset `EMAIL_PAGE_PASSWORD`
+ * is indistinguishable from a wrong one, so both mean "locked" and neither is
+ * logged. The cookie holds the digest, so the password itself never travels
+ * back to the browser.
  */
-async function requireControl(): Promise<boolean> {
-  const expected = await secret("EMAIL_CONTROL_SECRET");
-  if (!expected) return false;
-
+async function requirePageUnlock(): Promise<boolean> {
   const cookieStore = await cookies();
-  return controlCookieMatches(
-    cookieStore.get(EMAIL_CONTROL_COOKIE)?.value,
-    expected,
+  return isPageUnlocked(
+    cookieStore.get(PAGE_COOKIE)?.value,
+    await secret("EMAIL_PAGE_PASSWORD"),
   );
 }
 
@@ -190,71 +184,6 @@ function describeSyntheticFailure(
     return "Grafana credentials are not configured on this deployment.";
   }
   return result.message;
-}
-
-export async function unlockControl(
-  _previous: ControlState,
-  formData: FormData,
-): Promise<ControlState> {
-  // Before the comparison, never after: a locked-out attacker must not learn
-  // anything — by answer or by timing — from a request that then has its
-  // secret compared anyway. An unavailable limiter refuses too, but with a
-  // message that says so rather than a rejection the form cannot render.
-  const throttle = await throttleUnlocks("control");
-  if (!throttle.allowed) {
-    if (throttle.reason === "unavailable") {
-      return { ok: false, error: throttle.error };
-    }
-    return throttled(WRONG_SECRET, throttle.retryAfterSeconds);
-  }
-
-  const submitted = String(formData.get("secret") ?? "");
-  const expected = await secret("EMAIL_CONTROL_SECRET");
-
-  // The same answer whether the variable is missing, the field is empty or the
-  // value is wrong. Saying which would turn this form into a probe for the
-  // deployment's configuration. Both sides are hashed first, so the compared
-  // buffers are always 32 bytes and the timing does not depend on the input.
-  if (!expected) {
-    return { ok: false, error: WRONG_SECRET };
-  }
-  const matches =
-    submitted.length > 0 && safeSecretEqual(submitted, expected);
-  if (!matches) {
-    return { ok: false, error: WRONG_SECRET };
-  }
-
-  const cookieStore = await cookies();
-  cookieStore.set({
-    name: EMAIL_CONTROL_COOKIE,
-    value: controlCookieValue(expected),
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/email",
-    maxAge: 60 * 60 * 12,
-  });
-  // A redirect, not a returned message: `revalidatePath` remounts the client
-  // subtree, which threw away the `useActionState` success state before it
-  // rendered. The fixed notice is rendered by the page from the query string.
-  revalidatePath("/email");
-  redirect("/email?notice=unlocked");
-}
-
-/**
- * Drop the control cookie and return to the panel read-only.
- *
- * This function never returns normally: `redirect` rejects by design, because
- * that rejection is how Next unwinds the action into a navigation. Callers must
- * therefore tolerate a rejected promise — an un-caught `void lockControl()`
- * surfaces as an unhandled rejection — and must not render that rejection as a
- * failed lock.
- */
-export async function lockControl(): Promise<ControlState> {
-  const cookieStore = await cookies();
-  cookieStore.delete({ name: EMAIL_CONTROL_COOKIE, path: "/email" });
-  revalidatePath("/email");
-  redirect("/email?notice=locked");
 }
 
 /**
@@ -277,8 +206,8 @@ export async function unlockPage(
   formData: FormData,
 ): Promise<ControlState> {
   void _previous;
-  // Same order as the control form: budget first, comparison second. A limiter
-  // that cannot answer still refuses — visibly, so the gate can say why.
+  // Budget first, comparison second. A limiter that cannot answer still
+  // refuses — visibly, so the gate can say why.
   const throttle = await throttleUnlocks("page");
   if (!throttle.allowed) {
     // `revalidatePath` is what moves the action response into the render phase;
@@ -317,17 +246,15 @@ export async function unlockPage(
 }
 
 /**
- * Lock the page: drop both grants, not just the visible one.
+ * Lock the page: drop the page grant, which is also the write grant.
  *
- * The page cookie decides whether the panel renders, and the control cookie
- * decides whether it writes. Deleting only the view cookie would leave a
- * "locked" screen that anyone who re-enters the page password could still
- * write with — a lock that only hides the keypad.
+ * One cookie decides both, so deleting it returns the console to the password
+ * screen and makes every write refuse in the same step. Nothing is left behind
+ * that a re-entered password could write with before it is checked.
  */
 export async function lockPage(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.delete({ name: PAGE_COOKIE, path: "/email" });
-  cookieStore.delete({ name: EMAIL_CONTROL_COOKIE, path: "/email" });
   revalidatePath("/email");
   redirect("/email");
 }
@@ -336,7 +263,7 @@ export async function saveVolume(
   _previous: ControlState,
   formData: FormData,
 ): Promise<ControlState> {
-  if (!(await requireControl())) return locked();
+  if (!(await requirePageUnlock())) return locked();
 
   // The mode is the operator's choice, so a request without one is a refusal,
   // not a reason to save the default: a stale or hand-built form would
@@ -422,7 +349,7 @@ export async function toggleCheck(
   // the body, and ignoring them here keeps the signature the form expects.
   void _previous;
   void _formData;
-  if (!(await requireControl())) return locked();
+  if (!(await requirePageUnlock())) return locked();
 
   const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
   const current = await getCheck(id);
@@ -556,7 +483,7 @@ export async function addTarget(
   formData: FormData,
 ): Promise<TargetState> {
   void _previous;
-  if (!(await requireControl())) return targetLocked();
+  if (!(await requirePageUnlock())) return targetLocked();
 
   const raw = String(formData.get("url") ?? "");
   const problem = targetUrlProblem(raw);
@@ -605,7 +532,7 @@ export async function toggleTarget(
   formData: FormData,
 ): Promise<TargetState> {
   void _previous;
-  if (!(await requireControl())) return targetLocked();
+  if (!(await requirePageUnlock())) return targetLocked();
 
   const id = String(formData.get("id") ?? "");
   const enabled = formData.get("enabled") === "true";
@@ -654,7 +581,7 @@ export async function removeTarget(
   formData: FormData,
 ): Promise<TargetState> {
   void _previous;
-  if (!(await requireControl())) return targetLocked();
+  if (!(await requirePageUnlock())) return targetLocked();
 
   const id = String(formData.get("id") ?? "");
   const targets = await listAffiliateTargets();
@@ -700,7 +627,7 @@ export async function runOneOffClick(
   formData: FormData,
 ): Promise<ControlState> {
   void _previous;
-  if (!(await requireControl())) return locked();
+  if (!(await requirePageUnlock())) return locked();
 
   // Ticked rows, as ids: a URL in the body would make this an open proxy.
   const requested = formData.getAll("target").map(String);
@@ -846,7 +773,7 @@ export async function runBurst(
   formData: FormData,
 ): Promise<BurstState> {
   void _previous;
-  if (!(await requireControl())) return burstLocked();
+  if (!(await requirePageUnlock())) return burstLocked();
 
   const clicks = Number(formData.get("clicks"));
   const durationMinutes = Number(formData.get("duration"));
@@ -924,7 +851,7 @@ export async function setGithubSourceEnabled(
   formData: FormData,
 ): Promise<ControlState> {
   void _previous;
-  if (!(await requireControl())) return locked();
+  if (!(await requirePageUnlock())) return locked();
 
   const raw = formData.get("enabled");
   if (raw !== "true" && raw !== "false") {
@@ -957,7 +884,7 @@ export async function saveGithubSchedule(
   formData: FormData,
 ): Promise<ControlState> {
   void _previous;
-  if (!(await requireControl())) return locked();
+  if (!(await requirePageUnlock())) return locked();
 
   const interval = parseInterval(formData.get("interval"));
   if (!interval.ok) return { ok: false, error: interval.reason };
@@ -1026,7 +953,7 @@ export async function dispatchGithubNow(
   formData: FormData,
 ): Promise<GithubDispatchState> {
   void _previous;
-  if (!(await requireControl())) return { ok: false, error: LOCKED.error };
+  if (!(await requirePageUnlock())) return { ok: false, error: LOCKED.error };
 
   const os = String(formData.get("os") ?? "");
   if (!(RUNNER_OSES as readonly string[]).includes(os)) {
@@ -1163,7 +1090,7 @@ export async function pauseAllSources(
   // the body, and taking no fields means a hand-built form cannot widen it.
   void _previous;
   void _formData;
-  if (!(await requireControl())) return { ok: false, error: LOCKED.error };
+  if (!(await requirePageUnlock())) return { ok: false, error: LOCKED.error };
 
   // Both helpers start together and each settles into its own outcome. A
   // Grafana outage therefore cannot stop the GitHub disable, and neither throw

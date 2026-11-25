@@ -23,16 +23,26 @@ test("the panel imports lockPage from the actions module", () => {
   assert.match(panel, /from "@\/app\/email\/actions"/);
 });
 
-test("a Lock page control calls lockPage and is reachable in both panel states", () => {
+test("a Lock page control calls lockPage and is the only way out", () => {
   assert.match(panel, /await lockPage\(\);/);
   assert.match(panel, /data-testid="email-lock-page"/);
 
-  const renders = panel.split("<LockPageButton />").length - 1;
+  // One lock, one control: the page cookie is the write grant, so there is no
+  // second "lock panel" button and no second cookie to clear.
   assert.equal(
-    renders,
-    2,
-    "rendered for the unlocked panel and for the locked card, so the page lock exists without the control secret",
+    panel.split("<LockPageButton />").length - 1,
+    1,
+    "rendered once, in the controls the unlocked page shows",
   );
+  assert.doesNotMatch(panel, /Lock panel/);
+});
+
+test("the panel has no second password form", () => {
+  // The control secret and its unlock form are gone: the page password is the
+  // only authorization, so a secret field here would be a lock nothing checks.
+  assert.doesNotMatch(panel, /name="secret"/);
+  assert.doesNotMatch(panel, /Control secret/);
+  assert.doesNotMatch(panel, /unlockControl|lockControl/);
 });
 
 test("the redirect rejection is swallowed, not reported as a failed lock", () => {
@@ -193,7 +203,7 @@ test("the Grafana card prints its own 24-hour numbers when expanded", () => {
   );
 });
 
-test("save, toggle, one-off and unlock results are toasts only", () => {
+test("save, toggle and one-off results are toasts only", () => {
   assert.match(
     panel,
     /useActionToast\(saveState, "Could not save the volume", \{\s*successTitle: "Volume saved"/,
@@ -205,10 +215,6 @@ test("save, toggle, one-off and unlock results are toasts only", () => {
   assert.match(
     panel,
     /useActionToast\(clickState, "Could not run the click", \{\s*successTitle: "Click ran"/,
-  );
-  assert.match(
-    panel,
-    /useActionToast\(state, "Could not unlock the controls", \{\s*successTitle: "Controls unlocked"/,
   );
   assert.doesNotMatch(panel, /<FeedbackAlert/, "no duplicate inline surface");
 });

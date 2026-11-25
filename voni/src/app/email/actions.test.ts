@@ -2,19 +2,19 @@
  * Source-text assertions for the `/email` control actions, in the same shape as
  * the repo's other mutation tests. The node runner has no Next request context
  * or Grafana, so what is proved here is the surface itself: every mutation
- * gates on the control cookie above input handling, both password forms spend
- * an attempt budget before comparing anything, the unlock comparison and the
- * cookie format come from one module, and no result can carry an upstream body.
+ * gates on the page grant above input handling, the one password form spends an
+ * attempt budget before comparing anything, the write gate and the page gate
+ * are the same predicate, and no result can carry an upstream body.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
-  controlCookieMatches,
-  controlCookieValue,
-} from "@/lib/email/control";
+  isPageUnlocked,
+  pagePasswordDigest,
+} from "@/lib/email/page-gate";
 import { baseTargetUrl } from "@/lib/email/pool";
 import { buildCheckScript } from "@/lib/email/check-script";
 import {
@@ -51,6 +51,11 @@ const clicksSource = readFileSync(
 
 /** One valid script secret; `buildCheckScript` refuses a malformed literal. */
 const SECRET = "0123456789abcdef0123456789abcdef";
+/**
+ * The removed control secret's variable name, composed so this file can never
+ * satisfy — or trip — the sweep that proves it is gone.
+ */
+const REMOVED_CONTROL = ["EMAIL", "CONTROL"].join("_");
 /** A target row's own URL, which is what `baseTargetUrl` folds a stamp onto. */
 const TARGET_A = "https://voni.cc/a";
 const TARGET_B = "https://voni.cc/b";
@@ -70,105 +75,150 @@ function anyBody(name: string): string {
   return next < 0 ? source.slice(start) : source.slice(start, next);
 }
 
-test("every mutating action calls requireControl() itself", () => {
+test("every mutating action calls requirePageUnlock() itself", () => {
   for (const name of ["saveVolume", "toggleCheck", "runOneOffClick"]) {
     const body = fnBody(name);
     assert.match(
       body,
-      /requireControl\(\)/,
-      `${name} must re-check the cookie; client rendering is not a gate`,
+      /requirePageUnlock\(\)/,
+      `${name} must re-check the page grant; client rendering is not a gate`,
     );
     assert.ok(
-      body.indexOf("requireControl()") < body.indexOf("return locked()"),
+      body.indexOf("requirePageUnlock()") < body.indexOf("return locked()"),
       `${name} refuses before doing anything else`,
     );
   }
 });
 
-test("the control gate is auth-before-input", () => {
+test("the write gate is auth-before-input", () => {
   const save = fnBody("saveVolume");
   assert.ok(
-    save.indexOf("requireControl()") < save.indexOf("validateVolume({"),
+    save.indexOf("requirePageUnlock()") < save.indexOf("validateVolume({"),
     "saveVolume gates before parsing the form",
   );
   assert.ok(
-    save.indexOf("requireControl()") < save.indexOf("updateCheck("),
+    save.indexOf("requirePageUnlock()") < save.indexOf("updateCheck("),
     "saveVolume gates before writing to Grafana",
   );
 
   const toggle = fnBody("toggleCheck");
   assert.ok(
-    toggle.indexOf("requireControl()") < toggle.indexOf("getCheck("),
+    toggle.indexOf("requirePageUnlock()") < toggle.indexOf("getCheck("),
     "toggleCheck gates before reading the check",
   );
 
   const click = fnBody("runOneOffClick");
   assert.ok(
-    click.indexOf("requireControl()") < click.indexOf("listAffiliateTargets()"),
+    click.indexOf("requirePageUnlock()") < click.indexOf("listAffiliateTargets()"),
     "runOneOffClick gates before drawing a target",
   );
 });
 
-test("unlockControl compares through the shared constant-time helper", () => {
-  const unlock = fnBody("unlockControl");
+test("a write is authorized by the page password alone, and refused when the page is locked", () => {
+  const PASSWORD = "the operator's page password";
+  // Exactly the value `unlockPage` puts in the cookie: nothing else is minted.
+  const granted = pagePasswordDigest(PASSWORD);
+
+  assert.notEqual(granted, PASSWORD, "the password never rides in the cookie");
+  assert.equal(
+    isPageUnlocked(granted, PASSWORD),
+    true,
+    "an unlocked page writes: the page grant is the whole authorization",
+  );
+  assert.equal(
+    isPageUnlocked(undefined, PASSWORD),
+    false,
+    "a locked or expired page has no cookie, so the write is refused",
+  );
+  assert.equal(
+    isPageUnlocked(pagePasswordDigest("a guess"), PASSWORD),
+    false,
+    "another password's grant is refused",
+  );
+  assert.equal(
+    isPageUnlocked(granted, ""),
+    false,
+    "an unconfigured password grants nothing",
+  );
+
+  // And the action's gate is that same predicate over that same cookie: one
+  // answer for the page that renders the panel and the writes it offers, not a
+  // second lock that can drift from it.
+  const gate = anyBody("requirePageUnlock");
+  assert.match(gate, /isPageUnlocked\(/, "the gate delegates the comparison");
+  assert.match(gate, /cookieStore\.get\(PAGE_COOKIE\)/, "it reads the page cookie");
   assert.match(
-    unlock,
-    /safeSecretEqual\(submitted, expected\)/,
-    "both sides go through the module's own fixed-length digest compare",
+    gate,
+    /secret\("EMAIL_PAGE_PASSWORD"\)/,
+    "it compares against the page password",
+  );
+  assert.doesNotMatch(gate, /controlCookie|safeSecretEqual/);
+  assert.ok(
+    !gate.includes(REMOVED_CONTROL),
+    "the gate never reads the removed control secret",
   );
   assert.doesNotMatch(
     source,
-    /timingSafeEqual/,
-    "the comparison lives in @/lib/email/control, not in a second copy here",
+    /unlockControl|lockControl/,
+    "the second password form and its lock action are gone",
   );
   assert.doesNotMatch(
     source,
-    /function controlCookieValue|function constantTimeEqual|function digest/,
-    "no local cookie format or comparison",
+    /timingSafeEqual|function digest/,
+    "no local comparison: the predicate lives in @/lib/email/page-gate",
   );
   assert.match(
     source,
-    /from "@\/lib\/email\/control"/,
-    "the cookie is minted and verified through one module",
+    /from "@\/lib\/email\/page-gate"/,
+    "the grant is minted and verified through one module",
   );
 });
 
-test("a cookie minted by controlCookieValue satisfies requireControl's predicate", () => {
-  const minted = controlCookieValue("an operator secret");
-  assert.notEqual(minted, "an operator secret", "the secret never rides in the cookie");
+test("the removed control secret is gone from the code and the operator docs", () => {
+  // Composed so this file cannot satisfy its own check.
+  const REMOVED = [
+    `${REMOVED_CONTROL}_SECRET`,
+    ["voni", "email", "control"].join("_"),
+    ["lib/email", "control"].join("/"),
+  ];
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (/\.(ts|tsx|md)$/.test(entry.name)) files.push(path);
+    }
+  };
+  walk(join(here, "../.."));
+  files.push(join(here, "../../../ENVIRONMENT.md"));
+  files.push(join(here, "../../../../docs/agents/email-pool.md"));
 
-  // This is the drift the shared module prevents: the page renders the lock
-  // state with controlCookieMatches, so any format the writer mints must be
-  // the exact value that predicate accepts.
-  assert.equal(controlCookieMatches(minted, "an operator secret"), true);
-  assert.equal(controlCookieMatches(minted, "another secret"), false);
-  assert.equal(controlCookieMatches(undefined, "an operator secret"), false);
-  assert.equal(controlCookieMatches(minted, undefined), false);
-  assert.equal(controlCookieMatches("", "an operator secret"), false);
-  assert.equal(controlCookieMatches(minted, ""), false);
-});
-
-test("both password forms spend the attempt budget before comparing anything", () => {
-  const cases = [
-    ["unlockControl", "safeSecretEqual("],
-    ["unlockPage", "isPageUnlocked("],
-  ] as const;
-
-  for (const [name, comparison] of cases) {
-    const body = fnBody(name);
-    const budget = body.indexOf("await throttleUnlocks(");
-    const compare = body.indexOf(comparison);
-    assert.ok(budget >= 0, `${name} consults the limiter`);
-    assert.ok(compare > 0, `${name} compares the submitted password`);
-    assert.ok(
-      budget < compare,
-      `${name} must spend the budget first: a locked-out attacker must not learn anything from the comparison, including how long it takes`,
-    );
-    assert.ok(
-      budget < body.indexOf("const submitted = "),
-      `${name} throttles before it even reads the form`,
-    );
+  assert.ok(files.length > 50, "the walk reaches the app sources");
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    for (const needle of REMOVED) {
+      assert.ok(
+        !text.includes(needle),
+        `${file} still names the removed control secret (${needle})`,
+      );
+    }
   }
+});
+
+test("the one password form spends the attempt budget before comparing anything", () => {
+  const body = fnBody("unlockPage");
+  const budget = body.indexOf("await throttleUnlocks(");
+  const compare = body.indexOf("isPageUnlocked(");
+  assert.ok(budget >= 0, "unlockPage consults the limiter");
+  assert.ok(compare > 0, "unlockPage compares the submitted password");
+  assert.ok(
+    budget < compare,
+    "unlockPage must spend the budget first: a locked-out attacker must not learn anything from the comparison, including how long it takes",
+  );
+  assert.ok(
+    budget < body.indexOf("const submitted = "),
+    "unlockPage throttles before it even reads the form",
+  );
 });
 
 test("the unlock limiter is DB-backed, per-IP and global, 10 per 15 minutes", () => {
@@ -274,7 +324,7 @@ test("a refused per-IP attempt never touches the global bucket", async () => {
   };
 
   const verdict = await spendUnlockAttempt({
-    scope: "control",
+    scope: "page",
     ip: "203.0.113.10",
     now: NOW,
     bump,
@@ -308,7 +358,7 @@ test("an unresolved IP spends only the global bucket, not a fake per-IP one", as
   const store = memoryBuckets();
 
   const verdict = await spendUnlockAttempt({
-    scope: "control",
+    scope: "page",
     ip: "unknown",
     now: NOW,
     bump: store.bump,
@@ -316,7 +366,7 @@ test("an unresolved IP spends only the global bucket, not a fake per-IP one", as
 
   assert.deepEqual(verdict, { allowed: true });
   assert.deepEqual([...store.counts.keys()], [
-    `email-unlock:control:global:${WINDOW}`,
+    `email-unlock:page:global:${WINDOW}`,
   ]);
 });
 
@@ -341,24 +391,22 @@ test("a limiter outage is a visible refusal, not a rejected action", async () =>
   );
 });
 
-test("both password forms return the outage message instead of throwing", () => {
-  for (const [name, wrong] of [
-    ["unlockControl", "throttled(WRONG_SECRET, throttle.retryAfterSeconds)"],
-    ["unlockPage", "throttled(WRONG_PASSWORD, throttle.retryAfterSeconds)"],
-  ] as const) {
-    const body = fnBody(name);
-    assert.match(
-      body,
-      /if \(throttle\.reason === "unavailable"\)[\s\S]*return \{ ok: false, error: throttle\.error \}/,
-      `${name} must render a limiter outage, not reject`,
-    );
-    assert.ok(body.includes(wrong), `${name} still answers a real throttle as a wrong secret`);
-    assert.match(
-      body,
-      /if \(!throttle\.allowed\)/,
-      `${name} decides from the verdict before anything else`,
-    );
-  }
+test("the password form returns the outage message instead of throwing", () => {
+  const body = fnBody("unlockPage");
+  assert.match(
+    body,
+    /if \(throttle\.reason === "unavailable"\)[\s\S]*return \{ ok: false, error: throttle\.error \}/,
+    "unlockPage must render a limiter outage, not reject",
+  );
+  assert.ok(
+    body.includes("throttled(WRONG_PASSWORD, throttle.retryAfterSeconds)"),
+    "unlockPage still answers a real throttle as a wrong password",
+  );
+  assert.match(
+    body,
+    /if \(!throttle\.allowed\)/,
+    "unlockPage decides from the verdict before anything else",
+  );
 });
 
 test("the bucket salt comes from the deployment secret, not a public literal alone", () => {
@@ -410,105 +458,58 @@ test("a target that answered non-2xx is a different sentence from a refused hop"
 
 test("a throttled unlock is the wrong-password refusal plus the wait", () => {
   assert.match(
-    fnBody("unlockControl"),
-    /throttled\(WRONG_SECRET, throttle\.retryAfterSeconds\)/,
-  );
-  assert.match(
     fnBody("unlockPage"),
     /throttled\(WRONG_PASSWORD, throttle\.retryAfterSeconds\)/,
   );
-  assert.match(source, /const WRONG_SECRET = "Wrong secret\."/);
   assert.match(source, /const WRONG_PASSWORD = "Wrong password\."/);
+  assert.doesNotMatch(
+    source,
+    /WRONG_SECRET/,
+    "the second form's sentence went with the second form",
+  );
   assert.ok(
     source.includes("error: `${wrongPassword} Too many attempts;"),
     "refusal opens with the action's own wrong-password sentence, so a throttled right password reads exactly like a throttled wrong one",
   );
 });
 
-test("unlockControl never says whether the env secret is set", () => {
-  const unlock = fnBody("unlockControl");
-  assert.ok(
-    source.includes('const WRONG_SECRET = "Wrong secret.";'),
-    "one fixed sentence for a missing secret and a wrong one",
+test("the password form never says whether the env password is set", () => {
+  const unlock = fnBody("unlockPage");
+  assert.match(
+    unlock,
+    /if \(!expected\)[\s\S]*error: "This page is not configured\."/,
+    "an unset password is one fixed sentence, not a probe for the deployment",
   );
-  assert.equal(
-    (unlock.match(/error: WRONG_SECRET/g) ?? []).length,
-    2,
-    "both refusals in the action use that one sentence",
-  );
+  assert.doesNotMatch(unlock, /error:.*EMAIL_PAGE_PASSWORD/);
   assert.doesNotMatch(
     unlock,
-    /not configured|missing env|is not set|unset/i,
-    "a wrong secret and an unset secret must be the same answer",
+    /missing env|is not set|unset/i,
+    "the answer names no variable and no state of the environment",
   );
   assert.doesNotMatch(source, /console\.(log|error|warn)/, "nothing sensitive is logged");
 });
 
-test("unlockControl sets the documented cookie", () => {
-  const unlock = fnBody("unlockControl");
-  assert.match(unlock, /name: EMAIL_CONTROL_COOKIE/);
-  assert.match(unlock, /value: controlCookieValue\(expected\)/);
-  assert.match(unlock, /httpOnly: true/);
-  assert.match(unlock, /sameSite: "lax"/);
-  assert.match(unlock, /path: "\/email"/);
-  assert.match(unlock, /maxAge: 60 \* 60 \* 12/);
-  assert.match(unlock, /secure: process\.env\.NODE_ENV === "production"/);
-  assert.match(
-    source,
-    /EMAIL_CONTROL_COOKIE,/,
-    "the cookie name is imported from @/lib/email/control",
-  );
-  assert.doesNotMatch(
-    source,
-    /const COOKIE = "voni_email_control"/,
-    "the name is not re-declared here",
-  );
-});
-
-test("unlock and lock redirect to a fixed notice instead of returning success state", () => {
-  const unlock = fnBody("unlockControl");
-  assert.match(unlock, /redirect\("\/email\?notice=unlocked"\)/);
-  assert.doesNotMatch(unlock, /return\s*\{\s*ok: true/);
-
-  const lock = fnBody("lockControl");
-  assert.match(lock, /redirect\("\/email\?notice=locked"\)/);
-  assert.doesNotMatch(lock, /return\s*\{\s*ok: true/);
-});
-
-test("lockControl keeps the redirect and warns that it rejects", () => {
-  // The action never returns: `redirect` rejects by design. The caller in the
-  // panel must tolerate that rejection rather than report a failed lock, so
-  // the contract has to be in the action's own doc comment.
-  assert.match(source, /tolerate a rejected promise/);
-});
-
-test("lockPage drops both grants, not just the visible one", () => {
+test("lockPage drops the only grant and returns to the password screen", () => {
   const lock = fnBody("lockPage");
   assert.match(lock, /cookieStore\.delete\(\{ name: PAGE_COOKIE, path: "\/email" \}\)/);
-  assert.match(
-    lock,
-    /cookieStore\.delete\(\{ name: EMAIL_CONTROL_COOKIE, path: "\/email" \}\)/,
-    "a locked page that still accepts writes is a lock that only hides the keypad",
+  assert.equal(
+    (lock.match(/cookieStore\.delete\(/g) ?? []).length,
+    1,
+    "one grant, one delete: there is no second cookie left to drop",
   );
   assert.match(lock, /redirect\("\/email"\)/);
 });
 
-test("no success path returns the submitted secret", () => {
-  for (const name of ["unlockControl", "lockControl"]) {
-    const body = fnBody(name);
-    assert.doesNotMatch(
-      body,
-      /return\s*\{[^}]*submitted/,
-      `${name} must not echo what was typed into the form`,
-    );
-    assert.doesNotMatch(source, /message:\s*submitted/);
-  }
-  // A failed unlock is still a returned state, so the form can show it without
-  // navigating away from the page.
-  assert.match(
-    fnBody("unlockControl"),
-    /return \{ ok: false, error: WRONG_SECRET \}/,
+test("unlockPage never echoes the submitted password and redirects on success", () => {
+  const unlock = fnBody("unlockPage");
+  assert.doesNotMatch(
+    unlock,
+    /return\s*\{[^}]*submitted/,
+    "unlockPage must not echo what was typed into the form",
   );
+  assert.doesNotMatch(source, /message:\s*submitted/);
+  assert.match(unlock, /redirect\("\/email"\)/);
+  assert.doesNotMatch(unlock, /return\s*\{\s*ok: true/);
 });
 
 test("saveVolume clamps through validateVolume before writing", () => {
@@ -584,7 +585,7 @@ test("saveVolume refuses a missing or unrecognised mode before touching Grafana"
     "the submitted mode is parsed by the shared module, not read as a string",
   );
   assert.ok(
-    save.indexOf('formData.get("selection")') > save.indexOf("requireControl()"),
+    save.indexOf('formData.get("selection")') > save.indexOf("requirePageUnlock()"),
     "the mode is read after the cookie gate, like every other input",
   );
   const refusal = save.indexOf("if (selection === null)");
@@ -831,7 +832,7 @@ test("every target mutation gates first, then changes both sides through one pat
 
   for (const [name, write] of mutations) {
     const body = fnBody(name);
-    assert.match(body, /requireControl\(\)/, `${name} must gate`);
+    assert.match(body, /requirePageUnlock\(\)/, `${name} must gate`);
     assert.ok(
       body.indexOf("return targetLocked()") < body.indexOf("listAffiliateTargets()"),
       `${name} refuses before reading the list`,
@@ -1134,11 +1135,11 @@ test("the GitHub source actions gate inside the body, before reading the form", 
     const body = fnBody(name);
     assert.match(
       body,
-      /if \(!\(await requireControl\(\)\)\) return locked\(\);/,
+      /if \(!\(await requirePageUnlock\(\)\)\) return locked\(\);/,
       `${name} refuses before it parses anything`,
     );
     assert.ok(
-      body.indexOf("requireControl()") < body.indexOf("formData.get("),
+      body.indexOf("requirePageUnlock()") < body.indexOf("formData.get("),
       `${name} authorises before the first field read`,
     );
   }
@@ -1247,7 +1248,7 @@ test("a successful source save revalidates, and no refusal does", () => {
 test("the source actions never echo the control secret or a submitted value", () => {
   for (const name of GITHUB_ACTIONS) {
     const body = fnBody(name);
-    assert.doesNotMatch(body, /EMAIL_CONTROL_SECRET|controlCookie|safeSecretEqual/);
+    assert.doesNotMatch(body, /EMAIL_PAGE_PASSWORD|pagePasswordDigest|cookieStore.get(PAGE_COOKIE)/);
     assert.doesNotMatch(body, /\$\{formData|\$\{raw\}/);
     assert.doesNotMatch(body, /console\.(log|error)/);
   }
@@ -1257,15 +1258,15 @@ test("dispatch now gates inside the body, before it reads the OS", () => {
   const body = fnBody("dispatchGithubNow");
   assert.match(
     body,
-    /if \(!\(await requireControl\(\)\)\) return \{ ok: false, error: LOCKED\.error \};/,
+    /if \(!\(await requirePageUnlock\(\)\)\) return \{ ok: false, error: LOCKED\.error \};/,
     "the dispatch refuses without the control cookie",
   );
   assert.ok(
-    body.indexOf("requireControl()") < body.indexOf('formData.get("os")'),
+    body.indexOf("requirePageUnlock()") < body.indexOf('formData.get("os")'),
     "authorisation happens before the first field read",
   );
   assert.ok(
-    body.indexOf("requireControl()") < body.indexOf("dispatchBrowserCheck("),
+    body.indexOf("requirePageUnlock()") < body.indexOf("dispatchBrowserCheck("),
     "a locked request never reaches GitHub",
   );
 });
@@ -1390,7 +1391,7 @@ test("dispatch stays an inline bounded call, with no durable job", () => {
 
 test("the dispatch never echoes the control or dispatch token", () => {
   const body = fnBody("dispatchGithubNow");
-  assert.doesNotMatch(body, /EMAIL_CONTROL_SECRET|controlCookie|safeSecretEqual/);
+  assert.doesNotMatch(body, /EMAIL_PAGE_PASSWORD|pagePasswordDigest|cookieStore.get(PAGE_COOKIE)/);
   assert.doesNotMatch(body, /GITHUB_BURST_TOKEN|secret\("GITHUB/);
   assert.doesNotMatch(body, /\$\{formData/);
   assert.doesNotMatch(body, /console\.(log|error)/);
@@ -1405,18 +1406,18 @@ test("the dispatch never echoes the control or dispatch token", () => {
  */
 test("pauseAllSources authorises inside its body, before either write", () => {
   const body = fnBody("pauseAllSources");
-  assert.match(body, /if \(!\(await requireControl\(\)\)\)/);
+  assert.match(body, /if \(!\(await requirePageUnlock\(\)\)\)/);
   assert.ok(
-    body.indexOf("requireControl()") < body.indexOf("pauseGrafanaSource("),
+    body.indexOf("requirePageUnlock()") < body.indexOf("pauseGrafanaSource("),
     "the gate comes before the Grafana write",
   );
   assert.ok(
-    body.indexOf("requireControl()") < body.indexOf("disableGithubSource("),
+    body.indexOf("requirePageUnlock()") < body.indexOf("disableGithubSource("),
     "the gate comes before the GitHub write",
   );
   assert.match(
     body,
-    /if \(!\(await requireControl\(\)\)\) return \{ ok: false, error: LOCKED\.error \};/,
+    /if \(!\(await requirePageUnlock\(\)\)\) return \{ ok: false, error: LOCKED\.error \};/,
     "a locked request claims no source outcome it did not attempt",
   );
 });

@@ -1,14 +1,19 @@
 /**
- * The `/email` page password gate, separate from the control-panel secret.
+ * The `/email` page password gate — the only authorization on the console.
  *
- * Two locks, two questions. The page password decides whether the page renders
- * at all; the control secret only decides whether the panel it renders is
- * read-only. They must not share a digest, or a control-secret cookie would
- * open the page gate (and vice versa), so the page digest is domain-separated
- * with the `voni:email-page:` prefix.
+ * One question, one answer: the page password decides whether the page renders,
+ * and the same grant authorizes every write the page offers. A locked or
+ * expired page has no cookie, so its writes are refused by the same predicate
+ * that hides the panel.
+ *
+ * The digest stays domain-separated with the `voni:email-page:` prefix even
+ * though nothing else mints a `/email` cookie: changing the format now would
+ * invalidate every live grant for no security gain, and the prefix keeps this
+ * value from ever equalling a bare `sha256(password)` somewhere else.
  *
  * No I/O here: the cookie is written by `src/app/email/actions.ts` and read by
- * the page, and both must use this module so the formats cannot drift.
+ * the page and the actions, and all of them must use this module so the formats
+ * cannot drift.
  */
 
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -16,7 +21,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 /** The cookie that carries `pagePasswordDigest(password)` in hex. */
 export const PAGE_COOKIE = "voni_email_view";
 
-/** Domain separation from the control-secret digest. */
+/** Domain separation from a bare `sha256(password)`. */
 const PAGE_DIGEST_PREFIX = "voni:email-page:";
 
 function digest(value: string): Buffer {

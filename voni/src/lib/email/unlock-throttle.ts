@@ -3,7 +3,7 @@ import { bumpRateBucket } from "@/lib/demo/rate-limit";
 import { secret } from "@/lib/env";
 
 /**
- * The attempt budget both `/email` password forms spend before they compare
+ * The attempt budget the `/email` password form spends before it compares
  * anything.
  *
  * Lives here rather than in the server action so the ordering — which bucket a
@@ -44,7 +44,12 @@ export const UNLOCK_MAX_GLOBAL = 300;
 export const UNLOCK_UNAVAILABLE_MESSAGE =
   "Could not check attempts right now. Try again in a moment.";
 
-export type UnlockScope = "page" | "control";
+/**
+ * Which form is spending. `/email` has one password form now; the scope still
+ * names the bucket namespace, so a future second gate cannot silently share
+ * this budget.
+ */
+export type UnlockScope = "page";
 
 export type ThrottleVerdict =
   | { allowed: true }
