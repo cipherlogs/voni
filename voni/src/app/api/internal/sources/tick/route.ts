@@ -41,6 +41,10 @@ import {
 } from "@/lib/email/sources";
 import type { ClickProducer } from "@/lib/email/click-report";
 import { activeTargetUrls } from "@/lib/email/targets";
+import { currentRotation } from "@/lib/email/rotation";
+import type { TargetSelection } from "@/lib/email/target-selection";
+import { getCheck, resolveCheckId } from "@/lib/grafana/synthetic";
+import { secret } from "@/lib/env";
 
 /** What one OS got this minute. Every shape but `skipped` names a segment. */
 export type OsTickOutcome =
@@ -112,7 +116,7 @@ function silentSummary(
   };
 }
 
-/** Injecting these keeps the route test off Postgres, GitHub and the clock. */
+/** Injecting these keeps the route test off Postgres, Grafana, GitHub and the clock. */
 export type SourceTickDeps = {
   now?: () => Date;
   readConfig?: (producer: string) => Promise<SourceConfig | null>;
@@ -120,11 +124,29 @@ export type SourceTickDeps = {
     producer: ClickProducer,
   ) => Promise<Partial<Record<RunnerOs, Date>>>;
   readTargets?: () => Promise<string[]>;
+  /**
+   * The rotation mode every OS in this tick dispatches with. One read per
+   * sweep, so a segment cannot start under a mode its siblings do not share.
+   */
+  readRotation?: () => Promise<TargetSelection>;
   recordDispatch?: (producer: string, at: Date) => Promise<void>;
   dispatch?: (
     input: Parameters<typeof dispatchBrowserCheck>[0],
   ) => Promise<DispatchOutcome>;
 };
+
+/**
+ * The mode a dispatch carries when nobody injects one: the page's setting, or —
+ * until it is written for the first time — whatever Grafana's saved script
+ * reports, because the console shows that same value.
+ */
+async function liveRotation(): Promise<TargetSelection> {
+  return currentRotation(async () => {
+    const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
+    const current = await getCheck(id);
+    return current.ok ? current.data.targetSelection : null;
+  });
+}
 
 function messageOf(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
@@ -231,6 +253,10 @@ export async function runSourceTick(
 
   const dispatch = deps.dispatch ?? dispatchBrowserCheck;
   const record = deps.recordDispatch ?? recordSourceDispatch;
+  // One read for the whole sweep: every OS in this tick carries the page's
+  // rotation mode, so two segments started together cannot disagree with
+  // Grafana about it.
+  const selection = await (deps.readRotation ?? liveRotation)();
   const os: OsTickOutcome[] = [];
 
   for (const runnerOs of RUNNER_OSES) {
@@ -245,6 +271,7 @@ export async function runSourceTick(
         targets,
         intervalSeconds: config.intervalSeconds,
         windowSeconds: dueSummary.segmentSeconds,
+        selection,
       });
 
       if (!outcome.ok) {

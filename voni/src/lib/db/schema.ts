@@ -903,3 +903,24 @@ export const emailSources = pgTable("email_sources", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Console-wide `/email` settings that no single producer owns.
+ *
+ * One row (`id = 'default'`). A value here is a decision the operator made on
+ * the page, so every producer reads it instead of keeping its own copy: the
+ * rotation mode is why this table exists — Grafana's saved script and the
+ * GitHub dispatch must never disagree about it.
+ *
+ * `target_selection` is nullable on purpose. `null` means nobody has chosen
+ * yet, and until the first write an existing Grafana script keeps running — and
+ * being reported — in whatever mode it already carries. A non-null default
+ * would claim a choice the operator never made and silently flip a rotating
+ * check.
+ */
+export const emailSettings = pgTable("email_settings", {
+  id: text("id").primaryKey().default("default"),
+  /** `random` or `rotate`; `null` until the operator chooses on `/email`. */
+  targetSelection: text("target_selection"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

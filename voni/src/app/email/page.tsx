@@ -14,6 +14,7 @@ import {
 import { EmailGateForm } from "@/components/email-gate-form";
 import { BurstCard } from "@/components/burst-card";
 import { GithubSourceCard } from "@/components/github-source-card";
+import { RotationCard } from "@/components/rotation-card";
 import { TargetsCard } from "@/components/targets-card";
 import {
   addTarget,
@@ -22,6 +23,7 @@ import {
   removeTarget,
   runBurst,
   saveGithubSchedule,
+  saveRotation,
   setGithubSourceEnabled,
   toggleTarget,
 } from "@/app/email/actions";
@@ -41,6 +43,11 @@ import {
   summariseRunnerClicks,
 } from "@/lib/email/clicks";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
+import { readRotationSetting } from "@/lib/email/rotation";
+import {
+  resolveTargetSelection,
+  type TargetSelection,
+} from "@/lib/email/target-selection";
 import {
   GITHUB_SOURCE_PRODUCER,
   newestClickByOs,
@@ -84,7 +91,10 @@ export const metadata: Metadata = {
 const PAGE_CLICK_LIMIT = 20;
 const STATS_WINDOW_HOURS = 24;
 
-function toCheckView(check: SyntheticCheck): CheckView {
+function toCheckView(
+  check: SyntheticCheck,
+  rotation: TargetSelection,
+): CheckView {
   return {
     id: check.id,
     job: check.job,
@@ -93,9 +103,10 @@ function toCheckView(check: SyntheticCheck): CheckView {
     frequencyMs: check.frequencyMs,
     probeIds: [...check.probeIds],
     clicksPerRun: check.clicksPerRun,
-    // Read from the stored script: what the check is doing, or null when the
-    // script predates the setting (the panel then opens on the new default).
-    targetSelection: check.targetSelection,
+    // The mode every producer runs with, resolved from the page-level setting.
+    // The script's own marker is only the fallback until that setting is
+    // written, so the card describes the mode the clicks will actually use.
+    targetSelection: rotation,
     // The SM API reports `modified` as epoch seconds, not milliseconds.
     modified:
       check.modified === null
@@ -314,6 +325,7 @@ async function EmailControlData({
     targets,
     githubNewest,
     githubClicks,
+    rotationSetting,
   ] = await Promise.all([
     getCheck(id),
     listProbes(),
@@ -334,7 +346,18 @@ async function EmailControlData({
     // The GitHub card's own rows for the basis window, folded below so its
     // counts and its `targets x/x` come from one aggregation.
     runnerClicksSince(GITHUB_SOURCE_PRODUCER, githubSince),
+    // The page-level rotation setting every producer reads. `null` is "nobody
+    // has chosen yet", which is what keeps an existing script's mode reported.
+    readRotationSetting(),
   ]);
+
+  // One resolution rule for the whole console: the setting when it exists, else
+  // what Grafana's script already does. A failed check read is `null`, so the
+  // setting still answers when it is the only one.
+  const rotation = resolveTargetSelection(
+    rotationSetting,
+    checkResult.ok ? checkResult.data.targetSelection : null,
+  );
 
   // A paused target is not clicked by any source, so it is neither part of the
   // card's denominator nor of the volume the card promises.
@@ -401,6 +424,14 @@ async function EmailControlData({
         removeTarget={removeTarget}
         pauseAll={pauseAllSources}
       />
+      {/* Rotation sits with the targets, not inside a source card: one list,
+          one way of drawing from it, and every producer reads this setting. */}
+      <RotationCard
+        locked={locked}
+        mode={rotation}
+        chosen={rotationSetting !== null}
+        action={saveRotation}
+      />
       <section className="grid gap-6" aria-labelledby="email-sources-heading">
         <h2
           id="email-sources-heading"
@@ -409,7 +440,7 @@ async function EmailControlData({
           Sources
         </h2>
         <AffiliateControlPanel
-          check={checkResult.ok ? toCheckView(checkResult.data) : null}
+          check={checkResult.ok ? toCheckView(checkResult.data, rotation) : null}
           checkError={checkResult.ok ? null : checkResult.message}
           probes={probesResult.ok ? toProbeViews(probesResult.data) : []}
           oneOffTargets={targets

@@ -18,6 +18,7 @@ import {
 } from "@/lib/github/dispatch";
 import type { SourceConfig } from "@/lib/email/source-config";
 import { windowRemainingSeconds, type RunnerOs } from "@/lib/email/sources";
+import type { TargetSelection } from "@/lib/email/target-selection";
 import { POST, runSourceTick, type SourceTickDeps } from "./route";
 
 const SOURCE: SourceConfig = {
@@ -37,7 +38,12 @@ const WINDOW_LAST_HOUR = new Date("2026-11-23T18:00:00Z");
 const AFTER_WINDOW = new Date("2026-11-23T20:00:00Z");
 
 type Calls = {
-  dispatched: { os: RunnerOs; segmentSeconds: number; intervalSeconds: number }[];
+  dispatched: {
+    os: RunnerOs;
+    segmentSeconds: number;
+    intervalSeconds: number;
+    selection: string;
+  }[];
   recorded: { producer: string; at: Date }[];
   clickReads: number;
 };
@@ -48,6 +54,7 @@ function harness(
     now?: Date;
     clicks?: Partial<Record<RunnerOs, Date>>;
     targets?: string[];
+    rotation?: TargetSelection;
     dispatch?: SourceTickDeps["dispatch"];
     recordDispatch?: SourceTickDeps["recordDispatch"];
   } = {},
@@ -64,6 +71,7 @@ function harness(
       return options.clicks ?? {};
     },
     readTargets: async () => options.targets ?? ["https://example.com/a"],
+    readRotation: async () => options.rotation ?? "random",
     dispatch:
       options.dispatch ??
       (async (input) => {
@@ -71,6 +79,7 @@ function harness(
           os: input.os,
           segmentSeconds: input.windowSeconds,
           intervalSeconds: input.intervalSeconds,
+          selection: input.selection,
         });
         return {
           ok: true,
@@ -184,7 +193,12 @@ test("only the dead OS is dispatched, with a job-sized segment, and it is record
   assert.equal(summary.segmentSeconds, 20_000);
   assert.equal(summary.remainingSeconds, 43_200);
   assert.deepEqual(calls.dispatched, [
-    { os: "macos", segmentSeconds: 20_000, intervalSeconds: 60 },
+    {
+      os: "macos",
+      segmentSeconds: 20_000,
+      intervalSeconds: 60,
+      selection: "random",
+    },
   ]);
   assert.deepEqual(calls.recorded, [{ producer: "github", at: WINDOW_START }]);
   assert.deepEqual(
@@ -316,6 +330,19 @@ test("no active target means no dispatch, not a dispatch with an empty list", as
   );
 });
 
+test("the tick dispatches the page's rotation mode, so Grafana and GitHub agree", async () => {
+  const { deps, calls } = harness({}, { rotation: "rotate" });
+
+  const summary = await runSourceTick(deps);
+
+  assert.equal(summary.status, "due");
+  assert.equal(calls.dispatched.length, 3, "one segment per dead OS");
+  assert.ok(
+    calls.dispatched.every((call) => call.selection === "rotate"),
+    "every OS in the sweep carries the one stored setting",
+  );
+});
+
 test("the summary is JSON-safe and never carries the dispatch token", async () => {
   const previous = process.env.GITHUB_BURST_TOKEN;
   process.env.GITHUB_BURST_TOKEN = "ghp_tick_secret_token";
@@ -401,6 +428,7 @@ test("a full 12 h window with no clicks is due on cadence and never overruns it"
       readConfig: async () => ({ ...SOURCE, lastDispatchedAt }),
       readNewestClickByOs: async () => ({}),
       readTargets: async () => ["https://example.com/a"],
+      readRotation: async () => "random",
       dispatch: async (input) => {
         dispatches.push({
           at: now.getTime(),

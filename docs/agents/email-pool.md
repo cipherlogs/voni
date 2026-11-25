@@ -17,9 +17,10 @@ target accepts the click over HTTP, and GitHub proves the click survives a real
 browser. Neither proves a human clicked.
 
 The page reads the rows those sources produced from `affiliate_clicks`. It can
-change the Grafana check's interval, probe set, target-selection mode and
-enabled state through Grafana's API, and it can change the GitHub source's
-schedule and enabled state in `email_sources`.
+change the Grafana check's interval, probe set and enabled state through
+Grafana's API, the GitHub source's schedule and enabled state in
+`email_sources`, and the rotation mode every producer shares in
+`email_settings`.
 
 One control is not a source card: `runOneOffClick` in
 `src/app/email/actions.ts` performs a single click from voni's own server with
@@ -160,30 +161,37 @@ entry, which is what the one-off click stores. One column, one meaning.
 ## Target selection
 
 One target and one claimed email provider per click. The provider always rotates
-through a no-repeat bag; the target is chosen by the mode saved with the Grafana
-check:
+through a no-repeat bag; the target is chosen by the rotation mode, one setting
+on the console shared by every source:
 
 | Mode | What a click does |
 | --- | --- |
 | `random` (what a new script is built with) | uniform draw with replacement: any active target, equal odds, so one target can repeat and another may wait |
 | `rotate` | every active target once per shuffled pass, then the bag refills — the behaviour every script built before the mode existed had |
 
-The mode is a line in the check's stored script — `const TARGET_SELECTION =
-"random";` — emitted by `buildCheckScript` together with the draw itself and
-read back by the panel (`readStoredTargetSelection` / `readTargetSelection` in
-`voni/src/lib/email/target-selection.ts`). It is not a database column, so the
-panel can only show a mode that was actually saved. A script with no marker
-predates the setting — "no choice yet", not "rotate": the switch opens on the
-new default (`random`) and the copy says the live script is still rotating. The
-first Save, or any target change (which also rebuilds the script), applies
-`random` unless the operator turns the switch off. The one-off click does not
-rebuild, so it follows what the live script is doing — `rotate` until that first
-save. `rotate` is per k6 VU: each VU owns its bag, so a burst (up to 500 VUs)
-runs up to 500 independent passes. `random` keeps no per-VU state at all.
+The mode is stored once, in `email_settings.target_selection` (one row, no seed),
+and chosen on the page-level **Target rotation** card — not inside the Grafana
+card, because more than one producer reads it. Every reader goes through one
+rule (`resolveTargetSelection` / `currentRotation` in
+`voni/src/lib/email/rotation.ts`): the stored setting wins; only while it is
+`NULL` — nobody has chosen yet — does a saved Grafana script's own
+`const TARGET_SELECTION = "…";` marker answer instead. A script left behind by an
+older build therefore keeps running, and being reported, its own mode until the
+first save, and can never override the setting after it.
 
-The GitHub runner does not use this mode. Every pass shuffles the whole
-dispatched list and clicks all of it, so its coverage is a property of the loop
-rather than a draw.
+`saveRotation` writes the setting first and then rebuilds Grafana's script from
+the value it just wrote, so a failed rebuild is reported as what it is (the
+choice is stored, the script still runs the old mode, save again to retry) rather
+than leaving the two silently disagreeing. Target adds and pauses, the volume
+save, the one-off click and the burst all read the same setting. `rotate` is per
+k6 VU: each VU owns its bag, so a burst (up to 500 VUs) runs up to 500
+independent passes. `random` keeps no per-VU state at all.
+
+The GitHub runner receives the same mode as the workflow's `selection` input
+(`BROWSER_CHECK_SELECTION` in the job), dispatched from the same setting by
+`dispatchGithubNow` and by the ticker. Its per-pass behaviour (one exit for the
+pass, or the next ready exit per target) arrives with the proxy pool; until then
+the input is the wire, and the two sources still cannot disagree about the value.
 
 The providers are a constant in `voni/src/lib/email/pool.ts`; the targets are
 rows in `affiliate_targets`, managed from the console's **Targets** card. The
@@ -288,9 +296,9 @@ live traffic:
   not two entries competing in the bag.
 
 A burst dispatched from the card carries the active list as the workflow's
-`targets` input and the check's mode as its `selection` input (the job reads it
-as `AFFILIATE_TARGET_SELECTION` and `burst.yml` proves the marker reached the
-generated script). The **manual** fallback (`k6 cloud run
+`targets` input and the shared rotation mode as its `selection` input (the job
+reads it as `AFFILIATE_TARGET_SELECTION` and `burst.yml` proves the marker
+reached the generated script). The **manual** fallback (`k6 cloud run
 scripts/affiliate-click-check.k6.js`) runs the committed script, so it clicks
 the seed list in the committed mode (`random`) rather than the panel's — the one
 place the two can differ.
@@ -722,7 +730,11 @@ nothing at all — it logs one line saying so.
   map (`campaignForProvider`), `resolveTarget()` utm stamping, `baseTargetUrl()`
   (a stamped click folded back to its target), and the seed guard.
 - `voni/src/lib/email/target-selection.ts` — the two modes, the script marker's
-  read-back (`readTargetSelection`), and `pickTarget()` for the one-off click.
+  read-back (`readTargetSelection`), the one resolution rule
+  (`resolveTargetSelection`), and `pickTarget()` for the one-off click.
+- `voni/src/lib/email/rotation.ts` — the rotation setting's row
+  (`email_settings.target_selection`), its read/write, and `currentRotation()`,
+  the rule every producer resolves its mode through.
 - `voni/src/lib/email/targets.ts` — the live target list: seed-on-empty,
   `activeTargetUrls()`, `allTargetUrls()`, and the add/pause/remove writes.
 - `voni/src/lib/email/target-url.ts` — the one rule for what a target may be,

@@ -10,15 +10,17 @@
  *     is what every script built before this module existed did, because the
  *     script drew from a shuffle bag.
  *
- * The mode is not a database column: it is written into the Grafana check's
- * stored k6 script as `const TARGET_SELECTION = "…";`, exactly like
- * `CLICKS_PER_RUN`, and read back by the panel. That means the panel can only
- * ever show a mode the deployed script is actually using — the read-back is the
- * live value, not a copy that can drift.
+ * The mode is one stored setting (`email_settings.target_selection`), chosen
+ * once on `/email` and read by every producer: the Grafana script's draw, the
+ * GitHub dispatch's input, the one-off click and the burst. The script still
+ * carries a `TARGET_SELECTION` marker, but only as a copy of that setting — the
+ * rebuild writes the setting into it, and a copy left behind by an older script
+ * can never override the setting (see `resolveTargetSelection`).
  *
- * `TARGET_SELECTION_LEGACY` is the read-back answer for a stored script with no
- * marker: every such script rotates, so calling it anything else would make the
- * panel lie about the check that is running.
+ * `TARGET_SELECTION_LEGACY` is what a script with no marker does: every such
+ * script rotates. That is also what the console reports until the setting is
+ * written for the first time, so an existing check is described truthfully
+ * rather than flipped to a default nobody chose.
  */
 
 export type TargetSelection = "random" | "rotate";
@@ -57,18 +59,35 @@ export function parseTargetSelection(value: unknown): TargetSelection | null {
 }
 
 /**
+ * Which of two answers wins: the stored setting, or what a saved script says.
+ *
+ * The setting is the operator's choice, so it wins every time — a script that
+ * still carries another mode is a cache, and a stale cache must never override
+ * a decision the page recorded. `null` means nobody has chosen yet (the column
+ * is nullable on purpose), and then the script's own mode is the truth, which
+ * is how an existing check keeps behaving and reporting exactly as it did
+ * before the setting existed.
+ */
+export function resolveTargetSelection(
+  setting: TargetSelection | null,
+  storedScript: TargetSelection | null,
+): TargetSelection {
+  return setting ?? storedScript ?? TARGET_SELECTION_LEGACY;
+}
+
+/**
  * The marker a stored script actually carries, or `null` when it predates the
  * setting.
  *
  * Two different questions, two readers, on purpose:
  *
- *   - `readStoredTargetSelection` answers "did anyone ever choose a mode?" The
- *     panel's switch starts from this, so an unmarked script opens on the new
- *     default (random) with copy saying the live script is still rotating, and
- *     the first Save applies that choice.
+ *   - `readStoredTargetSelection` answers "what does the saved script itself
+ *     carry?" `null` is "it predates the setting", which is the one case where
+ *     a producer still has to consult the script at all — see
+ *     `currentRotation` in `./rotation`.
  *   - `readTargetSelection` answers "what will this script do?" An unmarked
- *     script rotates, which is what a producer that reads the live behaviour
- *     (the one-off click) needs to know.
+ *     script rotates, which is what a reader of the live behaviour needs to
+ *     know.
  */
 export function readStoredTargetSelection(
   script: string,

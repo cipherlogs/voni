@@ -277,7 +277,11 @@ function importBindings(src: string): ImportBinding[] {
  * them is a read that must happen inside `EmailControlData` and nowhere else —
  * derived, so a local alias is watched under the name this file actually calls.
  */
-const DATA_MODULES = ["@/lib/email/clicks", "@/lib/grafana/synthetic"] as const;
+const DATA_MODULES = [
+  "@/lib/email/clicks",
+  "@/lib/grafana/synthetic",
+  "@/lib/email/rotation",
+] as const;
 
 const imports = importBindings(code);
 

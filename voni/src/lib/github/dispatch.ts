@@ -1,6 +1,10 @@
 import { secret } from "@/lib/env";
 import { RUNNER_OS_VALUES, type RunnerOs } from "@/lib/email/click-report";
 import { MAX_JOB_SECONDS } from "@/lib/email/sources";
+import {
+  parseTargetSelection,
+  type TargetSelection,
+} from "@/lib/email/target-selection";
 
 /**
  * One bounded GitHub Actions workflow dispatch, shared by every source that
@@ -225,6 +229,7 @@ export const BROWSER_CHECK_INPUTS = {
   targets: "targets",
   interval: "interval",
   window: "window",
+  selection: "selection",
 } as const;
 
 /** The interval the schedule domain's floor and ceiling allow. */
@@ -247,6 +252,12 @@ export type BrowserCheckInput = {
   intervalSeconds: number;
   /** How long this segment runs, in seconds. */
   windowSeconds: number;
+  /**
+   * The page's rotation mode — the same value Grafana's script runs. Carried,
+   * never decided here: a default in the dispatcher would be a second source of
+   * truth, and the two Sources could then disagree.
+   */
+  selection: TargetSelection;
 };
 
 /** What a human runs when no dispatch token is configured. */
@@ -256,6 +267,7 @@ export function browserCheckCommand(input: BrowserCheckInput): string {
     `-f ${BROWSER_CHECK_INPUTS.os}=${input.os} ` +
     `-f ${BROWSER_CHECK_INPUTS.interval}=${input.intervalSeconds} ` +
     `-f ${BROWSER_CHECK_INPUTS.window}=${input.windowSeconds} ` +
+    `-f ${BROWSER_CHECK_INPUTS.selection}=${input.selection} ` +
     `-f ${BROWSER_CHECK_INPUTS.targets}='${JSON.stringify(input.targets)}'`
   );
 }
@@ -297,6 +309,14 @@ export async function dispatchBrowserCheck(
     }
   }
 
+  // One of two names, checked as strictly as the OS: a run dispatched with an
+  // unknown mode would click a whole segment in something nobody chose.
+  if (parseTargetSelection(input.selection) === null) {
+    return refuse(
+      `${JSON.stringify(input.selection)} is not one of random, rotate.`,
+    );
+  }
+
   if (
     !Number.isInteger(input.intervalSeconds) ||
     input.intervalSeconds < BROWSER_CHECK_MIN_INTERVAL_SECONDS ||
@@ -332,6 +352,7 @@ export async function dispatchBrowserCheck(
       [BROWSER_CHECK_INPUTS.targets]: JSON.stringify(input.targets),
       [BROWSER_CHECK_INPUTS.interval]: String(input.intervalSeconds),
       [BROWSER_CHECK_INPUTS.window]: String(input.windowSeconds),
+      [BROWSER_CHECK_INPUTS.selection]: input.selection,
     },
   });
 }

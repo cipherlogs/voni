@@ -21,6 +21,7 @@ import {
   TARGET_SELECTION_DEFAULT,
   pickTarget,
   readTargetSelection,
+  resolveTargetSelection,
 } from "@/lib/email/target-selection";
 import {
   UNLOCK_MAX_GLOBAL,
@@ -562,57 +563,76 @@ test("saveVolume refuses when the report secret is unconfigured", () => {
   );
 });
 
-test("saveVolume rebuilds with the live target list, not the seed", () => {
+test("saveVolume rebuilds with the live target list and the page's mode", () => {
   // The bug this covers: `buildCheckScript` defaults to `targets.json`, so a
   // volume save after pausing a creative silently resumed every paused target.
   const save = fnBody("saveVolume");
   assert.match(save, /await activeTargetUrls\(\)/);
   assert.match(
     save,
-    /uploadRebuiltCheck\(\{\s*clicksPerRun: volume\.value\.clicksPerRun,\s*targets,\s*selection,?\s*\}\)/,
-    "the count, the live list and the chosen mode go to the one upload path",
+    /const selection = await liveSelection\(\);[\s\S]*?uploadRebuiltCheck\(\{\s*clicksPerRun: volume\.value\.clicksPerRun,\s*targets,\s*selection,\s*\}\)/,
+    "the count, the live list and the shared mode go to the one upload path",
   );
   const upload = save.indexOf("uploadRebuiltCheck(");
   const update = save.indexOf("updateCheck(");
   assert.ok(upload >= 0 && update > upload, "script first, then frequency");
 });
 
-test("saveVolume refuses a missing or unrecognised mode before touching Grafana", () => {
+test("saveVolume no longer takes a mode from its form", () => {
+  // The control moved out of the Grafana card, so a submitted `selection` would
+  // be a second source of truth for one setting — and a stale form could flip a
+  // rotating check while claiming success. The page's setting decides, and its
+  // own action (`saveRotation`) is the only write.
   const save = fnBody("saveVolume");
+  assert.doesNotMatch(save, /formData\.get\("selection"\)/);
+  assert.doesNotMatch(save, /parseTargetSelection/);
   assert.match(
     save,
-    /const selection = parseTargetSelection\(formData\.get\("selection"\)\)/,
-    "the submitted mode is parsed by the shared module, not read as a string",
+    /const selection = await liveSelection\(\);/,
+    "the mode comes from the shared setting, resolved by one helper",
   );
+});
+
+test("saveRotation is the one write of the mode, and it rebuilds Grafana", () => {
+  const save = fnBody("saveRotation");
+  assert.match(save, /if \(!\(await requirePageUnlock\(\)\)\) return locked\(\);/);
   assert.ok(
-    save.indexOf('formData.get("selection")') > save.indexOf("requirePageUnlock()"),
-    "the mode is read after the cookie gate, like every other input",
+    save.indexOf("requirePageUnlock()") < save.indexOf('formData.get("selection")'),
+    "the gate runs before the form is read, like every other action",
   );
-  const refusal = save.indexOf("if (selection === null)");
-  assert.ok(refusal >= 0, "a missing or unrecognised mode is a refusal");
-  assert.ok(
-    refusal < save.indexOf('secret("EMAIL_CLICK_REPORT_SECRET")'),
-    "a request with no mode never reads the report secret",
-  );
-  assert.ok(
-    refusal < save.indexOf("uploadRebuiltCheck("),
-    "a request with no mode never builds or uploads a script",
-  );
-  assert.ok(
-    refusal < save.indexOf("updateCheck("),
-    "a request with no mode never rewrites the interval",
+  assert.match(
+    save,
+    /const selection = parseTargetSelection\(formData\.get\("selection"\)\);/,
+    "the submitted mode is parsed by the shared module, never read as a string",
   );
   assert.match(
     save,
     /error:\s*"Choose how each click picks its target: Random or Rotate through all\."/,
-    "the refusal names the two choices instead of guessing",
+    "a missing mode is a refusal that names the two choices",
   );
-  // The parse is strict: a save with no mode must not fall back to the default
-  // the way the burst does, because a save *is* the operator choosing.
-  assert.doesNotMatch(save, /selection\s*(\?\?|\|\|)/);
+  assert.ok(
+    save.indexOf("if (selection === null)") <
+      save.indexOf("saveRotationSetting("),
+    "nothing is written for a request with no mode",
+  );
+  assert.ok(
+    save.indexOf("await saveRotationSetting(selection)") <
+      save.indexOf("uploadRebuiltCheck("),
+    "the setting is written first: it is the source of truth, the script is derived",
+  );
+  assert.match(
+    save,
+    /uploadRebuiltCheck\(\{\s*clicksPerRun: current\.data\.clicksPerRun,\s*targets: await activeTargetUrls\(\),\s*selection,\s*\}\)/,
+    "the rebuild uploads the mode just written, not a second read",
+  );
+  assert.match(
+    save,
+    /Save again to retry/,
+    "a failed rebuild is reported with what landed and how to retry it",
+  );
 });
 
-test("the mode saveVolume submits is the marker the uploaded script carries", () => {
+test("the mode the setting carries is the marker the uploaded script writes", () => {
   const random = buildCheckScript({
     clicksPerRun: 1,
     reportSecret: SECRET,
@@ -654,15 +674,15 @@ test("the mode saveVolume submits is the marker the uploaded script carries", ()
   );
 });
 
-test("a target add or pause keeps the mode Grafana's stored script reports", () => {
+test("a target add or pause rebuilds with the shared mode", () => {
   // `pushTargetsToCheck` is private; the body is the slice up to the next export.
   const start = source.indexOf("async function pushTargetsToCheck(");
   assert.ok(start >= 0, "pushTargetsToCheck exists");
   const sync = source.slice(start, source.indexOf("\nexport async function", start));
   assert.match(
     sync,
-    /selection: current\.data\.targetSelection \?\? TARGET_SELECTION_DEFAULT/,
-    "a marked mode is preserved, and an unmarked (no-choice-yet) script takes the new default",
+    /selection: await liveSelection\(\)/,
+    "a target add must not silently change the mode, so it rebuilds with the setting",
   );
   assert.match(
     sync,
@@ -670,8 +690,8 @@ test("a target add or pause keeps the mode Grafana's stored script reports", () 
     "and the count is still the stored one",
   );
 
-  // End to end on the text: the stored script is the only copy of the mode, so
-  // reading it back and rebuilding with it must reproduce rotate.
+  // End to end on the rule: once a mode is stored, the script's own copy cannot
+  // override it on the next rebuild.
   const stored = buildCheckScript({
     clicksPerRun: 1,
     reportSecret: SECRET,
@@ -682,7 +702,7 @@ test("a target add or pause keeps the mode Grafana's stored script reports", () 
     clicksPerRun: 1,
     reportSecret: SECRET,
     targets: [TARGET_A, TARGET_B],
-    selection: readTargetSelection(stored),
+    selection: resolveTargetSelection("rotate", readTargetSelection(stored)),
   });
   assert.equal(
     readTargetSelection(rebuilt),
@@ -1038,12 +1058,12 @@ test("the rotation history is one entry per target, folded from the stamp", () =
   );
 });
 
-test("a Grafana read failure still lets the one-off click run, on the default mode", () => {
+test("a Grafana read failure still lets the one-off click run", () => {
   const click = fnBody("runOneOffClick");
   assert.match(
     click,
-    /const selection = current\.ok\s*\?\s*\(current\.data\.targetSelection \?\? TARGET_SELECTION_LEGACY\)\s*:\s*TARGET_SELECTION_DEFAULT/,
-    "an unmarked script still rotates, so the one-off follows that; the default is only the read-failure fallback",
+    /const selection = await liveSelection\(\);/,
+    "the mode is the page's setting, resolved by the one shared helper",
   );
   assert.doesNotMatch(
     click,
@@ -1051,19 +1071,25 @@ test("a Grafana read failure still lets the one-off click run, on the default mo
     "a Grafana outage must not refuse a click the operator asked for",
   );
   assert.ok(
-    click.indexOf("getCheck(") < click.indexOf("pickTarget("),
+    click.indexOf("liveSelection(") < click.indexOf("pickTarget("),
     "the mode is resolved before the draw, so the fallback is what it draws with",
+  );
+  // The helper tolerates an unreadable check (`scriptSelection` returns null),
+  // so an outage only matters while no mode has ever been saved.
+  assert.match(
+    anyBody("scriptSelection"),
+    /return current\.ok \? current\.data\.targetSelection : null;/,
   );
   assert.equal(TARGET_SELECTION_DEFAULT, "random");
 });
 
-test("the burst carries the live list and the check's mode into the dispatch", () => {
+test("the burst carries the live list and the page's mode into the dispatch", () => {
   const burst = fnBody("runBurst");
   assert.match(burst, /await activeTargetUrls\(\)/);
   assert.match(
     burst,
-    /const selection = current\.ok\s*\?\s*\(current\.data\.targetSelection \?\? TARGET_SELECTION_DEFAULT\)\s*:\s*TARGET_SELECTION_DEFAULT/,
-    "a burst rebuilds the script, so it uses the check's mode — or the new default when the script predates the setting",
+    /const selection = await liveSelection\(\);/,
+    "the burst carries the same mode the scheduled check runs, from one source",
   );
   assert.match(
     burst,
@@ -1313,7 +1339,12 @@ test("one OS is dispatched with the current targets and the saved interval and w
   // Targets come from the live list, never the form: a body that could name a
   // host would make this an open proxy on GitHub's runners.
   assert.doesNotMatch(body, /formData\.getAll\(/);
-  assert.match(body, /dispatchBrowserCheck\(\{\s*os: os as RunnerOs,\s*targets,\s*intervalSeconds: config\.intervalSeconds,\s*windowSeconds: segment,?\s*\}\)/);
+  assert.match(body, /dispatchBrowserCheck\(\{\s*os: os as RunnerOs,\s*targets,\s*intervalSeconds: config\.intervalSeconds,\s*windowSeconds: segment,[\s\S]*?selection: await liveSelection\(\),?\s*\}\)/);
+  assert.match(
+    body,
+    /selection: await liveSelection\(\)/,
+    "the dispatch carries the page's rotation mode, so it cannot disagree with Grafana",
+  );
 
   // One segment, clamped to the job ceiling: the last part of an open window,
   // or a full segment when the window is closed.
