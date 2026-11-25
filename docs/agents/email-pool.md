@@ -44,7 +44,8 @@ The page renders, in order:
 4. A **Sources** heading, then one card each for Grafana, GitHub and Burst.
 5. The shared click history table, with source chips and an **Exit** column:
    a pooled click names its address, country and ASN, a manual override says
-   so, and rows written before attribution existed read **No proxy**.
+   so, and a row with no exit reads **No proxy** — with the failure reason
+   appended when the click never opened a page.
 
 A source card is a `SourceCard` (`src/components/source-card.tsx`) whose header
 sits outside the collapsible body. Collapsing a card hides its controls, never
@@ -231,7 +232,8 @@ bucket's remaining changes are zero, or the client last failed with
 Every click row carries an **Exit** column. `describeClickExit`
 (`voni/src/lib/email/click-exit.ts`) names the address, country and ASN for a
 pooled click, says **Manual proxy** for the override, and reads **No proxy** for
-rows written before attribution existed.
+a row with no exit — appending the failure reason (`No proxy · no US exit`) when
+the click never opened a page.
 
 The providers are a constant in `voni/src/lib/email/pool.ts`; the targets are
 rows in `affiliate_targets`, managed from the console's **Targets** card. The
@@ -494,10 +496,32 @@ larger runners can be configured in more regions than the default hosted pool,
 which changes the egress address span. It is documented here and not invented in
 the UI.
 
+### The pool: a click's own exit
+
+When `TUXLER_CONTROL_URL` is set (`http://127.0.0.1:<port>`), the click path
+takes its egress from the Tuxler client instead of from the launch. Each click
+asks `GET /acquire?waitMs=10000`, opens its browser context through the returned
+`socks5://127.0.0.1:<port>`, and sends `POST /release` with `good` or `failed`.
+A `rotate` pass holds one exit for the whole target list; `random` takes the next
+ready exit per target. The mode is `BROWSER_CHECK_SELECTION`, the stored
+`/email` setting, never a runner-local flag. A click that gets no exit within ten
+seconds is recorded with `status: null` and the pool's reason, and no browser
+context is opened. The manual `BROWSER_PROXY_*` override is refused alongside the
+pool rather than silently preferred. Every launch disables QUIC and forces the
+WebRTC policy to non-proxied UDP, because either is a path around the proxy.
+
+Runner rows carry `exit_ip`, `exit_country`, `exit_asn` and `proxy_kind`
+(`pool`, `manual` or `none`); rows written before the columns existed read
+`none`, the column's default. A click that never opened a page also stores
+`failure_reason` (`no-us-exit`, `quota-spent`, `relay-silent`, `not-ready` or
+`exit-unavailable`), so a failed exit is distinguishable from a target that
+answered badly.
+
 The Grafana k6 path cannot use a proxy: k6 runs on Grafana's synthetic-probe
 network and the script is the check body, not configuration. So an IP-level
 claim — traffic that looks residential rather than datacenter — is true of the
-GitHub browser source only, and even there only when the proxy is configured.
+GitHub browser source only, and even there only when the pool or the manual
+proxy is configured.
 
 ### Chained segments
 

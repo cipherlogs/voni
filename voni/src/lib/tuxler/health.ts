@@ -9,7 +9,7 @@
  * (account, client egress IP), which is also how the relay meters it.
  */
 import { createHash } from "node:crypto";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { changesRemaining, type TuxlerAccountState } from "./account";
 import type { SessionSnapshot } from "./control";
@@ -159,6 +159,28 @@ export interface HealthServerOptions {
   host?: string;
   port?: number;
   snapshot: () => TuxlerHealth;
+  /**
+   * The pool's lease contract, when this client has one. Absent means `/acquire`
+   * and `/release` answer "not ready" rather than pretending the pool is empty.
+   */
+  acquire?: (options: { waitMs: number }) => Promise<ControlExit>;
+  release?: (exitId: string, outcome: "good" | "failed") => Promise<void>;
+}
+
+/** What one Click is handed over the loopback contract. */
+export interface ControlExit {
+  exitId: string;
+  /** The relay host the exit lives on. */
+  server: string;
+  ip: string;
+  /** ISO-3166 alpha-2, from the change reply. Always `US` for a pooled exit. */
+  country: string;
+  asn: string;
+  city: string | null;
+  state: string | null;
+  /** `socks5h://127.0.0.1:<port>` — the only address a Click may use. */
+  socksUrl: string;
+  localPort: number;
 }
 
 export interface HealthServer {
@@ -182,22 +204,13 @@ export async function startHealthServer(options: HealthServerOptions): Promise<H
   const host = options.host ?? "127.0.0.1";
   assertLoopback(host);
   const server: Server = createServer((request, response) => {
-    const url = request.url ?? "/";
-    const path = url.split("?")[0];
-    response.setHeader("cache-control", "no-store");
-    if (path !== "/health") {
-      response.writeHead(404, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: "not-found" }));
-      return;
-    }
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      response.writeHead(405, { "content-type": "application/json", allow: "GET" });
-      response.end(JSON.stringify({ error: "method-not-allowed" }));
-      return;
-    }
-    const body = JSON.stringify(options.snapshot());
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(body);
+    void handle(request, response, options).catch(() => {
+      if (response.headersSent) {
+        response.end();
+        return;
+      }
+      sendJson(response, 500, { error: "internal" });
+    });
   });
   server.listen(options.port ?? 0, host);
   await once(server, "listening");
@@ -215,4 +228,183 @@ export async function startHealthServer(options: HealthServerOptions): Promise<H
         server.closeAllConnections?.();
       }),
   };
+}
+
+/** Ten seconds: one refill plus a handshake, the ticket's bounded wait. */
+const ACQUIRE_DEFAULT_WAIT_MS = 10_000;
+/** A longer wait only holds a Click, and a segment, for no more supply. */
+const ACQUIRE_MAX_WAIT_MS = 60_000;
+const RELEASE_MAX_BODY_BYTES = 1_024;
+
+/** The four reasons the pool's own acquire names, as the control API relays them. */
+const CONTROL_FAILURE_REASONS: readonly string[] = [
+  "no-us-exit",
+  "quota-spent",
+  "relay-silent",
+  "not-ready",
+];
+
+function sendJson(response: ServerResponse, status: number, body: unknown): void {
+  response.writeHead(status, { "content-type": "application/json" });
+  response.end(JSON.stringify(body));
+}
+
+function methodNotAllowed(response: ServerResponse, allow: string): void {
+  response.writeHead(405, { "content-type": "application/json", allow });
+  response.end(JSON.stringify({ error: "method-not-allowed" }));
+}
+
+/** A pool refusal is the pool's named reason; anything else is a real failure. */
+function poolFailureReason(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
+  const reason = (error as { reason?: unknown }).reason;
+  return typeof reason === "string" && CONTROL_FAILURE_REASONS.includes(reason)
+    ? reason
+    : null;
+}
+
+/** A bounded body read: the release payload is two fields, never a document. */
+function readBodyWithinCap(
+  request: IncomingMessage,
+  cap: number,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+
+    const finish = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    // Once the cap is passed the rest is discarded, not buffered; the response
+    // still reaches the caller, which is the whole point of a 413.
+    request.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > cap) {
+        finish(null);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => finish(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", () => finish(null));
+  });
+}
+
+function parseWait(raw: string | null): number | null {
+  if (raw === null) return ACQUIRE_DEFAULT_WAIT_MS;
+  if (!/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return value <= ACQUIRE_MAX_WAIT_MS ? value : null;
+}
+
+async function acquire(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: HealthServerOptions,
+): Promise<void> {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    methodNotAllowed(response, "GET");
+    return;
+  }
+  const waitMs = parseWait(new URL(request.url ?? "/", "http://127.0.0.1").searchParams.get("waitMs"));
+  if (waitMs === null) {
+    sendJson(response, 400, { error: "bad-wait" });
+    return;
+  }
+  if (options.acquire === undefined) {
+    sendJson(response, 503, { reason: "not-ready" });
+    return;
+  }
+  try {
+    const exit = await options.acquire({ waitMs });
+    sendJson(response, 200, exit);
+  } catch (error) {
+    const reason = poolFailureReason(error);
+    if (reason !== null) {
+      sendJson(response, 503, { reason });
+      return;
+    }
+    sendJson(response, 500, { error: "acquire-failed" });
+  }
+}
+
+async function release(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: HealthServerOptions,
+): Promise<void> {
+  if (request.method !== "POST") {
+    methodNotAllowed(response, "POST");
+    return;
+  }
+  if (options.release === undefined) {
+    sendJson(response, 503, { reason: "not-ready" });
+    return;
+  }
+  const body = await readBodyWithinCap(request, RELEASE_MAX_BODY_BYTES);
+  if (body === null) {
+    sendJson(response, 413, { error: "too-large" });
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    sendJson(response, 400, { error: "bad-json" });
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    sendJson(response, 400, { error: "bad-release" });
+    return;
+  }
+  const record = parsed as { exitId?: unknown; ok?: unknown };
+  if (
+    typeof record.exitId !== "string" ||
+    record.exitId.length === 0 ||
+    record.exitId.length > 200 ||
+    typeof record.ok !== "boolean"
+  ) {
+    sendJson(response, 400, { error: "bad-release" });
+    return;
+  }
+  try {
+    await options.release(record.exitId, record.ok ? "good" : "failed");
+    response.writeHead(204);
+    response.end();
+  } catch {
+    sendJson(response, 500, { error: "release-failed" });
+  }
+}
+
+async function handle(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: HealthServerOptions,
+): Promise<void> {
+  response.setHeader("cache-control", "no-store");
+  const path = (request.url ?? "/").split("?")[0];
+  if (path === "/health") {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      methodNotAllowed(response, "GET");
+      return;
+    }
+    const body = JSON.stringify(options.snapshot());
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(body);
+    return;
+  }
+  if (path === "/acquire") {
+    await acquire(request, response, options);
+    return;
+  }
+  if (path === "/release") {
+    await release(request, response, options);
+    return;
+  }
+  sendJson(response, 404, { error: "not-found" });
 }

@@ -78,6 +78,11 @@ const PARSED: ClickReportInput = {
   producer: "grafana",
   runnerOs: null,
   passId: null,
+  exitIp: null,
+  exitCountry: null,
+  exitAsn: null,
+  proxyKind: "none",
+  failureReason: null,
   ranAt: new Date(RAN_AT),
 };
 
@@ -267,6 +272,49 @@ test("a GitHub click is stored with its producer, runner OS and pass id", async 
   assert.equal(calls[0].runnerOs, "ubuntu");
   assert.equal(calls[0].passId, passId);
   assert.equal(calls[0].status, null);
+});
+
+test("a pooled click is stored with the exit that produced it", async () => {
+  const calls = recordWrites();
+  const body = JSON.stringify({
+    ...VALID,
+    producer: "github",
+    runnerOs: "ubuntu",
+    passId: "2f3a9c7e-1b2d-4c5e-8f90-abcdef123456",
+    exitIp: "198.51.100.24",
+    exitCountry: "US",
+    exitAsn: "7018",
+    proxyKind: "pool",
+  });
+  const response = await POST(postRequest({ body }));
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].exitIp, "198.51.100.24");
+  assert.equal(calls[0].exitCountry, "US");
+  assert.equal(calls[0].exitAsn, "7018");
+  assert.equal(calls[0].proxyKind, "pool");
+  assert.equal(calls[0].failureReason, null);
+});
+
+test("a click that got no exit is stored as a failure with its reason", async () => {
+  const calls = recordWrites();
+  const body = JSON.stringify({
+    ...VALID,
+    status: null,
+    finalUrl: null,
+    producer: "github",
+    runnerOs: "ubuntu",
+    passId: "2f3a9c7e-1b2d-4c5e-8f90-abcdef123456",
+    proxyKind: "pool",
+    failureReason: "no-us-exit",
+  });
+  const response = await POST(postRequest({ body }));
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].status, null, "no row claims a response that never happened");
+  assert.equal(calls[0].failureReason, "no-us-exit");
 });
 
 test("a bad pass id is refused and nothing is written", async () => {

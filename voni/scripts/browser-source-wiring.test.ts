@@ -234,9 +234,13 @@ test("the optional proxy comes from repository secrets, never a literal", () => 
   assert.match(
     RUNNER,
     /if \(config\.proxy !== undefined\) launchOptions\.proxy = config\.proxy;/,
-    "the proxy is one launch option, and absent means no proxy",
+    "the manual override stays one launch option, and absent means no proxy",
   );
-  assert.match(RUNNER, /proxy=\$\{config\.proxy === undefined \? "off" : "on"\}/);
+  assert.match(
+    RUNNER,
+    /proxy=\$\{egressKind\(config\)\}/,
+    "the startup line names the egress mode without naming a proxy",
+  );
   assert.doesNotMatch(
     RUNNER,
     /console\.[a-z]+\([^)]*proxy[^)]*password/i,
@@ -251,6 +255,125 @@ test("the optional proxy comes from repository secrets, never a literal", () => 
     RUNNER,
     /BROWSER_PROXY_SERVER is malformed/,
     "a malformed server fails loudly before Chrome starts",
+  );
+});
+
+test("a Click takes its own exit from the control port, never a launch proxy", () => {
+  assert.match(
+    RUNNER,
+    /readEnv\("TUXLER_CONTROL_URL"\)/,
+    "the runner reads the loopback control address",
+  );
+  assert.match(
+    RUNNER,
+    /from "\.\/browser-exit-pool\.mjs"/,
+    "the control calls live in their own module, not a copy inside the runner",
+  );
+  assert.match(
+    RUNNER,
+    /contextOptions\.proxy = \{ server: exit\.socksUrl \}/,
+    "the exit is bound to the context, so each Click leaves from its own address",
+  );
+  assert.match(
+    RUNNER,
+    /await acquireExit\(config\.poolUrl\)/,
+    "a Click asks the pool before it opens a browser context",
+  );
+  assert.match(
+    RUNNER,
+    /releaseExit\(\s*config\.poolUrl/,
+    "and gives the exit back with an outcome",
+  );
+  assert.doesNotMatch(
+    RUNNER,
+    /launchOptions\.proxy = config\.pool/,
+    "a pool exit never becomes a launch-wide proxy",
+  );
+
+  const acquire = RUNNER.indexOf("await acquireExit(config.poolUrl)");
+  const click = RUNNER.indexOf("clickOnce(await browserFor(), target, config, passId, taken.exit)");
+  assert.ok(
+    acquire !== -1 && click !== -1 && acquire < click,
+    "a Click asks the pool before it asks Chrome for a context",
+  );
+  assert.match(
+    RUNNER,
+    /clickOnce\(await browserFor\(\), target, config, passId, taken\.exit\)/,
+    "Chrome starts on the first Click that has an exit, not before one exists",
+  );
+});
+
+test("the pool and the manual override cannot both be configured", () => {
+  const refusal = RUNNER.indexOf("manual override");
+  assert.notEqual(refusal, -1, "the conflict is refused with its own sentence");
+  assert.match(RUNNER, /TUXLER_CONTROL_URL/);
+  assert.match(RUNNER, /BROWSER_PROXY_SERVER/);
+  const launch = RUNNER.indexOf("chromium.launch(");
+  assert.ok(
+    refusal !== -1 && launch !== -1 && refusal < launch,
+    "the refusal happens before Chrome is started",
+  );
+  assert.match(
+    RUNNER,
+    /BROWSER_PROXY_USERNAME and BROWSER_PROXY_PASSWORD must be set together/,
+    "the manual override is still validated on its own",
+  );
+});
+
+test("the launch closes the QUIC and WebRTC leak paths", () => {
+  const launch = RUNNER.slice(
+    RUNNER.indexOf("const launchOptions"),
+    RUNNER.indexOf("chromium.launch("),
+  );
+  assert.match(launch, /args:\s*\[/, "the launch passes Chrome flags");
+  assert.match(launch, /"--disable-quic"/, "QUIC is a path around an HTTP proxy");
+  assert.match(
+    launch,
+    /"--force-webrtc-ip-handling-policy=disable_non_proxied_udp"/,
+    "WebRTC must not send non-proxied UDP",
+  );
+});
+
+test("the rotation mode comes from the shared setting, and both modes are honoured", () => {
+  assert.match(
+    RUNNER,
+    /readEnv\("BROWSER_CHECK_SELECTION"\)/,
+    "the mode is the dispatched setting, not a local flag",
+  );
+  assert.match(RUNNER, /parseTargetSelection/);
+  assert.match(
+    RUNNER,
+    /from "\.\.\/src\/lib\/email\/target-selection\.ts"/,
+    "the mode's names come from the app, not a second copy",
+  );
+  assert.match(RUNNER, /selection === "rotate"/, "rotate holds one exit for the pass");
+  assert.match(RUNNER, /let passExit/, "a rotate pass keeps the lease across its targets");
+});
+
+test("a pooled click reports the exit it used and a failed acquire writes the reason", () => {
+  assert.match(RUNNER, /function egressKind\(config\)/);
+  assert.match(
+    RUNNER,
+    /return config\.poolUrl !== undefined \? "pool" : config\.proxy === undefined \? "none" : "manual";/,
+  );
+  assert.match(RUNNER, /exitIp: exit === undefined \? null : exit\.ip/);
+  assert.match(RUNNER, /exitCountry: exit === undefined \? null : exit\.country/);
+  assert.match(RUNNER, /exitAsn: exit === undefined \? null : exit\.asn/);
+  assert.match(RUNNER, /failureReason/, "a click that got no exit stores why");
+  assert.match(
+    RUNNER,
+    /reportUnavailable\(/,
+    "no exit means no row claiming a response and no browser context",
+  );
+  assert.match(
+    RUNNER,
+    /exit=\$\{result\.exitIp\}/,
+    "the run log prints the same address the row records",
+  );
+  assert.match(
+    RUNNER,
+    /result\.failure === null \? "good" : "failed"/,
+    "a failed click gives its exit a strike",
   );
 });
 
@@ -344,7 +467,7 @@ test("the runner labels every click with its pass and reports the final pass", (
   assert.match(RUNNER, /randomUUID/, "the id is generated, never reused from input");
   assert.match(
     RUNNER,
-    /clickOnce\(browser, target, config, passId\)/,
+    /clickOnce\([^)]*target, config, passId, /,
     "every click of the pass receives it",
   );
   assert.match(RUNNER, /passId,/, "the report carries it, successful or not");

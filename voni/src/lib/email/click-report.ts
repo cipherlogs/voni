@@ -18,6 +18,7 @@
  */
 
 import { createHash, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 import { DEVICE_VALUES, type ClickDevice } from "./user-agents";
 
 /**
@@ -39,6 +40,38 @@ export const CLICK_PRODUCER_DEFAULT: ClickProducer = "grafana";
 export const RUNNER_OS_VALUES = ["ubuntu", "windows", "macos"] as const;
 export type RunnerOs = (typeof RUNNER_OS_VALUES)[number];
 
+/**
+ * How the Click reached the Target. Closed like the producer: the proxy card
+ * groups on it, and "which address did this leave from" is the question the
+ * column exists to answer.
+ *
+ *   - `pool` — a Tuxler exit supplied (or was meant to supply) the browser
+ *     context; `exit_*` names it when one was handed out.
+ *   - `manual` — the `BROWSER_PROXY_*` override carried the whole browser.
+ *   - `none` — a direct connection, which is also every row written before
+ *     these columns existed (the column's default is the backfill).
+ */
+export const CLICK_PROXY_KINDS = ["pool", "manual", "none"] as const;
+export type ClickProxyKind = (typeof CLICK_PROXY_KINDS)[number];
+
+/** An absent proxy kind can only be a report from before the pool existed. */
+export const CLICK_PROXY_KIND_DEFAULT: ClickProxyKind = "none";
+
+/**
+ * Why a Click never produced a page. Only the pool's own reasons (plus the
+ * context that could not be opened through the exit) are storable: a browser
+ * error string is already represented by a null `status`, and a free-text
+ * reason would create groups the card cannot name.
+ */
+export const CLICK_FAILURE_REASONS = [
+  "no-us-exit",
+  "quota-spent",
+  "relay-silent",
+  "not-ready",
+  "exit-unavailable",
+] as const;
+export type ClickFailureReason = (typeof CLICK_FAILURE_REASONS)[number];
+
 /** What one visit recorded, in the shape `recordAffiliateClick` takes. */
 export type ClickReportInput = {
   target: string;
@@ -53,6 +86,16 @@ export type ClickReportInput = {
   runnerOs: RunnerOs | null;
   /** The browser pass this click belonged to; null for other producers. */
   passId: string | null;
+  /** The exit that carried the click; null when no exit was handed out. */
+  exitIp: string | null;
+  /** ISO-3166 alpha-2, from the change reply. */
+  exitCountry: string | null;
+  /** The consumer ASN's number, as digits. */
+  exitAsn: string | null;
+  /** Pool, manual override or direct. Always known; `none` is the backfill. */
+  proxyKind: ClickProxyKind;
+  /** Why the Click never opened a page; null when a page was attempted. */
+  failureReason: ClickFailureReason | null;
   ranAt: Date;
 };
 
@@ -194,6 +237,55 @@ function parsePassId(raw: unknown): string | null | undefined {
   return CLICK_REPORT_PASS_ID_PATTERN.test(raw) ? raw : undefined;
 }
 
+/**
+ * An optional proxy kind. Absent and null mean "no proxy", which is what every
+ * report written before the pool existed was; a present value must be one of
+ * the three the card names.
+ */
+function parseProxyKind(raw: unknown): ClickProxyKind | undefined {
+  if (raw === undefined || raw === null) return CLICK_PROXY_KIND_DEFAULT;
+  if (typeof raw !== "string") return undefined;
+  const normalized = raw.trim().toLowerCase();
+  return (CLICK_PROXY_KINDS as readonly string[]).includes(normalized)
+    ? (normalized as ClickProxyKind)
+    : undefined;
+}
+
+/** An exit address must be an address: a hostname here would be a different claim. */
+function parseExitIp(raw: unknown): string | null | undefined {
+  const text = optionalText(raw, 45);
+  if (text === undefined || text === null) return text;
+  return isIP(text) === 0 ? undefined : text;
+}
+
+/** The country is the change reply's ISO alpha-2 code, never display text. */
+function parseExitCountry(raw: unknown): string | null | undefined {
+  const text = optionalText(raw, 2);
+  if (text === undefined || text === null) return text;
+  const normalized = text.toUpperCase();
+  return /^[A-Z]{2}$/.test(normalized) ? normalized : undefined;
+}
+
+/**
+ * The ASN is stored as its number. `AS7018` and `7018` are the same ASN, so the
+ * prefix is normalised away rather than becoming a second spelling of one row.
+ */
+function parseExitAsn(raw: unknown): string | null | undefined {
+  const text = optionalText(raw, 12);
+  if (text === undefined || text === null) return text;
+  const normalized = text.toUpperCase().replace(/^AS/, "");
+  return /^\d{1,10}$/.test(normalized) ? normalized : undefined;
+}
+
+function parseFailureReason(raw: unknown): ClickFailureReason | null | undefined {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string") return undefined;
+  const normalized = raw.trim().toLowerCase();
+  return (CLICK_FAILURE_REASONS as readonly string[]).includes(normalized)
+    ? (normalized as ClickFailureReason)
+    : undefined;
+}
+
 function parseRanAt(raw: unknown, now: Date): Date | null {
   if (raw === undefined || raw === null) return now;
   if (typeof raw !== "string") return null;
@@ -260,6 +352,21 @@ export function parseClickReport(raw: unknown, now: Date = new Date()): ClickRep
   const passId = parsePassId(body["passId"]);
   if (passId === undefined) return { ok: false, reason: "bad_pass_id" };
 
+  const exitIp = parseExitIp(body["exitIp"]);
+  if (exitIp === undefined) return { ok: false, reason: "bad_exit_ip" };
+
+  const exitCountry = parseExitCountry(body["exitCountry"]);
+  if (exitCountry === undefined) return { ok: false, reason: "bad_exit_country" };
+
+  const exitAsn = parseExitAsn(body["exitAsn"]);
+  if (exitAsn === undefined) return { ok: false, reason: "bad_exit_asn" };
+
+  const proxyKind = parseProxyKind(body["proxyKind"]);
+  if (proxyKind === undefined) return { ok: false, reason: "bad_proxy_kind" };
+
+  const failureReason = parseFailureReason(body["failureReason"]);
+  if (failureReason === undefined) return { ok: false, reason: "bad_failure_reason" };
+
   const ranAt = parseRanAt(body["ranAt"], now);
   if (!ranAt) return { ok: false, reason: "bad_ran_at" };
 
@@ -279,6 +386,11 @@ export function parseClickReport(raw: unknown, now: Date = new Date()): ClickRep
       producer,
       runnerOs,
       passId,
+      exitIp,
+      exitCountry,
+      exitAsn,
+      proxyKind,
+      failureReason,
       ranAt,
     },
   };

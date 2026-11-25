@@ -862,6 +862,12 @@ export async function runOneOffClick(
       producer: "oneoff",
       runnerOs: null,
       passId: null,
+      // The in-app one-off click runs from the server itself: no exit, no proxy.
+      exitIp: null,
+      exitCountry: null,
+      exitAsn: null,
+      proxyKind: "none",
+      failureReason: null,
     });
   } catch {
     return {

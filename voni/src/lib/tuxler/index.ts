@@ -20,6 +20,7 @@ export {
   bucketId,
   bucketReport,
   startHealthServer,
+  type ControlExit,
   type HealthBucket,
   type HealthExit,
   type HealthPool,

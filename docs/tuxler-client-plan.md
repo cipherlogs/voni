@@ -297,7 +297,7 @@ out-of-quota, naming failures as `no US exit`, `quota spent` and `relay silent`.
 Attribution is rendered by `voni/src/lib/email/click-exit.ts`; ticket 07 stores the
 columns it reads (`affiliate_clicks.exit_ip`, `exit_country`, `exit_asn`,
 `proxy_kind`, plus the failure `reason`, migration `0022_heavy_warbird`), so new
-rows name their exit and older rows read **No proxy**.
+rows name their exit, a failed row names why, and older rows read **No proxy**.
 
 ---
 
