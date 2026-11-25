@@ -286,6 +286,19 @@ Also:
 - Remove the control secret (`EMAIL_CONTROL_SECRET`); page unlock = write.
 - Move target selection out of the Grafana card to the page.
 
+**Built (ticket 10).** The card is `voni/src/components/proxy-card.tsx`. Its
+settings are `email_settings.proxy_country` (`US`, written from the constant) and
+`email_settings.proxy_pool_target` (3–8, default 5); the rules are in
+`voni/src/lib/email/proxy-policy.ts`, the boundary in `proxy-settings.ts`. There is
+no country select: the form posts US and the action refuses anything else before
+writing. The live pool is a read-only `GET /health` on `TUXLER_CONTROL_URL`
+(`proxy-health.ts`), and the card distinguishes client-down, short-of-exits and
+out-of-quota, naming failures as `no US exit`, `quota spent` and `relay silent`.
+Attribution is rendered by `voni/src/lib/email/click-exit.ts`; ticket 07 stores the
+columns it reads (`affiliate_clicks.exit_ip`, `exit_country`, `exit_asn`,
+`proxy_kind`, plus the failure `reason`, migration `0022_heavy_warbird`), so new
+rows name their exit, a failed row names why, and older rows read **No proxy**.
+
 ---
 
 ## 12. Data model

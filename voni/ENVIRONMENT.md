@@ -379,6 +379,7 @@ described in `docs/agents/email-pool.md`.
 | `BROWSER_PROXY_SERVER` | **GitHub Actions secret only** (not an app env var). Optional egress proxy for the browser runner: an absolute URL with an `http:`, `https:` or `socks5:` scheme and a host, e.g. `http://proxy.example.com:8080`. Unset or empty = no proxy, which is the runner's own Azure address. See `docs/agents/email-pool.md`. |
 | `BROWSER_PROXY_USERNAME` | **GitHub Actions secret only.** Optional proxy credential; must be set together with the password. Handed to Playwright's launch only, never logged. |
 | `BROWSER_PROXY_PASSWORD` | **GitHub Actions secret only.** Optional proxy credential; must be set together with the username. Never logged, never written into a report. |
+| `TUXLER_CONTROL_URL` | Base URL of a running `tuxler-proxy` control API, e.g. `http://127.0.0.1:41000` or an operator tunnel to the runner. The `/email` Proxy card reads `GET /health` from it (read-only; it never acquires or releases an exit). Unset, unreachable or answering something other than a health report = the card says the client is down, and no setting changes. Never put credentials in this URL; a URL with a username or password is refused. |
 
 `EMAIL_CLICK_REPORT_SECRET` lives in two places by design: the deployment
 environment (the Worker secret the report route reads) and the Grafana check

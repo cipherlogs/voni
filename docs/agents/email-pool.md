@@ -36,8 +36,16 @@ The page renders, in order:
 1. The shared **Targets** card: every target row once, with add, pause, resume
    and remove. Its aggregate line states total clicks per day across every
    enabled source, with **Pause all** beside it.
-2. A **Sources** heading, then one card each for Grafana, GitHub and Burst.
-3. The shared click history table, with source chips.
+2. The page-level **Target rotation** card: one mode shared by every source.
+3. The **Proxy exits** card: provider `tuxler`, the live pool and its cities,
+   changes spent per bucket, and the last failure. Country is US and has no
+   picker; a request naming another country is refused server-side and stored
+   nowhere. The pool target is 3–8 and is saved on the console's settings row.
+4. A **Sources** heading, then one card each for Grafana, GitHub and Burst.
+5. The shared click history table, with source chips and an **Exit** column:
+   a pooled click names its address, country and ASN, a manual override says
+   so, and a row with no exit reads **No proxy** — with the failure reason
+   appended when the click never opened a page.
 
 A source card is a `SourceCard` (`src/components/source-card.tsx`) whose header
 sits outside the collapsible body. Collapsing a card hides its controls, never
@@ -192,6 +200,40 @@ The GitHub runner receives the same mode as the workflow's `selection` input
 `dispatchGithubNow` and by the ticker. Its per-pass behaviour (one exit for the
 pass, or the next ready exit per target) arrives with the proxy pool; until then
 the input is the wire, and the two sources still cannot disagree about the value.
+
+## Proxy exits
+
+The **Proxy exits** card is the console's view of the exit layer, and its
+settings are the console's, not a producer's: the pool serves whichever click
+path asks for an exit. Two facts are stored on the same `email_settings` row as
+the rotation mode — `proxy_country` and `proxy_pool_target`:
+
+- **Country is US and is not a choice.** The card posts US as a fixed field; the
+  server refuses any other value before reading further, so a non-US request is
+  stored nowhere and passed down nowhere. `readProxySettings` returns US even if
+  the row was hand-edited. The client itself also refuses a non-US exit, which is
+  the second lock.
+- **Pool target is 3–8.** `parseProxyPoolTarget` accepts a whole number in that
+  range and refuses anything else (2, 9, 3.5, empty) with the range in the
+  message. A missing or out-of-range stored value reads as the default five. The
+  next client start constructs its pool with this target, so the saved number is
+  the size the pool fills to.
+
+The **live pool** is read, never steered, by the card: a plain `GET /health` on
+the control address in `TUXLER_CONTROL_URL`, with a two-second bound and no
+credentials. `/acquire` and `/release` are never called from the page, so opening
+it spends no change and moves no exit. The three states are distinct on purpose:
+*client down* (no address configured, unreachable, or a failed relay session),
+*short of exits* (a live client below its target) and *out of quota* (every
+bucket's remaining changes are zero, or the client last failed with
+`quota-spent`). The last failure is named in operator words (`no US exit`,
+`quota spent`, `relay silent`), never as a reason code.
+
+Every click row carries an **Exit** column. `describeClickExit`
+(`voni/src/lib/email/click-exit.ts`) names the address, country and ASN for a
+pooled click, says **Manual proxy** for the override, and reads **No proxy** for
+a row with no exit — appending the failure reason (`No proxy · no US exit`) when
+the click never opened a page.
 
 The providers are a constant in `voni/src/lib/email/pool.ts`; the targets are
 rows in `affiliate_targets`, managed from the console's **Targets** card. The
@@ -574,7 +616,7 @@ above. None of them may share a value.
 
 | Lock | Env var | Carried by | Lifetime | Protects |
 | --- | --- | --- | --- | --- |
-| Page password | `EMAIL_PAGE_PASSWORD` | cookie `voni_email_view`, value `sha256("voni:email-page:" + password)` in hex | 12 h; `path=/email`, `httpOnly`, `SameSite=Lax`, `Secure` in production | Whether the page renders, and whether any console write is accepted: save the Grafana interval/probes/clicks, pause/resume the check, add/pause/remove a target, run one click now, run a burst, enable/disable GitHub, save the GitHub schedule, dispatch one OS, and Pause all. Until it is satisfied the response carries the gate screen and nothing else — no check, no probes, no click history. |
+| Page password | `EMAIL_PAGE_PASSWORD` | cookie `voni_email_view`, value `sha256("voni:email-page:" + password)` in hex | 12 h; `path=/email`, `httpOnly`, `SameSite=Lax`, `Secure` in production | Whether the page renders, and whether any console write is accepted: save the Grafana interval/probes/clicks, pause/resume the check, add/pause/remove a target, save the rotation mode, save the proxy country and pool target, run one click now, run a burst, enable/disable GitHub, save the GitHub schedule, dispatch one OS, and Pause all. Until it is satisfied the response carries the gate screen and nothing else — no check, no probes, no click history. |
 | Click-report secret | `EMAIL_CLICK_REPORT_SECRET` | request header `x-voni-click-secret` on `POST /api/email/clicks/report` | per request; no cookie | One append to `affiliate_clicks`, and nothing else. |
 | Unlock throttle | (none — no secret to send) | Postgres bucket per hashed IP plus one deployment-wide bucket, via `bumpRateBucket` | fixed 15-minute window | The password form: 10 attempts per IP per window and 300 per deployment per window, spent **before** the comparison. Per-IP is bumped first and alone decides whether the attempt may spend global budget, so one anonymous address can burn only its own ten and never the ceiling the operator needs. Fail-closed: if Postgres cannot answer the form refuses with `Could not check attempts right now. Try again in a moment.` instead of rejecting the action, so a database outage is visible and never reads as a wrong password. An unresolved client IP (`"unknown"`) spends the global bucket only. The policy lives in `voni/src/lib/email/unlock-throttle.ts`. |
 
@@ -705,11 +747,12 @@ nothing at all — it logs one line saying so.
 ## Layout
 
 - `voni/src/app/email/page.tsx` — page gate, console shell, shared targets,
-  the three source cards, and the reads (check, probes, targets, 24 h stats,
-  recent clicks, GitHub config, newest click per OS, GitHub click samples).
-  Nothing on load sends a click.
+  rotation and proxy settings, the live proxy health read, the three source
+  cards, and the reads (check, probes, targets, 24 h stats, recent clicks,
+  GitHub config, newest click per OS, GitHub click samples). Nothing on load
+  sends a click.
 - `voni/src/app/email/actions.ts` — page unlock, page lock (`lockPage`), and
-  the console writes: `saveVolume`, `toggleCheck`,
+  the console writes: `saveVolume`, `toggleCheck`, `saveRotation`, `saveProxy`,
   `addTarget`, `toggleTarget`, `removeTarget`, `runOneOffClick`, `runBurst`,
   `setGithubSourceEnabled`, `saveGithubSchedule`, `dispatchGithubNow`,
   `pauseAllSources`. Every exported action authorises inside its own body
@@ -729,6 +772,13 @@ nothing at all — it logs one line saying so.
 - `voni/src/components/affiliate-control-panel.tsx` — the Grafana card and its
   one-off click controls. `voni/src/components/github-source-card.tsx` — the
   GitHub card. `voni/src/components/burst-card.tsx` — the Burst card.
+  `voni/src/components/rotation-card.tsx` — the shared mode.
+  `voni/src/components/proxy-card.tsx` — the exit layer's status and settings.
+- `voni/src/lib/email/proxy-policy.ts` — US-only and 3–8 rules, the health
+  verdict, and failure words. `proxy-health.ts` — the read-only `GET /health`
+  on `TUXLER_CONTROL_URL`. `proxy-settings.ts` — the `email_settings` boundary.
+- `voni/src/lib/email/click-exit.ts` — the one rule for how a click row names
+  its exit, its manual override, or its lack of a proxy.
 - `voni/src/lib/email/sources.ts` — the runner schedule domain: accepted
   intervals and windows, `clicksPerDay`, `deadAfterSeconds`, `insideWindow`,
   `windowRemainingSeconds`, `planSegments` and `decideDue`. Pure, no database.

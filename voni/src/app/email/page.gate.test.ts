@@ -281,6 +281,8 @@ const DATA_MODULES = [
   "@/lib/email/clicks",
   "@/lib/grafana/synthetic",
   "@/lib/email/rotation",
+  "@/lib/email/proxy-health",
+  "@/lib/email/proxy-settings",
 ] as const;
 
 const imports = importBindings(code);
