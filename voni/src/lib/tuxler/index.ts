@@ -29,12 +29,17 @@ export {
 } from "./health";
 export {
   POOL_ACQUIRE_WAIT_MS,
+  POOL_DEPTH,
   POOL_MAX,
+  POOL_PACE_BURST,
+  POOL_PACE_COOLDOWN_MS,
   POOL_REFILL_BELOW,
+  POOL_SILENCE_MS,
   POOL_TARGET,
   PoolUnavailableError,
   createExitPool,
   startExitPool,
+  type BucketLink,
   type ExitLease,
   type ExitPool,
   type ExitPoolOptions,
@@ -84,5 +89,5 @@ export {
   type ExitRejectionReason,
   type ExitVerdict,
 } from "./validate";
-export { exitTunnelDialer, type ExitTunnelOptions } from "./transport";
+export { exitTunnelDialer, tunneledTransport, type ExitTunnelOptions } from "./transport";
 export { type TuxlerAccountState, type TuxlerTier } from "./account";

@@ -78,6 +78,9 @@ function makePool(
     lookup: async () => CONSUMER,
     bucketId: () => "bucket-root",
     retryDelayMs: 150,
+    // The spec's cooldown is twenty seconds; the tests only need to see that the
+    // sixth change waits at all, so the tuning is short here.
+    paceCooldownMs: 50,
     changeTimeoutMs: 2_000,
     ...overrides,
   });

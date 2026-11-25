@@ -71,7 +71,7 @@ export interface FakeRelayOptions {
   /** The exit address the default change reply names. */
   changeIp?: string;
   /** What the exit tunnels can reach. Anything else is refused, as the relay would. */
-  tunnelHosts?: Record<string, "address-echo" | "echo">;
+  tunnelHosts?: Record<string, "address-echo" | "echo" | "forward">;
 }
 
 export interface FakeRelayStats {
@@ -98,6 +98,8 @@ export interface FakeRelayStats {
   tunnelPorts: number[];
   tunnelTargets: Array<{ host: string; port: number }>;
   addressEchoRequests: number;
+  /** Tunnels carried to a real destination — a parent exit reaching the relay. */
+  forwardedConnections: number;
 }
 
 interface Normalized extends Required<Omit<FakeRelayOptions, "dropAfterLoginMs">> {
@@ -135,6 +137,10 @@ export class FakeRelay {
   private readonly options: Normalized;
   private readonly sockets = new Set<net.Socket>();
   private readonly servers: net.Server[] = [];
+  /** Control sockets past login: a reset is pushed to them, as the relay does. */
+  private readonly loggedIn = new Set<net.Socket>();
+  /** The exit address behind each forwarded tunnel, keyed by the upstream local port. */
+  private readonly forwardedFrom = new Map<number, string>();
   private controlPort = 0;
   private redirectPort = 0;
   private secondPort = 0;
@@ -161,6 +167,7 @@ export class FakeRelay {
     tunnelPorts: [],
     tunnelTargets: [],
     addressEchoRequests: 0,
+    forwardedConnections: 0,
   };
 
   private constructor(options: FakeRelayOptions) {
@@ -224,9 +231,29 @@ export class FakeRelay {
   async close(): Promise<void> {
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
+    this.loggedIn.clear();
+    this.forwardedFrom.clear();
     await Promise.all(
       this.servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
     );
+  }
+
+  /**
+   * Push a daily reset the way the relay does: `RESET_INFO` plus an
+   * `ACCOUNT_INFO` whose usage has fallen, which is what a client can observe.
+   */
+  pushReset(resetAt: string, changesUsed = 0): void {
+    this.options.resetAt = resetAt;
+    for (const socket of this.loggedIn) {
+      if (socket.destroyed) continue;
+      socket.write(encodeServerFrame("RESET_INFO", resetAt));
+      socket.write(
+        encodeServerFrame(
+          "ACCOUNT_INFO",
+          JSON.stringify({ currentIPLocationChanges: changesUsed, currentBandwidth: 1024 }),
+        ),
+      );
+    }
   }
 
   private async listen(): Promise<void> {
@@ -290,6 +317,7 @@ export class FakeRelay {
   private handleControl(socket: net.Socket): void {
     this.track(socket);
     this.counters.controlConnections += 1;
+    socket.on("close", () => this.loggedIn.delete(socket));
     if (this.options.silentOnConnect) return;
 
     const echoTarget = this.options.sendBytes;
@@ -448,12 +476,16 @@ export class FakeRelay {
     this.counters.tunnelPorts.push(exitPort);
 
     let buffered = Buffer.alloc(0);
-    let mode: "address-echo" | "echo" | null = null;
+    let mode: "address-echo" | "echo" | "forward" | null = null;
+    let upstream: net.Socket | null = null;
+
+    socket.on("close", () => upstream?.destroy());
 
     socket.on("data", (chunk: Buffer) => {
       if (mode !== null) {
         // Client → relay is masked; the target, and so the answer, is clear.
         if (mode === "echo") socket.write(xor73(chunk));
+        else if (mode === "forward") upstream?.write(xor73(chunk));
         return;
       }
       buffered = Buffer.concat([buffered, xor73(chunk)]);
@@ -466,8 +498,10 @@ export class FakeRelay {
         socket.destroy();
         return;
       }
-      this.counters.tunnelTargets.push({ host: parsed[1], port: Number(parsed[2]) });
-      const reachable = this.options.tunnelHosts[parsed[1]];
+      const targetHost = parsed[1];
+      const targetPort = Number(parsed[2]);
+      this.counters.tunnelTargets.push({ host: targetHost, port: targetPort });
+      const reachable = this.options.tunnelHosts[targetHost];
       if (reachable === undefined) {
         // The relay could not reach the destination: the tunnel just closes.
         socket.destroy();
@@ -478,9 +512,30 @@ export class FakeRelay {
         this.counters.addressEchoRequests += 1;
         const body = `ip=${exitIp}\n`;
         socket.write(`HTTP/1.0 200 OK\r\ncontent-length: ${body.length}\r\n\r\n${body}`);
-      } else if (rest.length > 0) {
-        socket.write(rest);
+        return;
       }
+      if (mode === "echo") {
+        if (rest.length > 0) socket.write(rest);
+        return;
+      }
+      // `forward`: the hop is a real TCP destination, which is what a parent exit
+      // is when a child bucket dials the relay through it. The exit address is
+      // recorded so the relay can report it as that session's own client IP.
+      this.counters.forwardedConnections += 1;
+      const endpoint = this.resolve(targetHost, targetPort);
+      upstream = net.connect({ host: endpoint.host, port: endpoint.port });
+      this.track(upstream);
+      upstream.on("connect", () => {
+        this.forwardedFrom.set(upstream?.localPort ?? -1, exitIp);
+        // `rest` is already unmasked from the wire, which is what the next hop
+        // expects: a forwarded hop carries the client's tunnel one layer in.
+        if (rest.length > 0) upstream?.write(rest);
+      });
+      upstream.on("data", (answer: Buffer) => {
+        if (!socket.destroyed) socket.write(answer);
+      });
+      upstream.on("error", () => socket.destroy());
+      upstream.on("close", () => socket.destroy());
     });
   }
 
@@ -512,6 +567,12 @@ export class FakeRelay {
       return;
     }
     onAccepted();
+    this.loggedIn.add(socket);
+    // A session dialled through an exit is metered separately by the relay, and
+    // sees that exit's address as its client: a fresh bucket, keyed by that address.
+    const viaExit = this.forwardedFrom.get(socket.remotePort ?? -1);
+    const clientIp = viaExit ?? this.options.clientIp;
+    const changesUsed = viaExit === undefined ? this.options.changesUsed : 0;
     socket.write(encodeServerFrame("LOGIN_FINISHED", ""));
     if (this.options.silentAfterLogin) return;
     socket.write(encodeServerFrame("TIMEVAL", String(this.options.timevalSeconds)));
@@ -524,7 +585,7 @@ export class FakeRelay {
     socket.write(
       encodeServerFrame(
         "ACCOUNT_INFO",
-        JSON.stringify({ currentIPLocationChanges: this.options.changesUsed, currentBandwidth: 1024 }),
+        JSON.stringify({ currentIPLocationChanges: changesUsed, currentBandwidth: 1024 }),
       ),
     );
     socket.write(
@@ -542,7 +603,7 @@ export class FakeRelay {
     socket.write(
       encodeServerFrame(
         "YOUR_IP",
-        `<location><ip>${this.options.clientIp}</ip><country>United States</country>` +
+        `<location><ip>${clientIp}</ip><country>United States</country>` +
           `<countryiso>US</countryiso><city>Dallas</city></location>`,
       ),
     );

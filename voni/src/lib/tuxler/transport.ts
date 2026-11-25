@@ -106,10 +106,6 @@ export function directTransport(options: DirectTransportOptions): Transport {
  * Dial the relay *through* an existing exit, so the relay sees that exit's address
  * as the client. Stacking two of these is a second hop; nothing else changes.
  */
-/**
- * Dial the relay *through* an existing exit, so the relay sees that exit's address
- * as the client. Stacking two of these is a second hop; nothing else changes.
- */
 export function tunnelTransport(
   parent: { host: string; port: number },
   relayHost: string,
@@ -126,6 +122,21 @@ export function tunnelTransport(
     openControl: () => connect(29990),
     openSecond: (port: number) => connect(port),
   };
+}
+
+/**
+ * A control session dialled through an earlier exit — how a child bucket is
+ * opened. `dial` already carries the parent chain (one hop, or the nested chain
+ * of a deeper bucket), so the transport only names the host and port to reach.
+ */
+export function tunneledTransport(
+  dial: (target: RelayEndpoint) => Promise<Duplex>,
+): (host: string) => Transport {
+  return (host) => ({
+    label: `via a parent exit to ${host}`,
+    openControl: () => dial({ host, port: 29_990 }),
+    openSecond: (port) => dial({ host, port }),
+  });
 }
 
 export interface ExitTunnelOptions {

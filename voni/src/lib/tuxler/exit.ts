@@ -79,7 +79,7 @@ export interface OpenExitOptions {
   /** Local SOCKS port; `0` picks a free one. */
   socksPort?: number;
   changeTimeoutMs?: number;
-  /** Override the tunnel to the relay — a parent-exit dial, for example. */
+  /** Override how the relay is reached — a parent exit, for a nested tunnel. */
   dial?: TunnelDialer;
   refusalWindowMs?: number;
 }
@@ -130,13 +130,14 @@ export async function openUsExit(options: OpenExitOptions): Promise<TuxlerExit> 
   });
   if (!verdict.accepted) reject(verdict.reason, verdict.detail);
 
-  const dial =
-    options.dial ??
-    exitTunnelDialer({
-      relayHost: options.relayHost,
-      exitPort: outcome.port,
-      resolve: options.resolveEndpoint,
-    });
+  // The port named here is the exit's own; `dial` only decides how the client
+  // reaches the relay, so a child exit is nested through the exit it came from.
+  const dial = exitTunnelDialer({
+    relayHost: options.relayHost,
+    exitPort: outcome.port,
+    resolve: options.resolveEndpoint,
+    dial: options.dial,
+  });
 
   let server: SocksServer;
   try {
