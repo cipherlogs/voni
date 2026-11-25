@@ -106,6 +106,10 @@ export function directTransport(options: DirectTransportOptions): Transport {
  * Dial the relay *through* an existing exit, so the relay sees that exit's address
  * as the client. Stacking two of these is a second hop; nothing else changes.
  */
+/**
+ * Dial the relay *through* an existing exit, so the relay sees that exit's address
+ * as the client. Stacking two of these is a second hop; nothing else changes.
+ */
 export function tunnelTransport(
   parent: { host: string; port: number },
   relayHost: string,
@@ -121,5 +125,37 @@ export function tunnelTransport(
     label: `via exit :${parent.port}`,
     openControl: () => connect(29990),
     openSecond: (port: number) => connect(port),
+  };
+}
+
+export interface ExitTunnelOptions {
+  /** The relay the exit lives on, e.g. `server3.ipsharkk.com`. */
+  relayHost: string;
+  /** The port the change reply named. Never the handshake's derived port. */
+  exitPort: number;
+  /** Where host names resolve. Identity in production; loopback in tests. */
+  resolve?: EndpointResolver;
+  connectTimeoutMs?: number;
+  /** Dial the relay through something else — a parent exit — instead of directly. */
+  dial?: (endpoint: RelayEndpoint) => Promise<Duplex>;
+}
+
+/**
+ * One proxied connection: dial the exit's relay port, mask writes with XOR-0x73,
+ * and put the real destination in front so the exit resolves it. This is the
+ * consumer leg; the bytes coming back are already clear.
+ */
+export function exitTunnelDialer(
+  options: ExitTunnelOptions,
+): (target: RelayEndpoint) => Promise<Duplex> {
+  const resolve = options.resolve ?? identityResolver;
+  const timeoutMs = options.connectTimeoutMs ?? 9_000;
+  const connect =
+    options.dial ?? ((endpoint: RelayEndpoint) => dial(endpoint, timeoutMs));
+  return async (target: RelayEndpoint) => {
+    const raw = await connect(resolve(options.relayHost, options.exitPort));
+    const tunnel = new XorSocket(raw);
+    tunnel.write(Buffer.from(`<h>${target.host}<p>${target.port}</p></h>`, "latin1"));
+    return tunnel;
   };
 }

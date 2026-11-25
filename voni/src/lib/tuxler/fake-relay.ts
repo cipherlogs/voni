@@ -15,6 +15,29 @@ import net from "node:net";
 import { once } from "node:events";
 import { encodeServerFrame, parseFrame } from "./frames";
 import type { RelayEndpoint } from "./transport";
+import { xor73 } from "./transport";
+
+/** One scripted answer to `CHANGE_IP_COUNTRY_CITY`, in the order the client asks. */
+export type FakeChange =
+  | {
+      kind: "changed";
+      ip?: string;
+      countryIso?: string;
+      country?: string;
+      region?: string | null;
+      city?: string | null;
+      /** Answer with `…_BUT_LIMIT`: an exit now, and nothing left in this bucket. */
+      lastOfBucket?: boolean;
+    }
+  | { kind: "no-change" }
+  | { kind: "limit" }
+  | { kind: "not-available" }
+  | { kind: "overloaded" }
+  | { kind: "not-entitled" }
+  | { kind: "exit-unavailable"; limitReached?: boolean }
+  /** A success tag with no port: the client must not invent one. */
+  | { kind: "incomplete" }
+  | { kind: "silent" };
 
 export interface FakeRelayOptions {
   email?: string;
@@ -43,6 +66,12 @@ export interface FakeRelayOptions {
   dropAfterLoginMs?: number | null;
   /** Text the conformance target answers with; the client echoes `OKEXT` when it matches. */
   conformanceMatch?: string;
+  /** Change replies in order; the last one repeats. Absent means one US consumer exit. */
+  changes?: FakeChange[];
+  /** The exit address the default change reply names. */
+  changeIp?: string;
+  /** What the exit tunnels can reach. Anything else is refused, as the relay would. */
+  tunnelHosts?: Record<string, "address-echo" | "echo">;
 }
 
 export interface FakeRelayStats {
@@ -58,6 +87,17 @@ export interface FakeRelayStats {
   conformanceVerdicts: string[];
   version3: boolean;
   lastHeartbeatAt: number | null;
+  /** The port the handshake handed out; tests prove it is never served. */
+  secondPort: number;
+  /** One per change the client asked for. */
+  changeRequests: number;
+  /** Ports the relay named in change replies, in order. */
+  exitPorts: number[];
+  /** Connections onto exit tunnels, and the exit port each one landed on. */
+  tunnelConnections: number;
+  tunnelPorts: number[];
+  tunnelTargets: Array<{ host: string; port: number }>;
+  addressEchoRequests: number;
 }
 
 interface Normalized extends Required<Omit<FakeRelayOptions, "dropAfterLoginMs">> {
@@ -81,6 +121,9 @@ const DEFAULTS: Normalized = {
   silentOnConnect: false,
   dropAfterLoginMs: null,
   conformanceMatch: "FAKE-RELAY-PROBE-OK",
+  changes: [],
+  changeIp: "198.51.100.7",
+  tunnelHosts: { "echo.example.test": "address-echo", "chatty.example.test": "echo" },
 };
 
 type Stage = "conformance" | "echo" | "second" | "connected";
@@ -96,6 +139,9 @@ export class FakeRelay {
   private redirectPort = 0;
   private secondPort = 0;
   private conformancePort = 0;
+  /** Changes are answered one at a time, in the order they were asked. */
+  private changeQueue: Promise<void> = Promise.resolve();
+  private changesAnswered = 0;
   private readonly counters: FakeRelayStats = {
     connectedHosts: [],
     redirectConnections: 0,
@@ -108,6 +154,13 @@ export class FakeRelay {
     conformanceVerdicts: [],
     version3: false,
     lastHeartbeatAt: null,
+    secondPort: 0,
+    changeRequests: 0,
+    exitPorts: [],
+    tunnelConnections: 0,
+    tunnelPorts: [],
+    tunnelTargets: [],
+    addressEchoRequests: 0,
   };
 
   private constructor(options: FakeRelayOptions) {
@@ -129,6 +182,9 @@ export class FakeRelay {
       ...this.counters,
       connectedHosts: [...this.counters.connectedHosts],
       conformanceVerdicts: [...this.counters.conformanceVerdicts],
+      exitPorts: [...this.counters.exitPorts],
+      tunnelPorts: [...this.counters.tunnelPorts],
+      tunnelTargets: this.counters.tunnelTargets.map((target) => ({ ...target })),
     };
   }
 
@@ -184,6 +240,7 @@ export class FakeRelay {
 
     const second = await this.listenOn((socket) => this.handleSecond(socket));
     this.secondPort = second;
+    this.counters.secondPort = second;
 
     const control = await this.listenOn((socket) => this.handleControl(socket));
     this.controlPort = control;
@@ -267,6 +324,10 @@ export class FakeRelay {
         });
         return;
       }
+      if (tag === "CHANGE_IP_COUNTRY_CITY") {
+        this.queueChange(socket);
+        return;
+      }
       if (tag === "I_AM_ALIVE") {
         this.counters.heartbeats += 1;
         this.counters.lastHeartbeatAt = Date.now();
@@ -297,6 +358,130 @@ export class FakeRelay {
     });
 
     this.sendChallenge(socket);
+  }
+
+  private queueChange(socket: net.Socket): void {
+    this.counters.changeRequests += 1;
+    this.changeQueue = this.changeQueue.then(() => this.sendChange(socket));
+  }
+
+  /**
+   * Answer one `CHANGE_IP_COUNTRY_CITY`. A `changed` reply gets a real exit port
+   * with a tunnel listener behind it, so a request through that port can only
+   * succeed if the client used the port the reply named.
+   */
+  private async sendChange(socket: net.Socket): Promise<void> {
+    const index = this.changesAnswered;
+    this.changesAnswered += 1;
+    const script = this.options.changes;
+    const entry: FakeChange =
+      script.length === 0 ? { kind: "changed" } : script[Math.min(index, script.length - 1)];
+    if (socket.destroyed) return;
+
+    const write = (tag: string, details = ""): void => {
+      if (!socket.destroyed) socket.write(encodeServerFrame(tag, details));
+    };
+
+    if (entry.kind === "silent") return;
+
+    const ip = entry.kind === "changed" ? (entry.ip ?? this.options.changeIp) : this.options.changeIp;
+    const countryIso = entry.kind === "changed" ? (entry.countryIso ?? "US") : "US";
+    const country = entry.kind === "changed" ? (entry.country ?? "United States") : "United States";
+    const region = entry.kind === "changed" ? (entry.region ?? "Texas") : "Texas";
+    const city = entry.kind === "changed" ? (entry.city ?? "Dallas") : "Dallas";
+    const location =
+      `<location><ip>${ip}</ip><country>${country}</country><countryiso>${countryIso}</countryiso>` +
+      `<region>${region}</region><city>${city}</city></location>`;
+
+    switch (entry.kind) {
+      case "changed": {
+        const port = await this.listenExit(ip);
+        this.counters.exitPorts.push(port);
+        write(
+          entry.lastOfBucket ? "IP_CHANGED_SUCCESSFULLY_BUT_LIMIT" : "IP_CHANGED_SUCCESSFULLY",
+          `<status>OK</status><ip>${ip}</ip>${location}<port>${port}</port>`,
+        );
+        return;
+      }
+      case "incomplete":
+        write("IP_CHANGED_SUCCESSFULLY", `<status>OK</status><ip>${ip}</ip>${location}`);
+        return;
+      case "no-change":
+        write(
+          "IP_CHANGED_SUCCESSFULLY_ALREADY_USING",
+          `<status>OK</status><ip>${ip}</ip>${location}`,
+        );
+        return;
+      case "limit":
+        write("IP_NOT_CHANGED_LIMITS", "<status>NOK</status>");
+        return;
+      case "not-available":
+        write("IP_NOT_CHANGED_NOT_AVAILABLE");
+        return;
+      case "overloaded":
+        write("IP_NOT_CHANGED_OVERLOADED");
+        return;
+      case "not-entitled":
+        write("IP_CHANGED_FAILED_FREE");
+        return;
+      case "exit-unavailable":
+        write(
+          entry.limitReached
+            ? "IP_BECAME_UNAVAILABLE_AND_YOU_HAVE_REACHED_LIMITS"
+            : "IP_BECAME_UNAVAILABLE",
+        );
+        return;
+      default:
+        return;
+    }
+  }
+
+  /** An exit port whose listener is the exit: unmask the header, find the target. */
+  private async listenExit(exitIp: string): Promise<number> {
+    const port = await this.listenOn((socket) => this.handleTunnel(port, exitIp, socket));
+    return port;
+  }
+
+  private handleTunnel(exitPort: number, exitIp: string, socket: net.Socket): void {
+    this.track(socket);
+    this.counters.tunnelConnections += 1;
+    this.counters.tunnelPorts.push(exitPort);
+
+    let buffered = Buffer.alloc(0);
+    let mode: "address-echo" | "echo" | null = null;
+
+    socket.on("data", (chunk: Buffer) => {
+      if (mode !== null) {
+        // Client → relay is masked; the target, and so the answer, is clear.
+        if (mode === "echo") socket.write(xor73(chunk));
+        return;
+      }
+      buffered = Buffer.concat([buffered, xor73(chunk)]);
+      const end = buffered.indexOf("</h>");
+      if (end === -1) return;
+      const header = buffered.subarray(0, end + 4).toString("latin1");
+      const rest = buffered.subarray(end + 4);
+      const parsed = /^<h>([\s\S]*)<p>([\s\S]*)<\/p><\/h>$/.exec(header);
+      if (parsed === null) {
+        socket.destroy();
+        return;
+      }
+      this.counters.tunnelTargets.push({ host: parsed[1], port: Number(parsed[2]) });
+      const reachable = this.options.tunnelHosts[parsed[1]];
+      if (reachable === undefined) {
+        // The relay could not reach the destination: the tunnel just closes.
+        socket.destroy();
+        return;
+      }
+      mode = reachable;
+      if (mode === "address-echo") {
+        this.counters.addressEchoRequests += 1;
+        const body = `ip=${exitIp}\n`;
+        socket.write(`HTTP/1.0 200 OK\r\ncontent-length: ${body.length}\r\n\r\n${body}`);
+      } else if (rest.length > 0) {
+        socket.write(rest);
+      }
+    });
   }
 
   private sendChallenge(socket: net.Socket): void {
