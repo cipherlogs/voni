@@ -323,11 +323,12 @@ export function describeProxyHealth(read: ProxyHealthRead, target: number): Prox
   if (read.state === "unconfigured") {
     return {
       status: "client-down",
-      headline: "The client is not connected",
+      headline: "No pool has been reported yet",
       detail:
-        `No proxy client address is configured, so there is no pool to read. ` +
-        `Set ${PROXY_HEALTH_URL_ENV} to the running client's control address. ` +
-        `A click without a US exit fails rather than falling back to a direct connection.` +
+        `A Segment pushes its pool report here when it runs, and this card shows ` +
+        `the newest one. A click without a US exit fails rather than falling back ` +
+        `to a direct connection. Point ${PROXY_HEALTH_URL_ENV} at a long-running ` +
+        `client to read one live instead.` +
         (read.message === undefined ? "" : ` ${read.message}`),
     };
   }

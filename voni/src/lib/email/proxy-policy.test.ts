@@ -260,7 +260,7 @@ function report(
 test("the card tells client-down, short-of-exits and out-of-quota apart", () => {
   const down = describeProxyHealth({ state: "unconfigured" }, 5);
   assert.equal(down.status, "client-down");
-  assert.match(down.headline, /client/i);
+  assert.match(down.headline, /no pool has been reported/i);
 
   const unreachable = describeProxyHealth(
     { state: "unreachable", message: "The client did not answer." },
@@ -358,4 +358,32 @@ test("the unconfigured sentence also says no Segment has reported", () => {
     5,
   );
   assert.match(read.detail, /No Segment has reported a pool yet/);
+});
+
+test("with no client and no report the card says no pool has been reported", () => {
+  const read = describeProxyHealth({ state: "unconfigured" }, 5);
+
+  // "The client is not connected" implied something was broken and pointed the
+  // operator at an env var that can never reach an ephemeral runner. The pool
+  // arrives as a pushed report instead, so the card names that condition.
+  assert.match(read.headline, /No pool has been reported yet/);
+  assert.match(
+    read.detail,
+    /Segment pushes its pool report here when it runs/i,
+    "the detail says how a report reaches the app",
+  );
+  assert.match(
+    read.detail,
+    /A click without a US exit fails rather than falling back to a direct connection\./,
+    "the consequence of an empty pool stays truthful",
+  );
+
+  // The env var is an optional live read, never the fix to be prescribed.
+  assert.doesNotMatch(
+    read.detail,
+    /Set\s+[^.]*TUXLER_CONTROL_URL/,
+    "the card never instructs giving the operator an env var to set",
+  );
+  assert.doesNotMatch(read.detail, /No proxy client address is configured/);
+  assert.doesNotMatch(read.detail, /is not connected/);
 });
