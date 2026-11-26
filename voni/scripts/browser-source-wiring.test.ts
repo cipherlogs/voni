@@ -565,6 +565,7 @@ const POOL_START = "Start the exit pool";
 const POOL_GATE = "Wait for the exit pool";
 const POOL_FINAL = "Final pool report";
 const POOL_UPLOAD = "Pool report";
+const POOL_CLIENT_LOG = "Client log";
 
 test("the client starts before the clicks and the gate fails before them", () => {
   const start = step(POOL_START);
@@ -667,6 +668,28 @@ test("the account is two secrets on the client step and nowhere else", () => {
     /console\.[a-z]+\([^)]*TUXLER_(?:USERNAME|PASSWD|PASSWORD)/i,
     "the runner prints no account line",
   );
+});
+
+test("a short pool explains itself: the client log is printed and kept", () => {
+  // The job log alone must say why the gate refused: the last 40 lines of the
+  // client's own log, labelled, and the gate's exit code must survive the tail.
+  const gate = step(POOL_GATE);
+  assert.match(
+    gate,
+    /node --import tsx scripts\/browser-pool-gate\.mjs \|\| status=\$\?/,
+    "the gate's failure is captured, not swallowed",
+  );
+  assert.match(gate, /tail -n 40 tuxler-client\.log/, "the last 40 client lines are printed");
+  assert.match(gate, /last 40 lines/, "and the block is labelled");
+  assert.match(gate, /if \[ "\$status" -ne 0 \]/, "only a failed gate prints the tail");
+  assert.match(gate, /exit "\$status"/, "the gate still fails the step");
+
+  const upload = step(POOL_CLIENT_LOG);
+  assert.match(upload, /uses: actions\/upload-artifact@v4/);
+  assert.match(upload, /if: always\(\)/, "a failed gate's log is the artifact");
+  assert.match(upload, /name: browser-client-log-\$\{\{ inputs\.os \}\}/);
+  assert.match(upload, /path: voni\/tuxler-client\.log/);
+  assert.match(upload, /if-no-files-found: ignore/, "a run with the flag off wrote no log");
 });
 
 test("the pool report is an artifact of every run that reached the clicks", () => {

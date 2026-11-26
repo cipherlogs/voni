@@ -140,9 +140,21 @@ jobs:
       # fails. A failed step skips the click step below by default, so a pool
       # that is broken or short of exits writes no click row at all, and the
       # pool report artifact says why. Bounded at three minutes.
+      #
+      # On a refusal the client's own log is printed too: the report names the
+      # verdict, but only the log says which refills it spent and what the relay
+      # answered. Last 40 lines, labelled, and the gate's exit code survives.
       - name: Wait for the exit pool
         if: env.TUXLER_ENABLED == 'true'
-        run: node --import tsx scripts/browser-pool-gate.mjs
+        run: |
+          status=0
+          node --import tsx scripts/browser-pool-gate.mjs || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::group::exit pool failed: tuxler-client.log (last 40 lines)"
+            tail -n 40 tuxler-client.log 2>/dev/null || echo "(no tuxler-client.log)"
+            echo "::endgroup::"
+          fi
+          exit "$status"
 
       - name: Click every target
         run: node --import tsx scripts/browser-click.mjs
@@ -196,6 +208,20 @@ jobs:
         with:
           name: browser-pool-report-${{ inputs.os }}
           path: voni/pool-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # The client's own decision log: one line per refill, park, reconnect and
+      # exhausted bucket, with the relay's refusal quoted. It is the only
+      # forensic trail a short pool leaves, and the client redacts the account
+      # before it writes. A sibling artifact, so the pool report's path stays one
+      # file; a run whose flag was off wrote no log and uploads nothing.
+      - name: Client log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-client-log-${{ inputs.os }}
+          path: voni/tuxler-client.log
           if-no-files-found: ignore
           retention-days: 7
 
