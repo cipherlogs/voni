@@ -196,3 +196,29 @@ The relay also reported `used: 12` against a stated `limit: 10`, so the stated
 daily limit is not a hard cap this client may trust: it is a hint for pacing, and
 the only safe rule is the one implemented — spend on refills, pace them, and park
 when a rejection cannot be fixed by another change.
+
+### Resolver failure, and why the pool can now classify exits
+
+The ASN classifier asks Team Cymru over DNS. On the operator's machine the host
+resolver returned `ESERVFAIL` for `origin.asn.cymru.com` one minute and a normal
+answer the next, so the failure is **intermittent**, not a permanently broken
+zone. A pool that classifies on Monday and parks with `lookup-failed` on Tuesday
+is exactly the silent failure this subsystem is built to avoid.
+
+`cymruLookup` now resolves in order: the system resolver, then DNS-over-HTTPS
+(Cloudflare, then Google) when the system resolver throws. Both providers answer
+authoritatively for the zone; they differ in formatting only — Cloudflare quotes
+TXT values, Google does not — and the parser handles both.
+
+Verified locally with the system resolver forced to throw (as it did during the
+incident):
+
+```
+102.69.220.138 -> AS328494 GH | consumer | 3D WIRELESS PLUS LIMITED
+73.162.14.9    -> AS7922  US | consumer | COMCAST-7922
+8.8.8.8        -> AS15169 US | hosting  | GOOGLE
+```
+
+So classification no longer depends on one resolver, and the fail-closed rule is
+unchanged: when every resolver fails, the exit is rejected with `lookup-failed`
+and the pool parks rather than clicking direct.
