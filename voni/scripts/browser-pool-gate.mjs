@@ -239,8 +239,14 @@ export function evaluatePoolGate(health) {
     return { ok: true, reason: null, detail: null, retryable: false, ...seen };
   }
 
+  // A refusal is only terminal when the pool says so. `relay-silent` is what the
+  // pool heals by reconnecting, and a thin-supply rejection is what refilling
+  // heals, so failing the gate on either spends the run on a state that was
+  // about to change. `parked` is the pool's own verdict; trust it, and keep
+  // polling to the deadline otherwise.
   const failure = seen.lastError;
-  if (failure !== null) {
+  const clientFailed = asRecord(record.session)?.state === "failed";
+  if (failure !== null && (record.parked === true || clientFailed)) {
     const reason = text(failure.reason) ?? "client-not-ready";
     return {
       ok: false,

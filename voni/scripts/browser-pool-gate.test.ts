@@ -133,12 +133,35 @@ test("a client that failed is named at once, not waited on", () => {
       ready: 0,
       pool: [],
       lastError: { reason: "credential-missing", message: "no relay credential configured" },
+      parked: true,
       session: { state: "failed", frames: [] },
     }),
   );
   assert.equal(verdict.ok, false);
   assert.equal(verdict.reason, "credential-missing");
   assert.equal(verdict.retryable, false);
+});
+
+test("a silence the pool can heal does not end the gate", () => {
+  const verdict = evaluatePoolGate(
+    health({
+      ready: 0,
+      pool: [],
+      parked: false,
+      lastError: {
+        reason: "relay-silent",
+        message: "the relay did not answer the change within 20000 ms",
+      },
+      session: { state: "connected", frames: [] },
+    }),
+  );
+  assert.equal(verdict.ok, false);
+  assert.notEqual(
+    verdict.reason,
+    "relay-silent",
+    "the pool reconnects a silent session; the gate must keep waiting for it",
+  );
+  assert.equal(verdict.retryable, true, "the gate keeps polling to its deadline");
 });
 
 test("an exhausted account is quota-spent, not a thin supply", () => {
@@ -256,6 +279,8 @@ test("no credential reaches the report or the file it is written to", () => {
       ready: 0,
       pool: [],
       lastError: { reason: "connect-failed", message: `login failed for ${account}` },
+      parked: true,
+      session: { state: "failed", frames: [] },
     }),
   );
   const report = buildPoolReport({ gate: verdict, env });
