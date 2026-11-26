@@ -15,6 +15,7 @@ import { organization, user } from "./auth-schema";
 // Type-only: the allowlist is parsed at the intake, and this column stores
 // nothing else. Erased at runtime, so drizzle-kit does not load email code.
 import type { RunnerOs } from "../email/click-report";
+import type { TuxlerPoolReport } from "../email/pool-report";
 
 // ---------------------------------------------------------------------------
 // Better Auth core tables (user/session/account/verification) + the
@@ -969,3 +970,40 @@ export const emailSettings = pgTable("email_settings", {
   proxyPoolTarget: integer("proxy_pool_target"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * The most recent exit-pool report a GitHub runner pushed, one row per
+ * `(producer, runner_os)`.
+ *
+ * The runner's pool client listens on that runner's loopback, so the report it
+ * writes dies with the job. The workflow therefore POSTs the artifact to the
+ * app, and this table is what `/email` reads: the last known pool per OS, with
+ * the time it arrived, rather than a live address nobody can reach.
+ *
+ * Upserted, not appended: the console only ever wants the newest report, and
+ * `received_at` is rewritten with it so "newest" means "last report written"
+ * even when two OSes finish in either order. `report` is the validated shape in
+ * `src/lib/email/pool-report.ts`, never raw caller text.
+ */
+export const tuxlerPoolReports = pgTable(
+  "tuxler_pool_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** `github` today; text so a future producer does not need an enum migration. */
+    producer: text("producer").notNull().default("github"),
+    /** The runner OS the report came from; one row per OS. */
+    runnerOs: text("runner_os").$type<RunnerOs>().notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    report: jsonb("report").$type<TuxlerPoolReport>().notNull(),
+  },
+  (table) => [
+    // The upsert's conflict target: one row per producer and OS, so a second
+    // report from the same runner replaces the first instead of accumulating.
+    uniqueIndex("tuxler_pool_reports_producer_runner_os_uidx").on(
+      table.producer,
+      table.runnerOs,
+    ),
+  ],
+);

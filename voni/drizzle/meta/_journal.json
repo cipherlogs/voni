@@ -176,6 +176,13 @@
       "when": 1795686175583,
       "tag": "0024_regular_ben_grimm",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795695447772,
+      "tag": "0025_soft_sebastian_shaw",
+      "breakpoints": true
     }
   ]
 }
