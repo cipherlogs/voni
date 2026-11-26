@@ -1526,3 +1526,142 @@ test("the Pause all result carries a per-source outcome", () => {
     /export type PauseAllState = \{[\s\S]*?grafana\?: PauseOutcome;[\s\S]*?github\?: PauseOutcome;/,
   );
 });
+
+// --- Restart: cancel the running Segment, observe the stop, then dispatch ---
+
+test("restart gates inside the body and validates the OS before cancelling", () => {
+  const body = fnBody("restartGithubSegment");
+
+  assert.match(
+    body,
+    /if \(!\(await requirePageUnlock\(\)\)\) return \{ ok: false, error: LOCKED\.error \};/,
+    "a locked request never reaches GitHub",
+  );
+  assert.ok(
+    body.indexOf("requirePageUnlock()") < body.indexOf('formData.get("os")'),
+    "authorisation happens before the first field read",
+  );
+  assert.ok(
+    body.indexOf("requirePageUnlock()") < body.indexOf("cancelBrowserCheckRuns("),
+  );
+  assert.match(
+    body,
+    /\(RUNNER_OSES as readonly string\[\]\)\.includes\(os\)/,
+    "the closed set is the gate, not a second list",
+  );
+  assert.ok(
+    body.indexOf("GITHUB_OS_REASON") < body.indexOf("cancelBrowserCheckRuns("),
+    "an unknown OS is refused before anything is cancelled",
+  );
+});
+
+test("restart cancels before it dispatches, through the tested orchestration", () => {
+  const body = fnBody("restartGithubSegment");
+
+  assert.match(
+    body,
+    /restartSegment\(\s*\{[\s\S]*?os: os as RunnerOs,[\s\S]*?targets,[\s\S]*?intervalSeconds: config\.intervalSeconds,[\s\S]*?windowSeconds: segment,[\s\S]*?selection: await liveSelection\(\),?\s*\},[\s\S]*?\{[\s\S]*?cancel:[\s\S]*?cancelBrowserCheckRuns\(runnerOs\)[\s\S]*?dispatch: dispatchBrowserCheck/,
+    "the action supplies the real cancel and dispatch to the one ordered sequence",
+  );
+  assert.equal(
+    (body.match(/dispatch: dispatchBrowserCheck/g) ?? []).length,
+    1,
+    "exactly one dispatch wiring: a restart cannot start a second Segment",
+  );
+  assert.doesNotMatch(
+    body,
+    /dispatchBrowserCheck\(/,
+    "the action never dispatches outside the ordered sequence",
+  );
+  assert.equal(
+    (body.match(/cancelBrowserCheckRuns\(/g) ?? []).length,
+    1,
+    "exactly one cancel call site: no retry loop in the action",
+  );
+});
+
+test("a restart failure names the step that failed, and never the token", () => {
+  const body = fnBody("restartGithubSegment");
+
+  assert.match(
+    body,
+    /Restart failed at the \$\{result\.step\} step: \$\{result\.error\}/,
+    "the operator is told whether cancel or dispatch failed",
+  );
+  assert.doesNotMatch(
+    body,
+    /GITHUB_BURST_TOKEN|Bearer|authorization|EMAIL_PAGE_PASSWORD|pagePasswordDigest/,
+    "the action never reads or echoes a credential",
+  );
+  assert.doesNotMatch(body, /console\.(log|error)/);
+});
+
+test("restart bypasses the ticker's anti-thrash throttle on purpose, and says so", () => {
+  const body = fnBody("restartGithubSegment");
+  const at = source.indexOf("export async function restartGithubSegment(");
+  const doc = source.slice(Math.max(0, at - 2_500), at);
+
+  assert.doesNotMatch(
+    body,
+    /decideDue|DISPATCH_THROTTLE_SECONDS|lastDispatchedAt/,
+    "the throttle is the ticker's guard; an operator's restart must not be swallowed by it",
+  );
+  assert.match(
+    doc,
+    /throttle/i,
+    "the code states the decision instead of leaving it implicit",
+  );
+  assert.match(doc, /bypass/i);
+  assert.match(
+    body,
+    /await recordSourceDispatch\(/,
+    "the replacement is recorded, so the ticker's own throttle starts from it",
+  );
+});
+
+test("restart records only a real dispatch and revalidates once", () => {
+  const body = fnBody("restartGithubSegment");
+
+  assert.equal(
+    (body.match(/recordSourceDispatch\(/g) ?? []).length,
+    1,
+    "one record, on the dispatched path only",
+  );
+  assert.equal(
+    (body.match(/revalidatePath\("\/email"\)/g) ?? []).length,
+    1,
+  );
+  assert.ok(
+    body.indexOf('result.mode === "manual"') <
+      body.indexOf("recordSourceDispatch("),
+    "a manual fallback queues nothing, so it records nothing",
+  );
+  assert.ok(
+    body.indexOf("recordSourceDispatch(") < body.indexOf('revalidatePath("/email")'),
+  );
+  assert.match(body, /runUrl: result\.runUrl/);
+});
+
+test("restart refuses an empty target list or a missing config row", () => {
+  const body = fnBody("restartGithubSegment");
+
+  assert.match(body, /if \(targets\.length === 0\) \{\s*return \{ ok: false, error: GITHUB_NO_TARGETS_REASON \};\s*\}/);
+  assert.match(body, /if \(!config\) return \{ ok: false, error: GITHUB_NOT_CONFIGURED_REASON \};/);
+  assert.ok(
+    body.indexOf("targets.length === 0") < body.indexOf("cancelBrowserCheckRuns("),
+    "there is nothing to restart if there is nothing to click",
+  );
+  assert.ok(
+    body.indexOf("if (!config)") < body.indexOf("cancelBrowserCheckRuns("),
+    "no schedule means no segment to start",
+  );
+});
+
+test("restart is inline and bounded, with no job row", () => {
+  const body = fnBody("restartGithubSegment");
+  assert.doesNotMatch(body, /insertJob|createJob|jobId|enqueue|await db\b/);
+  assert.ok(
+    body.indexOf("restartSegment(") > body.indexOf("segment"),
+    "the one sequence is the bounded wait; nothing is scheduled after it",
+  );
+});

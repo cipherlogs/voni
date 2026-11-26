@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   BROWSER_CHECK_INPUTS,
   BROWSER_CHECK_WORKFLOW_FILE,
+  browserCheckRunName,
   dispatchBrowserCheck,
   type BrowserCheckInput,
 } from "../src/lib/github/dispatch";
@@ -830,5 +831,26 @@ test("an impossible request is refused before it reaches GitHub", async () => {
     badSelection.ok ? "" : badSelection.error,
     /"shuffle" is not one of random, rotate/,
     "the refusal names the two modes",
+  );
+});
+
+test("the cancel client finds a run by the name the workflow prints", () => {
+  // Restart lists the workflow's runs and keeps the ones whose display title is
+  // this OS's. A renamed run-name would silently make every Restart see "no
+  // run", so the two sides are compared here rather than in production.
+  const runName = /^run-name:\s*"([^"]+)"\s*$/m.exec(WORKFLOW);
+  assert.ok(runName, "browser-check.yml declares a run-name");
+  for (const os of ["ubuntu", "windows", "macos"] as const) {
+    const printed: string = runName[1]!.replace("${{ inputs.os }}", os);
+    assert.equal(
+      browserCheckRunName(os),
+      printed,
+      `the cancel client looks for "${printed}"`,
+    );
+  }
+  assert.match(
+    WORKFLOW,
+    /group: browser-check-\$\{\{ inputs\.os \}\}/,
+    "the per-OS concurrency group is what makes one running segment the rule",
   );
 });

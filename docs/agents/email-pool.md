@@ -410,6 +410,8 @@ destructive "Stale". The body adds:
 - one row per OS with its last run, conclusion and coverage (`targets 4/4`) for
   the **most recent pass**, and a link to the workflow page;
 - `Dispatch now` per OS;
+- `Restart` per OS: cancel the running segment, wait for it to stop, then
+  dispatch exactly one replacement;
 - this source's own clicks for the basis window, split by OS and by target.
 
 A failed run leaves screenshots on the workflow page as the
@@ -539,6 +541,41 @@ never the form, and dispatches one segment. Outside the window it takes a full
 segment rather than refusing, so an operator can prove the path before turning
 continuous running on. A missing dispatch token is a manual outcome, not an
 error: the card shows the exact `gh workflow run` command to run instead.
+
+### Restart
+
+`Restart` on one OS row is the one control allowed to stop a working segment.
+It is a strict sequence, not a re-dispatch:
+
+1. list the workflow's runs and keep the ones whose display title is that OS's
+   `run-name` (`Browser check (<os>)`) and whose status is not terminal. Queued
+   runs count: cancelling only the run that is clicking would let a queued
+   sibling start the moment it finishes;
+2. `POST /repos/{repo}/actions/runs/{id}/cancel` for each of them;
+3. read each run until GitHub reports a terminal status. The wait is bounded at
+   60 s with a 2 s re-read. If a run has not stopped by then, the card reports
+   that the **cancel** step failed and dispatches nothing.
+
+A cancel request is not a cancellation — GitHub answers `202` and the run sits
+in `cancelling`, or ignores it until a runner checks in — so only an observed
+stop releases the replacement. A re-dispatch without the cancel would queue
+behind the running segment (`cancel-in-progress: false`); a dispatch before the
+stop would put two browsers on the same target.
+
+The cancel needs the same `GITHUB_BURST_TOKEN` as a dispatch, with Actions
+write access on the repository. A missing token therefore refuses a Restart at
+the cancel step; nothing is dispatched.
+
+`Restart` deliberately bypasses the ticker's 600-second anti-thrash throttle.
+That throttle exists to stop the **ticker** respawning a failing source every
+minute; an operator pressing Restart is asking for a replacement, so a
+throttle must not silently swallow the request. The replacement is still
+recorded as `last_dispatched_at`, so the ticker's own throttle starts from the
+restart and cannot immediately dispatch a second segment.
+
+A failure names the step: `Restart failed at the cancel step: …` or
+`Restart failed at the dispatch step: …`. Neither sentence contains the token;
+the cancel client and the dispatcher redact every string they return.
 
 ## The ticker: clicks are the heartbeat
 

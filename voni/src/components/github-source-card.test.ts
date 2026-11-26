@@ -483,7 +483,7 @@ test("every OS row carries its own Dispatch now, and each owns its pending state
   assert.doesNotMatch(card, /const \[pending/);
   assert.doesNotMatch(card, /dispatching \|\|/);
   assert.doesNotMatch(card, /disabled=\{dispatching\}/);
-  assert.equal((card.match(/useActionState\(/g) ?? []).length, 2);
+  assert.equal((card.match(/useActionState\(/g) ?? []).length, 3);
   assert.equal(
     (card.match(/useIntentActionState\(/g) ?? []).length,
     1,
@@ -566,4 +566,74 @@ test("each OS dispatch owns its own toast, so two runs are two results", () => {
     "the card shares no dispatch state between rows",
   );
   assert.doesNotMatch(card, /email-github-dispatch-\$\{os\}-result/);
+});
+
+// --- Restart: one control per OS, cancel then replace ---
+
+test("every OS row has its own Restart, next to Dispatch now", () => {
+  assert.match(
+    card,
+    /RUNNER_OSES\.map\(\(os\) => \{[\s\S]*?<DispatchControl\s+os=\{os\}[\s\S]*?<RestartControl\s+os=\{os\}/,
+    "the same map that renders the row renders both controls",
+  );
+  assert.match(card, /function RestartControl/);
+
+  const control = functionBody(card, "RestartControl");
+  assert.match(
+    control,
+    /useActionState\(\s*restart,\s*INITIAL_DISPATCH,?\s*\)/,
+    "the restart's pending flag lives in the row, not on the card",
+  );
+  assert.match(control, /pending=\{restarting\}/);
+  assert.match(control, /pendingText="Restarting…"/);
+  assert.match(control, /disabled=\{locked\}/);
+  assert.match(control, /name="os" value=\{os\}/);
+  assert.match(
+    control,
+    /Cancels this OS's running segment, waits for it to stop, then starts one replacement\./,
+    "the control says what a restart does, in order",
+  );
+});
+
+test("Restart arrives as a prop and the page wires it", () => {
+  assert.match(card, /restart:/, "the action arrives as a prop like the others");
+  assert.match(
+    page,
+    /<GithubSourceCard[\s\S]*?restart=\{restartGithubSegment\}/,
+    "the page passes the real action",
+  );
+  assert.match(
+    page,
+    /import \{[^}]*restartGithubSegment[^}]*\} from "@\/app\/email\/actions"/,
+  );
+});
+
+test("a restart reports success and failure through the house toast", () => {
+  assert.match(card, /function useRestartToast/);
+  const toast = functionBody(card, "useRestartToast");
+  assert.match(
+    toast,
+    /useActionToast\(state, "Could not restart the segment"/,
+    "the failure title names the action, not a generic error",
+  );
+  assert.match(
+    toast,
+    /successTitle: "Restarted"/,
+    "a success never claims a plain dispatch",
+  );
+  assert.match(
+    toast,
+    /\{ label: "View run", href: state\.runUrl \}/,
+    "the replacement links to the workflow page as a toast action",
+  );
+  assert.doesNotMatch(toast, /<Alert/, "no inline result Alert in the row");
+  assert.doesNotMatch(toast, /Bearer|authorization/i);
+  assert.doesNotMatch(card, /actions\/runs\//, "the card never fabricates a run URL");
+
+  const control = functionBody(card, "RestartControl");
+  assert.match(
+    control,
+    /useRestartToast\(restartState\)/,
+    "each row owns its restart result",
+  );
 });

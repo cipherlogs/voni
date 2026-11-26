@@ -284,6 +284,295 @@ function refuse(reason: string): DispatchOutcome {
   return { ok: false, error: `The browser check was not dispatched: ${reason}` };
 }
 
+/**
+ * Restart's first half: cancel one OS's running Segment and prove it stopped.
+ *
+ * A dispatch answers 204 with no body, so nothing in a dispatch names the run
+ * it started. The run is found the same way a reader finds it on the workflow
+ * page: by the run name the workflow sets per OS (`browserCheckRunName`) and
+ * by a status that is not terminal. Both queued and in-progress runs count —
+ * cancelling only the one that is clicking would let a queued sibling start
+ * the moment it finishes, which is exactly the second Segment a Restart must
+ * prevent.
+ *
+ * A cancel request is not a cancellation. GitHub answers 202 and the run sits
+ * in `cancelling` (or ignores the request entirely until a runner checks in),
+ * so this waits, reads, and only reports success when every run it asked to
+ * stop is terminal. The wait is bounded; on the bound the caller is told what
+ * is still running and must not dispatch.
+ */
+export function browserCheckRunName(os: RunnerOs): string {
+  return `Browser check (${os})`;
+}
+
+/** One cancel or run read is a small request; it gets the dispatch's ceiling. */
+export const CANCEL_TIMEOUT_MS = 10_000;
+
+/**
+ * How long a Restart waits for GitHub to report the cancelled run completed.
+ * Longer than a cancel needs, short enough that the operator's form does not
+ * hang indefinitely: past it, the answer is "not observed", not a dispatch.
+ */
+export const CANCEL_WAIT_TIMEOUT_MS = 60_000;
+
+/** How often the wait re-reads a run while it is still active. */
+export const CANCEL_POLL_INTERVAL_MS = 2_000;
+
+/** The newest runs are the active ones; one page is more than an OS can hold. */
+const RUNS_PER_PAGE = 100;
+
+/**
+ * A status outside this set may still be clicking. GitHub reports `completed`
+ * on the run resource and keeps the outcome in `conclusion`, but the older
+ * status words are accepted as terminal too so a representation change cannot
+ * make a finished run look like a live one — or a live one look finished.
+ */
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
+  "completed",
+  "cancelled",
+  "success",
+  "failure",
+  "timed_out",
+  "skipped",
+  "neutral",
+  "stale",
+  "action_required",
+]);
+
+export type CancelDeps = {
+  /** Injecting `fetch` keeps the tests off the network. */
+  fetcher?: typeof fetch;
+  /** Injecting the reader keeps the tests off the environment and the Worker context. */
+  readSecret?: (name: string) => Promise<string | undefined>;
+  /** Injected so a test never waits on a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+  /** The bound on observing the stop; defaults to `CANCEL_WAIT_TIMEOUT_MS`. */
+  waitTimeoutMs?: number;
+  /** The re-read interval; defaults to `CANCEL_POLL_INTERVAL_MS`. */
+  pollIntervalMs?: number;
+};
+
+/**
+ * `cancelled: false` means nothing was running and nothing was waited for.
+ * Every failure names the cancel step; `stillRunning` is empty only when the
+ * client could not even find out what was running.
+ */
+export type CancelOutcome =
+  | { ok: true; cancelled: false; runIds: [] }
+  | { ok: true; cancelled: true; runIds: number[] }
+  | { ok: false; step: "cancel"; error: string; stillRunning: number[] };
+
+type GithubRun = {
+  id?: unknown;
+  status?: unknown;
+  display_title?: unknown;
+};
+
+export async function cancelBrowserCheckRuns(
+  os: RunnerOs,
+  deps: CancelDeps = {},
+): Promise<CancelOutcome> {
+  const readSecret = deps.readSecret ?? secret;
+  const token = await readSecret(BROWSER_CHECK_TOKEN_ENV);
+  if (!token) {
+    // The same token dispatches and cancels. Without it GitHub cannot be asked
+    // to stop anything, so a Restart refuses rather than stacking a run on top
+    // of one it cannot see.
+    return {
+      ok: false,
+      step: "cancel",
+      error: `A running ${os} browser check cannot be cancelled without ${BROWSER_CHECK_TOKEN_ENV}, so no replacement was dispatched.`,
+      stillRunning: [],
+    };
+  }
+
+  const fetcher = deps.fetcher ?? fetch;
+  const base = `https://api.github.com/repos/${BROWSER_CHECK_REPO}`;
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+    authorization: `Bearer ${token}`,
+    "x-github-api-version": "2022-11-28",
+    // GitHub 403s a UA-less request with a body that reads like a permission
+    // refusal; the dispatch module learned that the expensive way.
+    "user-agent": "voni-restart",
+  };
+
+  const fail = (sentence: string, stillRunning: number[] = []): CancelOutcome => ({
+    ok: false,
+    step: "cancel",
+    error: redact(sentence, token),
+    stillRunning,
+  });
+
+  let listed: Response;
+  try {
+    listed = await fetcher(
+      `${base}/actions/workflows/${BROWSER_CHECK_WORKFLOW_FILE}/runs?per_page=${RUNS_PER_PAGE}`,
+      {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
+        cache: "no-store",
+      },
+    );
+  } catch (error) {
+    return fail(
+      `Could not reach GitHub to find the running ${os} browser check: ${messageOf(error)}`,
+    );
+  }
+
+  if (!listed.ok) {
+    const detail = await githubMessage(listed);
+    switch (listed.status) {
+      case 401:
+        return fail(
+          `GitHub rejected ${BROWSER_CHECK_TOKEN_ENV} while looking for the running ${os} browser check (401): the token is unset, expired, or cannot see ${BROWSER_CHECK_REPO}.${detail}`,
+        );
+      case 403:
+        return fail(
+          `GitHub refused the ${os} cancel (403): ${BROWSER_CHECK_TOKEN_ENV} needs Actions write access on ${BROWSER_CHECK_REPO}.${detail}`,
+        );
+      case 404:
+        return fail(
+          `GitHub could not find ${BROWSER_CHECK_WORKFLOW_FILE} on ${BROWSER_CHECK_REPO} (404), so a running ${os} browser check cannot be found.${detail}`,
+        );
+      case 429:
+        return fail(
+          `GitHub rate-limited the ${os} cancel (429): wait for the limit to reset before restarting.${detail}`,
+        );
+      default:
+        return fail(
+          `GitHub returned HTTP ${listed.status} while looking for the running ${os} browser check, so no replacement was dispatched.${detail}`,
+        );
+    }
+  }
+
+  const payload = (await listed.json().catch(() => null)) as
+    | { workflow_runs?: unknown }
+    | null;
+  if (!payload || !Array.isArray(payload.workflow_runs)) {
+    return fail(
+      `GitHub's run list could not be read, so no replacement was dispatched.`,
+    );
+  }
+
+  const title = browserCheckRunName(os);
+  const active: number[] = [];
+  for (const entry of payload.workflow_runs) {
+    if (!entry || typeof entry !== "object") {
+      return fail(
+        `GitHub's run list could not be read, so no replacement was dispatched.`,
+      );
+    }
+    const run = entry as GithubRun;
+    if (typeof run.id !== "number" || typeof run.status !== "string") {
+      return fail(
+        `GitHub's run list could not be read, so no replacement was dispatched.`,
+      );
+    }
+    if (run.display_title !== title) continue;
+    if (!TERMINAL_RUN_STATUSES.has(run.status)) active.push(run.id);
+  }
+
+  if (active.length === 0) {
+    return { ok: true, cancelled: false, runIds: [] };
+  }
+
+  for (const [index, runId] of active.entries()) {
+    let response: Response;
+    try {
+      response = await fetcher(`${base}/actions/runs/${runId}/cancel`, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
+        cache: "no-store",
+      });
+    } catch (error) {
+      return fail(
+        `Could not reach GitHub to cancel the ${os} browser check: ${messageOf(error)}`,
+        active.slice(index),
+      );
+    }
+
+    if (response.ok) continue;
+
+    // 404 (gone) and 409 (not in a cancellable state) are not failures: the
+    // wait below is the only proof that matters, and it reads the run either
+    // way. Every other status means the cancel was refused, which a wait
+    // cannot repair.
+    if (response.status === 404 || response.status === 409) continue;
+
+    const detail = await githubMessage(response);
+    switch (response.status) {
+      case 401:
+        return fail(
+          `GitHub rejected ${BROWSER_CHECK_TOKEN_ENV} while cancelling the ${os} browser check (401): the token is unset, expired, or cannot see ${BROWSER_CHECK_REPO}.${detail}`,
+          active.slice(index),
+        );
+      case 403:
+        return fail(
+          `GitHub refused to cancel the ${os} browser check (403): ${BROWSER_CHECK_TOKEN_ENV} needs Actions write access on ${BROWSER_CHECK_REPO}.${detail}`,
+          active.slice(index),
+        );
+      case 429:
+        return fail(
+          `GitHub rate-limited the ${os} cancel (429): wait for the limit to reset before restarting.${detail}`,
+          active.slice(index),
+        );
+      default:
+        return fail(
+          `GitHub returned HTTP ${response.status} when asked to cancel the ${os} browser check.${detail}`,
+          active.slice(index),
+        );
+    }
+  }
+
+  const sleep =
+    deps.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const pollIntervalMs = Math.max(1, deps.pollIntervalMs ?? CANCEL_POLL_INTERVAL_MS);
+  const waitTimeoutMs = deps.waitTimeoutMs ?? CANCEL_WAIT_TIMEOUT_MS;
+  const attempts = Math.max(1, Math.ceil(waitTimeoutMs / pollIntervalMs));
+
+  let stillRunning: number[] = [];
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    stillRunning = [];
+    for (const runId of active) {
+      let stopped = false;
+      try {
+        const response = await fetcher(`${base}/actions/runs/${runId}`, {
+          method: "GET",
+          headers,
+          signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
+          cache: "no-store",
+        });
+        if (response.status === 404) {
+          stopped = true;
+        } else if (response.ok) {
+          const run = (await response.json().catch(() => null)) as GithubRun | null;
+          stopped =
+            typeof run?.status === "string" &&
+            TERMINAL_RUN_STATUSES.has(run.status);
+        }
+      } catch {
+        // A transient read failure is "not observed yet": the bound decides.
+      }
+      if (!stopped) stillRunning.push(runId);
+    }
+
+    if (stillRunning.length === 0) {
+      return { ok: true, cancelled: true, runIds: active };
+    }
+    if (attempt < attempts - 1) await sleep(pollIntervalMs);
+  }
+
+  return fail(
+    `The ${os} browser check did not stop within ${Math.round(waitTimeoutMs / 1_000)} seconds of the cancel request, so no replacement was dispatched. Runs still active: ${stillRunning.join(", ")}.`,
+    stillRunning,
+  );
+}
+
+
 export async function dispatchBrowserCheck(
   input: BrowserCheckInput,
   deps: BrowserCheckDeps = {},

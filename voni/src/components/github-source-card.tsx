@@ -110,6 +110,14 @@ export type GithubSourceCardProps = {
     previous: GithubDispatchState,
     formData: FormData,
   ) => Promise<GithubDispatchState>;
+  /**
+   * Restart one OS: cancel its running Segment, wait for the stop, then
+   * dispatch exactly one replacement; field `os` = one of `RUNNER_OSES`.
+   */
+  restart: (
+    previous: GithubDispatchState,
+    formData: FormData,
+  ) => Promise<GithubDispatchState>;
 };
 
 const OS_LABELS: Record<RunnerOs, string> = {
@@ -224,6 +232,21 @@ function useDispatchToast(state: GithubDispatchState) {
 }
 
 /**
+ * One OS's Restart result, in the same toast channel as a dispatch.
+ *
+ * The titles differ because the outcomes differ: "Dispatched" would hide that
+ * a run was stopped first. The description is the action's own sentence, which
+ * states both the order and the deliberate throttle bypass.
+ */
+function useRestartToast(state: GithubDispatchState) {
+  useActionToast(state, "Could not restart the segment", {
+    successTitle: "Restarted",
+    description: state.message,
+    action: state.runUrl ? { label: "View run", href: state.runUrl } : undefined,
+  });
+}
+
+/**
  * One OS's Dispatch now control.
  *
  * The `useActionState` lives here, in the row, rather than on the card: three
@@ -268,6 +291,60 @@ function DispatchControl({
           {locked
             ? "Unlock the panel to dispatch a run."
             : "Runs one segment from the saved targets and schedule."}
+        </p>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * One OS's Restart: cancel the running Segment, wait until it has stopped,
+ * then start one replacement.
+ *
+ * It is a second form, not a second mode of the dispatch button: the two have
+ * different results (a queued run versus a replaced one) and different
+ * durations (a restart can wait for a cancel), so each owns its pending state
+ * and its toast. A restart is the one control allowed to stop a working
+ * Segment, so the row says what it will do before it is pressed.
+ */
+function RestartControl({
+  os,
+  locked,
+  restart,
+}: {
+  os: RunnerOs;
+  locked: boolean;
+  restart: GithubSourceCardProps["restart"];
+}) {
+  const [restartState, restartAction, restarting] = useActionState(
+    restart,
+    INITIAL_DISPATCH,
+  );
+  useRestartToast(restartState);
+
+  return (
+    <form
+      action={restartAction}
+      className="grid gap-2"
+      data-testid={`email-github-restart-${os}`}
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <input type="hidden" name="os" value={os} />
+        <LoadingButton
+          type="submit"
+          variant="outline"
+          size="sm"
+          pending={restarting}
+          pendingText="Restarting…"
+          disabled={locked}
+          data-testid={`email-github-restart-${os}-button`}
+        >
+          Restart
+        </LoadingButton>
+        <p className="text-muted-foreground text-xs">
+          {locked
+            ? "Unlock the panel to restart a run."
+            : "Cancels this OS's running segment, waits for it to stop, then starts one replacement."}
         </p>
       </div>
     </form>
@@ -366,6 +443,7 @@ export function GithubSourceCard({
   setEnabled,
   saveSchedule,
   dispatchNow,
+  restart,
 }: GithubSourceCardProps) {
   // Draft values start from the saved row and stay editable until a save lands;
   // the preview reads these, not the saved numbers, so it answers "what would
@@ -775,6 +853,11 @@ export function GithubSourceCard({
                       os={os}
                       locked={locked}
                       dispatchNow={dispatchNow}
+                    />
+                    <RestartControl
+                      os={os}
+                      locked={locked}
+                      restart={restart}
                     />
                   </li>
                 );

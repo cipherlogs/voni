@@ -34,7 +34,11 @@ import {
   windowRemainingSeconds,
   type RunnerOs,
 } from "@/lib/email/sources";
-import { dispatchBrowserCheck } from "@/lib/github/dispatch";
+import {
+  cancelBrowserCheckRuns,
+  dispatchBrowserCheck,
+} from "@/lib/github/dispatch";
+import { restartSegment } from "@/lib/github/restart";
 import { currentRotation, saveRotationSetting } from "@/lib/email/rotation";
 import { parseProxyCountry, parseProxyPoolTarget } from "@/lib/email/proxy-policy";
 import { writeProxySettings } from "@/lib/email/proxy-settings";
@@ -1168,6 +1172,102 @@ export async function dispatchGithubNow(
     ok: true,
     mode: "dispatched",
     message: `The ${os} browser check is queued. Its progress is in the run list on the workflow page.`,
+    runUrl: result.runUrl,
+  };
+}
+
+/**
+ * Restart: cancel this OS's running Segment, wait until GitHub says it has
+ * stopped, then dispatch exactly one replacement.
+ *
+ * The order is the safety property, not a preference. A dispatch alone would
+ * queue behind the running Segment (`browser-check.yml` uses
+ * `cancel-in-progress: false`), and a dispatch before an observed stop would
+ * put two browsers on the same target. Both live in `@/lib/github/restart`,
+ * which is tested against a fake GitHub; this body reads the same live inputs
+ * as Dispatch now and reports which step failed.
+ *
+ * The anti-thrash throttle (`DISPATCH_THROTTLE_SECONDS`, read by `decideDue`)
+ * is deliberately bypassed. It protects the ticker from respawning a failing
+ * source every minute; an operator pressing Restart is asking for a
+ * replacement, so a throttle must not silently swallow the request. The
+ * replacement is still recorded below, so the ticker's own throttle starts
+ * from this restart and cannot immediately dispatch a second Segment.
+ *
+ * A cancellation that is not observed is reported as the cancel step failing,
+ * and nothing is dispatched — the old Segment may still be clicking.
+ */
+export async function restartGithubSegment(
+  _previous: GithubDispatchState,
+  formData: FormData,
+): Promise<GithubDispatchState> {
+  void _previous;
+  if (!(await requirePageUnlock())) return { ok: false, error: LOCKED.error };
+
+  const os = String(formData.get("os") ?? "");
+  if (!(RUNNER_OSES as readonly string[]).includes(os)) {
+    return { ok: false, error: GITHUB_OS_REASON };
+  }
+
+  // The same live reads as a dispatch: a restart must click the list the
+  // console shows, under the schedule and mode it shows.
+  const targets = await activeTargetUrls();
+  if (targets.length === 0) {
+    return { ok: false, error: GITHUB_NO_TARGETS_REASON };
+  }
+
+  const config = await readSourceConfig();
+  if (!config) return { ok: false, error: GITHUB_NOT_CONFIGURED_REASON };
+
+  const now = new Date();
+  const segment = Math.min(
+    windowRemainingSeconds(now, config.windowSeconds, config.windowStartHour) ||
+      MAX_JOB_SECONDS,
+    MAX_JOB_SECONDS,
+  );
+
+  const result = await restartSegment(
+    {
+      os: os as RunnerOs,
+      targets,
+      intervalSeconds: config.intervalSeconds,
+      windowSeconds: segment,
+      selection: await liveSelection(),
+    },
+    {
+      cancel: (runnerOs) => cancelBrowserCheckRuns(runnerOs),
+      dispatch: dispatchBrowserCheck,
+    },
+  );
+
+  if (!result.ok) {
+    // The step is named so the operator knows whether GitHub refused to stop
+    // the old run or refused to start the replacement. Every sentence is the
+    // cancel client's or dispatcher's, already redacted.
+    return {
+      ok: false,
+      error: `Restart failed at the ${result.step} step: ${result.error}`,
+    };
+  }
+
+  if (result.mode === "manual") {
+    // Unreachable in practice (both halves need the same token), but a manual
+    // result must never be recorded as a run that exists.
+    return {
+      ok: true,
+      mode: "manual",
+      message: result.message,
+      fallback: result.fallback,
+    };
+  }
+
+  await recordSourceDispatch(GITHUB_SOURCE_PRODUCER, now);
+  revalidatePath("/email");
+
+  return {
+    ok: true,
+    mode: "dispatched",
+    message: result.message,
     runUrl: result.runUrl,
   };
 }

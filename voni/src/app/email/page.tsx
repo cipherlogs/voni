@@ -22,6 +22,7 @@ import {
   dispatchGithubNow,
   pauseAllSources,
   removeTarget,
+  restartGithubSegment,
   runBurst,
   saveGithubSchedule,
   saveProxy,
@@ -499,6 +500,7 @@ async function EmailControlData({
           setEnabled={setGithubSourceEnabled}
           saveSchedule={saveGithubSchedule}
           dispatchNow={dispatchGithubNow}
+          restart={restartGithubSegment}
         />
         <BurstCard
           locked={locked}
