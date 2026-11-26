@@ -183,3 +183,16 @@ What it proves, in the operator's terms:
    all. Before the parking fix it also retried, which is what drained the bucket.
 3. **Neither defect was reachable through the fake relay**, which resolves by
    construction. A live client run is part of the gate, not a formality.
+
+### Second live client run, after the parking fix
+
+Same settings (`TUXLER_POOL_TARGET=3`, depth `0`). The drain was gone — four refill
+attempts, three changes, then the pool stopped on its own instead of looping —
+but it stopped with a **null `lastError`**, which reads as "nothing wrong". That
+is why `parked` and `parkedFor` now appear in `/health`, and why `lastError` is
+only cleared once the pool is actually at its target.
+
+The relay also reported `used: 12` against a stated `limit: 10`, so the stated
+daily limit is not a hard cap this client may trust: it is a hint for pacing, and
+the only safe rule is the one implemented — spend on refills, pace them, and park
+when a rejection cannot be fixed by another change.

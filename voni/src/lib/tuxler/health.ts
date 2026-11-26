@@ -56,6 +56,9 @@ export interface HealthPool {
   reconnects: number;
   /** The last replacement, so health can name the reconnect rather than guess. */
   lastReconnect?: { at: string; depth: number; reason: string } | null;
+  /** Whether the pool stopped refilling on purpose, and why. */
+  parked?: boolean;
+  parkedFor?: "quota" | "hard" | null;
 }
 
 export interface TuxlerHealth {
@@ -69,6 +72,9 @@ export interface TuxlerHealth {
   refills: number;
   /** Sessions the pool replaced after silence or a close. */
   reconnects: number;
+  /** Whether the pool stopped refilling on purpose; `parkedFor` names why. */
+  parked: boolean;
+  parkedFor: "quota" | "hard" | null;
   lastError: { reason: string; message: string } | null;
   account: {
     tier: TuxlerAccountState["tier"];
@@ -143,6 +149,8 @@ export function buildHealth(input: HealthInput): TuxlerHealth {
     buckets,
     refills: pool?.refills ?? 0,
     reconnects: pool?.reconnects ?? 0,
+    parked: pool?.parked ?? false,
+    parkedFor: pool?.parkedFor ?? null,
 
     lastError: failure,
     account: {

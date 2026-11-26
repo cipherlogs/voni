@@ -182,6 +182,8 @@ test("a failing ASN lookup parks the pool instead of spending change after chang
       const snapshot = await waitFor(pool, (seen) => seen.lastError !== null);
       assert.equal(snapshot.ready, 0);
       assert.equal(snapshot.lastError?.reason, "lookup-failed");
+      assert.equal(snapshot.parked, true, "a parked pool must say so, not look idle");
+      assert.equal(snapshot.parkedFor, "hard");
 
       // Give the retry loop every chance to spend again before asserting it did not.
       await pause(300);

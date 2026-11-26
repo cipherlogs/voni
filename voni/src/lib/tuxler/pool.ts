@@ -124,6 +124,14 @@ export interface PoolSnapshot {
   reconnects: number;
   lastReconnect: { at: string; depth: number; reason: string } | null;
   lastError: { reason: string; message: string } | null;
+  /**
+   * Whether the pool has stopped refilling on purpose, and why. `quota` means the
+   * bucket tree is spent; `hard` means a rejection another change cannot fix (the
+   * ASN classifier, a listener, an unreadable reply). A parked pool spends nothing
+   * until it is restarted — so it must never look merely idle.
+   */
+  parked: boolean;
+  parkedFor: "quota" | "hard" | null;
 }
 
 export type PoolSession = Pick<TuxlerSession, "requestChange" | "snapshot"> & {
@@ -601,7 +609,10 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       }),
     };
     entries.set(exit.id, entry);
-    lastFailure = null;
+    // Only a pool that is actually at its target is healthy enough to forget the
+    // last refusal. Clearing this on every insert let a pool lose its exits and
+    // then stop refilling with a null `lastError`, which reads as "nothing wrong".
+    if (entries.size >= target) lastFailure = null;
     bucket.silences = 0;
     bucket.watermark = watermarkOf(bucket.session);
     if (exit.lastOfBucket) bucket.exhausted = true;
@@ -825,6 +836,8 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       reconnects,
       lastReconnect,
       lastError: lastFailure === null ? null : { ...lastFailure },
+      parked,
+      parkedFor,
     }),
 
     health: (): HealthPool => {
