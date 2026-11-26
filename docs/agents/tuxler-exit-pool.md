@@ -71,8 +71,11 @@ With `TUXLER_ENABLED=true`, a dispatched Segment runs these steps in order:
    opened for it.
 4. **Final pool report** — one read of `/health` after the clicks, merged into
    the same `pool-report.json` (`always()`; it never changes the run's verdict).
-5. **Stop the exit pool** — `SIGTERM` to the PID (`always()`).
-6. **Pool report** — uploads `voni/pool-report.json` as
+5. **Send the pool report** — POSTs `pool-report.json` to the app with the
+   click-report secret and the runner OS, so the console keeps the newest report
+   per OS (`always()`; a non-200 fails the step).
+6. **Stop the exit pool** — `SIGTERM` to the PID (`always()`).
+7. **Pool report** — uploads `voni/pool-report.json` as
    `browser-pool-report-<os>` (7-day retention).
 
 With the variable off, every added step is skipped, no client starts, and the
@@ -238,6 +241,7 @@ the usual one) and restart the Segment; a restart resumes refilling.
 | **Client down** | No control address, unreachable, or the relay session is `starting`/stopped. | The card only reads; it cannot start a client. Start the Segment (the workflow starts one), or fix the client host. |
 | **Short of exits** | A live client below the target (5). A refill starts below three. | Wait for the refill while supply allows. If it persists, check US supply with `--pool-scan`; the ceiling is supply, not the target. |
 | **Out of quota** | Every bucket's remaining changes are zero, or the last failure was `quota-spent`. Ready exits keep serving; the pool cannot replace them. | Wait for `resetAt` or raise the tier. Do not restart in a loop — a restart does not create quota. |
+| **Stale report** | No live client answered and the newest Segment push is more than three hours old. | Treat the counts as that run's history; open its artifact or dispatch a new Segment. |
 
 ### Session and login failures
 
@@ -348,12 +352,33 @@ The `Tuxler probe` workflow is manual (`workflow_dispatch`) and has two modes,
 `ban-check` and `pool-scan`. Neither spends an IP change. A live diagnostic is
 an operator action with a hard cap; it is never a build step.
 
-**The console reads a runner's loopback address through the operator's browser
-or not at all.** `TUXLER_CONTROL_URL` is `127.0.0.1:41000`, and on a GitHub
-runner that loopback exists only inside the job. A local console sees *Client
-down* for every live Segment unless the operator opens a tunnel to that port for
-the duration of the read; the card is not an exception to this, and the pool
-report artifact is the durable record.
+**The console reads the last Segment report the runner pushed.** A GitHub
+runner's loopback is still unreachable from the app, but the report no longer
+dies with the job: after the final read, the workflow POSTs `pool-report.json`
+to `/api/email/pool/report` with the click-report secret and the runner OS. The
+app validates the artifact, redacts credentials and upserts one row per OS in
+`tuxler_pool_reports`, so the newest push replaces that OS's previous one.
+
+The card reads in this order:
+
+1. **A live client**, if `TUXLER_CONTROL_URL` is set and answers `GET /health`.
+   It is labelled **Live client**.
+2. **The newest stored report**, across every OS, when the live read is
+   unconfigured or unreachable. It is labelled
+   **Last Segment report · ubuntu · 2 minutes ago** (the OS and the report's
+   age), so a stored report never looks live. It shows the `final` half when
+   that half read `/health`, otherwise the `gate` half: exits, ready count,
+   refills, reconnects and the last error. The artifact carries no bucket
+   snapshot, so the card says per-bucket limits are unknown instead of
+   inventing "0 of 0 changes".
+3. **Neither**, which reads **No Segment has reported a pool yet** — the one
+   sentence that says the console has nothing to show, rather than a fabricated
+   empty pool.
+
+A report older than **three hours** is labelled **Stale report**, its age is
+repeated in the header, and its numbers are prefixed "At the last report:".
+Nothing on a stale card can be mistaken for the pool as it is now; open the
+run's `browser-pool-report-<os>` artifact for the durable record.
 
 **Restart holds a server action for up to ~70 seconds** (a 60 s bounded wait for
 an observed cancel, plus the dispatch). That is deliberate: the alternative is
