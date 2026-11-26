@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { LockKeyhole, Repeat } from "lucide-react";
+import { Repeat } from "lucide-react";
 import { LoadingButton } from "@/components/loading-button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -47,7 +47,6 @@ import {
  * made.
  */
 export type RotationCardProps = {
-  locked: boolean;
   /** What every producer runs with right now. */
   mode: TargetSelection;
   /** Whether that mode came from the stored setting, or from the script. */
@@ -57,7 +56,7 @@ export type RotationCardProps = {
 
 const INITIAL: ControlState = { ok: false };
 
-export function RotationCard({ locked, mode, chosen, action }: RotationCardProps) {
+export function RotationCard({ mode, chosen, action }: RotationCardProps) {
   // Local until Save: the switch is a preference, and the saved value is what
   // both producers actually run, so the two must not be shown as one.
   const [selection, setSelection] = useState<TargetSelection>(mode);
@@ -65,6 +64,7 @@ export function RotationCard({ locked, mode, chosen, action }: RotationCardProps
 
   useActionToast(state, "Could not save the rotation mode", {
     successTitle: "Rotation saved",
+    warningTitle: "Rotation saved, Grafana not updated",
   });
 
   const label =
@@ -77,7 +77,7 @@ export function RotationCard({ locked, mode, chosen, action }: RotationCardProps
     <Card data-testid="email-rotation-card">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          {locked ? <LockKeyhole className="size-4" /> : <Repeat className="size-4" />}
+          <Repeat className="size-4" />
           Target rotation
         </CardTitle>
         <CardDescription>
@@ -101,7 +101,7 @@ export function RotationCard({ locked, mode, chosen, action }: RotationCardProps
                 onCheckedChange={(next: boolean) => {
                   setSelection(next ? "random" : "rotate");
                 }}
-                disabled={locked || saving}
+                disabled={saving}
                 data-testid="email-rotation-selection"
               />
             </div>
@@ -122,7 +122,7 @@ export function RotationCard({ locked, mode, chosen, action }: RotationCardProps
               pending={saving}
               pendingText="Saving…"
               icon={<Repeat />}
-              disabled={locked || saving}
+              disabled={saving}
             >
               {changed ? "Save rotation" : "Re-apply rotation"}
             </LoadingButton>

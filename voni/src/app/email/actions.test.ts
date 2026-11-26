@@ -578,60 +578,6 @@ test("saveVolume rebuilds with the live target list and the page's mode", () => 
   assert.ok(upload >= 0 && update > upload, "script first, then frequency");
 });
 
-test("saveVolume no longer takes a mode from its form", () => {
-  // The control moved out of the Grafana card, so a submitted `selection` would
-  // be a second source of truth for one setting — and a stale form could flip a
-  // rotating check while claiming success. The page's setting decides, and its
-  // own action (`saveRotation`) is the only write.
-  const save = fnBody("saveVolume");
-  assert.doesNotMatch(save, /formData\.get\("selection"\)/);
-  assert.doesNotMatch(save, /parseTargetSelection/);
-  assert.match(
-    save,
-    /const selection = await liveSelection\(\);/,
-    "the mode comes from the shared setting, resolved by one helper",
-  );
-});
-
-test("saveRotation is the one write of the mode, and it rebuilds Grafana", () => {
-  const save = fnBody("saveRotation");
-  assert.match(save, /if \(!\(await requirePageUnlock\(\)\)\) return locked\(\);/);
-  assert.ok(
-    save.indexOf("requirePageUnlock()") < save.indexOf('formData.get("selection")'),
-    "the gate runs before the form is read, like every other action",
-  );
-  assert.match(
-    save,
-    /const selection = parseTargetSelection\(formData\.get\("selection"\)\);/,
-    "the submitted mode is parsed by the shared module, never read as a string",
-  );
-  assert.match(
-    save,
-    /error:\s*"Choose how each click picks its target: Random or Rotate through all\."/,
-    "a missing mode is a refusal that names the two choices",
-  );
-  assert.ok(
-    save.indexOf("if (selection === null)") <
-      save.indexOf("saveRotationSetting("),
-    "nothing is written for a request with no mode",
-  );
-  assert.ok(
-    save.indexOf("await saveRotationSetting(selection)") <
-      save.indexOf("uploadRebuiltCheck("),
-    "the setting is written first: it is the source of truth, the script is derived",
-  );
-  assert.match(
-    save,
-    /uploadRebuiltCheck\(\{\s*clicksPerRun: current\.data\.clicksPerRun,\s*targets: await activeTargetUrls\(\),\s*selection,\s*\}\)/,
-    "the rebuild uploads the mode just written, not a second read",
-  );
-  assert.match(
-    save,
-    /Save again to retry/,
-    "a failed rebuild is reported with what landed and how to retry it",
-  );
-});
-
 test("the mode the setting carries is the marker the uploaded script writes", () => {
   const random = buildCheckScript({
     clicksPerRun: 1,

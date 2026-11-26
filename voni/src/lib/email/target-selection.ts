@@ -28,6 +28,13 @@ export type TargetSelection = "random" | "rotate";
 /** What `buildCheckScript` emits when the caller names no mode. */
 export const TARGET_SELECTION_DEFAULT: TargetSelection = "random";
 
+/** One sentence for a mode, used by the panel's save messages. */
+export function describeTargetSelection(selection: TargetSelection): string {
+  return selection === "random"
+    ? "draw each click's target at random"
+    : "rotate through every active target once per pass";
+}
+
 /** What an unmarked (pre-setting) script does, so the panel shows the truth. */
 export const TARGET_SELECTION_LEGACY: TargetSelection = "rotate";
 

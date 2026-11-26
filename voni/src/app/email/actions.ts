@@ -40,6 +40,7 @@ import {
 } from "@/lib/github/dispatch";
 import { restartSegment } from "@/lib/github/restart";
 import { currentRotation, saveRotationSetting } from "@/lib/email/rotation";
+import { saveRotationMode } from "@/lib/email/rotation-save";
 import { parseProxyCountry, parseProxyPoolTarget } from "@/lib/email/proxy-policy";
 import { writeProxySettings } from "@/lib/email/proxy-settings";
 import {
@@ -63,7 +64,6 @@ import {
 import {
   spendUnlockAttempt,
   type ThrottleVerdict,
-  type UnlockScope,
 } from "@/lib/email/unlock-throttle";
 import { clicksPerDay, validateVolume } from "@/lib/email/volume";
 import { buildCheckScript } from "@/lib/email/check-script";
@@ -114,7 +114,7 @@ const WRONG_PASSWORD = "Wrong password.";
  * The header order belongs to `clientIp` (Cloudflare's `cf-connecting-ip`
  * first), not to this file — one reader for every public form.
  */
-async function throttleUnlocks(scope: UnlockScope): Promise<ThrottleVerdict> {
+async function throttleUnlocks(scope: "page"): Promise<ThrottleVerdict> {
   return spendUnlockAttempt({ scope, ip: clientIp(await headers()) });
 }
 
@@ -125,6 +125,12 @@ export type ControlState = {
   ok: boolean;
   message?: string;
   error?: string;
+  /**
+   * A save that landed but whose second effect did not — the setting is stored
+   * and the script is stale. It is not an error: the caller did what it asked
+   * for. The card renders it as its own warning, never under "could not save".
+   */
+  warning?: string;
 };
 
 /**
@@ -287,25 +293,15 @@ async function liveSelection(): Promise<TargetSelection> {
   return currentRotation(scriptSelection);
 }
 
-/** One sentence for a mode, used by the save messages. */
-function describeSelection(selection: TargetSelection): string {
-  return selection === "random"
-    ? "draw each click's target at random"
-    : "rotate through every active target once per pass";
-}
-
 /**
  * Save the rotation mode: one setting, read by every producer.
  *
- * The setting is written first, because it is the source of truth — Grafana's
- * script and the next GitHub dispatch both read it. The script is then rebuilt
- * from the value just written rather than re-read, so a concurrent change
- * cannot leave the two disagreeing.
- *
- * A failure after the write is reported as what it is: the choice is stored and
- * the dispatch will carry it, but Grafana is still running the old mode until
- * the rebuild lands. Saving again retries that, so the two converge rather than
- * one silently losing.
+ * The order and the two-part outcome live in `saveRotationMode`, which takes
+ * the database and Grafana as injected functions: the setting is the source of
+ * truth and is written first, the script is rebuilt from the value just
+ * written, and a rebuild failure is reported as "saved, script stale" — a
+ * warning, not a failed save. This body only validates the form and revalidates
+ * the page.
  */
 export async function saveRotation(
   _previous: ControlState,
@@ -322,55 +318,22 @@ export async function saveRotation(
     };
   }
 
-  try {
-    await saveRotationSetting(selection);
-  } catch {
-    return {
-      ok: false,
-      error:
-        "The rotation setting could not be saved, so nothing changed. Try again.",
-    };
-  }
-
   const id = resolveCheckId(await secret("EMAIL_CLICK_CHECK_ID"));
-  const current = await getCheck(id);
-  const storedForGithub =
-    `The setting is saved, so the next GitHub dispatch will ` +
-    `${describeSelection(selection)}.`;
-
-  if (!current.ok) {
-    revalidatePath("/email");
-    return {
-      ok: false,
-      error:
-        `${storedForGithub} Grafana's check could not be read, so its script ` +
-        `still runs the previous mode: ${describeSyntheticFailure(current)} ` +
-        "Save again to retry.",
-    };
-  }
-
-  const uploadError = await uploadRebuiltCheck({
-    clicksPerRun: current.data.clicksPerRun,
-    targets: await activeTargetUrls(),
-    selection,
+  const outcome = await saveRotationMode(selection, {
+    saveSetting: saveRotationSetting,
+    readCheck: async () => {
+      const current = await getCheck(id);
+      return current.ok
+        ? { ok: true as const, clicksPerRun: current.data.clicksPerRun }
+        : { ok: false as const, message: describeSyntheticFailure(current) };
+    },
+    readTargets: activeTargetUrls,
+    rebuild: uploadRebuiltCheck,
   });
-  revalidatePath("/email");
 
-  if (uploadError !== null) {
-    return {
-      ok: false,
-      error:
-        `${storedForGithub} Grafana's script could not be rebuilt, so it still ` +
-        `runs the previous mode: ${uploadError} Save again to retry.`,
-    };
-  }
-
-  return {
-    ok: true,
-    message:
-      `Saved. Grafana's script and every GitHub dispatch now ` +
-      `${describeSelection(selection)}.`,
-  };
+  // A failed write revalidated nothing; a stored setting did.
+  if (outcome.ok) revalidatePath("/email");
+  return outcome;
 }
 
 /**
@@ -412,7 +375,7 @@ export async function saveProxy(
   }
 
   try {
-    await writeProxySettings({ country, poolTarget });
+    await writeProxySettings({ poolTarget });
   } catch {
     return {
       ok: false,

@@ -17,6 +17,12 @@ import { toast } from "@/components/ui/toast";
 export type ActionFeedbackState = {
   error?: string | null;
   message?: string | null;
+  /**
+   * A partial success: the request landed and one effect did not. It is not an
+   * error (the operator's change is stored), so it must never wear the error
+   * title; it gets its own warning toast.
+   */
+  warning?: string | null;
 };
 
 /**
@@ -41,6 +47,11 @@ export type ActionToastAction = {
 export type ActionToastOptions = {
   /** The success title; "Done" when the card has nothing more specific. */
   successTitle?: string;
+  /**
+   * The title for a partial success. It must name what did and did not happen
+   * ("Rotation saved, Grafana not updated"), because the body is the detail.
+   */
+  warningTitle?: string;
   /** The artifact control: a "View run" link or a "Copy" button. */
   action?: ActionToastAction;
   /** Longer for command toasts, so an operator can read the line. */
@@ -88,6 +99,7 @@ export function useActionToast(
   useEffect(() => {
     const {
       successTitle = "Done",
+      warningTitle,
       action,
       timeout,
       description,
@@ -103,6 +115,17 @@ export function useActionToast(
         type: "error",
         priority: "high",
         timeout: 0,
+      });
+      return;
+    }
+    if (state.warning) {
+      // A partial success is stored, so it does not wear the error title. It
+      // stays long enough to read and names the half that did not land.
+      toast.add({
+        title: warningTitle ?? successTitle,
+        description: state.warning,
+        type: "warning",
+        timeout: timeout ?? 10_000,
       });
       return;
     }
