@@ -176,6 +176,10 @@ test("the relay's first bytes are logged escaped, on one line, and never consume
   await waitFor(() => lines.some((line) => line.includes("relay said")));
 
   const said = lines.find((line) => line.includes("relay said"))!;
+  assert.ok(
+    lines.some((line) => line.endsWith("tunnel connected for example.com:443")),
+    "a successful dial is logged before the caller uses the tunnel",
+  );
   assert.ok(said.includes("relay said 7B: "), `the byte count is named: ${said}`);
   assert.ok(said.includes("HTTP"), "printable bytes are kept");
   assert.ok(said.includes("\\x00") && said.includes("\\x0a") && said.includes("\\xff"), said);

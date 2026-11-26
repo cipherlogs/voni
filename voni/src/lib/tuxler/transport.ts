@@ -227,6 +227,8 @@ export function exitTunnelDialer(
       throw error;
     }
 
+    note(`tunnel connected for ${destination}`);
+
     let answered = false;
     const tunnel = new XorSocket(raw, (chunk) => {
       if (answered) return;
