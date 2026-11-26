@@ -232,6 +232,159 @@ export function prefixKey(ip: string): string {
 
 export type TxtResolver = (name: string) => Promise<string[][]>;
 
+export interface DohTxtResolverOptions {
+  /** Ordered endpoints. Default: Cloudflare, then Google. */
+  endpoints?: string[];
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  /** The resolver tried before DoH. Defaults to `dns.resolveTxt`; injected in tests. */
+  system?: TxtResolver;
+}
+
+/**
+ * DNS-over-HTTPS endpoints in order. `{name}` is replaced with the query name;
+ * an endpoint without the token has the name and `type=TXT` appended.
+ */
+const DEFAULT_DOH_ENDPOINTS = [
+  "https://cloudflare-dns.com/dns-query?name={name}&type=TXT",
+  "https://dns.google/resolve?name={name}&type=TXT",
+];
+
+/** Build the request URL for one endpoint, keeping any query it already has. */
+function dohUrl(endpoint: string, name: string): string {
+  const query = encodeURIComponent(name);
+  if (endpoint.includes("{name}")) return endpoint.replaceAll("{name}", query);
+  const separator = endpoint.includes("?") ? "&" : "?";
+  return `${endpoint}${separator}name=${query}&type=TXT`;
+}
+
+/**
+ * Split one TXT record's presentation `data` into its quoted runs.
+ *
+ * A TXT value is one or more quoted strings and a long record may be split into
+ * 255-byte chunks (`"a | b" " | c"`), which `entry.join("")` reassembles. Inside
+ * a run `\"` and `\\` are escapes for a literal quote and backslash, so they are
+ * unescaped here rather than ending the run. Providers disagree on presentation:
+ * Cloudflare wraps the value in quotes, Google does not, so a value with no
+ * quoted run at all is one chunk, kept verbatim.
+ */
+function splitTxtChunks(data: string): string[] {
+  const chunks: string[] = [];
+  let index = 0;
+  while (index < data.length) {
+    if (data[index] !== '"') {
+      index += 1;
+      continue;
+    }
+    index += 1;
+    let chunk = "";
+    while (index < data.length) {
+      const char = data[index];
+      if (char === "\\" && index + 1 < data.length) {
+        chunk += data[index + 1];
+        index += 2;
+        continue;
+      }
+      if (char === '"') {
+        index += 1;
+        break;
+      }
+      chunk += char;
+      index += 1;
+    }
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) {
+    // Google returns TXT `data` unquoted. Keep it whole — the record's own ` | `
+    // separators and dots are content, not presentation.
+    return data.trim() === "" ? [] : [data];
+  }
+  return chunks;
+}
+
+/** Read a JSON-DNS body: only `Status === 0` answers, only `type === 16` is TXT. */
+function parseDohTxtResponse(body: unknown): string[][] {
+  if (typeof body !== "object" || body === null) return [];
+  const { Status, Answer } = body as { Status?: unknown; Answer?: unknown };
+  if (Status !== 0 || !Array.isArray(Answer)) return [];
+  const records: string[][] = [];
+  for (const entry of Answer) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { type, data } = entry as { type?: unknown; data?: unknown };
+    if (type !== 16 || typeof data !== "string") continue;
+    const chunks = splitTxtChunks(data);
+    if (chunks.length > 0) records.push(chunks);
+  }
+  return records;
+}
+
+/**
+ * A TXT resolver over DNS-over-HTTPS, for hosts whose recursive resolver refuses
+ * Team Cymru's zones. Endpoints are tried in order; every failure — HTTP, a
+ * non-JSON body, `Status !== 0`, no TXT answer — moves to the next, and if none
+ * answers the lookup rejects. An empty answer is never returned as `[]`, because
+ * the caller must see a throw to record `lookup-failed`.
+ */
+export function dohTxtResolver(options: DohTxtResolverOptions = {}): TxtResolver {
+  const endpoints = options.endpoints ?? DEFAULT_DOH_ENDPOINTS;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 5000;
+
+  return async (name: string): Promise<string[][]> => {
+    const failures: string[] = [];
+    for (const endpoint of endpoints) {
+      const url = dohUrl(endpoint, name);
+      try {
+        const response = await fetchImpl(url, {
+          headers: { accept: "application/dns-json" },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!response.ok) {
+          failures.push(`${url}: HTTP ${response.status}`);
+          continue;
+        }
+        let body: unknown;
+        try {
+          body = await response.json();
+        } catch {
+          failures.push(`${url}: body was not JSON`);
+          continue;
+        }
+        const records = parseDohTxtResponse(body);
+        if (records.length === 0) {
+          failures.push(`${url}: no TXT answer`);
+          continue;
+        }
+        return records;
+      } catch (error) {
+        failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    throw new Error(
+      `DNS-over-HTTPS TXT lookup for ${name} failed at every endpoint: ${failures.join("; ")}`,
+    );
+  };
+}
+
+/**
+ * The system resolver first, DoH only when it throws. The host's recursive
+ * resolver is the fast path; it is not allowed to be the single point of failure.
+ * It can be intermittent — one query answers and the next returns `ESERVFAIL` —
+ * so every call decides again: any throw falls through, and a later success
+ * takes the system path without remembering the earlier failure.
+ */
+export function systemThenDohTxtResolver(options: DohTxtResolverOptions = {}): TxtResolver {
+  const fallback = dohTxtResolver(options);
+  const system = options.system ?? dns.resolveTxt;
+  return async (name: string): Promise<string[][]> => {
+    try {
+      return await system(name);
+    } catch {
+      return fallback(name);
+    }
+  };
+}
+
 export interface CymruOptions {
   resolveTxt?: TxtResolver;
   /** Shared between lookups so a process keeps one cache. */
@@ -244,14 +397,17 @@ export interface CymruOptions {
  * query decides whether an *unlisted* ASN is a consumer ISP, so its failure is
  * recorded as a missing name and `classifyAsn` refuses the exit rather than
  * defaulting to "consumer".
+ *
+ * Resolution order is the system resolver, then DNS-over-HTTPS (Cloudflare, then
+ * Google) if it throws. The host's recursive resolver can refuse the Cymru zones
+ * outright — on such a host every exit is unclassifiable and the pool never fills
+ * — and DoH reaches them over HTTPS instead. The fallback changes *how* the
+ * question is asked, never the rule: if every resolver fails or answers no TXT
+ * record, the lookup still rejects and `validateExit` still records
+ * `lookup-failed`.
  */
 export function cymruLookup(options: CymruOptions = {}): AsnLookup {
-  const resolveTxt: TxtResolver =
-    options.resolveTxt ??
-    (async (name: string) => {
-      const answers = await dns.resolveTxt(name);
-      return answers;
-    });
+  const resolveTxt: TxtResolver = options.resolveTxt ?? systemThenDohTxtResolver();
   const cache = options.cache ?? new Map<string, AsnRecord>();
   const names = new Map<number, string | null>();
 

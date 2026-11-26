@@ -12,7 +12,9 @@ import {
   HOSTING_ASNS,
   classifyAsn,
   cymruLookup,
+  dohTxtResolver,
   parseCymruOrigin,
+  systemThenDohTxtResolver,
   validateExit,
   type AsnRecord,
 } from "./validate";
@@ -219,4 +221,191 @@ test("the real lookup rejects when Team Cymru cannot be reached", async () => {
     },
   });
   await assert.rejects(lookup("99.44.12.7"));
+});
+
+/** A JSON-DNS response body, as both DoH providers send it. */
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/dns-json" },
+  });
+}
+
+/** One `type: 16` answer entry; `data` is exactly what the provider sends. */
+function txtAnswer(data: string): unknown {
+  return {
+    Status: 0,
+    Answer: [{ name: "origin.asn.cymru.com", type: 16, TTL: 300, data }],
+  };
+}
+
+const CYMRU_NAME = "102.69.220.0.138.origin.asn.cymru.com";
+
+// The live values from the operator's machine: Cloudflare quotes the TXT data,
+// Google does not, and the same prefix has both a /24 and a /22 answer.
+const GH_RECORD_24 = "328494 | 102.69.220.0/24 | GH | afrinic | 2019-06-03";
+const GH_RECORD_22 = "328494 | 102.69.220.0/22 | GH | afrinic | 2019-06-03";
+
+test("the DoH resolver reads a Cloudflare-quoted TXT answer", async () => {
+  const urls: string[] = [];
+  const accepts: Array<string | undefined> = [];
+  const resolver = dohTxtResolver({
+    fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(input));
+      accepts.push(new Headers(init?.headers).get("accept") ?? undefined);
+      return jsonResponse(txtAnswer(`"${GH_RECORD_24}"`));
+    }) as typeof fetch,
+  });
+
+  const answers = await resolver(CYMRU_NAME);
+  assert.deepEqual(answers, [[GH_RECORD_24]]);
+  assert.equal(answers[0].join(""), GH_RECORD_24);
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /^https:\/\/cloudflare-dns\.com\/dns-query\?name=/);
+  assert.match(urls[0], /&type=TXT$/);
+  assert.equal(accepts[0], "application/dns-json");
+});
+
+test("the DoH resolver reads Google's unquoted TXT answer without stripping it", async () => {
+  const resolver = dohTxtResolver({
+    fetchImpl: (async () => jsonResponse(txtAnswer(GH_RECORD_24))) as typeof fetch,
+  });
+
+  const answers = await resolver(CYMRU_NAME);
+  assert.deepEqual(answers, [[GH_RECORD_24]]);
+  assert.equal(answers[0].join(""), GH_RECORD_24);
+});
+
+test("one string[] per TXT answer keeps both prefix records, in order", async () => {
+  const resolver = dohTxtResolver({
+    fetchImpl: (async () =>
+      jsonResponse({
+        Status: 0,
+        Answer: [
+          { name: "origin.asn.cymru.com", type: 16, TTL: 300, data: GH_RECORD_24 },
+          { name: "origin.asn.cymru.com", type: 16, TTL: 300, data: GH_RECORD_22 },
+        ],
+      })) as typeof fetch,
+  });
+
+  const answers = await resolver(CYMRU_NAME);
+  assert.deepEqual(answers, [[GH_RECORD_24], [GH_RECORD_22]]);
+  assert.equal(answers[0].join(""), GH_RECORD_24);
+  assert.equal(answers[1].join(""), GH_RECORD_22);
+});
+
+test("a multi-chunk quoted TXT value reassembles with join", async () => {
+  const resolver = dohTxtResolver({
+    fetchImpl: (async () =>
+      jsonResponse(txtAnswer(`"${GH_RECORD_24}" " | 2019-06-03"`))) as typeof fetch,
+  });
+
+  const answers = await resolver(CYMRU_NAME);
+  assert.equal(answers[0].length, 2, "the value is two quoted chunks");
+  assert.equal(
+    answers[0].join(""),
+    "328494 | 102.69.220.0/24 | GH | afrinic | 2019-06-03 | 2019-06-03",
+  );
+});
+
+test("escaped quotes and backslashes are unescaped, not treated as chunk ends", async () => {
+  const resolver = dohTxtResolver({
+    fetchImpl: (async () => jsonResponse(txtAnswer('"a \\"quoted\\" value \\\\ here"'))) as typeof fetch,
+  });
+
+  const answers = await resolver(CYMRU_NAME);
+  assert.deepEqual(answers, [['a "quoted" value \\ here']]);
+});
+
+test("a failing system resolver falls through to DoH and succeeds", async () => {
+  let systemCalls = 0;
+  let dohCalls = 0;
+  const resolver = systemThenDohTxtResolver({
+    system: async () => {
+      systemCalls += 1;
+      throw new Error("queryTxt ESERVFAIL");
+    },
+    fetchImpl: async () => {
+      dohCalls += 1;
+      return jsonResponse(txtAnswer(`"${GH_RECORD_24}"`));
+    },
+  });
+
+  const answers = await resolver(CYMRU_NAME);
+  assert.equal(systemCalls, 1);
+  assert.equal(dohCalls, 1);
+  assert.deepEqual(answers, [[GH_RECORD_24]]);
+});
+
+test("an intermittent system resolver is asked again on the next call", async () => {
+  const results: Array<string | Error> = [new Error("queryTxt ESERVFAIL"), GH_RECORD_24];
+  const resolver = systemThenDohTxtResolver({
+    system: async () => {
+      const next = results.shift();
+      if (next instanceof Error) throw next;
+      return [[next ?? ""]];
+    },
+    fetchImpl: async () => jsonResponse(txtAnswer(`"${GH_RECORD_24}"`)),
+  });
+
+  const failed = await resolver(CYMRU_NAME);
+  assert.deepEqual(failed, [[GH_RECORD_24]], "the throw fell through to DoH");
+
+  const answered = await resolver(CYMRU_NAME);
+  assert.deepEqual(answered, [[GH_RECORD_24]], "the system resolver is tried again");
+});
+
+test("a failing Cloudflare endpoint falls through to Google", async () => {
+  const seen: string[] = [];
+  const resolver = dohTxtResolver({
+    fetchImpl: (async (input: string | URL | Request) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.startsWith("https://cloudflare-dns.com/")) {
+        return new Response("bad gateway", { status: 502 });
+      }
+      return jsonResponse(txtAnswer(GH_RECORD_24));
+    }) as typeof fetch,
+  });
+
+  const answers = await resolver(CYMRU_NAME);
+  assert.equal(seen.length, 2, "Cloudflare was tried, then Google");
+  assert.match(seen[1], /^https:\/\/dns\.google\/resolve\?name=/);
+  assert.deepEqual(answers, [[GH_RECORD_24]]);
+});
+
+test("DoH failures reject rather than answer an empty set", async () => {
+  const cases: Array<[string, () => Response]> = [
+    ["Status !== 0", () => jsonResponse({ Status: 2, Answer: [] })],
+    ["non-JSON body", () => new Response("<html>nope</html>", { status: 200 })],
+    ["empty Answer", () => jsonResponse({ Status: 0, Answer: [] })],
+    ["no TXT entry", () => jsonResponse({ Status: 0, Answer: [{ type: 1, data: "1.2.3.4" }] })],
+    ["HTTP 500", () => new Response("", { status: 500 })],
+    [
+      "network throw",
+      () => {
+        throw new Error("ECONNRESET");
+      },
+    ],
+  ];
+
+  for (const [label, respond] of cases) {
+    const resolver = dohTxtResolver({
+      fetchImpl: (async () => respond()) as typeof fetch,
+    });
+    await assert.rejects(resolver(CYMRU_NAME), /DNS-over-HTTPS TXT lookup/, label);
+  }
+});
+
+test("a DoH failure is still lookup-failed through the classifier, never a pass", async () => {
+  const lookup = cymruLookup({
+    resolveTxt: dohTxtResolver({
+      fetchImpl: (async () => jsonResponse({ Status: 2, Answer: [] })) as typeof fetch,
+    }),
+  });
+
+  const verdict = await validateExit({ ip: "102.69.220.138", countryIso: "US", lookup });
+  assert.equal(verdict.accepted, false);
+  if (verdict.accepted) return;
+  assert.equal(verdict.reason, "lookup-failed");
 });

@@ -212,6 +212,17 @@ published reasons, the control API, the exit layer, the click report and the
 runner); nothing here is one enum, and a reason added in one place must be added
 in the others.
 
+### Resolver order: system first, DoH as the escape hatch
+
+The classifier asks Team Cymru through the host's recursive resolver first, the
+fast path. When that resolver throws — it can be intermittent, answering one
+query and returning `ESERVFAIL` for the next — the same query is retried over
+DNS-over-HTTPS (Cloudflare, then Google). DoH travels over HTTPS, so it reaches
+the Cymru zones even on a host whose resolver refuses them, and every call
+decides again, so a later system success needs no restart. The fallback changes
+only how the question is asked: if every resolver fails, or answers no TXT
+record, the lookup still rejects and the verdict is still `lookup-failed`.
+
 ### A rejection that another change cannot fix parks the pool
 
 Thin US supply is a reason to retry; a broken classifier, a listener that will not
