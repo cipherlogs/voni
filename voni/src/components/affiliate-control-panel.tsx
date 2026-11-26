@@ -32,15 +32,20 @@ import {
 } from "@/components/source-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { useCardDisclosure } from "@/components/card-disclosure";
+import { CollapsibleCardTitle } from "@/components/collapsible-card-title";
 import {
   Card,
   CardAction,
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Collapsible,
+  CollapsibleContent,
+} from "@/components/ui/collapsible";
 import {
   Field,
   FieldDescription,
@@ -944,6 +949,11 @@ function StatsBlock({ stats }: { stats: StatsView }) {
  * The chips are links, not client state. The page resolves `?source=` inside its
  * request-time data boundary and hands the already-built links down, so a
  * copied URL opens the same narrowed table and a reload cannot reset it.
+ *
+ * The card folds like every other `/email` card and remembers the choice under
+ * its own `data-testid`. Its header keeps the two facts an operator must not
+ * have to open a card to see — how many clicks landed and the worst health among
+ * them — so a collapsed card never hides volume or a failure.
  */
 export function ClickSurface({
   stats,
@@ -957,121 +967,144 @@ export function ClickSurface({
   const active = sources.find((chip) => chip.active) ?? null;
   // "All" is the absence of a producer, not a label worth repeating in prose.
   const narrowed = active !== null && active.producer !== null;
+  const health = worstHealth(stats.byStatus);
+  const { open, onOpenChange } = useCardDisclosure("email-control-analytics");
 
   return (
     <Card data-testid="email-control-analytics">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Globe className="size-4" />
-          Clicks
-        </CardTitle>
-        <CardDescription>
-          {narrowed
-            ? `The last 24 hours of clicks from ${active.label}.`
-            : "Every affiliate click recorded in the last 24 hours, from every source on this page."}
-        </CardDescription>
-        <CardAction>
-          <Badge variant="outline">{stats.total} clicks</Badge>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="grid gap-5">
-        <nav
-          aria-label="Filter clicks by source"
-          className="flex flex-wrap items-center gap-2"
-          data-testid="email-clicks-sources"
-        >
-          {sources.map((chip) => (
-            <Badge
-              key={chip.value}
-              variant={chip.active ? "default" : "outline"}
-              render={<Link href={chip.href} />}
-              aria-current={chip.active ? "page" : undefined}
-              data-testid={`email-clicks-source-${chip.value}`}
-            >
-              {chip.label}
-            </Badge>
-          ))}
-        </nav>
-
-        <StatsBlock stats={stats} />
-
-        {clicks.length === 0 ? (
-          <p className="text-muted-foreground text-sm">
+      <Collapsible
+        open={open}
+        onOpenChange={onOpenChange}
+        className="group/card grid gap-(--card-spacing)"
+      >
+        <CardHeader>
+          <CollapsibleCardTitle
+            icon={<Globe className="size-4" />}
+            testId="email-clicks-trigger"
+          >
+            Clicks
+          </CollapsibleCardTitle>
+          <CardDescription>
             {narrowed
-              ? `No clicks from ${active.label} in the last 24 hours.`
-              : "No clicks recorded yet. Run one click or wait for the Grafana check."}
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-muted-foreground border-b text-left">
-                  <th className="py-2 pr-3 font-medium">Time</th>
-                  <th className="py-2 pr-3 font-medium">Target host</th>
-                  <th className="py-2 pr-3 font-medium">Source</th>
-                  <th className="py-2 pr-3 font-medium">Exit</th>
-                  <th className="py-2 pr-3 font-medium">Device</th>
-                  <th className="py-2 pr-3 font-medium">Browser</th>
-                  <th className="py-2 pr-3 font-medium">User-Agent</th>
-                  <th className="py-2 pr-3 font-medium">Status</th>
-                  <th className="py-2 pr-3 font-medium">ms</th>
-                  <th className="py-2 font-medium">Final host</th>
-                </tr>
-              </thead>
-              <tbody>
-                {clicks.map((click) => (
-                  <tr key={click.id} className="border-b last:border-0">
-                    <td className="text-muted-foreground py-2 pr-3 font-mono text-xs whitespace-nowrap">
-                      {formatWhen(click.ranAt)}
-                    </td>
-                    <td className="py-2 pr-3 font-mono text-xs">
-                      {hostOf(click.target)}
-                    </td>
-                    <td className="py-2 pr-3 font-mono text-xs">
-                      {click.source ?? "—"}
-                    </td>
-                    <td className="py-2 pr-3 font-mono text-xs">
-                      {describeClickExit(click)}
-                    </td>
-                    <td
-                      className="py-2 pr-3 font-mono text-xs"
-                      title={click.userAgent ?? undefined}
-                    >
-                      {click.device ?? "—"}
-                    </td>
-                    <td className="py-2 pr-3 font-mono text-xs">
-                      {click.browser ?? "—"}
-                    </td>
-                    {/* The UA was recorded and queryable all along, but only as
-                        a tooltip on the Device cell — so the panel looked like
-                        it stored none. Show it, truncated; the title carries
-                        the whole string. */}
-                    <td className="py-2 pr-3">
-                      <span
-                        className="block max-w-xs truncate font-mono text-xs"
-                        title={click.userAgent ?? undefined}
-                      >
-                        {click.userAgent ?? "—"}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-3">
-                      <Badge variant={statusBadgeVariant(click.status)}>
-                        {click.status ?? "—"}
-                      </Badge>
-                    </td>
-                    <td className="py-2 pr-3 font-mono text-xs">
-                      {click.ms ?? "—"}
-                    </td>
-                    <td className="py-2 font-mono text-xs">
-                      {hostOf(click.finalUrl)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </CardContent>
+              ? `The last 24 hours of clicks from ${active.label}.`
+              : "Every affiliate click recorded in the last 24 hours, from every source on this page."}
+          </CardDescription>
+          {/* Volume and worst health stay in the header: collapsing the card
+              may hide the table and the chips, never how many clicks landed or
+              whether they failed. */}
+          <CardAction>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" data-testid="email-clicks-total">
+                {stats.total} clicks
+              </Badge>
+              <Badge variant={health.variant} data-testid="email-clicks-health">
+                {health.label}
+              </Badge>
+            </div>
+          </CardAction>
+        </CardHeader>
+
+        <CollapsibleContent>
+          <CardContent className="grid gap-5">
+            <nav
+              aria-label="Filter clicks by source"
+              className="flex flex-wrap items-center gap-2"
+              data-testid="email-clicks-sources"
+            >
+              {sources.map((chip) => (
+                <Badge
+                  key={chip.value}
+                  variant={chip.active ? "default" : "outline"}
+                  render={<Link href={chip.href} />}
+                  aria-current={chip.active ? "page" : undefined}
+                  data-testid={`email-clicks-source-${chip.value}`}
+                >
+                  {chip.label}
+                </Badge>
+              ))}
+            </nav>
+
+            <StatsBlock stats={stats} />
+
+            {clicks.length === 0 ? (
+              <p className="text-muted-foreground text-sm">
+                {narrowed
+                  ? `No clicks from ${active.label} in the last 24 hours.`
+                  : "No clicks recorded yet. Run one click or wait for the Grafana check."}
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-muted-foreground border-b text-left">
+                      <th className="py-2 pr-3 font-medium">Time</th>
+                      <th className="py-2 pr-3 font-medium">Target host</th>
+                      <th className="py-2 pr-3 font-medium">Source</th>
+                      <th className="py-2 pr-3 font-medium">Exit</th>
+                      <th className="py-2 pr-3 font-medium">Device</th>
+                      <th className="py-2 pr-3 font-medium">Browser</th>
+                      <th className="py-2 pr-3 font-medium">User-Agent</th>
+                      <th className="py-2 pr-3 font-medium">Status</th>
+                      <th className="py-2 pr-3 font-medium">ms</th>
+                      <th className="py-2 font-medium">Final host</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clicks.map((click) => (
+                      <tr key={click.id} className="border-b last:border-0">
+                        <td className="text-muted-foreground py-2 pr-3 font-mono text-xs whitespace-nowrap">
+                          {formatWhen(click.ranAt)}
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-xs">
+                          {hostOf(click.target)}
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-xs">
+                          {click.source ?? "—"}
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-xs">
+                          {describeClickExit(click)}
+                        </td>
+                        <td
+                          className="py-2 pr-3 font-mono text-xs"
+                          title={click.userAgent ?? undefined}
+                        >
+                          {click.device ?? "—"}
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-xs">
+                          {click.browser ?? "—"}
+                        </td>
+                        {/* The UA was recorded and queryable all along, but only as
+                            a tooltip on the Device cell — so the panel looked like
+                            it stored none. Show it, truncated; the title carries
+                            the whole string. */}
+                        <td className="py-2 pr-3">
+                          <span
+                            className="block max-w-xs truncate font-mono text-xs"
+                            title={click.userAgent ?? undefined}
+                          >
+                            {click.userAgent ?? "—"}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3">
+                          <Badge variant={statusBadgeVariant(click.status)}>
+                            {click.status ?? "—"}
+                          </Badge>
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-xs">
+                          {click.ms ?? "—"}
+                        </td>
+                        <td className="py-2 font-mono text-xs">
+                          {hostOf(click.finalUrl)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </CollapsibleContent>
+      </Collapsible>
     </Card>
   );
 }

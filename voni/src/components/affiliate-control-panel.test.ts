@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import {
+  readCardOpen,
+  writeCardOpen,
+  type CardDisclosureStorage,
+} from "@/components/card-disclosure";
 
 /**
  * Source-text guards for the one wiring that has no other witness.
@@ -194,4 +199,94 @@ test("the rotate note follows the mode the console resolved", () => {
     panel,
     /the least recently clicked of\s+the ticked targets/,
   );
+});
+
+class MemoryStorage implements CardDisclosureStorage {
+  private readonly values = new Map<string, string>();
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+}
+
+/** The shared click surface, and only it: the source card has its own guards. */
+function clickSurface(): string {
+  const start = panel.indexOf("export function ClickSurface");
+  const end = panel.indexOf("function ControlsSection");
+  assert.ok(start > 0 && end > start, "ClickSurface is a top-level export");
+  return panel.slice(start, end);
+}
+
+test("the clicks card folds like every other card, closed until opened", () => {
+  const surface = clickSurface();
+
+  // The fold memory is the shared hook, keyed by the card's own test id, so it
+  // restores after a reload and never opens a different card.
+  assert.match(surface, /useCardDisclosure\("email-control-analytics"\)/);
+  assert.match(surface, /className="group\/card grid gap-\(--card-spacing\)"/);
+  assert.match(
+    surface,
+    /<CollapsibleCardTitle[\s\S]*?testId="email-clicks-trigger"/,
+    "the title is the fold trigger",
+  );
+  assert.match(
+    surface,
+    /<Collapsible\s+open=\{open\}\s+onOpenChange=\{onOpenChange\}/,
+  );
+
+  // A remount re-reads storage; the same fixture the other cards use.
+  const storage = new MemoryStorage();
+  assert.equal(
+    readCardOpen("email-control-analytics", storage),
+    false,
+    "a card nobody opened starts collapsed",
+  );
+  writeCardOpen("email-control-analytics", true, storage);
+  assert.equal(
+    readCardOpen("email-control-analytics", storage),
+    true,
+    "opening it survives a remount",
+  );
+  assert.equal(
+    readCardOpen("email-rotation-card", storage),
+    false,
+    "and it never opens another card",
+  );
+});
+
+test("a collapsed clicks card still shows the volume and the worst health", () => {
+  const surface = clickSurface();
+  const contentAt = surface.indexOf("<CollapsibleContent>");
+  assert.ok(contentAt > 0, "the card has a foldable body");
+
+  for (const [fact, label] of [
+    ["{stats.total} clicks", "the total clicks"],
+    ["health.label", "the worst health label"],
+  ] as const) {
+    const at = surface.indexOf(fact);
+    assert.ok(at > 0, `${label} is rendered`);
+    assert.ok(
+      at < contentAt,
+      `${label} is outside the fold, so collapsing cannot hide it`,
+    );
+  }
+
+  // Everything else is the body: a collapsed card hides the table and the
+  // source chips, never the numbers in its header.
+  assert.ok(surface.indexOf("<table") > contentAt);
+  assert.ok(surface.indexOf('data-testid="email-clicks-sources"') > contentAt);
+});
+
+test("the Grafana panel is already a collapsible source card, not a bare card", () => {
+  // It renders through `SourceCard`, which owns the fold, so it needs no second
+  // collapsible of its own.
+  const start = panel.indexOf("export function AffiliateControlPanel");
+  const section = panel.slice(start);
+  assert.match(section, /<SourceCard/);
+  assert.match(section, /testId="email-control-source-grafana"/);
+  assert.doesNotMatch(section, /<Collapsible\b/);
 });
