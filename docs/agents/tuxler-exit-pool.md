@@ -41,6 +41,16 @@ click step, not written to the pool report, and the report's redaction pass
 scrubs them from every string it writes. `TUXLER_CONTROL_URL` is fixed in the
 workflow at `http://127.0.0.1:41000`; it is not an operator setting.
 
+Two **sizes** reach the client without a secret and without touching the code:
+
+| Where | Name | Meaning |
+| --- | --- | --- |
+| `/email` → Proxy exits → Pool target | `proxy_pool_target` | Exits to fill to, 3–8. The dispatch carries the saved value as the `poolTarget` input, the workflow maps it to `TUXLER_POOL_TARGET`, and the CLI refuses a value outside 3–8 rather than clamping. |
+| GitHub → Variables | `TUXLER_POOL_DEPTH` | How many child buckets deep the refill tree may grow, 0–3, default 3 (`0` = no children). An empty variable is the default three. |
+
+Both are read when the client **starts**: changing the pool target does not
+resize a client that is already running, it resizes the next Segment.
+
 ### What "on" changes
 
 With `TUXLER_ENABLED=true`, a dispatched Segment runs these steps in order:
@@ -188,10 +198,16 @@ a click row, in the gate/artifact, on the card, or in the client's own
 | Click row, `/acquire`, artifact | `relay-silent` | The relay stopped answering for 20 seconds. | A burst of changes, a relay incident, or a dropped socket. | The client closes and reconnects through the same parent (up to three in a row) and reports `reconnects`. If it hard-parks, restart the Segment. `--ban-check` separates a relay problem from a runner-address problem. |
 | Click row, `/acquire`, artifact | `not-ready` | The client is starting, closed, or has no live session. | The gate was read too early, the client crashed, or the login never settled. | Read `gate.clientLog` in the artifact. Check the two secrets and the client's first lines. Rerun the Segment; do not click without a ready exit. |
 | Click row only | `exit-unavailable` | The exit died between acquire and the page, or a `rotate` pass lost its one exit. | Exit death, a closed listener, or a context that could not be opened through it. | The release is marked failed; the second strike kills the exit and the pool replaces it. The next Click takes another exit. Investigate if it repeats every pass. |
+| Click row only | `bad-exit` | The control port answered 200 with something that is not a US loopback SOCKS lease. | A client bug, or a second thing listening on the control port. | The row is stored and the Click is a miss. Stop and inspect the client; never accept the offered lease. |
+| Client `lastError` / `no-us-exit` detail | `name-lookup-failed` | The address's ASN resolved, but its AS name did not answer, so the address cannot be shown to be a consumer ISP. | A DNS failure at Team Cymru, or an ASN with no name record. | Fail closed is the rule: the exit is refused, not assumed residential. Retry; if it persists for one ASN, that ASN is unusable. |
 
 The click-row enum is closed: `no-us-exit`, `quota-spent`, `relay-silent`,
-`not-ready`, `exit-unavailable`. A browser's own navigation error is `status:
-null` with no failure reason, which is a target result, not an exit result.
+`not-ready`, `exit-unavailable`, `bad-exit`. A browser's own navigation error is
+`status: null` with no failure reason, which is a target result, not an exit
+result. The same vocabulary is deliberately spelled in five modules (the pool's
+published reasons, the control API, the exit layer, the click report and the
+runner); nothing here is one enum, and a reason added in one place must be added
+in the others.
 
 ### Gate-only refusals
 
@@ -319,6 +335,19 @@ the wire format. It is a diagnostic, not the shipped path. The client is
 The `Tuxler probe` workflow is manual (`workflow_dispatch`) and has two modes,
 `ban-check` and `pool-scan`. Neither spends an IP change. A live diagnostic is
 an operator action with a hard cap; it is never a build step.
+
+**The console reads a runner's loopback address through the operator's browser
+or not at all.** `TUXLER_CONTROL_URL` is `127.0.0.1:41000`, and on a GitHub
+runner that loopback exists only inside the job. A local console sees *Client
+down* for every live Segment unless the operator opens a tunnel to that port for
+the duration of the read; the card is not an exception to this, and the pool
+report artifact is the durable record.
+
+**Restart holds a server action for up to ~70 seconds** (a 60 s bounded wait for
+an observed cancel, plus the dispatch). That is deliberate: the alternative is
+a dispatch that races the run it is meant to replace. It is the one interactive
+action this long; a longer operation belongs in the durable job center
+(`voni/AGENTS.md`).
 
 ## What this runbook does not claim
 

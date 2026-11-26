@@ -216,13 +216,20 @@ on the same `email_settings` row as the rotation mode — `proxy_country` and
   stored nowhere and passed down nowhere. `readProxySettings` returns US even if
   the row was hand-edited. The client itself also refuses a non-US exit, which is
   the second lock.
-- **Pool target is 3–8.** `parseProxyPoolTarget` accepts a whole number in that
-  range and refuses anything else (2, 9, 3.5, empty) with the range in the
-  message. A missing or out-of-range stored value reads as the default five. The
-  value is stored for a future wire, but the browser-check dispatch does not yet
-  carry it to the runner: every Segment currently fills to the client's default
-  of five. This is recorded as an accepted risk in the plan; the card's number is
-  not a live lever until that wire lands.
+- **Pool target is 3–8 and is carried to the client.** `parseProxyPoolTarget`
+  accepts a whole number in that range and refuses anything else (2, 9, 3.5,
+  empty) with the range in the message. A missing or out-of-range stored value
+  reads as the default five. The wire is live end to end: `dispatchBrowserCheck`
+  reads the saved target from the same row, sends it as the `poolTarget` input
+  (the hand-run `gh workflow run` line names it too), `browser-check.yml` maps it
+  to `TUXLER_POOL_TARGET`, and the CLI refuses a value outside 3–8 rather than
+  clamping. The target is read when the client starts, so a save resizes the
+  next Segment, not one already clicking.
+
+The **refill depth** is a client-side setting, not a dispatch input:
+`TUXLER_POOL_DEPTH` (repository variable, 0–3, default 3) is read by the CLI and
+passed to `createExitPool`. `0` means the root bucket only, so no child bucket is
+ever dialled.
 
 The **live pool** is read, never steered, by the card: a plain `GET /health` on
 the control address in `TUXLER_CONTROL_URL`, with a two-second bound and no
@@ -458,7 +465,15 @@ loop, not an assertion about intent.
 
 The workflow (`.github/workflows/browser-check.yml`) is workflow-dispatch only,
 with `contents: read`, a per-OS concurrency group that queues rather than
-cancels, and a 350-minute timeout under GitHub's 6-hour ceiling. The k6 script
+cancels, and a 350-minute timeout under GitHub's 6-hour ceiling.
+
+One test reads the workflow as text on purpose:
+`voni/scripts/browser-source-wiring.test.ts` compares the workflow's declared
+input names with `BROWSER_CHECK_INPUTS` and its env mappings with the variables
+the runner and the client read. It is a contract with a file no unit test can
+run (a GitHub runner), so a rename on either side fails at review time instead of
+at 3am as a 422 or a silently direct Click. That is the only place source text
+stands in for behaviour here. The k6 script
 generator is one builder for both producers: its byte-identical output is still
 the Grafana contract, and it now emits the same per-provider campaign map the
 app stamps with. That is a deliberate change to the earlier out-of-scope note in

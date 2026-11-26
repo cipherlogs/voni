@@ -454,7 +454,7 @@ health response or an artifact.
 |---|---|---|
 | 0 | Protocol core + pool + SOCKS + fake-relay tests | Built and tested against the fake relay. The live 5-exit / 5-click proof is the baseline Segment, not yet run. |
 | 1 | Runner integration + attribution columns | Built; a real dispatched Segment has not been exercised. |
-| 2 | Panel: proxy card, US constraint, global mode, single password, restart | Built. The saved pool target is not yet carried on a dispatch (§18.1). |
+| 2 | Panel: proxy card, US constraint, global mode, single password, restart | Built. The saved pool target is carried on every dispatch to the client (§18.1, risk 4). |
 | 3 | Hardening: pacing, cooldown, reconnect | Built. A 12 h Segment keeping ≥3 US exits is unproven; no dashboards or lifetime metric exist. |
 
 Phase 0 ships behind the repository variable `TUXLER_ENABLED`, default off.
@@ -474,7 +474,7 @@ Phase 0 ships behind the repository variable `TUXLER_ENABLED`, default off.
 | Account ban / ToS | loss of source | operator decision; keep a commercial provider path |
 | Credentials in logs | security | scoped to the start step, redaction + test |
 | No live Segment yet | quota headroom is a budget, not a measurement | the baseline record; one operator-run Segment |
-| Pool target not carried on dispatch | the card's 3–8 is not a live lever | accepted risk; the client fills to 5 until the wire lands |
+| Pool target only read at client start | a save does not resize a running Segment | accepted risk; the next Segment fills to the saved value |
 
 ---
 
@@ -496,9 +496,11 @@ Phase 0 ships behind the repository variable `TUXLER_ENABLED`, default off.
    anything else, and the client refuses a non-US exit.
 9. The manual proxy (`BROWSER_PROXY_*`) is an **emergency override only** and is
    refused alongside the pool rather than silently preferred.
-10. The saved pool target (3–8) is accepted as stored-but-not-yet-carried on a
-    dispatch; every Segment fills to five. Recorded as a risk (§18.1), not
-    dropped.
+10. The saved pool target (3–8) is carried end to end: the dispatch reads the
+    saved row, sends `poolTarget`, the workflow maps it to `TUXLER_POOL_TARGET`,
+    and the CLI refuses a value outside 3–8 rather than clamping. It is read at
+    client start, so it resizes the next Segment. Depth is a separate,
+    CLI-read setting (`TUXLER_POOL_DEPTH`, 0–3, default 3).
 
 ---
 
@@ -533,12 +535,10 @@ as pending; each is a limit of what has been proved.
 3. **A killed parent does not rebuild its child subtree.** Two strikes kill the
    parent exit; the parent is replaced and new children can be opened, but the
    existing children dialled through the dead parent are not re-parented.
-4. **The pool target has no live setter, and is not yet carried at all.** Even
-   once a dispatch carries it, a change converges only on the next client start,
-   because the control API has no live target setter. Today the saved 3–8 value
-   is not passed to the runner, so every Segment fills to the client's default of
-   five; changing the card does not change a running Segment, and today does not
-   change the next one either.
+4. **The pool target has no live setter.** The saved 3–8 value is carried on
+   every dispatch and the client fills to it, but it converges only on the next
+   client start: the control API has no live target setter, so changing the card
+   does not resize a Segment that is already clicking.
 5. **The artifact records two samples, not a series.** Ready exits are read at
    the gate and at the end; there is no per-minute ready count and no bucket
    snapshot in `pool-report.json`. Exact quota is read from the live `/health`.
@@ -553,6 +553,20 @@ as pending; each is a limit of what has been proved.
    loudly rather than substituting.
 9. **Restart has not talked to GitHub.** The cancel/observe/dispatch order is
    tested against an injected client; no real cancel or dispatch was exercised.
+10. **Restart holds a server action for up to ~70 s.** The cancel is observed for
+    up to 60 s before the replacement is dispatched. That is bounded and
+    interactive by design — a dispatch that raced the run it replaces would put
+    two browsers on the same target — but it is longer than the durable-job rule
+    in `voni/AGENTS.md` normally tolerates. It stays inline, deliberately.
+11. **The console cannot read a runner's loopback pool.** `TUXLER_CONTROL_URL` is
+    `127.0.0.1:41000`, which exists only inside the job. The card shows *Client
+    down* for a live Segment unless the operator opens a tunnel to that port for
+    the read; `pool-report.json` is the durable record.
+12. **Failure reasons are defined in five modules.** The pool's published reasons,
+    the control API's 503 set, the exit layer's `ExitFailureReason`, the intake's
+    `CLICK_FAILURE_REASONS` / DB enum, and the runner's own emits. They agree by
+    convention and by review, not by one shared type; a reason added in one place
+    must be added in the others (see `docs/agents/tuxler-exit-pool.md`).
 
 ---
 
