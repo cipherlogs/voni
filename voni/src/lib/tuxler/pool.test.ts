@@ -167,6 +167,36 @@ test("the pool reaches five ready exits on its own, one change each", async () =
   });
 });
 
+test("a failing ASN lookup parks the pool instead of spending change after change", async () => {
+  await withRelay({ changes: distinctChanges() }, async (relay) => {
+    const session = await connect(relay);
+    const pool = makePool(relay, session, {
+      // A classifier outage: the address cannot be identified, so no exit can be
+      // accepted. This is not thin supply and another change cannot fix it.
+      lookup: async () => ({ asn: 0, prefix: "", country: null, name: null }),
+      retryDelayMs: 10,
+      paceCooldownMs: 10,
+    });
+    try {
+      pool.start();
+      const snapshot = await waitFor(pool, (seen) => seen.lastError !== null);
+      assert.equal(snapshot.ready, 0);
+      assert.equal(snapshot.lastError?.reason, "lookup-failed");
+
+      // Give the retry loop every chance to spend again before asserting it did not.
+      await pause(300);
+      assert.equal(
+        relay.stats().changeRequests,
+        1,
+        "a rejection the next change cannot fix must park the pool, not drain the bucket",
+      );
+    } finally {
+      await pool.close();
+      session.stop();
+    }
+  });
+});
+
 test("a good release sends its exit to the back, so consecutive clicks differ", async () => {
   await withRelay({ changes: distinctChanges() }, async (relay) => {
     const session = await connect(relay);

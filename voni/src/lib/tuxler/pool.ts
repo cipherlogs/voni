@@ -274,6 +274,20 @@ function silent(reason: ExitFailureReason): boolean {
   return reason === "relay-silent" || reason === "session-closed";
 }
 
+/**
+ * A rejection the next change cannot fix. Thin supply heals on its own; a failed
+ * ASN lookup, a listener that will not bind, or a reply shape we cannot read does
+ * not, so retrying only spends quota. These park the pool until it is restarted.
+ */
+function systemic(reason: ExitFailureReason): boolean {
+  return (
+    reason === "lookup-failed" ||
+    reason === "name-lookup-failed" ||
+    reason === "listener-failed" ||
+    reason === "unrecognised"
+  );
+}
+
 function describe(error: unknown): { reason: ExitFailureReason; message: string } {
   if (error instanceof ExitRejectedError) return { reason: error.reason, message: error.message };
   return {
@@ -550,6 +564,16 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       }
       if (silent(detail.reason)) {
         return (await reconnect(bucket, detail)) ? "retry" : "stop";
+      }
+      if (systemic(detail.reason)) {
+        // The classifier, the listener or the reply shape is broken, so the next
+        // change would be spent on the same rejection. Park the pool and surface
+        // the reason instead: a live run burned eight changes in ninety seconds
+        // because a failing ASN lookup retried like thin supply does.
+        parked = true;
+        parkedFor = "hard";
+        lastFailure = detail;
+        return "stop";
       }
       return "retry";
     }

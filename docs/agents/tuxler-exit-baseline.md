@@ -4,11 +4,12 @@ The measured record of one real Segment: ready exits over time, changes spent,
 and failures grouped by reason. This is the evidence the headroom arithmetic in
 [the runbook](tuxler-exit-pool.md#quota-headroom) is checked against.
 
-> **Every measured cell below is deliberately blank.** Capturing this record
-> requires one real Segment against the live relay, with the account's two
-> Actions secrets and `TUXLER_ENABLED=true`; no agent in the build environment
-> may run that, and the values must not be filled from the probe, a fake relay,
-> CI, or an estimate. The operator runs the Segment and fills the table.
+> **The table below is deliberately blank.** Capturing it requires one real
+> Segment against the live relay, with the account's two Actions secrets and
+> `TUXLER_ENABLED=true`. The values must not be filled from the probe, a fake
+> relay, CI, or an estimate. One live *client* observation was made on
+> 2026-11-26 and is recorded verbatim at the end; it is not a Segment and does
+> not fill the table.
 
 ## The method
 
@@ -155,3 +156,30 @@ where producer = 'github'
 An honest "no" is a result. If the Segment needed a child bucket, record the
 `refills` count at which it opened; that is the number that tells the next
 operator whether the free tier's five spare refills are enough for a full window.
+
+## Live client observation, 2026-11-26 (not a Segment)
+
+Run from the operator's line against the live relay after the first deploy, with
+`TUXLER_POOL_TARGET=3` and `TUXLER_POOL_DEPTH=0`. No click was made and no
+Segment was dispatched, so this fills no cell above; it is recorded because it
+found two defects and one environment limit that the fake relay could not.
+
+| Observed | Value |
+| --- | --- |
+| Login | ok, handshake ~2.1 s, redirected to `server13` |
+| Account frame | 10 changes, premium 0, reset `2026-11-26T13:26:11Z` |
+| One change reply | `IP_CHANGED_SUCCESSFULLY`, port assigned, `ip 102.69.220.138`, country **Morocco (MA)** although the request asked `country:US` |
+| ASN lookup for that address | **failed**, `ESERVFAIL`, from the build environment's resolver |
+| Pool outcome | 0 ready exits; 8 of 10 changes spent in ~90 s before the parking fix |
+| Clicks / leak check | none — the gate was never satisfied, so nothing clicked |
+
+What it proves, in the operator's terms:
+
+1. **A US request can be answered with another country.** That is why the country
+   check reads `countryiso` and refuses rather than trusting the request, and why
+   a non-US reply must never be a Click.
+2. **The ASN classifier's DNS is a hard dependency.** When `origin.asn.cymru.com`
+   cannot be answered, the client correctly fails closed and can serve no exit at
+   all. Before the parking fix it also retried, which is what drained the bucket.
+3. **Neither defect was reachable through the fake relay**, which resolves by
+   construction. A live client run is part of the gate, not a formality.

@@ -209,6 +209,18 @@ published reasons, the control API, the exit layer, the click report and the
 runner); nothing here is one enum, and a reason added in one place must be added
 in the others.
 
+### A rejection that another change cannot fix parks the pool
+
+Thin US supply is a reason to retry; a broken classifier, a listener that will not
+bind, or a reply shape the client cannot read is not. `lookup-failed`,
+`name-lookup-failed`, `listener-failed` and an unreadable reply therefore **park
+the pool immediately**, publish the reason as `lastError`, and spend nothing
+further until the client is restarted. Without that rule a live run on 2026-11-26
+spent eight of ten daily changes in ninety seconds because a failing ASN lookup
+retried like thin supply — see `tuxler-exit-baseline.md`. If the card shows one of
+those four reasons, fix the cause (DNS reachability for `origin.asn.cymru.com` is
+the usual one) and restart the Segment; a restart resumes refilling.
+
 ### Gate-only refusals
 
 | Where | Reason | Meaning | Next action |

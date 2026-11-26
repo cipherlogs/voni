@@ -89,6 +89,11 @@ export interface FakeRelayStats {
   lastHeartbeatAt: number | null;
   /** The port the handshake handed out; tests prove it is never served. */
   secondPort: number;
+  /**
+   * Hosts the second socket was dialled on, in order. The relay assigns its port
+   * on the redirected `serverN`, so this must never be the original entry point.
+   */
+  secondConnectionHosts: string[];
   /** One per change the client asked for. */
   changeRequests: number;
   /** Ports the relay named in change replies, in order. */
@@ -161,6 +166,7 @@ export class FakeRelay {
     version3: false,
     lastHeartbeatAt: null,
     secondPort: 0,
+    secondConnectionHosts: [],
     changeRequests: 0,
     exitPorts: [],
     tunnelConnections: 0,
@@ -201,7 +207,10 @@ export class FakeRelay {
    * is passed through untouched.
    */
   resolve = (host: string, port: number): RelayEndpoint => {
-    if (port !== CONTROL_PORT) return { host: "127.0.0.1", port };
+    if (port !== CONTROL_PORT) {
+      this.counters.secondConnectionHosts.push(host);
+      return { host: "127.0.0.1", port };
+    }
     const hosts = this.counters.connectedHosts;
     if (hosts[hosts.length - 1] !== host) hosts.push(host);
     const match = /^server(\d+)\./i.exec(host);

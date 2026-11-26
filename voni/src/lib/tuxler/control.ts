@@ -237,7 +237,7 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
     if (!Number.isFinite(secondPort) || secondPort <= 0) {
       throw new Error(`the relay assigned no usable port: ${assignment.details}`);
     }
-    second = await dialSecond(options, secondPort);
+    second = await dialSecond(options, opened.host, secondPort);
 
     stage = "login-rejected";
     socket.write(
@@ -465,12 +465,24 @@ function asSessionError(error: unknown, stage: SessionFailureReason): TuxlerSess
   return new TuxlerSessionError(stage, message);
 }
 
-async function dialSecond(options: SessionOptions, port: number): Promise<Duplex> {
+/**
+ * Dial the second socket on the host the session actually reached.
+ *
+ * `CONNECT_LIST` moves the session to a `serverN` host, and the relay's assigned
+ * port exists only on that host. Dialling the original entry point is refused
+ * (`ECONNREFUSED`), which reads as a broken client even though the relay is
+ * healthy — the live relay showed exactly that.
+ */
+async function dialSecond(
+  options: SessionOptions,
+  host: string,
+  port: number,
+): Promise<Duplex> {
   if (options.transport !== undefined) {
-    return options.transport(options.host).openSecond(port);
+    return options.transport(host).openSecond(port);
   }
   const transport = directTransport({
-    host: options.host,
+    host,
     port: options.port,
     resolve: options.resolveEndpoint,
   });

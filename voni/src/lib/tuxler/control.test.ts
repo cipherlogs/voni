@@ -70,6 +70,10 @@ test("a session follows the redirect, passes conformance, echoes, logs in and re
           "server3.ipsharkk.com",
         ]);
         assert.equal(snapshot.host, "server3.ipsharkk.com");
+        // The relay assigns its second port on the redirected host. Dialling the
+        // original entry point is refused by the live relay, so the second socket
+        // must follow the redirect like the control socket did.
+        assert.deepEqual(relay.stats().secondConnectionHosts, ["server3.ipsharkk.com"]);
 
         const settled = await waitForState(session, (state) => state.clientIp !== null);
         assert.equal(settled.clientIp, "203.0.113.9", "the exit IP must not read null after login");
