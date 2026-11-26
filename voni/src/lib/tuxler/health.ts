@@ -56,6 +56,8 @@ export interface HealthPool {
   reconnects: number;
   /** The last replacement, so health can name the reconnect rather than guess. */
   lastReconnect?: { at: string; depth: number; reason: string } | null;
+  /** The pool's own last refusal, so a stalled pool carries its reason. */
+  lastError?: { reason: string; message: string } | null;
   /** Whether the pool stopped refilling on purpose, and why. */
   parked?: boolean;
   parkedFor?: "quota" | "hard" | null;
@@ -138,7 +140,12 @@ export function buildHealth(input: HealthInput): TuxlerHealth {
       : account === null
         ? []
         : bucketReport(input.bucketId, account);
-  const failure = input.lastError ?? snapshot?.failure ?? null;
+  const poolFailure = pool?.parked === true ? (pool.lastError ?? null) : null;
+  // A pool that is still refilling may have a refusal on record and thin supply
+  // behind it; publishing that as `lastError` would make the gate read a normal
+  // retry as fatal. A parked pool is the one that will not recover on its own, so
+  // that is when its refusal becomes the report's own — never null with zero exits.
+  const failure = input.lastError ?? poolFailure ?? snapshot?.failure ?? null;
   const ok = state === "connected" && failure === null;
   return {
     ok,

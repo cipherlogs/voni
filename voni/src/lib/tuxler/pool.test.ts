@@ -16,6 +16,7 @@ import { startSession, type TuxlerSession } from "./control";
 import {
   POOL_ACQUIRE_WAIT_MS,
   POOL_MAX,
+  POOL_NO_PROGRESS_REFILLS,
   POOL_REFILL_BELOW,
   POOL_TARGET,
   PoolUnavailableError,
@@ -512,6 +513,184 @@ test("restarting the pool closes every listener it owned, so no port is stranded
       await pool.close();
       for (const port of newPorts) await assertPortFree(port, new Set());
     } finally {
+      session.stop();
+    }
+  });
+});
+
+test("a pool that refills and never accepts parks itself with a stated cause", async () => {
+  await withRelay({ changes: [{ kind: "not-available" }] }, async (relay) => {
+    const session = await connect(relay);
+    const lines: string[] = [];
+    const pool = makePool(relay, session, {
+      target: 3,
+      noProgressRefills: 3,
+      retryDelayMs: 10,
+      paceCooldownMs: 10,
+      log: (line) => lines.push(line),
+    });
+    try {
+      pool.start();
+      const deadline = Date.now() + 8_000;
+      for (;;) {
+        const seen = pool.snapshot();
+        // Before the first refill there is nothing to report. From then on a
+        // zero-exit pool always carries either the refusal or the park: the
+        // `ready: 0, parked: false, lastError: null` shape is the bug.
+        if (seen.refills > 0 && seen.ready === 0) {
+          assert.ok(
+            seen.parked || seen.lastError !== null,
+            `silent stall: ${JSON.stringify(seen)}`,
+          );
+        }
+        if (seen.parked) break;
+        assert.ok(Date.now() < deadline, `never parked: ${JSON.stringify(seen)}`);
+        await pause(10);
+      }
+
+      const parked = pool.snapshot();
+      assert.equal(parked.ready, 0);
+      assert.equal(parked.parked, true, "a pool that cannot accept an exit must not look idle");
+      assert.equal(parked.parkedFor, "hard", "no supply after eight refusals is not quota");
+      assert.equal(
+        parked.refills,
+        3,
+        "the stall rule stops at its threshold rather than draining the allowance",
+      );
+      assert.equal(relay.stats().changeRequests, 3);
+      assert.equal(parked.lastError?.reason, "not-available");
+      assert.match(
+        parked.lastError?.message ?? "",
+        /no exit was accepted in 3 refill\(s\) in a row/,
+      );
+      assert.match(parked.lastError?.message ?? "", /change\(s\)/);
+      assert.match(
+        parked.lastError?.message ?? "",
+        /the relay said: no US exit is available right now/,
+        "the report quotes the relay's own refusal",
+      );
+
+      // `/health` is the seam the gate reads: parked, and carrying the reason.
+      const health = buildHealth({
+        state: "connected",
+        snapshot: session.snapshot(),
+        bucketId: "bucket-root",
+        lastError: null,
+        pool: pool.health(),
+      });
+      assert.equal(health.ready, false);
+      assert.equal(health.parked, true);
+      assert.equal(health.lastError?.reason, "not-available");
+
+      // One line per refill, and nothing a log artifact should not keep.
+      const refillLines = lines.filter((line) => line.startsWith("refill #"));
+      assert.equal(refillLines.length, 3, "every refill wrote exactly one line");
+      for (const line of [...refillLines, ...lines.filter((l) => l.startsWith("parked"))]) {
+        assert.equal(line.includes("\n"), false, "a log line is one line");
+        assert.equal(line.includes(EMAIL), false, "the pool log holds no account");
+        assert.equal(line.includes(PASSWORD), false, "the pool log holds no password");
+      }
+      assert.match(
+        refillLines[0]!,
+        /^refill #1 depth=0 outcome=retry reason=not-available message=".+ entries=0 ready=0$/,
+        "attempt number, outcome, refusal and the pool's own counts",
+      );
+      assert.ok(
+        lines.some((line) => /^parked for=hard reason=not-available after 3 refill\(s\): /.test(line)),
+        "the park is logged with its cause",
+      );
+    } finally {
+      await pool.close();
+      session.stop();
+    }
+  });
+});
+
+test("an account out of changes parks as quota instead of waiting silently", async () => {
+  await withRelay({ changes: [{ kind: "limit" }] }, async (relay) => {
+    const session = await connect(relay);
+    const lines: string[] = [];
+    const pool = makePool(relay, session, {
+      target: 3,
+      retryDelayMs: 10,
+      log: (line) => lines.push(line),
+    });
+    try {
+      pool.start();
+      const parked = await waitFor(pool, (seen) => seen.parked);
+      assert.equal(parked.ready, 0);
+      assert.equal(parked.parkedFor, "quota");
+      assert.equal(parked.lastError?.reason, "limit");
+      assert.match(parked.lastError?.message ?? "", /change\(s\) spent/);
+      assert.match(
+        parked.lastError?.message ?? "",
+        /the bucket's change limit is spent/,
+        "the report says what the relay said, not only that nothing is ready",
+      );
+      await pause(200);
+      assert.ok(
+        relay.stats().changeRequests <= 2,
+        "a spent account is not retried into more changes",
+      );
+      assert.ok(
+        lines.some((line) => line.startsWith("bucket depth=0 exhausted: limit")),
+        "the bucket becoming exhausted is logged",
+      );
+
+      const health = buildHealth({
+        state: "connected",
+        snapshot: session.snapshot(),
+        bucketId: "bucket-root",
+        lastError: null,
+        pool: pool.health(),
+      });
+      assert.equal(health.ready, false);
+      assert.equal(health.parked, true);
+      assert.equal(health.parkedFor, "quota");
+      assert.ok(
+        health.lastError !== null,
+        "zero exits with a spent account is never reported as no failure",
+      );
+    } finally {
+      await pool.close();
+      session.stop();
+    }
+  });
+});
+
+test("the stall threshold is the exported constant, not a local number", () => {
+  assert.equal(POOL_NO_PROGRESS_REFILLS, 8);
+});
+
+test("a log line never carries a full URL query string", async () => {
+  await withRelay({ changes: distinctChanges() }, async (relay) => {
+    const session = await connect(relay);
+    const lines: string[] = [];
+    const pool = makePool(relay, session, {
+      retryDelayMs: 10,
+      log: (line) => lines.push(line),
+      // The real resolver names its endpoints, query string included, in the
+      // failure it throws; the log must keep the fact and drop the query.
+      lookup: async () => {
+        throw new Error("TXT lookup at https://dns.example/resolve?name=1.2.3.4&type=TXT failed");
+      },
+    });
+    try {
+      pool.start();
+      const parked = await waitFor(pool, (seen) => seen.parked);
+      assert.equal(parked.lastError?.reason, "lookup-failed");
+      assert.ok(lines.length > 0, "the failure was logged");
+      for (const line of lines) {
+        assert.equal(
+          /\?[^\s"…']/.test(line),
+          false,
+          `a query string reached the log: ${line}`,
+        );
+      }
+      assert.ok(lines.some((line) => line.includes("lookup-failed")));
+      assert.ok(lines.some((line) => line.includes("dns.example")));
+    } finally {
+      await pool.close();
       session.stop();
     }
   });

@@ -48,6 +48,15 @@ export const POOL_PACE_BURST = 5;
 export const POOL_PACE_COOLDOWN_MS = 20_000;
 /** Silence after which a session is unhealthy and is reconnected. */
 export const POOL_SILENCE_MS = 20_000;
+/**
+ * Refills in a row that may accept no exit before the pool parks itself. A real
+ * run refilled 35 times and published `ready: 0, parked: false, lastError: null`,
+ * and a local reproduction sat on the same shape for minutes: a relay that
+ * refuses every change is not thin supply, it is no supply, and a pool that
+ * keeps retrying must say so instead of idling. Eight leaves thin supply the
+ * retries it needs (`retryDelayMs` apart) and still bounds a silent stall.
+ */
+export const POOL_NO_PROGRESS_REFILLS = 8;
 
 /** Why an acquire could not be served. The four reasons the control API names. */
 export type PoolUnavailableReason = "no-us-exit" | "quota-spent" | "relay-silent" | "not-ready";
@@ -177,6 +186,14 @@ export interface ExitPoolOptions {
   silenceMs?: number;
   /** How often an exhausted tree checks for a reset. Defaults to five seconds. */
   resetPollMs?: number;
+  /** Refills in a row with no accepted exit before the pool parks. Defaults to eight. */
+  noProgressRefills?: number;
+  /**
+   * One line per decision (refill, park, reconnect, exhausted bucket) for the
+   * runner's own log. Defaults to a no-op; the pool never holds a credential, so
+   * there is nothing for a line to leak.
+   */
+  log?: (line: string) => void;
   lookup?: AsnLookup;
   resolveEndpoint?: EndpointResolver;
   dial?: TunnelDialer;
@@ -253,6 +270,15 @@ function bounded(value: number | undefined, fallback: number, minimum: number): 
   return Math.max(minimum, Math.floor(value));
 }
 
+/** A log line: one line, bounded, and never a full URL query string. */
+function oneLine(text: string): string {
+  return text
+    .replace(/\?[^\s)"']*/g, "?…")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 400);
+}
+
 /** Each failure reason lands on exactly one reason the control API publishes. */
 function publishable(reason: ExitFailureReason): PoolUnavailableReason {
   switch (reason) {
@@ -327,6 +353,8 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
   const silenceMs = bounded(options.silenceMs, POOL_SILENCE_MS, 1);
   const changeTimeoutMs = bounded(options.changeTimeoutMs, silenceMs, 1);
   const resetPollMs = bounded(options.resetPollMs, 5_000, 1);
+  const noProgressRefills = bounded(options.noProgressRefills, POOL_NO_PROGRESS_REFILLS, 1);
+  const trace = options.log ?? (() => {});
 
   const entries = new Map<string, Entry>();
   const waiters: Waiter[] = [];
@@ -343,6 +371,8 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
   let watch: ReturnType<typeof setInterval> | null = null;
   let lastReconnect: PoolSnapshot["lastReconnect"] = null;
   let lastFailure: { reason: ExitFailureReason; message: string } | null = null;
+  /** Refills since an exit was last accepted; the stall rule's evidence. */
+  let refillsWithoutExit = 0;
   let signalClose: () => void = () => {};
   const closeSignal = new Promise<void>((resolve) => {
     signalClose = resolve;
@@ -423,6 +453,84 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
     const reason = publishable(lastFailure.reason);
     return new PoolUnavailableError(reason, `${REASON_TEXT[reason]}: ${lastFailure.message}`);
   };
+
+  /** A decision, written where the runner's log will keep it. Never throws. */
+  function note(line: string): void {
+    try {
+      trace(oneLine(line));
+    } catch {
+      // A logger is a witness, never a participant: a broken one cannot stop a refill.
+    }
+  }
+
+  /** The account's own spend, so a parked pool names what it cost. */
+  function spentText(): string {
+    const account = buckets[0]?.session.snapshot().account;
+    const used = account?.changesUsed ?? null;
+    const limit = account?.changesLimit ?? null;
+    const changes =
+      used === null
+        ? "the account has not reported its usage"
+        : limit === null || limit < 0
+          ? `the account reports ${used} change(s) spent`
+          : `the account reports ${used} of ${limit} change(s) spent`;
+    return `${changes}, ${refills} refill(s) attempted`;
+  }
+
+  /**
+   * The one way to stop on purpose: the flag, the cause and the refusal it rests
+   * on are set together, so `/health` can never read `parked` without a reason.
+   */
+  function park(cause: "quota" | "hard", refusal: { reason: ExitFailureReason; message: string }): void {
+    parked = true;
+    parkedFor = cause;
+    lastFailure = refusal;
+    note(`parked for=${cause} reason=${refusal.reason} after ${refills} refill(s): ${refusal.message}`);
+    if (cause === "quota") watchForReset();
+  }
+
+  /**
+   * Whether the pool is merely waiting or actually stuck. Two shapes park it:
+   *
+   * 1. Every bucket is spent and no exit is owned, so a child bucket can never
+   *    be opened through a ready exit and no refill can ever start. This is the
+   *    shape a real run froze in: `ready: 0, parked: false, lastError: null`
+   *    while the gate waited its full three minutes.
+   * 2. `POOL_NO_PROGRESS_REFILLS` refills in a row produced no accepted exit.
+   *    Thin supply still gets its retries; eight refusals with nothing to show
+   *    is a relay that is not going to answer, and it must say so.
+   *
+   * An unparked pool with zero ready exits is between refills by definition, so
+   * this runs before every attempt: there is no window where a stall is neither
+   * parked nor carrying its refusal.
+   */
+  function guardStall(): void {
+    if (closed || parked || readyCount() > 0) return;
+    const refusal = lastFailure;
+    const spendable = buckets.some((bucket) => !bucket.exhausted);
+    if (!spendable && entries.size === 0) {
+      park("quota", {
+        reason:
+          refusal !== null && (refusal.reason === "limit" || refusal.reason === "not-entitled")
+            ? refusal.reason
+            : "limit",
+        message: oneLine(
+          `no exit became ready and no bucket can spend: ${spentText()}; ` +
+            `the relay said: ${refusal === null ? "nothing was refused" : refusal.message}`,
+        ),
+      });
+      return;
+    }
+    if (refillsWithoutExit >= noProgressRefills) {
+      park("hard", {
+        reason: refusal === null ? "no-change" : refusal.reason,
+        message: oneLine(
+          `no exit was accepted in ${refillsWithoutExit} refill(s) in a row: ${spentText()}; ` +
+            `the relay said: ${refusal === null ? "nothing was refused" : refusal.message}`,
+        ),
+      });
+    }
+  }
 
   function takeWaiter(entry: Entry): void {
     entry.leased = true;
@@ -549,7 +657,25 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
     return deepest + 1 <= depth;
   }
 
+  /**
+   * One refill, and the line that records what it decided. The counter the stall
+   * rule reads moves with the outcome, so only an accepted exit resets it.
+   */
   async function fillOne(bucket: Bucket): Promise<FillOutcome> {
+    const outcome = await attemptFill(bucket);
+    refillsWithoutExit = outcome === "created" ? 0 : refillsWithoutExit + 1;
+    const refusal =
+      outcome === "created" || lastFailure === null
+        ? ""
+        : ` reason=${lastFailure.reason} message="${oneLine(lastFailure.message)}"`;
+    note(
+      `refill #${refills} depth=${bucket.depth} outcome=${outcome}${refusal}` +
+        ` entries=${entries.size} ready=${readyCount()}`,
+    );
+    return outcome;
+  }
+
+  async function attemptFill(bucket: Bucket): Promise<FillOutcome> {
     refills += 1;
     bucket.consecutive += 1;
     let exit: TuxlerExit;
@@ -568,6 +694,9 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       if (detail.reason === "limit" || detail.reason === "not-entitled") {
         // The address has nothing left. The next pick opens a child, or stops.
         bucket.exhausted = true;
+        note(
+          `bucket depth=${bucket.depth} exhausted: ${detail.reason}: ${detail.message} (${spentText()})`,
+        );
         return "retry";
       }
       if (silent(detail.reason)) {
@@ -578,9 +707,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
         // change would be spent on the same rejection. Park the pool and surface
         // the reason instead: a live run burned eight changes in ninety seconds
         // because a failing ASN lookup retried like thin supply does.
-        parked = true;
-        parkedFor = "hard";
-        lastFailure = detail;
+        park("hard", detail);
         return "stop";
       }
       return "retry";
@@ -615,7 +742,10 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
     if (entries.size >= target) lastFailure = null;
     bucket.silences = 0;
     bucket.watermark = watermarkOf(bucket.session);
-    if (exit.lastOfBucket) bucket.exhausted = true;
+    if (exit.lastOfBucket) {
+      bucket.exhausted = true;
+      note(`bucket depth=${bucket.depth} exhausted: the last change was its last (${spentText()})`);
+    }
     notify();
     return "created";
   }
@@ -636,11 +766,12 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       depth: bucket.depth,
       reason: publishable(detail.reason),
     };
+    note(
+      `reconnect #${reconnects} depth=${bucket.depth} reason=${publishable(detail.reason)}: ${detail.message}`,
+    );
     bucket.session.stop?.();
     if (options.openSession === undefined || bucket.silences > MAX_RECONNECTS_IN_A_ROW) {
-      parked = true;
-      parkedFor = "hard";
-      lastFailure = detail;
+      park("hard", detail);
       return false;
     }
     try {
@@ -658,9 +789,10 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
     } catch (error) {
       // A failed reconnect is still a silence: it must never read as no supply.
       const again = describe(error);
-      lastFailure = { reason: detail.reason, message: `${detail.message}; reconnect failed: ${again.message}` };
-      parked = true;
-      parkedFor = "hard";
+      park("hard", {
+        reason: detail.reason,
+        message: `${detail.message}; reconnect failed: ${again.message}`,
+      });
       return false;
     }
   }
@@ -670,18 +802,17 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
     pumping = true;
     try {
       while (!closed && !parked && entries.size < max && readyCount() < target) {
+        guardStall();
+        if (parked) break;
         const pick = await pickBucket();
         if (pick.kind === "quota") {
-          parked = true;
-          parkedFor = "quota";
-          lastFailure = {
+          park("quota", {
             reason: "limit",
             message:
               depth === 0
                 ? "the change bucket is spent and no child bucket is configured"
                 : `the change bucket tree is spent at depth ${depth}`,
-          };
-          watchForReset();
+          });
           break;
         }
         if (pick.kind === "wait") {
@@ -858,6 +989,13 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
         refills,
         reconnects,
         lastReconnect,
+        // The pool's own verdict, not only the session's: a pool that stopped on
+        // purpose must say so on `/health`, and a refusal must never be dropped
+        // here — that is how a run reported `ready: 0, parked: false` while the
+        // account was out of changes.
+        lastError: lastFailure === null ? null : { ...lastFailure },
+        parked,
+        parkedFor,
       };
     },
 
@@ -912,6 +1050,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       entries.clear();
       for (const entry of owned) entry.leased = false;
       lastFailure = null;
+      refillsWithoutExit = 0;
       await Promise.all(owned.map((entry) => entry.exit.close()));
       await Promise.all([...closing]);
       for (const bucket of buckets.slice(1)) bucket.session.stop?.();
