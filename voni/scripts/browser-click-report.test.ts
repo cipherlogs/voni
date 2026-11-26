@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { postReport } from "./browser-click.mjs";
+import { finalUrlOf, postReport } from "./browser-click.mjs";
 
 const REPORT = {
   target: "https://example.com/abc",
@@ -105,4 +105,17 @@ test("all attempts failing records the count and the last error, and does not th
   assert.deepEqual(fake.waits, [1_000, 3_000]);
   assert.match(result.detail ?? "", /The operation was aborted due to timeout/);
   assert.match(result.detail ?? "", /3 attempts/);
+});
+
+test("a failed navigation reports no final URL instead of being refused", () => {
+  // A failed goto leaves the browser on its own error page. Reporting that as
+  // the final URL made the intake answer `bad_final_url` and throw the row away,
+  // so a failed click was invisible in the console.
+  assert.equal(finalUrlOf({ url: () => "about:blank" }), null);
+  assert.equal(finalUrlOf({ url: () => "chrome-error://chromewebdata/" }), null);
+  assert.equal(finalUrlOf({ url: () => "" }), null);
+  assert.equal(
+    finalUrlOf({ url: () => "https://www.glizzitrium.com/BCMPW39K/CZ562T2/" }),
+    "https://www.glizzitrium.com/BCMPW39K/CZ562T2/",
+  );
 });
