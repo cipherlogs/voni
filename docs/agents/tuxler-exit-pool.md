@@ -146,7 +146,7 @@ The durable record is the `browser-pool-report-<os>` artifact:
 | `gate.refills` | change **attempts** the pool made, including refused attempts |
 | `gate.reconnects` | sessions replaced after silence or a close |
 | `gate.lastError` | the client's own last failure (`reason`, `message`) |
-| `gate.clientLog` | tail of `tuxler-client.log`, only when the control port never opened |
+| `gate.clientLog` | tail of `tuxler-client.log`, whenever the gate failed — unreachable port or thin pool alike |
 | `final.*` | the same fields, read after the clicks and before the client stops |
 
 `refills` is an upper bound on quota spent, not an exact debit: a refused change

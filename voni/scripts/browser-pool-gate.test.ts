@@ -20,10 +20,12 @@ import {
   POOL_GATE_POLL_MS,
   POOL_GATE_TIMEOUT_MS,
   POOL_REPORT_PATH,
+  attachClientLog,
   buildPoolReport,
   evaluatePoolGate,
   finalSnapshot,
   mergeFinalReport,
+  MAX_CLIENT_LOG_CHARS,
   readClientLogTail,
   redactCredentials,
   waitForPoolGate,
@@ -390,6 +392,73 @@ test("a gate that could not reach the client carries the client's own reason", (
     const text = JSON.stringify(report);
     assert.match(text, /relay closed the session/, "the client's reason is in the artifact");
     assert.ok(!text.includes(account), "the account is not");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a gate that ran short of exits carries the client's own reason too", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-short-log-"));
+  const account = "operator@example.test";
+  const env = { TUXLER_USERNAME: account, TUXLER_PASSWD: "correct-horse-battery" };
+  try {
+    const log = join(dir, "tuxler-client.log");
+    writeFileSync(
+      log,
+      [
+        `tuxler-proxy: serving 127.0.0.1:41000`,
+        `tuxler-proxy: login for ${account} accepted`,
+        `tuxler-proxy: refill returned 1 exit, 2 short of the gate`,
+      ].join("\n"),
+    );
+
+    const verdict = evaluatePoolGate(health({ ready: 1, pool: THREE.slice(0, 1) }));
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.reason, "short-of-exits", "the port opened; only the pool was thin");
+
+    const report = buildPoolReport({ gate: attachClientLog(verdict, log), env });
+    assert.equal(report.gate.reason, "short-of-exits");
+    assert.match(
+      report.gate.clientLog ?? "",
+      /2 short of the gate/,
+      "a thin pool quotes the client's log, not only an unreachable port",
+    );
+    assert.ok(
+      !JSON.stringify(report).includes(account),
+      "the tail is redacted like the rest of the report",
+    );
+    assert.match(report.gate.clientLog, /login for \[redacted\] accepted/);
+
+    const passed = attachClientLog(evaluatePoolGate(health()), log);
+    assert.ok(!("clientLog" in passed), "a passing gate reads no log");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a huge client log is quoted by its end, not rejected as one oversized field", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-log-cap-"));
+  try {
+    const log = join(dir, "tuxler-client.log");
+    const inventory = Array.from({ length: 40 }, (_, at) => `refill #${at} ${"x".repeat(900)}`);
+    writeFileSync(log, [...inventory, "refill #40 reason=limit the bucket is spent"].join("\n"));
+
+    const tail = readClientLogTail(log);
+    assert.ok(tail !== null);
+    assert.ok(
+      tail.length <= MAX_CLIENT_LOG_CHARS,
+      "the quote stays inside the report parser's field cap",
+    );
+    assert.match(tail, /the bucket is spent/, "the end of the log is the part kept");
+
+    const report = buildPoolReport({
+      gate: attachClientLog(evaluatePoolGate(health({ ready: 0, pool: [] })), log),
+      env: {},
+    });
+    assert.ok(
+      JSON.stringify(report).length < 16_000,
+      "an oversized quote would make the whole gate record unparseable",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

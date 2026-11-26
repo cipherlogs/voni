@@ -47,6 +47,13 @@ export const POOL_REPORT_PATH = "pool-report.json";
 /** The start step's redirect target; its tail is the client's own reason. */
 export const POOL_CLIENT_LOG_PATH = "tuxler-client.log";
 
+/**
+ * Character bound for the quoted log tail. The report parser refuses a long
+ * string field beyond 16 000 characters, and a report it refuses is a report the
+ * intake never stores, so the quote stays well inside that.
+ */
+export const MAX_CLIENT_LOG_CHARS = 12_000;
+
 /** The variables a client logs in with. Read only so a report can scrub them. */
 export const CREDENTIAL_ENV_NAMES = [
   "TUXLER_EMAIL",
@@ -117,16 +124,23 @@ function asRecord(value) {
 }
 
 /**
- * The client's own last lines. When the control port never opens, this is the
- * only place the real reason (a bad login, a banned runner, a silent relay)
- * exists, so a failed gate quotes it instead of only "did not answer". The
- * report's redaction runs over it like everything else.
+ * The client's own last lines. When the gate fails, this is the only place the
+ * real reason (a bad login, a banned runner, a silent relay, a refill that
+ * returned one exit) exists, so a failed gate quotes it instead of only the
+ * verdict. The report's redaction runs over it like everything else.
+ *
+ * The line bound alone is not enough: the client prints pretty-printed health
+ * reports, so forty lines can exceed the report parser's own field cap for a
+ * long string, and one oversized `clientLog` makes the whole gate record
+ * unparseable — the intake answers 400 and the report is lost. Keep the end of
+ * the log, which is the part that names the last failure.
  *
  * @param {string} path
  * @param {number} [maxLines]
+ * @param {number} [maxChars]
  * @returns {string | null}
  */
-export function readClientLogTail(path, maxLines = 40) {
+export function readClientLogTail(path, maxLines = 40, maxChars = MAX_CLIENT_LOG_CHARS) {
   let contents;
   try {
     contents = readFileSync(path, "utf8");
@@ -134,7 +148,8 @@ export function readClientLogTail(path, maxLines = 40) {
     return null;
   }
   const lines = contents.split("\n").filter((line) => line.trim() !== "");
-  return lines.slice(-maxLines).join("\n");
+  const tail = lines.slice(-maxLines).join("\n");
+  return tail.length > maxChars ? tail.slice(-maxChars) : tail;
 }
 
 function text(value) {
@@ -369,13 +384,29 @@ export function buildPoolReport({ gate, minReady = POOL_GATE_MIN_READY, env = pr
       refills: typeof gate.refills === "number" ? gate.refills : 0,
       reconnects: typeof gate.reconnects === "number" ? gate.reconnects : 0,
       lastError: gate.lastError ?? null,
-      // Only a gate that could not reach the client carries this: it is the
-      // reason the port never opened, quoted from the client's own log.
+      // Present on every failed gate: the client's own log tail, which is the
+      // only witness for why it never produced the exits a Click needs.
       clientLog: typeof gate.clientLog === "string" ? gate.clientLog : null,
     },
     final: null,
   };
   return redactCredentials(report, env);
+}
+
+/**
+ * A failed gate quotes the client's own log tail, whatever the reason. A thin
+ * pool and an unreachable port are indistinguishable from the artifact alone,
+ * and the log is the only place the client's account of either exists. A gate
+ * that passed pays nothing for it.
+ *
+ * @template {Record<string, any>} T
+ * @param {T} gate
+ * @param {string} [path]
+ * @returns {T}
+ */
+export function attachClientLog(gate, path = POOL_CLIENT_LOG_PATH) {
+  if (gate.ok === true) return gate;
+  return { ...gate, clientLog: readClientLogTail(path) };
 }
 
 /**
@@ -521,11 +552,9 @@ async function main(argv) {
     return 1;
   }
 
-  const gate = await waitForPoolGate({ controlUrl: control.url });
-  if (!gate.ok && gate.reason === "control-unreachable") {
-    // The port never opened: the client's own log is the only witness.
-    gate.clientLog = readClientLogTail(POOL_CLIENT_LOG_PATH);
-  }
+  // Every failed gate carries the client's own log tail: the reason the port
+  // never opened, or the one it opened and then ran short of exits on.
+  const gate = attachClientLog(await waitForPoolGate({ controlUrl: control.url }));
   const report = buildPoolReport({ gate, env });
   writePoolReport(path, report);
 

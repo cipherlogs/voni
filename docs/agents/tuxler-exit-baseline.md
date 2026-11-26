@@ -222,3 +222,36 @@ incident):
 So classification no longer depends on one resolver, and the fail-closed rule is
 unchanged: when every resolver fails, the exit is rejected with `lookup-failed`
 and the pool parks rather than clicking direct.
+
+### The Short Segment of 2026-11-26 22:29Z, and what it proved
+
+One dispatch, `ubuntu`, one non-affiliate target (`https://example.com/`), window
+300 s, pool target 3. Nothing else was touched: no affiliate target was enabled
+or removed.
+
+```
+browser-pool-gate: FAILED short-of-exits after 180002 ms: only 0 of 3 exits are ready
+```
+```json
+"gate": { "ready": 0, "exits": [], "refills": 35, "reconnects": 0, "lastError": null }
+```
+
+Two facts came out of it.
+
+**The account is out of changes.** A local reproduction with the same settings
+reported `used: 11` against a stated `limit: 10` (`resetAt` 2026-11-27T13:27Z),
+and a subsequent login was refused with `connect-failed`. No exit can be
+produced before the reset, whatever the code does.
+
+**The pool spent 35 changes and published nothing.** `ready: 0, parked: false,
+lastError: null` reads as "nothing is wrong" and is exactly the silent stall
+this subsystem is meant not to have. The pool had no logging at all, and the
+gate attached the client log only when the control port never opened, so the
+artifact could not say why. Both are now fixed: one line per refill decision on
+stderr, a stall rule that parks after `POOL_NO_PROGRESS_REFILLS` refusals with no
+accepted exit (and when every bucket is spent while no exit is owned), and the
+client log attached to every failed gate — character-bounded, because the report
+parser refuses a long field and one oversized quote would lose the whole record.
+
+The next run after the reset is the real test: three accepted US exits, a pushed
+report, and a card that says so.
