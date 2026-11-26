@@ -10,8 +10,13 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+} from "@/components/ui/collapsible";
+import { useCardDisclosure } from "@/components/card-disclosure";
+import { CollapsibleCardTitle } from "@/components/collapsible-card-title";
 import {
   Field,
   FieldDescription,
@@ -72,69 +77,82 @@ export function RotationCard({ mode, chosen, action }: RotationCardProps) {
       ? "Draw targets at random"
       : "Rotate through every target";
   const changed = selection !== mode;
+  const { open, onOpenChange } = useCardDisclosure("email-rotation-card");
 
   return (
     <Card data-testid="email-rotation-card">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Repeat className="size-4" />
-          Target rotation
-        </CardTitle>
-        <CardDescription>
-          How every source picks its next target: Grafana&apos;s scheduled check
-          and the GitHub browser source share this one setting.
-        </CardDescription>
-        <CardAction>
-          <Badge variant="outline">{TARGET_SELECTION_LABELS[mode]}</Badge>
-        </CardAction>
-      </CardHeader>
+      <Collapsible
+        open={open}
+        onOpenChange={onOpenChange}
+        className="group/card grid gap-(--card-spacing)"
+      >
+        <CardHeader>
+          <CollapsibleCardTitle
+            icon={<Repeat className="size-4" />}
+            testId="email-rotation-trigger"
+          >
+            Target rotation
+          </CollapsibleCardTitle>
+          <CardDescription>
+            How every source picks its next target: Grafana&apos;s scheduled
+            check and the GitHub browser source share this one setting.
+          </CardDescription>
+          <CardAction>
+            <Badge variant="outline">{TARGET_SELECTION_LABELS[mode]}</Badge>
+          </CardAction>
+        </CardHeader>
 
-      <CardContent className="grid gap-4">
-        <form action={formAction} className="grid gap-4">
-          <Field>
-            <input type="hidden" name="selection" value={selection} />
-            <div className="flex items-center justify-between gap-3">
-              <FieldLabel htmlFor="email-rotation-selection">{label}</FieldLabel>
-              <Switch
-                id="email-rotation-selection"
-                checked={selection === "random"}
-                onCheckedChange={(next: boolean) => {
-                  setSelection(next ? "random" : "rotate");
-                }}
-                disabled={saving}
-                data-testid="email-rotation-selection"
-              />
-            </div>
-            <FieldDescription>
-              <span className="text-foreground font-medium">
-                {TARGET_SELECTION_LABELS[selection]}
-              </span>{" "}
-              — {TARGET_SELECTION_DESCRIPTIONS[selection]}
-              {chosen
-                ? null
-                : " No mode has been saved here yet, so this shows what Grafana's script already does; saving applies your choice to both sources."}
-            </FieldDescription>
-          </Field>
+        <CollapsibleContent>
+          <CardContent className="grid gap-4">
+            <form action={formAction} className="grid gap-4">
+              <Field>
+                <input type="hidden" name="selection" value={selection} />
+                <div className="flex items-center justify-between gap-3">
+                  <FieldLabel htmlFor="email-rotation-selection">
+                    {label}
+                  </FieldLabel>
+                  <Switch
+                    id="email-rotation-selection"
+                    checked={selection === "random"}
+                    onCheckedChange={(next: boolean) => {
+                      setSelection(next ? "random" : "rotate");
+                    }}
+                    disabled={saving}
+                    data-testid="email-rotation-selection"
+                  />
+                </div>
+                <FieldDescription>
+                  <span className="text-foreground font-medium">
+                    {TARGET_SELECTION_LABELS[selection]}
+                  </span>{" "}
+                  — {TARGET_SELECTION_DESCRIPTIONS[selection]}
+                  {chosen
+                    ? null
+                    : " No mode has been saved here yet, so this shows what Grafana's script already does; saving applies your choice to both sources."}
+                </FieldDescription>
+              </Field>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <LoadingButton
-              type="submit"
-              pending={saving}
-              pendingText="Saving…"
-              icon={<Repeat />}
-              disabled={saving}
-            >
-              {changed ? "Save rotation" : "Re-apply rotation"}
-            </LoadingButton>
-            {chosen ? null : (
-              <span className="text-muted-foreground text-sm">
-                The check is still running its own saved mode until you save one
-                here.
-              </span>
-            )}
-          </div>
-        </form>
-      </CardContent>
+              <div className="flex flex-wrap items-center gap-3">
+                <LoadingButton
+                  type="submit"
+                  pending={saving}
+                  pendingText="Saving…"
+                  icon={<Repeat />}
+                  disabled={saving}
+                >
+                  {changed ? "Save rotation" : "Re-apply rotation"}
+                </LoadingButton>
+                {chosen ? null : (
+                  <span className="text-muted-foreground text-sm">
+                    The check is still running its own saved mode until you save
+                    one here.
+                  </span>
+                )}
+              </div>
+            </form>
+          </CardContent>
+        </CollapsibleContent>
+      </Collapsible>
     </Card>
   );
 }

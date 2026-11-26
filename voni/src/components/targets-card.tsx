@@ -16,8 +16,13 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+} from "@/components/ui/collapsible";
+import { useCardDisclosure } from "@/components/card-disclosure";
+import { CollapsibleCardTitle } from "@/components/collapsible-card-title";
 import {
   Field,
   FieldDescription,
@@ -366,50 +371,61 @@ export function TargetsCard({
   pauseAll,
 }: TargetsCardProps) {
   const active = targets.filter((target) => target.enabled).length;
+  const { open, onOpenChange } = useCardDisclosure("email-targets-card");
 
   return (
     <Card data-testid="email-targets-card">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Link2 className="size-4" />
-          Targets
-        </CardTitle>
-        <CardDescription>
-          The click URLs every source on this page draws from. Paused targets
-          stay in the list but receive no clicks.
-        </CardDescription>
-        <CardAction>
-          <Badge variant="outline">
-            {active} of {targets.length} active
-          </Badge>
-        </CardAction>
-        {/* The aggregate sits in the header, not the body: a source's number
-            and the sum are the two facts a collapsed card may never hide. */}
-        <div className="col-span-full w-full">
-          <PauseAllControl volume={volume} pauseAll={pauseAll} />
-        </div>
-      </CardHeader>
+      <Collapsible
+        open={open}
+        onOpenChange={onOpenChange}
+        className="group/card grid gap-(--card-spacing)"
+      >
+        <CardHeader>
+          <CollapsibleCardTitle
+            icon={<Link2 className="size-4" />}
+            testId="email-targets-trigger"
+          >
+            Targets
+          </CollapsibleCardTitle>
+          <CardDescription>
+            The click URLs every source on this page draws from. Paused targets
+            stay in the list but receive no clicks.
+          </CardDescription>
+          <CardAction>
+            <Badge variant="outline">
+              {active} of {targets.length} active
+            </Badge>
+          </CardAction>
+          {/* The aggregate sits in the header, not the body: a source's number
+              and the sum are the two facts a collapsed card may never hide. */}
+          <div className="col-span-full w-full">
+            <PauseAllControl volume={volume} pauseAll={pauseAll} />
+          </div>
+        </CardHeader>
 
-      <CardContent className="grid gap-5">
-        {targets.length === 0 ? (
-          <p className="text-muted-foreground text-sm">
-            No targets in the list. Add the first one below.
-          </p>
-        ) : (
-          <ul className="grid gap-3">
-            {targets.map((target) => (
-              <TargetRow
-                key={target.id}
-                target={target}
-                toggleTarget={toggleTarget}
-                removeTarget={removeTarget}
-              />
-            ))}
-          </ul>
-        )}
+        <CollapsibleContent>
+          <CardContent className="grid gap-5">
+            {targets.length === 0 ? (
+              <p className="text-muted-foreground text-sm">
+                No targets in the list. Add the first one below.
+              </p>
+            ) : (
+              <ul className="grid gap-3">
+                {targets.map((target) => (
+                  <TargetRow
+                    key={target.id}
+                    target={target}
+                    toggleTarget={toggleTarget}
+                    removeTarget={removeTarget}
+                  />
+                ))}
+              </ul>
+            )}
 
-        <AddTargetForm addTarget={addTarget} />
-      </CardContent>
+            <AddTargetForm addTarget={addTarget} />
+          </CardContent>
+        </CollapsibleContent>
+      </Collapsible>
     </Card>
   );
 }
