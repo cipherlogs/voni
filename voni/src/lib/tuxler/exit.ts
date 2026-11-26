@@ -82,6 +82,12 @@ export interface OpenExitOptions {
   /** Override how the relay is reached — a parent exit, for a nested tunnel. */
   dial?: TunnelDialer;
   refusalWindowMs?: number;
+  /**
+   * One line per tunnel decision, so a click that fails below the pool can say
+   * why. The pool passes its own logger here; without it a refused tunnel is
+   * silent, which is how a whole Segment's clicks failed with no witness.
+   */
+  log?: (line: string) => void;
 }
 
 const REJECTION_TEXT: Record<ExitFailureReason, string> = {
@@ -144,11 +150,14 @@ export async function openUsExit(options: OpenExitOptions): Promise<TuxlerExit> 
 
   // The port named here is the exit's own; `dial` only decides how the client
   // reaches the relay, so a child exit is nested through the exit it came from.
+  const label = `${options.relayHost}:${outcome.port}`;
   const dial = exitTunnelDialer({
     relayHost: options.relayHost,
     exitPort: outcome.port,
     resolve: options.resolveEndpoint,
     dial: options.dial,
+    label,
+    log: options.log,
   });
 
   let server: SocksServer;
@@ -157,6 +166,8 @@ export async function openUsExit(options: OpenExitOptions): Promise<TuxlerExit> 
       port: options.socksPort,
       dial,
       refusalWindowMs: options.refusalWindowMs,
+      exitLabel: label,
+      log: options.log,
     });
   } catch (error) {
     reject("listener-failed", error instanceof Error ? error.message : String(error));

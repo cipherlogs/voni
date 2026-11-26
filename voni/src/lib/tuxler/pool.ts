@@ -687,6 +687,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
         resolveEndpoint: options.resolveEndpoint,
         dial: bucket.dialBase,
         changeTimeoutMs,
+        log: options.log,
       });
     } catch (error) {
       const detail = describe(error);
