@@ -18,8 +18,10 @@
  * carry on with the next Target, not end the segment.
  */
 
-/** The pool's bounded wait: one refill plus a handshake. */
-export const EXIT_ACQUIRE_WAIT_MS = 10_000;
+import { POOL_ACQUIRE_WAIT_MS } from "../src/lib/tuxler/timing.ts";
+
+/** The pool's bounded wait, from the one place the client declares it. */
+export const EXIT_ACQUIRE_WAIT_MS = POOL_ACQUIRE_WAIT_MS;
 /** The pool may take its full wait; this only bounds a wedged client. */
 const ACQUIRE_TIMEOUT_MS = EXIT_ACQUIRE_WAIT_MS + 5_000;
 const RELEASE_TIMEOUT_MS = 5_000;

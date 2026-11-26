@@ -411,19 +411,6 @@ test("time selects show their labels closed, and the three windows are a radio g
   );
 });
 
-test("locked disables every write and says why", () => {
-  const disabled = (card.match(/disabled=\{locked/g) ?? []).length;
-  assert.ok(disabled >= 5, "three selects, the save button and the toggle");
-  assert.match(card, /data-testid="email-github-locked"/);
-  assert.match(card, /Controls are locked/);
-  assert.match(card, /Unlock the panel above to enable this source or change its/);
-  assert.match(
-    card,
-    /disabled=\{locked \|\| savingSchedule\}/,
-    "a save in flight does not disable the enable button",
-  );
-});
-
 test("the form fields are the actions' contract", () => {
   for (const field of ["interval", "window", "startHour", "enabled"]) {
     assert.match(
@@ -437,11 +424,16 @@ test("the form fields are the actions' contract", () => {
   assert.match(card, /WINDOW_SECONDS\.map/);
 });
 
-test("the page passes the lock and both actions to the card", () => {
+test("the page passes both actions to the card", () => {
   assert.match(
     page,
-    /<GithubSourceCard[\s\S]*?locked=\{locked\}[\s\S]*?setEnabled=\{setGithubSourceEnabled\}[\s\S]*?saveSchedule=\{saveGithubSchedule\}[\s\S]*?dispatchNow=\{dispatchGithubNow\}/,
-    "the card gets the panel's lock state and all three server actions",
+    /<GithubSourceCard[\s\S]*?setEnabled=\{setGithubSourceEnabled\}[\s\S]*?saveSchedule=\{saveGithubSchedule\}[\s\S]*?dispatchNow=\{dispatchGithubNow\}/,
+    "the card gets all three server actions",
+  );
+  assert.doesNotMatch(
+    page,
+    /locked=\{/,
+    "the gate renders before the console, so no card takes a lock state",
   );
   assert.match(
     page,
@@ -472,7 +464,7 @@ test("every OS row carries its own Dispatch now, and each owns its pending state
   );
   assert.match(control, /pending=\{dispatching\}/);
   assert.match(control, /pendingText="Dispatching…"/);
-  assert.match(control, /disabled=\{locked\}/, "locked is the only disable reason");
+  assert.doesNotMatch(control, /disabled=\{/, "nothing else disables a dispatch");
   assert.match(
     card,
     /import \{ LoadingButton \} from "@\/components\/loading-button"/,
@@ -586,11 +578,11 @@ test("every OS row has its own Restart, next to Dispatch now", () => {
   );
   assert.match(control, /pending=\{restarting\}/);
   assert.match(control, /pendingText="Restarting…"/);
-  assert.match(control, /disabled=\{locked\}/);
+  assert.doesNotMatch(control, /disabled=\{/, "nothing else disables a restart");
   assert.match(control, /name="os" value=\{os\}/);
   assert.match(
     control,
-    /Cancels this OS's running segment, waits for it to stop, then starts one replacement\./,
+    /Cancels this OS&apos;s running segment, waits for it to stop, then/i,
     "the control says what a restart does, in order",
   );
 });

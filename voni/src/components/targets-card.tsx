@@ -3,7 +3,6 @@
 import { useActionState } from "react";
 import {
   Link2,
-  LockKeyhole,
   Pause,
   Play,
   Plus,
@@ -65,7 +64,6 @@ export type TargetsVolumeView = {
 };
 
 export type TargetsCardProps = {
-  locked: boolean;
   targets: TargetView[];
   volume: TargetsVolumeView;
   addTarget: (previous: TargetState, formData: FormData) => Promise<TargetState>;
@@ -111,10 +109,8 @@ function githubLine(outcome: PauseOutcome): string {
 }
 
 function AddTargetForm({
-  locked,
   addTarget,
 }: {
-  locked: boolean;
   addTarget: TargetsCardProps["addTarget"];
 }) {
   const [state, action, pending] = useActionState(addTarget, INITIAL);
@@ -133,7 +129,7 @@ function AddTargetForm({
             placeholder="https://www.glizzitrium.com/BCMPW39K/XXXX/?creative_id=123"
             autoComplete="off"
             spellCheck={false}
-            disabled={locked || pending}
+            disabled={pending}
             required
           />
           <FieldDescription>
@@ -149,7 +145,6 @@ function AddTargetForm({
           pending={pending}
           pendingText="Adding…"
           icon={<Plus />}
-          disabled={locked}
           data-testid="email-target-add"
         >
           Add target
@@ -166,12 +161,10 @@ function AddTargetForm({
  */
 function TargetRow({
   target,
-  locked,
   toggleTarget,
   removeTarget,
 }: {
   target: TargetView;
-  locked: boolean;
   toggleTarget: TargetsCardProps["toggleTarget"];
   removeTarget: TargetsCardProps["removeTarget"];
 }) {
@@ -232,7 +225,6 @@ function TargetRow({
             pending={toggling}
             pendingText={target.enabled ? "Pausing…" : "Resuming…"}
             icon={target.enabled ? <Pause /> : <Play />}
-            disabled={locked}
             data-testid={`email-target-toggle-${target.id}`}
           >
             {target.enabled ? "Pause" : "Resume"}
@@ -250,7 +242,6 @@ function TargetRow({
             pending={removing}
             pendingText="Removing…"
             icon={<Trash2 />}
-            disabled={locked}
             data-testid={`email-target-remove-${target.id}`}
           >
             Remove
@@ -270,11 +261,9 @@ function TargetRow({
  * slow Grafana never looks like a button that did nothing.
  */
 function PauseAllControl({
-  locked,
   volume,
   pauseAll,
 }: {
-  locked: boolean;
   volume: TargetsVolumeView;
   pauseAll: TargetsCardProps["pauseAll"];
 }) {
@@ -339,17 +328,11 @@ function PauseAllControl({
               pending={pausingAll}
               pendingText="Pausing all…"
               icon={<Pause />}
-              disabled={locked}
               data-testid="email-targets-pause-all"
             >
               Pause all
             </LoadingButton>
           </form>
-          {locked ? (
-            <span className="text-muted-foreground text-xs">
-              Unlock the controls to pause every source.
-            </span>
-          ) : null}
         </div>
       </div>
 
@@ -375,7 +358,6 @@ function PauseAllControl({
 }
 
 export function TargetsCard({
-  locked,
   targets,
   volume,
   addTarget,
@@ -389,7 +371,7 @@ export function TargetsCard({
     <Card data-testid="email-targets-card">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          {locked ? <LockKeyhole className="size-4" /> : <Link2 className="size-4" />}
+          <Link2 className="size-4" />
           Targets
         </CardTitle>
         <CardDescription>
@@ -404,23 +386,14 @@ export function TargetsCard({
         {/* The aggregate sits in the header, not the body: a source's number
             and the sum are the two facts a collapsed card may never hide. */}
         <div className="col-span-full w-full">
-          <PauseAllControl locked={locked} volume={volume} pauseAll={pauseAll} />
+          <PauseAllControl volume={volume} pauseAll={pauseAll} />
         </div>
       </CardHeader>
 
       <CardContent className="grid gap-5">
-        {locked ? (
-          <p className="text-muted-foreground text-sm">
-            Unlock the controls to change the target list.
-          </p>
-        ) : null}
-
         {targets.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            No targets in the list.{" "}
-            {locked
-              ? "Unlock the controls to add one."
-              : "Add the first one below."}
+            No targets in the list. Add the first one below.
           </p>
         ) : (
           <ul className="grid gap-3">
@@ -428,7 +401,6 @@ export function TargetsCard({
               <TargetRow
                 key={target.id}
                 target={target}
-                locked={locked}
                 toggleTarget={toggleTarget}
                 removeTarget={removeTarget}
               />
@@ -436,7 +408,7 @@ export function TargetsCard({
           </ul>
         )}
 
-        {locked ? null : <AddTargetForm locked={locked} addTarget={addTarget} />}
+        <AddTargetForm addTarget={addTarget} />
       </CardContent>
     </Card>
   );

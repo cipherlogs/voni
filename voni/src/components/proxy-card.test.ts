@@ -40,7 +40,7 @@ test("the pool target is bounded at the input and again on the server", () => {
   assert.match(card, /min=\{PROXY_POOL_MIN\}/);
   assert.match(card, /max=\{PROXY_POOL_MAX\}/);
   assert.match(card, /defaultValue=\{settings\.poolTarget\}/);
-  assert.match(card, /disabled=\{locked \|\| saving\}/);
+  assert.match(card, /disabled=\{saving\}/);
   assert.match(
     card,
     /Three to eight|3 (?:to|–|-)8/i,
@@ -83,10 +83,13 @@ test("the card shows the exits, their cities, changes spent and the last failure
   assert.match(card, /failureWords\(/, "the last failure is named in operator words");
 });
 
-test("a locked page disables the writes and says why", () => {
-  assert.match(card, /locked/);
-  assert.match(card, /Alert/, "a locked card explains itself inline");
+test("the page renders the card with its action, and no dead locked prop", () => {
   assert.match(card, /data-testid="email-proxy-card"/);
   assert.match(page, /<ProxyCard/, "the page renders the card");
   assert.match(page, /action=\{saveProxy\}/, "the action arrives as a prop");
+  assert.doesNotMatch(
+    card,
+    /locked/,
+    "the gate renders before the card, so a locked branch would be unreachable",
+  );
 });

@@ -40,5 +40,5 @@ test("a manual burst toast carries the exact command and a copy action", () => {
 test("the plan preview still gates the dispatch and is unchanged", () => {
   assert.match(card, /data-testid="email-burst-preview"/);
   assert.match(card, /planBurst\(\{ clicks, durationSec, zoneIds: selected \}\)/);
-  assert.match(card, /disabled=\{locked \|\| plan === null\}/);
+  assert.match(card, /disabled=\{plan === null\}/);
 });

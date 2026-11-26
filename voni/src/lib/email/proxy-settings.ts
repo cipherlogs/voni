@@ -45,12 +45,12 @@ export async function readProxySettings(
 }
 
 /**
- * Write the operator's choice. The first save creates the row, and the country
- * column is written from the constant rather than from the caller, so a bug in
- * the action cannot store another country.
+ * Write the operator's choice. The first save creates the row. The country is
+ * not a parameter: US is the constant this module writes, so the signature
+ * cannot imply a caller has a country to choose.
  */
 export async function writeProxySettings(
-  settings: Pick<ProxySettings, "country" | "poolTarget">,
+  settings: Pick<ProxySettings, "poolTarget">,
   settingsId: string = EMAIL_SETTINGS_ID,
 ): Promise<void> {
   const now = new Date();

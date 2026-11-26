@@ -36,8 +36,8 @@ test("the switch posts its value, so the server never guesses a mode", () => {
   assert.match(switchBlock, /checked=\{selection === "random"\}/);
   assert.match(
     switchBlock,
-    /disabled=\{locked \|\| saving\}/,
-    "a locked page and an in-flight save both disable it",
+    /disabled=\{saving\}/,
+    "an in-flight save disables it, so a second submission cannot race the first",
   );
 });
 

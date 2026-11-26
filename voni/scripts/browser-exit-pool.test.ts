@@ -8,12 +8,18 @@ import {
   parseControlUrl,
   releaseExit,
 } from "./browser-exit-pool.mjs";
+import { POOL_ACQUIRE_WAIT_MS } from "../src/lib/tuxler/timing";
 
 /**
  * The runner's half of the client's control API, proved against a local HTTP
  * server that speaks the same contract. Nothing here reaches the relay, and no
  * browser is started: these are the two calls a Click makes around its context.
  */
+
+test("the wait the runner gives up after is the client's own budget", () => {
+  assert.equal(EXIT_ACQUIRE_WAIT_MS, POOL_ACQUIRE_WAIT_MS);
+  assert.equal(POOL_ACQUIRE_WAIT_MS, 10_000);
+});
 
 interface ControlRequest {
   method: string;

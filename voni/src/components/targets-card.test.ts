@@ -86,20 +86,6 @@ test("each write control is a LoadingButton with its own pending flag", () => {
   assert.match(card, /useActionState\(\s*removeTarget,\s*INITIAL,?\s*\)/);
 });
 
-test("locked disables every write control and says why", () => {
-  assert.match(
-    card,
-    /Unlock the controls to change the target list\./,
-  );
-
-  const disabled = card.split("disabled={locked}").length - 1;
-  assert.ok(
-    disabled >= 3,
-    "add, pause/resume and remove are all disabled while locked",
-  );
-  assert.match(card, /\{locked \? null : <AddTargetForm/);
-});
-
 /**
  * Ticket 09: the aggregate volume line and Pause all. The console exists to
  * show one number — what every enabled source adds up to per day — so these
@@ -163,17 +149,6 @@ test("each affected source has its own pending line", () => {
     /pausingAll \?[\s\S]*?Pausing Grafana…[\s\S]*?Disabling GitHub…/,
     "both lines render together while the single request runs",
   );
-});
-
-test("locked disables Pause all and says why", () => {
-  assert.match(
-    card,
-    /Unlock the controls to pause every source\./,
-  );
-  const testId = card.indexOf('data-testid="email-targets-pause-all"');
-  const form = card.slice(card.indexOf("<form action={pauseAction}>"), testId);
-  assert.match(form, /pending=\{pausingAll\}/);
-  assert.match(form, /disabled=\{locked\}/);
 });
 
 test("add, pause and remove results are toasts only", () => {

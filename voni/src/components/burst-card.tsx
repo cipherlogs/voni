@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { AlertCircle, LockKeyhole, Zap } from "lucide-react";
+import { AlertCircle, Zap } from "lucide-react";
 import { copyCommand, useActionToast } from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import { SourceCard } from "@/components/source-card";
@@ -44,7 +44,6 @@ import type { BurstState } from "@/lib/burst/state";
  */
 
 export type BurstCardProps = {
-  locked: boolean;
   action: (prev: BurstState, formData: FormData) => Promise<BurstState>;
   /** Zone ids to start selected; empty or unknown ids fall back to all four. */
   defaultZones: string[];
@@ -84,7 +83,7 @@ function BudgetBar({ vuHours }: { vuHours: number }) {
   );
 }
 
-export function BurstCard({ locked, action, defaultZones }: BurstCardProps) {
+export function BurstCard({ action, defaultZones }: BurstCardProps) {
   const [state, formAction, pending] = useActionState(action, INITIAL);
 
   // One toast per burst outcome: an error, a queued run with a "View run"
@@ -128,18 +127,16 @@ export function BurstCard({ locked, action, defaultZones }: BurstCardProps) {
 
   const loud =
     plan !== null && (plan.clicks > LOUD_CLICKS || plan.vuHours > LOUD_VU_HOURS);
-  const disabled = locked || pending;
+  const disabled = pending;
 
   return (
     <SourceCard
       testId="email-burst-card"
       name="Burst"
-      icon={locked ? <LockKeyhole className="size-4" /> : <Zap className="size-4" />}
+      icon={<Zap className="size-4" />}
       description="One manual k6 Cloud run of the same click script, from the US load zones, for a fixed window. It spends the monthly VU-hour allowance."
       summary={{
-        status: locked
-          ? { label: "Locked", variant: "outline" }
-          : { label: "On demand", variant: "secondary" },
+        status: { label: "On demand", variant: "secondary" },
         // Burst has no cadence to state, so the volume slot says what one run
         // commands rather than a daily rate it does not have.
         volume: {
@@ -271,19 +268,13 @@ export function BurstCard({ locked, action, defaultZones }: BurstCardProps) {
           ) : null}
         </div>
 
-        {locked ? (
-          <p className="text-muted-foreground text-sm">
-            The panel is read-only. Unlock it to dispatch a burst.
-          </p>
-        ) : null}
-
         <div>
           <LoadingButton
             type="submit"
             pending={pending}
             pendingText="Dispatching…"
             icon={<Zap />}
-            disabled={locked || plan === null}
+            disabled={plan === null}
             data-testid="email-burst-dispatch"
           >
             Dispatch burst

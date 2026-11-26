@@ -45,11 +45,10 @@ export const UNLOCK_UNAVAILABLE_MESSAGE =
   "Could not check attempts right now. Try again in a moment.";
 
 /**
- * Which form is spending. `/email` has one password form now; the scope still
- * names the bucket namespace, so a future second gate cannot silently share
- * this budget.
+ * Which form is spending. `/email` has one password form, so the namespace is
+ * a literal rather than a type with one member; a second gate would add its own
+ * name here and its own bucket with it.
  */
-export type UnlockScope = "page";
 
 export type ThrottleVerdict =
   | { allowed: true }
@@ -63,7 +62,7 @@ type BumpBucket = (
 ) => Promise<{ ok: boolean; count: number }>;
 
 export type SpendUnlockAttemptInput = {
-  scope: UnlockScope;
+  scope: "page";
   /** The caller's IP, or `"unknown"` when no proxy header named one. */
   ip: string;
   /** Injected clock, in ms; the bucket key carries the 15-minute slice. */
@@ -94,11 +93,11 @@ async function ipBucketKey(ip: string): Promise<string> {
     .slice(0, 16);
 }
 
-function globalBucket(scope: UnlockScope, window: number): string {
+function globalBucket(scope: "page", window: number): string {
   return `email-unlock:${scope}:global:${window}`;
 }
 
-function perIpBucket(scope: UnlockScope, key: string, window: number): string {
+function perIpBucket(scope: "page", key: string, window: number): string {
   return `email-unlock:${scope}:ip:${key}:${window}`;
 }
 

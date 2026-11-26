@@ -13,6 +13,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { once } from "node:events";
 import { changesRemaining, type TuxlerAccountState } from "./account";
 import type { SessionSnapshot } from "./control";
+import { POOL_ACQUIRE_WAIT_MS } from "./timing";
 
 export type TuxlerHealthState = "starting" | "connected" | "failed" | "stopped";
 
@@ -235,8 +236,6 @@ export async function startHealthServer(options: HealthServerOptions): Promise<H
   };
 }
 
-/** Ten seconds: one refill plus a handshake, the ticket's bounded wait. */
-const ACQUIRE_DEFAULT_WAIT_MS = 10_000;
 /** A longer wait only holds a Click, and a segment, for no more supply. */
 const ACQUIRE_MAX_WAIT_MS = 60_000;
 const RELEASE_MAX_BODY_BYTES = 1_024;
@@ -301,7 +300,7 @@ function readBodyWithinCap(
 }
 
 function parseWait(raw: string | null): number | null {
-  if (raw === null) return ACQUIRE_DEFAULT_WAIT_MS;
+  if (raw === null) return POOL_ACQUIRE_WAIT_MS;
   if (!/^\d+$/.test(raw)) return null;
   const value = Number(raw);
   return value <= ACQUIRE_MAX_WAIT_MS ? value : null;

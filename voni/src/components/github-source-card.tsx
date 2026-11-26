@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useMemo, useState } from "react";
-import { AlertCircle, ExternalLink, GitBranch } from "lucide-react";
+import { ExternalLink, GitBranch } from "lucide-react";
 import type {
   ControlState,
   GithubDispatchState,
@@ -14,7 +14,6 @@ import {
 } from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import { SourceCard, type SourceCardSummary } from "@/components/source-card";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import {
   Field,
@@ -79,8 +78,6 @@ export type GithubSourceConfigView = {
 };
 
 export type GithubSourceCardProps = {
-  /** Presentation only; every action re-checks the cookie itself. */
-  locked: boolean;
   /** The `email_sources` row for this producer; null when it is not seeded. */
   config: GithubSourceConfigView | null;
   /** The active shared target count — the denominator of `targets x/x`. */
@@ -255,11 +252,9 @@ function useRestartToast(state: GithubDispatchState) {
  */
 function DispatchControl({
   os,
-  locked,
   dispatchNow,
 }: {
   os: RunnerOs;
-  locked: boolean;
   dispatchNow: GithubSourceCardProps["dispatchNow"];
 }) {
   const [dispatchState, dispatchAction, dispatching] = useActionState(
@@ -282,15 +277,12 @@ function DispatchControl({
           size="sm"
           pending={dispatching}
           pendingText="Dispatching…"
-          disabled={locked}
           data-testid={`email-github-dispatch-${os}-button`}
         >
           Dispatch now
         </LoadingButton>
         <p className="text-muted-foreground text-xs">
-          {locked
-            ? "Unlock the panel to dispatch a run."
-            : "Runs one segment from the saved targets and schedule."}
+          Runs one segment from the saved targets and schedule.
         </p>
       </div>
     </form>
@@ -309,11 +301,9 @@ function DispatchControl({
  */
 function RestartControl({
   os,
-  locked,
   restart,
 }: {
   os: RunnerOs;
-  locked: boolean;
   restart: GithubSourceCardProps["restart"];
 }) {
   const [restartState, restartAction, restarting] = useActionState(
@@ -336,15 +326,13 @@ function RestartControl({
           size="sm"
           pending={restarting}
           pendingText="Restarting…"
-          disabled={locked}
           data-testid={`email-github-restart-${os}-button`}
         >
           Restart
         </LoadingButton>
         <p className="text-muted-foreground text-xs">
-          {locked
-            ? "Unlock the panel to restart a run."
-            : "Cancels this OS's running segment, waits for it to stop, then starts one replacement."}
+          Cancels this OS&apos;s running segment, waits for it to stop, then
+          starts one replacement.
         </p>
       </div>
     </form>
@@ -432,7 +420,6 @@ function StatusField({
 }
 
 export function GithubSourceCard({
-  locked,
   config,
   targetCount,
   newestByOs,
@@ -554,19 +541,6 @@ export function GithubSourceCard({
         </p>
       ) : (
         <div className="grid gap-5">
-          {locked ? (
-            <Alert variant="destructive" data-testid="email-github-locked">
-              <AlertCircle />
-              <AlertTitle>Controls are locked</AlertTitle>
-              <AlertDescription>
-                Unlock the panel above to enable this source or change its
-                schedule, or to dispatch one run. The values below are the saved
-                configuration, and nothing here can be written while the panel
-                is locked.
-              </AlertDescription>
-            </Alert>
-          ) : null}
-
           <section
             aria-label="GitHub source schedule"
             data-testid="email-github-schedule"
@@ -592,7 +566,7 @@ export function GithubSourceCard({
                     onValueChange={(next) => {
                       if (next) setDraftInterval(Number(next));
                     }}
-                    disabled={locked || savingSchedule}
+                    disabled={savingSchedule}
                   >
                     <SelectTrigger
                       id="email-github-interval"
@@ -623,7 +597,7 @@ export function GithubSourceCard({
                     onValueChange={(next) => {
                       if (next) setDraftWindow(Number(next));
                     }}
-                    disabled={locked || savingSchedule}
+                    disabled={savingSchedule}
                     aria-label="Active window"
                   >
                     {WINDOW_SECONDS.map((seconds) => {
@@ -658,7 +632,7 @@ export function GithubSourceCard({
                     onValueChange={(next) => {
                       if (next) setDraftStartHour(Number(next));
                     }}
-                    disabled={locked || savingSchedule}
+                    disabled={savingSchedule}
                   >
                     <SelectTrigger
                       id="email-github-start-hour"
@@ -702,7 +676,6 @@ export function GithubSourceCard({
                   type="submit"
                   pending={savingSchedule}
                   pendingText="Saving…"
-                  disabled={locked}
                   data-testid="email-github-save"
                 >
                   Save schedule
@@ -737,7 +710,6 @@ export function GithubSourceCard({
                 variant={enabled ? "outline" : "default"}
                 pending={togglingSource}
                 pendingText={enabled ? "Disabling…" : "Enabling…"}
-                disabled={locked}
                 data-testid="email-github-toggle"
               >
                 {enabled ? "Disable source" : "Enable source"}
@@ -849,16 +821,8 @@ export function GithubSourceCard({
                         </a>
                       </StatusField>
                     </dl>
-                    <DispatchControl
-                      os={os}
-                      locked={locked}
-                      dispatchNow={dispatchNow}
-                    />
-                    <RestartControl
-                      os={os}
-                      locked={locked}
-                      restart={restart}
-                    />
+                    <DispatchControl os={os} dispatchNow={dispatchNow} />
+                    <RestartControl os={os} restart={restart} />
                   </li>
                 );
               })}

@@ -20,6 +20,7 @@ import test from "node:test";
 import { POOL_MAX, POOL_TARGET, createExitPool } from "@/lib/tuxler/pool";
 import {
   PROXY_COUNTRY,
+  asnLabel,
   PROXY_POOL_MAX,
   PROXY_POOL_MIN,
   PROXY_POOL_TARGET_DEFAULT,
@@ -108,6 +109,14 @@ test("the card's bounds are the client's own, not a second copy that can drift",
   assert.equal(PROXY_POOL_MAX, POOL_MAX);
 });
 
+test("one ASN spelling, shared by the proxy card and the click table", () => {
+  assert.equal(asnLabel("7018"), "AS7018");
+  assert.equal(asnLabel("as7018"), "AS7018");
+  assert.equal(asnLabel(" 7018 "), "AS7018", "surrounding space is not a different ASN");
+  assert.equal(asnLabel(null), null, "nothing reported stays nothing reported");
+  assert.equal(asnLabel(""), null);
+});
+
 test("a saved pool target is the target the pool fills to", () => {
   const saved = resolveProxySettings({ proxyCountry: "US", proxyPoolTarget: 8 });
   const session = {
@@ -172,7 +181,7 @@ test("the action gates first, refuses a non-US country and a bad target before w
   );
   assert.match(save, /must be US/i, "the refusal says what the country must be");
   assert.match(save, /3 to 8/, "the refusal says the accepted range");
-  assert.match(save, /writeProxySettings\(\{ country, poolTarget \}\)|\{ country, poolTarget \}/);
+  assert.match(save, /writeProxySettings\(\{ poolTarget \}\)/);
   assert.match(save, /revalidatePath\("\/email"\)/, "a save refreshes the card and the pool read");
 });
 

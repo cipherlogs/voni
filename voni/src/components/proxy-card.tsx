@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
-import { LockKeyhole, Network } from "lucide-react";
+import { Network } from "lucide-react";
 import { LoadingButton } from "@/components/loading-button";
 import { useActionToast } from "@/components/action-feedback";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -27,6 +27,7 @@ import {
   PROXY_POOL_MIN,
   PROXY_PROVIDER,
   PROXY_STATUS_LABELS,
+  asnLabel,
   describeProxyHealth,
   failureWords,
   type ProxyHealthRead,
@@ -53,7 +54,6 @@ import {
  */
 
 export type ProxyCardProps = {
-  locked: boolean;
   settings: ProxySettings;
   health: ProxyHealthRead;
   action: (previous: ControlState, formData: FormData) => Promise<ControlState>;
@@ -76,17 +76,12 @@ const ALERT_VARIANT: Record<ProxyStatus, "default" | "destructive"> = {
   "out-of-quota": "destructive",
 };
 
-function asnLabel(asn: string | null): string {
-  if (asn === null) return "ASN not reported";
-  return asn.toUpperCase().startsWith("AS") ? asn.toUpperCase() : `AS${asn}`;
-}
-
 function bucketName(depth: number | undefined): string {
   if (depth === undefined || depth === 0) return "Root bucket";
   return `Child bucket, depth ${depth}`;
 }
 
-export function ProxyCard({ locked, settings, health, action }: ProxyCardProps) {
+export function ProxyCard({ settings, health, action }: ProxyCardProps) {
   const [state, formAction, saving] = useActionState(action, INITIAL);
 
   useActionToast(state, "Could not save the proxy settings", {
@@ -104,11 +99,7 @@ export function ProxyCard({ locked, settings, health, action }: ProxyCardProps) 
     <Card data-testid="email-proxy-card">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          {locked ? (
-            <LockKeyhole className="size-4" />
-          ) : (
-            <Network className="size-4" />
-          )}
+          <Network className="size-4" />
           Proxy exits
         </CardTitle>
         <CardDescription>
@@ -128,16 +119,6 @@ export function ProxyCard({ locked, settings, health, action }: ProxyCardProps) 
           <AlertDescription>{verdict.detail}</AlertDescription>
         </Alert>
 
-        {locked ? (
-          <Alert>
-            <AlertTitle>Locked</AlertTitle>
-            <AlertDescription>
-              Unlock the page to change the proxy settings. The pool below is
-              still read live.
-            </AlertDescription>
-          </Alert>
-        ) : null}
-
         <section className="grid gap-2">
           <h3 className="text-sm font-medium">Ready exits</h3>
           {exits.length === 0 ? (
@@ -154,7 +135,7 @@ export function ProxyCard({ locked, settings, health, action }: ProxyCardProps) 
                   <span className="font-mono text-xs">{exit.ip}</span>
                   <span>{[exit.city, exit.state].filter(Boolean).join(", ") || "City not reported"}</span>
                   <span className="text-muted-foreground font-mono text-xs">
-                    {exit.country} · {asnLabel(exit.asn)}
+                    {exit.country} · {asnLabel(exit.asn) ?? "ASN not reported"}
                   </span>
                 </li>
               ))}
@@ -228,7 +209,7 @@ export function ProxyCard({ locked, settings, health, action }: ProxyCardProps) 
               max={PROXY_POOL_MAX}
               step={1}
               defaultValue={settings.poolTarget}
-              disabled={locked || saving}
+              disabled={saving}
               className="max-w-40"
             />
             <FieldDescription>
@@ -243,7 +224,7 @@ export function ProxyCard({ locked, settings, health, action }: ProxyCardProps) 
               pending={saving}
               pendingText="Saving…"
               icon={<Network />}
-              disabled={locked || saving}
+              disabled={saving}
             >
               Save proxy
             </LoadingButton>
