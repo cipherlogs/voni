@@ -1,5 +1,11 @@
 import { secret } from "@/lib/env";
 import { RUNNER_OS_VALUES, type RunnerOs } from "@/lib/email/click-report";
+import {
+  PROXY_POOL_MAX,
+  PROXY_POOL_MIN,
+  parseProxyPoolTarget,
+} from "@/lib/email/proxy-policy";
+import { readProxySettings } from "@/lib/email/proxy-settings";
 import { MAX_JOB_SECONDS } from "@/lib/email/sources";
 import {
   parseTargetSelection,
@@ -105,6 +111,49 @@ function redact(text: string, token: string): string {
   return token === "" ? text : text.split(token).join("[redacted]");
 }
 
+/**
+ * The headers every GitHub API call sends.
+ *
+ * One copy, because the User-Agent is not optional in practice: GitHub answers a
+ * UA-less request with a 403 and a plain-text body ("Request forbidden by
+ * administrative rules") that reads exactly like a permission refusal. That cost
+ * a day of chasing a token that was correct; a second caller with its own header
+ * set would have rediscovered it.
+ */
+function githubHeaders(token: string, userAgent: string): Record<string, string> {
+  return {
+    accept: "application/vnd.github+json",
+    authorization: `Bearer ${token}`,
+    "x-github-api-version": "2022-11-28",
+    "user-agent": userAgent,
+  };
+}
+
+/**
+ * The status sentences that must never differ between callers.
+ *
+ * A token that is wrong, short of scope, or throttled is the same fact whether
+ * the caller was dispatching a run or cancelling one; only the operation noun
+ * changes. Returns `null` for a status the caller words itself (404 means
+ * different things to a dispatch and a run lookup).
+ */
+function githubRefusal(
+  status: number,
+  context: { tokenEnv: string; repo: string; operation: string; detail: string },
+): string | null {
+  const { tokenEnv, repo, operation, detail } = context;
+  switch (status) {
+    case 401:
+      return `GitHub rejected ${tokenEnv} (401): the token is unset, expired, or does not belong to an account that can see ${repo}.${detail}`;
+    case 403:
+      return `GitHub refused ${operation} (403): ${tokenEnv} needs Actions write access on ${repo}.${detail}`;
+    case 429:
+      return `GitHub rate-limited ${operation} (429): wait for the limit to reset before trying again.${detail}`;
+    default:
+      return null;
+  }
+}
+
 export async function dispatchWorkflow(
   dispatch: WorkflowDispatch,
 ): Promise<DispatchOutcome> {
@@ -134,15 +183,8 @@ export async function dispatchWorkflow(
     response = await fetcher(url, {
       method: "POST",
       headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
+        ...githubHeaders(token, dispatch.userAgent ?? `voni-${action}`),
         "content-type": "application/json",
-        "x-github-api-version": "2022-11-28",
-        // GitHub answers any request without a User-Agent with a 403 and a
-        // plain-text body ("Request forbidden by administrative rules"), which
-        // reads exactly like a permission refusal and cost a day of chasing a
-        // token that was correct all along. undici's default UA does not count.
-        "user-agent": dispatch.userAgent ?? `voni-${action}`,
       },
       body: JSON.stringify({ ref, inputs }),
       signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
@@ -170,22 +212,18 @@ export async function dispatchWorkflow(
   const fail = (sentence: string) =>
     ({ ok: false, error: redact(`${sentence}${detail}`, token) }) as const;
 
+  const shared = githubRefusal(response.status, {
+    tokenEnv,
+    repo,
+    operation: `the ${action} dispatch`,
+    detail,
+  });
+  if (shared !== null) return fail(shared);
+
   switch (response.status) {
-    case 401:
-      return fail(
-        `GitHub rejected ${tokenEnv} (401): the token is unset, expired, or does not belong to an account that can see ${repo}.`,
-      );
-    case 403:
-      return fail(
-        `GitHub refused the ${action} dispatch (403): ${tokenEnv} needs Actions write access on ${repo}.`,
-      );
     case 404:
       return fail(
         `GitHub could not find ${workflowFile} on ${repo} (404): the workflow must exist on the ${ref} branch.`,
-      );
-    case 429:
-      return fail(
-        `GitHub rate-limited the ${action} dispatch (429): wait for the limit to reset before trying again.`,
       );
     default:
       return fail(
@@ -230,6 +268,7 @@ export const BROWSER_CHECK_INPUTS = {
   interval: "interval",
   window: "window",
   selection: "selection",
+  poolTarget: "poolTarget",
 } as const;
 
 /** The interval the schedule domain's floor and ceiling allow. */
@@ -261,13 +300,14 @@ export type BrowserCheckInput = {
 };
 
 /** What a human runs when no dispatch token is configured. */
-export function browserCheckCommand(input: BrowserCheckInput): string {
+export function browserCheckCommand(input: BrowserCheckInput, poolTarget: number): string {
   return (
     `gh workflow run ${BROWSER_CHECK_WORKFLOW_FILE} --ref main ` +
     `-f ${BROWSER_CHECK_INPUTS.os}=${input.os} ` +
     `-f ${BROWSER_CHECK_INPUTS.interval}=${input.intervalSeconds} ` +
     `-f ${BROWSER_CHECK_INPUTS.window}=${input.windowSeconds} ` +
     `-f ${BROWSER_CHECK_INPUTS.selection}=${input.selection} ` +
+    `-f ${BROWSER_CHECK_INPUTS.poolTarget}=${poolTarget} ` +
     `-f ${BROWSER_CHECK_INPUTS.targets}='${JSON.stringify(input.targets)}'`
   );
 }
@@ -277,6 +317,11 @@ export type BrowserCheckDeps = {
   fetcher?: typeof fetch;
   /** Injecting the reader keeps the tests off the environment and the Worker context. */
   readSecret?: (name: string) => Promise<string | undefined>;
+  /**
+   * The console's saved pool target. Injected so a test can name it without a
+   * database; production reads the same row the Proxy exits card writes.
+   */
+  readPoolTarget?: () => Promise<number>;
 };
 
 /** A refusal is a sentence, never a throw: the card renders it verbatim. */
@@ -388,14 +433,8 @@ export async function cancelBrowserCheckRuns(
 
   const fetcher = deps.fetcher ?? fetch;
   const base = `https://api.github.com/repos/${BROWSER_CHECK_REPO}`;
-  const headers: Record<string, string> = {
-    accept: "application/vnd.github+json",
-    authorization: `Bearer ${token}`,
-    "x-github-api-version": "2022-11-28",
-    // GitHub 403s a UA-less request with a body that reads like a permission
-    // refusal; the dispatch module learned that the expensive way.
-    "user-agent": "voni-restart",
-  };
+  // The same headers the dispatch sends: a cancel is a GitHub call too.
+  const headers = githubHeaders(token, "voni-restart");
 
   const fail = (sentence: string, stillRunning: number[] = []): CancelOutcome => ({
     ok: false,
@@ -423,22 +462,17 @@ export async function cancelBrowserCheckRuns(
 
   if (!listed.ok) {
     const detail = await githubMessage(listed);
+    const shared = githubRefusal(listed.status, {
+      tokenEnv: BROWSER_CHECK_TOKEN_ENV,
+      repo: BROWSER_CHECK_REPO,
+      operation: `the ${os} browser check cancel`,
+      detail,
+    });
+    if (shared !== null) return fail(shared);
     switch (listed.status) {
-      case 401:
-        return fail(
-          `GitHub rejected ${BROWSER_CHECK_TOKEN_ENV} while looking for the running ${os} browser check (401): the token is unset, expired, or cannot see ${BROWSER_CHECK_REPO}.${detail}`,
-        );
-      case 403:
-        return fail(
-          `GitHub refused the ${os} cancel (403): ${BROWSER_CHECK_TOKEN_ENV} needs Actions write access on ${BROWSER_CHECK_REPO}.${detail}`,
-        );
       case 404:
         return fail(
           `GitHub could not find ${BROWSER_CHECK_WORKFLOW_FILE} on ${BROWSER_CHECK_REPO} (404), so a running ${os} browser check cannot be found.${detail}`,
-        );
-      case 429:
-        return fail(
-          `GitHub rate-limited the ${os} cancel (429): wait for the limit to reset before restarting.${detail}`,
         );
       default:
         return fail(
@@ -503,28 +537,17 @@ export async function cancelBrowserCheckRuns(
     if (response.status === 404 || response.status === 409) continue;
 
     const detail = await githubMessage(response);
-    switch (response.status) {
-      case 401:
-        return fail(
-          `GitHub rejected ${BROWSER_CHECK_TOKEN_ENV} while cancelling the ${os} browser check (401): the token is unset, expired, or cannot see ${BROWSER_CHECK_REPO}.${detail}`,
-          active.slice(index),
-        );
-      case 403:
-        return fail(
-          `GitHub refused to cancel the ${os} browser check (403): ${BROWSER_CHECK_TOKEN_ENV} needs Actions write access on ${BROWSER_CHECK_REPO}.${detail}`,
-          active.slice(index),
-        );
-      case 429:
-        return fail(
-          `GitHub rate-limited the ${os} cancel (429): wait for the limit to reset before restarting.${detail}`,
-          active.slice(index),
-        );
-      default:
-        return fail(
-          `GitHub returned HTTP ${response.status} when asked to cancel the ${os} browser check.${detail}`,
-          active.slice(index),
-        );
-    }
+    const shared = githubRefusal(response.status, {
+      tokenEnv: BROWSER_CHECK_TOKEN_ENV,
+      repo: BROWSER_CHECK_REPO,
+      operation: `the ${os} browser check cancel`,
+      detail,
+    });
+    if (shared !== null) return fail(shared, active.slice(index));
+    return fail(
+      `GitHub returned HTTP ${response.status} when asked to cancel the ${os} browser check.${detail}`,
+      active.slice(index),
+    );
   }
 
   const sleep =
@@ -628,12 +651,32 @@ export async function dispatchBrowserCheck(
     );
   }
 
+  // The console's saved size, carried to the client. A read that fails, or a
+  // hand-edited row the policy cannot read as a size, is a refusal: a dispatch
+  // is not the place to invent a pool nobody chose.
+  const readPoolTarget =
+    deps.readPoolTarget ?? (async () => (await readProxySettings()).poolTarget);
+  let poolTarget: number;
+  try {
+    poolTarget = await readPoolTarget();
+  } catch (error) {
+    return refuse(
+      `the saved pool target could not be read: ${messageOf(error)}`,
+    );
+  }
+  if (parseProxyPoolTarget(poolTarget) === null) {
+    return refuse(
+      `the saved pool target must be a whole number from ${PROXY_POOL_MIN} to ` +
+        `${PROXY_POOL_MAX}, got ${JSON.stringify(poolTarget)}.`,
+    );
+  }
+
   return dispatchWorkflow({
     repo: BROWSER_CHECK_REPO,
     workflowFile: BROWSER_CHECK_WORKFLOW_FILE,
     tokenEnv: BROWSER_CHECK_TOKEN_ENV,
     action: "browser check",
-    manualCommand: browserCheckCommand(input),
+    manualCommand: browserCheckCommand(input, poolTarget),
     fetcher: deps.fetcher,
     readSecret: deps.readSecret,
     inputs: {
@@ -642,6 +685,7 @@ export async function dispatchBrowserCheck(
       [BROWSER_CHECK_INPUTS.interval]: String(input.intervalSeconds),
       [BROWSER_CHECK_INPUTS.window]: String(input.windowSeconds),
       [BROWSER_CHECK_INPUTS.selection]: input.selection,
+      [BROWSER_CHECK_INPUTS.poolTarget]: String(poolTarget),
     },
   });
 }

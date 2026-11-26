@@ -21,9 +21,12 @@
  *   TUXLER_HOST                         relay entry point, default server1.ipsharkk.com
  *   TUXLER_CONTROL_PORT                 relay control port, default 29990
  *   TUXLER_HEALTH_PORT                  loopback control API port, default 41000
+ *   TUXLER_POOL_TARGET                  exits to fill to, 3-8, default 5
+ *   TUXLER_POOL_DEPTH                   child-bucket depth, 0-3, default 3, 0 = none
  *   TUXLER_SILENCE_MS                   override the silence deadline (diagnostics)
  */
 import { startTuxlerClient, type TuxlerClient } from "../src/lib/tuxler";
+import { poolConfigFromEnv } from "../src/lib/tuxler/config";
 
 interface CliOptions {
   once: boolean;
@@ -33,6 +36,10 @@ interface CliOptions {
   host: string;
   controlHost: string;
   controlPort: number;
+  /** The pool's fill size, from `TUXLER_POOL_TARGET` (3-8, default 5). */
+  poolTarget: number;
+  /** The refill tree's budget, from `TUXLER_POOL_DEPTH` (0-3, default 3). */
+  poolDepth: number;
   silenceMs?: number;
   email: string;
   password: string;
@@ -45,6 +52,9 @@ function readOptions(argv: string[]): CliOptions {
     return at === -1 ? undefined : argv[at + 1];
   };
   const silence = flag("silence-ms") ?? process.env.TUXLER_SILENCE_MS;
+  // A size the card saved or the operator set. A value outside its range is a
+  // refusal naming the variable, never a silent fill to five.
+  const pool = poolConfigFromEnv(process.env);
   return {
     once: argv.includes("--once"),
     noPool: argv.includes("--no-pool"),
@@ -52,6 +62,8 @@ function readOptions(argv: string[]): CliOptions {
     host: flag("bind") ?? "127.0.0.1",
     controlHost: flag("relay-host") ?? process.env.TUXLER_HOST ?? "server1.ipsharkk.com",
     controlPort: Number(flag("relay-port") ?? process.env.TUXLER_CONTROL_PORT ?? 29_990),
+    poolTarget: pool.target,
+    poolDepth: pool.depth,
     silenceMs: silence === undefined ? undefined : Number(silence),
     email: process.env.TUXLER_EMAIL ?? process.env.TUXLER_USERNAME ?? "",
     password: process.env.TUXLER_PASSWORD ?? process.env.TUXLER_PASSWD ?? "",
@@ -74,7 +86,14 @@ async function withDeadline<T>(work: Promise<T>, timeoutMs: number, what: string
 }
 
 async function main(): Promise<number> {
-  const options = readOptions(process.argv.slice(2));
+  let options: CliOptions;
+  try {
+    options = readOptions(process.argv.slice(2));
+  } catch (error) {
+    // `PoolConfigError` is the expected shape: a sentence naming the variable.
+    console.error(`tuxler-proxy: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
   let client: TuxlerClient;
   try {
     client = await startTuxlerClient({
@@ -84,7 +103,9 @@ async function main(): Promise<number> {
       controlPort: options.controlPort,
       silenceMs: options.silenceMs,
       health: { host: options.host, port: options.port },
-      pool: options.noPool ? false : undefined,
+      pool: options.noPool
+        ? false
+        : { target: options.poolTarget, depth: options.poolDepth },
     });
   } catch (error) {
     console.error(`tuxler-proxy: ${error instanceof Error ? error.message : String(error)}`);

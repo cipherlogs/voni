@@ -350,6 +350,7 @@ test("the summary is JSON-safe and never carries the dispatch token", async () =
     const dispatch: SourceTickDeps["dispatch"] = async (input) =>
       dispatchBrowserCheck(input, {
         readSecret: async () => process.env.GITHUB_BURST_TOKEN,
+        readPoolTarget: async () => 5,
         fetcher: async () =>
           new Response("ghp_tick_secret_token is not allowed", { status: 403 }),
       });

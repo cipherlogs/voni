@@ -18,19 +18,18 @@
  *     dispatch both carry;
  *   - both modes still select exactly as before, through `pickTarget`, the seam
  *     every producer's draw already goes through;
- *   - the setting lives in one page-level row, and the actions read it there
- *     instead of the form or a stored script.
+ *   - a save writes the setting first and rebuilds Grafana from it, and a
+ *     rebuild that fails is a saved setting with a stale script (a warning),
+ *     not a failed save.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
   BROWSER_CHECK_INPUTS,
   dispatchBrowserCheck,
 } from "@/lib/github/dispatch";
+import { saveRotationMode, type RotationSaveDeps } from "./rotation-save";
 import { buildCheckScript } from "./check-script";
 import {
   TARGET_SELECTION_DEFAULT,
@@ -43,22 +42,8 @@ import {
 } from "./target-selection";
 import { currentRotation } from "./rotation";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const read = (path: string): string => readFileSync(path, "utf8");
-const rotationSource = read(join(here, "rotation.ts"));
-const actionsSource = read(join(here, "../../app/email/actions.ts"));
-const schemaSource = read(join(here, "../db/schema.ts"));
-
 const SECRET = "report-secret-value";
 const TARGETS = ["https://voni.cc/a", "https://voni.cc/b", "https://voni.cc/c"];
-
-/** One action's body, from its declaration to the next top-level `export`. */
-function fnBody(source: string, name: string): string {
-  const start = source.indexOf(`export async function ${name}(`);
-  assert.ok(start >= 0, `${name} is exported`);
-  const end = source.indexOf("\nexport ", start + 1);
-  return source.slice(start, end === -1 ? source.length : end);
-}
 
 test("the stored setting wins, so a script's cached copy cannot override it", () => {
   // The one thing the ticket is strict about: once the operator chose, the
@@ -149,7 +134,7 @@ test("one write, resolved once, is what both consumers carry", async () => {
         windowSeconds: 3_600,
         selection: resolved,
       },
-      { fetcher, readSecret: async () => "ghp_test_token" },
+      { fetcher, readSecret: async () => "ghp_test_token", readPoolTarget: async () => 5 },
     );
     assert.equal(dispatched.ok, true);
     assert.equal(
@@ -194,100 +179,105 @@ test("both modes still select the way they always did, through the seam", () => 
   assert.equal(TARGET_SELECTION_DEFAULT, "random");
 });
 
-test("the setting is one nullable row, not a column on a producer", () => {
-  assert.match(
-    schemaSource,
-    /export const emailSettings = pgTable\("email_settings", \{/,
-    "one console-wide settings table",
-  );
-  const table = schemaSource.slice(schemaSource.indexOf("emailSettings = pgTable("));
-  assert.match(
-    table.slice(0, table.indexOf("});")),
-    /targetSelection: text\("target_selection"\)/,
-    "nullable: null is 'nobody chose yet', which is what keeps an existing script's mode reported",
+
+/**
+ * A save has two effects and they can fail apart: the setting (the source of
+ * truth every producer reads) and Grafana's saved script (a copy of it). These
+ * tests drive the save through the injected seam, so what is asserted is what
+ * the operator observes: the setting was written, what the rebuild received,
+ * and whether the result is a success, a partial success or a refusal.
+ */
+function saveDeps(overrides: Partial<RotationSaveDeps> = {}): RotationSaveDeps {
+  return {
+    saveSetting: async () => {},
+    readCheck: async () => ({ ok: true as const, clicksPerRun: 2 }),
+    readTargets: async () => [...TARGETS],
+    rebuild: async () => null,
+    ...overrides,
+  };
+}
+
+test("a save writes the setting, then rebuilds Grafana from that same value", async () => {
+  const seen: string[] = [];
+  const outcome = await saveRotationMode(
+    "rotate",
+    saveDeps({
+      saveSetting: async (selection) => {
+        seen.push(`setting:${selection}`);
+      },
+      readCheck: async () => {
+        seen.push("check");
+        return { ok: true as const, clicksPerRun: 4 };
+      },
+      rebuild: async (input) => {
+        seen.push(`script:${input.selection}:${input.clicksPerRun}:${input.targets.length}`);
+        return null;
+      },
+    }),
   );
 
-  // The row is read and written through one module, so both consumers cannot
-  // grow their own copy of the rule.
-  assert.match(rotationSource, /export async function readRotationSetting/);
-  assert.match(rotationSource, /export async function saveRotationSetting/);
-  assert.match(rotationSource, /\.onConflictDoUpdate\(/, "a first write creates the row");
+  assert.deepEqual(
+    seen,
+    ["setting:rotate", "check", "script:rotate:4:3"],
+    "the setting is stored before the script is derived from it",
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.warning, undefined, "both effects landed, so there is nothing to warn about");
 });
 
-test("every producer's mode comes from the setting, never from a form", () => {
-  const saveVolume = fnBody(actionsSource, "saveVolume");
-  assert.doesNotMatch(
-    saveVolume,
-    /formData\.get\("selection"\)/,
-    "the Grafana form no longer submits a mode: the page-level control owns it",
+test("a rebuild that fails leaves a saved setting and says the script is stale", async () => {
+  const outcome = await saveRotationMode(
+    "random",
+    saveDeps({ rebuild: async () => "Grafana answered 500" }),
   );
 
-  // Every *reader* asks the same helper, so no two producers can resolve the
-  // setting differently. `saveRotation` is the write path and uploads the value
-  // it just stored; the test below pins that.
-  for (const name of [
-    "saveVolume",
-    "dispatchGithubNow",
-    "runOneOffClick",
-    "runBurst",
-  ]) {
-    assert.match(
-      fnBody(actionsSource, name),
-      /await liveSelection\(\)/,
-      `${name} reads the shared setting`,
-    );
-  }
-
-  const push = actionsSource.slice(
-    actionsSource.indexOf("async function pushTargetsToCheck("),
-    actionsSource.indexOf("\nexport ", actionsSource.indexOf("async function pushTargetsToCheck(")),
-  );
-  assert.match(
-    push,
-    /await liveSelection\(\)/,
-    "a target edit rebuilds with the setting, preserving the script only when none was ever written",
-  );
-
-  // And the helper itself is the one place the rule is written.
-  const helper = actionsSource.slice(
-    actionsSource.indexOf("async function liveSelection("),
-    actionsSource.indexOf("\n}", actionsSource.indexOf("async function liveSelection(")),
-  );
-  assert.match(helper, /currentRotation\(scriptSelection\)/);
-  assert.doesNotMatch(
-    actionsSource,
-    /data\.targetSelection \?\?/,
-    "no producer keeps its own 'script or default' rule beside the setting",
-  );
+  assert.equal(outcome.ok, true, "the operator's choice is stored; this is not a failed save");
+  assert.equal("error" in outcome, false, "the failure title must not claim the save failed");
+  assert.match(outcome.warning ?? "", /saved/i);
+  assert.match(outcome.warning ?? "", /Grafana answered 500/);
+  assert.match(outcome.warning ?? "", /Save again to retry/);
 });
 
-test("saving the mode is one unlocked write that rebuilds Grafana from it", () => {
-  const save = fnBody(actionsSource, "saveRotation");
-  assert.match(
-    save,
-    /if \(!\(await requirePageUnlock\(\)\)\) return locked\(\);/,
-    "the page password is the only authorization",
+test("a check that cannot be read is the same partial success", async () => {
+  const outcome = await saveRotationMode(
+    "rotate",
+    saveDeps({ readCheck: async () => ({ ok: false as const, message: "Grafana timed out" }) }),
   );
-  assert.ok(
-    save.indexOf("requirePageUnlock()") < save.indexOf('formData.get("selection")'),
-    "the gate runs before the input is read",
+
+  assert.equal(outcome.ok, true);
+  assert.match(outcome.warning ?? "", /Grafana timed out/);
+});
+
+test("a rebuild that throws is reported, not propagated", async () => {
+  const outcome = await saveRotationMode(
+    "rotate",
+    saveDeps({
+      rebuild: async () => {
+        throw new Error("the upload socket closed");
+      },
+    }),
   );
-  assert.match(
-    save,
-    /const selection = parseTargetSelection\(formData\.get\("selection"\)\);/,
+
+  assert.equal(outcome.ok, true);
+  assert.match(outcome.warning ?? "", /the upload socket closed/);
+});
+
+test("a setting write that fails changes nothing and rebuilds nothing", async () => {
+  let rebuilt = false;
+  const outcome = await saveRotationMode(
+    "random",
+    saveDeps({
+      saveSetting: async () => {
+        throw new Error("the database refused");
+      },
+      rebuild: async () => {
+        rebuilt = true;
+        return null;
+      },
+    }),
   );
-  assert.ok(
-    save.indexOf("if (selection === null)") > 0,
-    "a missing or unrecognised mode is a refusal, not the default",
-  );
-  assert.ok(
-    save.indexOf("await saveRotationSetting(selection)") <
-      save.indexOf("uploadRebuiltCheck("),
-    "the setting is written first: it is the source of truth, and the script is rebuilt from it",
-  );
-  assert.match(
-    save,
-    /uploadRebuiltCheck\(\{[\s\S]*?selection,\s*\}\)/,
-    "the rebuild uploads the mode just written, not a second read that could race it",
-  );
+
+  assert.equal(outcome.ok, false);
+  assert.equal(rebuilt, false, "a script rebuilt without the setting would run a mode nobody stored");
+  assert.match(outcome.ok ? "" : outcome.error, /nothing changed/);
 });

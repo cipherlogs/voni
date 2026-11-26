@@ -53,7 +53,7 @@ function declaredInputs(text: string): { names: string[]; types: string[] } {
   const types: string[] = [];
   for (const line of block.split("\n")) {
     if (/^\S/.test(line)) break;
-    const name = /^ {6}([a-z0-9_-]+):\s*$/.exec(line);
+    const name = /^ {6}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (name) {
       names.push(name[1]!);
       continue;
@@ -585,8 +585,12 @@ test("the flag defaults off: no variable, no client, no pool", () => {
 
   const { names } = declaredInputs(WORKFLOW);
   assert.ok(
-    !names.some((name) => /tuxler|pool|proxy|enabled/.test(name)),
+    !names.some((name) => /tuxler|enabled|proxy/i.test(name)),
     "a dispatch cannot switch the pool on; it is not an input",
+  );
+  assert.ok(
+    names.includes("poolTarget"),
+    "the pool's size is an input: the console's number must reach the client",
   );
 
   // The flag off is the pre-pool behaviour: the click step still runs, and the
@@ -729,6 +733,7 @@ test("the dispatcher sends those inputs, on main, as strings", async () => {
   const result = await dispatchBrowserCheck(input, {
     fetcher,
     readSecret: async () => "ghp_test_token",
+    readPoolTarget: async () => 7,
   });
 
   assert.equal(result.ok, true);
@@ -756,6 +761,11 @@ test("the dispatcher sends those inputs, on main, as strings", async () => {
     "rotate",
     "the rotation mode rides the dispatch, so the runner and Grafana cannot disagree",
   );
+  assert.equal(
+    body.inputs[BROWSER_CHECK_INPUTS.poolTarget],
+    "7",
+    "the pool size saved on /email rides the dispatch, so the card is a live lever",
+  );
   assert.deepEqual(
     JSON.parse(body.inputs[BROWSER_CHECK_INPUTS.targets]!),
     input.targets,
@@ -775,7 +785,7 @@ test("no token hands back the manual command and makes no request", async () => 
       windowSeconds: 3_600,
       selection: "random",
     },
-    { fetcher, readSecret: async () => undefined },
+    { fetcher, readSecret: async () => undefined, readPoolTarget: async () => 5 },
   );
 
   assert.equal(result.ok, true);
@@ -791,13 +801,66 @@ test("no token hands back the manual command and makes no request", async () => 
     /-f selection=random/,
     "a hand-run dispatch names the mode too, or the run would not match the setting",
   );
+  assert.match(
+    result.fallback.command,
+    /-f poolTarget=5/,
+    "a hand-run dispatch names the saved pool size too",
+  );
+});
+
+test("the pool size saved on /email is what the runner is told to fill to", async () => {
+  // A target of N is the console's number, carried end to end: the workflow
+  // declares the input, maps it to the variable the client reads, and the
+  // dispatcher refuses a saved value outside 3-8 instead of clamping it.
+  assert.match(
+    WORKFLOW,
+    /TUXLER_POOL_TARGET: \$\{\{ inputs\.poolTarget \}\}/,
+    "the workflow maps the dispatched target to the variable the client reads",
+  );
+
+  const fetcher = (async () => {
+    throw new Error("a refused dispatch must not reach GitHub");
+  }) as unknown as typeof fetch;
+  const base: BrowserCheckInput = {
+    os: "ubuntu",
+    targets: ["https://voni.cc/test"],
+    intervalSeconds: 60,
+    windowSeconds: 3_600,
+    selection: "random",
+  };
+
+  for (const saved of [2, 9, 3.5, Number.NaN]) {
+    const result = await dispatchBrowserCheck(base, {
+      fetcher,
+      readSecret: async () => "ghp_test_token",
+      readPoolTarget: async () => saved,
+    });
+    assert.equal(result.ok, false, `${saved} was dispatched`);
+    if (result.ok) continue;
+    assert.match(result.error, /3 to 8/, "the refusal names the range");
+  }
+
+  const unreadable = await dispatchBrowserCheck(base, {
+    fetcher,
+    readSecret: async () => "ghp_test_token",
+    readPoolTarget: async () => {
+      throw new Error("the settings row could not be read");
+    },
+  });
+  assert.equal(unreadable.ok, false);
+  if (unreadable.ok) return;
+  assert.match(unreadable.error, /pool target could not be read/);
 });
 
 test("an impossible request is refused before it reaches GitHub", async () => {
   const fetcher = (async () => {
     throw new Error("a refused dispatch must not reach GitHub");
   }) as unknown as typeof fetch;
-  const deps = { fetcher, readSecret: async () => "ghp_test_token" };
+  const deps = {
+    fetcher,
+    readSecret: async () => "ghp_test_token",
+    readPoolTarget: async () => 5,
+  };
   const base: BrowserCheckInput = {
     os: "ubuntu",
     targets: ["https://voni.cc/test"],

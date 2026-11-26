@@ -266,7 +266,12 @@ test("end to end: one Restart leaves the OS with one run, the replacement", asyn
         waitTimeoutMs: 5_000,
         pollIntervalMs: 1_000,
       }),
-    dispatch: (input) => dispatchBrowserCheck(input, { fetcher: github.fetcher, readSecret }),
+    dispatch: (input) =>
+      dispatchBrowserCheck(input, {
+        fetcher: github.fetcher,
+        readSecret,
+        readPoolTarget: async () => 5,
+      }),
   });
 
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -301,7 +306,12 @@ test("end to end: a runner that ignores the cancel never gets company", async ()
         waitTimeoutMs: 2_000,
         pollIntervalMs: 1_000,
       }),
-    dispatch: (input) => dispatchBrowserCheck(input, { fetcher: github.fetcher, readSecret }),
+    dispatch: (input) =>
+      dispatchBrowserCheck(input, {
+        fetcher: github.fetcher,
+        readSecret,
+        readPoolTarget: async () => 5,
+      }),
   });
 
   assert.equal(result.ok, false);
@@ -336,7 +346,12 @@ test("the token never reaches the operator's sentence", async () => {
         waitTimeoutMs: 1_000,
         pollIntervalMs: 1_000,
       }),
-    dispatch: (input) => dispatchBrowserCheck(input, { fetcher: github.fetcher, readSecret }),
+    dispatch: (input) =>
+      dispatchBrowserCheck(input, {
+        fetcher: github.fetcher,
+        readSecret,
+        readPoolTarget: async () => 5,
+      }),
   });
 
   assert.equal(JSON.stringify(outcome).includes(TOKEN), false);

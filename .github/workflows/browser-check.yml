@@ -36,6 +36,10 @@ on:
         description: 'Rotation mode set on /email, shared with Grafana: "random" or "rotate".'
         required: true
         type: string
+      poolTarget:
+        description: "Exits the client fills to, saved on /email: a whole number from 3 to 8."
+        required: true
+        type: string
 
 # The OS is part of the workflow's name on purpose: the card reads the run list
 # for this workflow and needs to tell an ubuntu run from a macos one.
@@ -71,6 +75,15 @@ jobs:
       # The rotation mode is chosen once on /email and shared with Grafana; the
       # runner reads it, it never decides it.
       BROWSER_CHECK_SELECTION: ${{ inputs.selection }}
+      # The pool size saved on /email, carried by the dispatch. The client reads
+      # it instead of its own default, and refuses a value outside 3-8 rather
+      # than clamping: the card's number is the live lever.
+      TUXLER_POOL_TARGET: ${{ inputs.poolTarget }}
+      # How many child buckets deep the refill tree may grow (0 = none). Not a
+      # dispatch input: a repository variable, so an operator can turn the
+      # refill budget down without changing anything a dispatch carries. An
+      # unset variable is empty, which the CLI reads as the default of three.
+      TUXLER_POOL_DEPTH: ${{ vars.TUXLER_POOL_DEPTH }}
       # Low-privilege by design (the intake may append one click row and
       # nothing else), and never printed: the runner sends it as a header only.
       EMAIL_CLICK_REPORT_SECRET: ${{ secrets.EMAIL_CLICK_REPORT_SECRET }}
