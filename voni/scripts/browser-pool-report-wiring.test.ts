@@ -78,8 +78,24 @@ test("the send step is gated on the pool flag and fails the job when it fails", 
     /curl -sS -o \/dev\/null -w "%\{http_code\}"/,
     "the status is captured, not the body",
   );
+  assert.match(
+    send,
+    /--max-time 30 --retry 2 --retry-delay 2/,
+    "the push can neither hang nor give up on one blip",
+  );
   assert.match(send, /--data-binary @pool-report\.json/, "the artifact is sent as bytes");
   assert.match(send, /test "\$status" = "200"/, "a non-200 makes the step fail");
+});
+
+test("the final pool read keeps its promise never to fail the run", () => {
+  const final = step(FINAL);
+
+  assert.match(
+    final,
+    /continue-on-error: true/,
+    "the comment says it never fails the run; the step must match",
+  );
+  assert.match(final, /--final/, "it reads the end-of-run counts once the clicks stop");
 });
 
 test("the URL is the app's pool-report intake, with the production fallback", () => {

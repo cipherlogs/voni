@@ -536,6 +536,31 @@ test("the runner labels every click with its pass and reports the final pass", (
   assert.match(RUNNER, /report not stored for/, "and every report that never landed");
 });
 
+test("a lost report records how many attempts were made, not just the last error", () => {
+  assert.match(RUNNER, /const REPORT_ATTEMPTS = 3/, "the retry budget is bounded");
+  assert.match(
+    RUNNER,
+    /const REPORT_RETRY_DELAYS_MS = \[1_000, 3_000\]/,
+    "one second then three, not a tight loop",
+  );
+  assert.match(
+    RUNNER,
+    /const REPORT_TIMEOUT_MS = 20_000/,
+    "a worker cold start may exceed ten seconds",
+  );
+  assert.match(RUNNER, /status >= 500 \|\| status === 408 \|\| status === 429/);
+  assert.match(
+    RUNNER,
+    /detail: result\.posted\.detail/,
+    "the operator's log keeps the attempt count and the last error",
+  );
+  assert.match(
+    RUNNER,
+    /unreported\.push\(\{[\s\S]*?pass: passes,[\s\S]*?detail: result\.posted\.detail/,
+    "the lost row is recorded and the pass carries on",
+  );
+});
+
 const POOL_START = "Start the exit pool";
 const POOL_GATE = "Wait for the exit pool";
 const POOL_FINAL = "Final pool report";

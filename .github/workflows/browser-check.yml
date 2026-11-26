@@ -149,9 +149,11 @@ jobs:
 
       # After the clicks: one read of the pool, merged into the same report, so
       # a five-hour segment records the refills and exits it ended with. It
-      # never fails the run — the click step already decided that.
+      # never fails the run — the click step already decided that, and `--final`
+      # is documented to exit 0 even when the client is already gone.
       - name: Final pool report
         if: always() && env.TUXLER_ENABLED == 'true'
+        continue-on-error: true
         run: node --import tsx scripts/browser-pool-gate.mjs --final
 
       # The client listens on this runner's loopback, so the report dies with
@@ -166,7 +168,10 @@ jobs:
           POOL_REPORT_SECRET: ${{ secrets.EMAIL_CLICK_REPORT_SECRET }}
           RUNNER_OS: ${{ inputs.os }}
         run: |
+          # Bounded: a hung intake cannot hold the job, and one blip is retried
+          # rather than read as a broken push path. Only the status is printed.
           status=$(curl -sS -o /dev/null -w "%{http_code}" \
+            --max-time 30 --retry 2 --retry-delay 2 \
             -X POST "$VONI_APP_URL/api/email/pool/report" \
             -H "content-type: application/json" \
             -H "x-voni-click-secret: $POOL_REPORT_SECRET" \

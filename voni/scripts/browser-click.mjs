@@ -48,6 +48,7 @@
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 
 import { chromium } from "@playwright/test";
 
@@ -96,7 +97,19 @@ const DEFAULT_WINDOW_SECONDS = 12 * 3_600;
 const NAVIGATION_TIMEOUT_MS = 30_000;
 /** Let deferred page scripts run before the final URL is read. */
 const SETTLE_MS = 1_000;
-const REPORT_TIMEOUT_MS = 10_000;
+/**
+ * One attempt's ceiling. A Cloudflare Worker cold start can exceed ten seconds,
+ * so this is deliberately generous: the click itself is already over, and the
+ * only thing a short timeout buys is a lost row.
+ */
+const REPORT_TIMEOUT_MS = 20_000;
+/**
+ * A transient timeout costs nothing when it happens and the whole segment when
+ * it is never retried: three attempts, then the row is recorded as lost.
+ */
+const REPORT_ATTEMPTS = 3;
+/** Waits between attempts: 1 s, then 3 s. Each attempt has its own timeout. */
+const REPORT_RETRY_DELAYS_MS = [1_000, 3_000];
 /** The intake refuses a larger `ms`, so clamp rather than lose the row. */
 const MAX_REPORTED_MS = 120_000;
 /** The intake stops reading a body past 4096 bytes. */
@@ -387,10 +400,29 @@ function screenshotName(target) {
 }
 
 /**
- * Post one click to the intake. A failure here is reported like a click
- * failure: the run must not exit green when the row never landed.
+ * A status whose retry can plausibly succeed: a server fault, a timeout, or a
+ * rate limit. Everything else in the 4xx range is the intake rejecting this
+ * body, which retrying cannot fix and would hide.
  */
-async function postReport(report, secret) {
+function reportRetryable(status) {
+  return status >= 500 || status === 408 || status === 429;
+}
+
+/**
+ * Post one click to the intake, retrying a transient failure. A failure here is
+ * reported like a click failure: the run must not exit green when the row never
+ * landed, and it must not stop clicking when one row is lost — the loop records
+ * this result and carries on.
+ */
+export async function postReport(
+  report,
+  secret,
+  {
+    fetchImpl = fetch,
+    sleepImpl = sleep,
+    timeoutMs = REPORT_TIMEOUT_MS,
+  } = {},
+) {
   let body = JSON.stringify(report);
   if (Buffer.byteLength(body) > MAX_REPORT_BYTES) {
     // A long redirect chain can push the body past the intake's cap. The click
@@ -398,29 +430,44 @@ async function postReport(report, secret) {
     body = JSON.stringify({ ...report, finalUrl: null });
   }
 
-  try {
-    const response = await fetch(REPORT_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-voni-click-secret": secret,
-      },
-      body,
-      signal: AbortSignal.timeout(REPORT_TIMEOUT_MS),
-      cache: "no-store",
-    });
-    if (response.ok) return { ok: true };
-    const text = await response.text().catch(() => "");
-    return {
-      ok: false,
-      detail: `HTTP ${response.status}${text === "" ? "" : ` ${text.slice(0, 120)}`}`,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      detail: error instanceof Error ? error.message : String(error),
-    };
+  let last = "no attempt was made";
+  for (let attempt = 1; attempt <= REPORT_ATTEMPTS; attempt += 1) {
+    if (attempt > 1) await sleepImpl(REPORT_RETRY_DELAYS_MS[attempt - 2]);
+
+    try {
+      const response = await fetchImpl(REPORT_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-voni-click-secret": secret,
+        },
+        body,
+        // A fresh signal per attempt: a timeout on the first must not poison
+        // the retry that would have stored the row.
+        signal: AbortSignal.timeout(timeoutMs),
+        cache: "no-store",
+      });
+      if (response.ok) return { ok: true, attempts: attempt };
+
+      const text = await response.text().catch(() => "");
+      last = `HTTP ${response.status}${text === "" ? "" : ` ${text.slice(0, 120)}`}`;
+      if (!reportRetryable(response.status)) {
+        return {
+          ok: false,
+          attempts: attempt,
+          detail: `${last} (${attempt} attempt, not retried: the intake rejected the body)`,
+        };
+      }
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
   }
+
+  return {
+    ok: false,
+    attempts: REPORT_ATTEMPTS,
+    detail: `${last} (${REPORT_ATTEMPTS} attempts)`,
+  };
 }
 
 /**
@@ -858,9 +905,13 @@ async function main() {
   console.log("browser-click: every dispatched target responded and was stored");
 }
 
-main().catch((error) => {
-  console.error(
-    `browser-click: ${error instanceof Error ? error.message : String(error)}`,
-  );
-  process.exit(1);
-});
+// Only run when this file is the entry point: the retry above is unit-tested
+// by importing it, and importing must not start a segment.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(
+      `browser-click: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exit(1);
+  });
+}
