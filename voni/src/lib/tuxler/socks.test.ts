@@ -148,6 +148,38 @@ test("a tunnel that closes before the destination answers is a refusal too", asy
   );
 });
 
+test("a refusal from inside the window names the destination and the exit", async () => {
+  const lines: string[] = [];
+  const exitLabel = "24.90.211.117:32516";
+  const server = await startSocksServer({
+    dial: async () => {
+      const tunnel = new FakeTunnel();
+      tunnel.destroy();
+      return tunnel;
+    },
+    refusalWindowMs: 60,
+    exitLabel,
+    log: (line) => lines.push(line),
+  });
+  try {
+    const { reply, socket } = await socksConnect(server.port, {
+      host: "example.com",
+      port: 443,
+    });
+    assert.equal(reply[1], 0x05, "the window's refusal keeps its wire reply");
+    socket.destroy();
+
+    await waitFor(() => lines.length > 0);
+    const said = lines[lines.length - 1]!;
+    assert.ok(said.includes("example.com:443"), `the destination is named: ${said}`);
+    assert.ok(said.includes(exitLabel), `the exit is named: ${said}`);
+    assert.ok(/refused/.test(said) && /upstream refused/.test(said), said);
+    assert.equal(said.includes("\n"), false, "a log line is one line");
+  } finally {
+    await server.close();
+  }
+});
+
 test("only CONNECT is accepted", async () => {
   await withServer(
     async () => new FakeTunnel(),

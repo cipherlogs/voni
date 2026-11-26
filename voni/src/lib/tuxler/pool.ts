@@ -734,6 +734,8 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
         exitPort: exit.port,
         resolve: options.resolveEndpoint,
         dial: bucket.dialBase,
+        label: exit.id,
+        log: trace,
       }),
     };
     entries.set(exit.id, entry);

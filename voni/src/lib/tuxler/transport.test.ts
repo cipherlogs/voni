@@ -11,7 +11,31 @@ import assert from "node:assert/strict";
 import net from "node:net";
 import test from "node:test";
 import { once } from "node:events";
-import { directTransport, tunnelTransport, xor73 } from "./transport";
+import { Duplex } from "node:stream";
+import { directTransport, exitTunnelDialer, tunnelTransport, xor73 } from "./transport";
+
+/** A tunnel stand-in: the dialer wraps it, and the test decides what the relay says. */
+class FakeTunnel extends Duplex {
+  readonly written: Buffer[] = [];
+  _read(): void {}
+  _write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.written.push(Buffer.from(chunk));
+    callback();
+  }
+  reply(bytes: Buffer): void {
+    this.push(bytes);
+  }
+}
+
+/** Poll until the condition holds; log lines arrive on the tunnel's own schedule. */
+async function waitFor(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("condition never held");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 
 interface Listener {
   port: number;
@@ -109,4 +133,97 @@ test("inbound tunnel bytes are forwarded raw, never unmasked again", async () =>
   } finally {
     await server.close();
   }
+});
+
+test("an exit tunnel that cannot connect logs the endpoint and the reason, then rejects", async () => {
+  const lines: string[] = [];
+  const dialer = exitTunnelDialer({
+    relayHost: "server3.ipsharkk.com",
+    exitPort: 32516,
+    label: "24.90.211.117:32516",
+    log: (line) => lines.push(line),
+    dial: async () => {
+      throw new Error("connect ECONNREFUSED 10.0.0.9:9");
+    },
+  });
+
+  await assert.rejects(dialer({ host: "example.com", port: 443 }), /ECONNREFUSED/);
+
+  assert.equal(lines.length, 2, "one line for the attempt and one for the failure");
+  assert.match(lines[0]!, /^exit 24\.90\.211\.117:32516 tunnel connecting for example\.com:443$/);
+  assert.match(
+    lines[1]!,
+    /^exit 24\.90\.211\.117:32516 tunnel connect failed for example\.com:443: .*ECONNREFUSED/,
+  );
+});
+
+test("the relay's first bytes are logged escaped, on one line, and never consumed", async () => {
+  const fake = new FakeTunnel();
+  const lines: string[] = [];
+  const dialer = exitTunnelDialer({
+    relayHost: "server3.ipsharkk.com",
+    exitPort: 32516,
+    log: (line) => lines.push(line),
+    dial: async () => fake,
+  });
+
+  const tunnel = await dialer({ host: "example.com", port: 443 });
+  const received: Buffer[] = [];
+  tunnel.on("data", (chunk: Buffer) => received.push(chunk));
+
+  const answer = Buffer.from([0x48, 0x54, 0x54, 0x50, 0x00, 0x0a, 0xff]);
+  fake.reply(answer);
+  await waitFor(() => lines.some((line) => line.includes("relay said")));
+
+  const said = lines.find((line) => line.includes("relay said"))!;
+  assert.ok(
+    lines.some((line) => line.endsWith("tunnel connected for example.com:443")),
+    "a successful dial is logged before the caller uses the tunnel",
+  );
+  assert.ok(said.includes("relay said 7B: "), `the byte count is named: ${said}`);
+  assert.ok(said.includes("HTTP"), "printable bytes are kept");
+  assert.ok(said.includes("\\x00") && said.includes("\\x0a") && said.includes("\\xff"), said);
+  assert.equal(said.includes("\n"), false, "a binary chunk cannot break the line");
+  assert.equal(Buffer.concat(received).toString("latin1"), answer.toString("latin1"));
+  tunnel.destroy();
+});
+
+test("a binary first chunk is capped at 120 bytes in the log line", async () => {
+  const fake = new FakeTunnel();
+  const lines: string[] = [];
+  const dialer = exitTunnelDialer({
+    relayHost: "server3.ipsharkk.com",
+    exitPort: 32516,
+    log: (line) => lines.push(line),
+    dial: async () => fake,
+  });
+
+  await dialer({ host: "example.com", port: 443 });
+  fake.reply(Buffer.concat([Buffer.alloc(120, 0x41), Buffer.alloc(80, 0x42)]));
+  await waitFor(() => lines.some((line) => line.includes("relay said")));
+
+  const said = lines.find((line) => line.includes("relay said"))!;
+  assert.ok(said.includes("relay said 120B: "), said);
+  const payload = said.slice(said.indexOf("relay said") + "relay said 120B: ".length);
+  assert.ok(payload.includes("A".repeat(120)), "every one of the first 120 bytes is shown");
+  assert.equal(payload.includes("BB"), false, "byte 121 is not logged");
+});
+
+test("a tunnel that closes before answering says so", async () => {
+  const fake = new FakeTunnel();
+  const lines: string[] = [];
+  const dialer = exitTunnelDialer({
+    relayHost: "server3.ipsharkk.com",
+    exitPort: 32516,
+    log: (line) => lines.push(line),
+    dial: async () => fake,
+  });
+
+  await dialer({ host: "example.com", port: 443 });
+  fake.destroy();
+  await waitFor(() => lines.some((line) => line.includes("closed the tunnel")));
+
+  const said = lines.find((line) => line.includes("closed the tunnel"))!;
+  assert.match(said, /relay closed the tunnel before the destination answered/);
+  assert.ok(said.includes("example.com:443"), `the destination is named: ${said}`);
 });
