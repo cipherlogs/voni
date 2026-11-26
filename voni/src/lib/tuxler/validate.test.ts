@@ -91,6 +91,59 @@ test("a US address whose ASN name says hosting is rejected", async () => {
   assert.equal(verdict.reason, "hosting");
 });
 
+test("a US address in an unlisted ASN whose name query failed is rejected, not assumed consumer", async () => {
+  // The origin resolves, but the AS-name query does not answer. An unlisted ASN
+  // must never be read as a consumer ISP on a failed lookup.
+  const lookup = cymruLookup({
+    resolveTxt: async (name: string) => {
+      if (name.includes("origin.asn.cymru.com")) {
+        return [["400000 | 45.9.9.0/24 | US | arin | 2020-01-01"]];
+      }
+      throw new Error("queryTxt ETIMEOUT");
+    },
+  });
+
+  const verdict = await validateExit({
+    ip: "45.9.9.9",
+    countryIso: "US",
+    lookup,
+  });
+
+  assert.equal(verdict.accepted, false);
+  if (verdict.accepted) return;
+  assert.equal(verdict.reason, "name-lookup-failed");
+});
+
+test("a resolved consumer ISP is still accepted when its name query answered", async () => {
+  const lookup = cymruLookup({
+    resolveTxt: async (name: string) => {
+      if (name.includes("origin.asn.cymru.com")) {
+        return [["7018 | 99.44.0.0/14 | US | arin | 1992-12-01"]];
+      }
+      return [["7018 | US | arin | 2000-03-30 | ATT-INTERNET4, US"]];
+    },
+  });
+
+  const verdict = await validateExit({ ip: "99.44.12.7", countryIso: "US", lookup });
+  assert.equal(verdict.accepted, true);
+});
+
+test("a resolved hosting ASN is rejected when the name query answered", async () => {
+  const lookup = cymruLookup({
+    resolveTxt: async (name: string) => {
+      if (name.includes("origin.asn.cymru.com")) {
+        return [["16509 | 54.211.0.0/16 | US | arin | 2000-01-01"]];
+      }
+      return [["16509 | US | arin | 2000-01-01 | AMAZON-02, US"]];
+    },
+  });
+
+  const verdict = await validateExit({ ip: "54.211.170.155", countryIso: "US", lookup });
+  assert.equal(verdict.accepted, false);
+  if (verdict.accepted) return;
+  assert.equal(verdict.reason, "hosting");
+});
+
 test("a failed ASN lookup fails closed, with its own reason", async () => {
   const verdict = await validateExit({
     ip: "99.44.12.7",
@@ -118,6 +171,11 @@ test("an ASN the lookup could not identify is a failed lookup, not a consumer IS
 test("a hosting address is rejected even before its name is consulted", () => {
   assert.equal(classifyAsn(HOSTING), "hosting");
   assert.equal(classifyAsn(CONSUMER), "consumer");
+  assert.equal(
+    classifyAsn({ asn: 400000, prefix: "45.9.9.0/24", country: "US", name: null }),
+    "unclassifiable",
+    "an unlisted ASN with no name is not a consumer ISP by default",
+  );
   assert.ok(HOSTING_ASNS.has(16509), "Amazon must be on the hosting list");
   assert.ok(HOSTING_ASNS.has(15169), "Google must be on the hosting list");
 });

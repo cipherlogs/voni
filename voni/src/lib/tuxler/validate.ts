@@ -27,7 +27,11 @@ export interface AsnRecord {
 /** Resolves an address to its ASN. Rejecting is a lookup failure, never a pass. */
 export type AsnLookup = (ip: string) => Promise<AsnRecord>;
 
-export type ExitRejectionReason = "not-us" | "hosting" | "lookup-failed";
+export type ExitRejectionReason =
+  | "not-us"
+  | "hosting"
+  | "lookup-failed"
+  | "name-lookup-failed";
 
 export type ExitVerdict =
   | { accepted: true; asn: AsnRecord }
@@ -123,7 +127,8 @@ export async function validateExit(input: ExitValidationInput): Promise<ExitVerd
     };
   }
 
-  if (classifyAsn(record) === "hosting") {
+  const asnClass = classifyAsn(record);
+  if (asnClass === "hosting") {
     return {
       accepted: false,
       reason: "hosting",
@@ -131,13 +136,34 @@ export async function validateExit(input: ExitValidationInput): Promise<ExitVerd
     };
   }
 
+  // A resolved origin whose AS name could not be read is not a consumer ISP by
+  // default: the deny-list only covers known providers, so an unlisted hosting
+  // ASN with a failed name query would otherwise be served. Fail closed.
+  if (asnClass === "unclassifiable") {
+    return {
+      accepted: false,
+      reason: "name-lookup-failed",
+      detail:
+        `AS${record.asn} (${record.prefix}) answered no AS name, so ${input.ip} ` +
+        "could not be classified as a consumer ISP",
+    };
+  }
+
   return { accepted: true, asn: record };
 }
 
-export function classifyAsn(record: AsnRecord): "consumer" | "hosting" {
+/**
+ * The three answers the classifier can give. `unclassifiable` is not a fourth
+ * kind of network: it means the name query that would have decided the question
+ * did not answer, and the caller must refuse rather than assume a consumer ISP.
+ */
+export type AsnClass = "consumer" | "hosting" | "unclassifiable";
+
+export function classifyAsn(record: AsnRecord): AsnClass {
   if (HOSTING_ASNS.has(record.asn)) return "hosting";
-  const name = record.name?.toLowerCase() ?? "";
-  if (name !== "" && HOSTING_NAME_HINTS.some((hint) => name.includes(hint))) return "hosting";
+  const name = record.name?.trim().toLowerCase() ?? "";
+  if (name === "") return "unclassifiable";
+  if (HOSTING_NAME_HINTS.some((hint) => name.includes(hint))) return "hosting";
   return "consumer";
 }
 
@@ -215,7 +241,9 @@ export interface CymruOptions {
 /**
  * The real classifier: Team Cymru over DNS. The origin query is authoritative and
  * its failure fails the whole lookup — that is the fail-closed rule. The AS-name
- * query only refines the verdict, so if it fails the ASN list still decides.
+ * query decides whether an *unlisted* ASN is a consumer ISP, so its failure is
+ * recorded as a missing name and `classifyAsn` refuses the exit rather than
+ * defaulting to "consumer".
  */
 export function cymruLookup(options: CymruOptions = {}): AsnLookup {
   const resolveTxt: TxtResolver =

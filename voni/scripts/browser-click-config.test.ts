@@ -100,6 +100,18 @@ test("with the flag off a control address is ignored, so the run is the pre-pool
   }
 });
 
+test("the flag on with no control address refuses to click at all", () => {
+  // Without a client address the only egress left is the runner's own, and a
+  // Click from a datacenter address is what the pool exists to avoid.
+  for (const control of [undefined, "", "   "]) {
+    const result = run({ TUXLER_ENABLED: "true", TUXLER_CONTROL_URL: control });
+    assert.equal(result.status, 2, `control ${JSON.stringify(control)} was accepted`);
+    assert.match(result.stderr, /TUXLER_CONTROL_URL/);
+    assert.match(result.stderr, /never clicks direct/);
+    assert.doesNotMatch(result.stderr, /pass 1 click/, "no target was attempted");
+  }
+});
+
 test("the flag is only true or false, never a guess", () => {
   const result = run({ TUXLER_ENABLED: "yes", TUXLER_CONTROL_URL: "http://127.0.0.1:41000" });
   assert.equal(result.status, 2);

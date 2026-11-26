@@ -84,6 +84,18 @@ export type ProxyHealthRead =
 
 export type ProxyStatus = "ok" | "client-down" | "short-of-exits" | "out-of-quota";
 
+/**
+ * One ASN, one spelling. The pool reports digits, Team Cymru reports `AS7018`,
+ * and a table cell must not show both forms for one network: `null` (nothing
+ * reported) stays `null` so each surface can say so in its own words.
+ */
+export function asnLabel(asn: string | null | undefined): string | null {
+  if (asn === null || asn === undefined) return null;
+  const trimmed = asn.trim();
+  if (trimmed === "") return null;
+  return trimmed.toUpperCase().startsWith("AS") ? trimmed.toUpperCase() : `AS${trimmed}`;
+}
+
 export interface ProxyVerdict {
   status: ProxyStatus;
   headline: string;
@@ -174,12 +186,14 @@ const FAILURE_WORDS: Record<string, string> = {
   "not-us": "the exit was not in the US",
   hosting: "the exit was a hosting address",
   "lookup-failed": "the exit's owner could not be checked",
+  "name-lookup-failed": "the exit's owner did not answer",
   limit: "quota spent",
   "not-entitled": "the account is not entitled to changes",
   "no-change": "the relay did not return an exit",
   "not-available": "no exit was available",
   overloaded: "the relay was overloaded",
   "exit-unavailable": "the exit was unavailable",
+  "bad-exit": "the client returned an unusable exit",
   incomplete: "the relay's reply was incomplete",
   unrecognised: "the relay's reply was not understood",
   "listener-failed": "the exit's local port could not be opened",

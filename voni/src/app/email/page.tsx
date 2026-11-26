@@ -45,6 +45,7 @@ import {
   runnerClicksSince,
   summariseRunnerClicks,
 } from "@/lib/email/clicks";
+import type { ClickProxyKind } from "@/lib/email/click-report";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
 import { readRotationSetting } from "@/lib/email/rotation";
 import { readProxyHealth } from "@/lib/email/proxy-health";
@@ -153,7 +154,7 @@ function toClickRow(row: {
   exitIp?: string | null;
   exitCountry?: string | null;
   exitAsn?: string | null;
-  proxyKind?: string | null;
+  proxyKind?: ClickProxyKind | null;
   failureReason?: string | null;
 }): ClickRowView {
   return {
@@ -292,9 +293,8 @@ function PanelSkeleton() {
 /**
  * The console's data. Reaching this function means `EmailPageGate` already
  * proved the page grant, so the console is writable: a locked or expired page
- * renders the gate screen instead and never arrives here. The cards keep their
- * `locked` prop as a presentation guard (it disables every write control), and
- * it is `false` for the life of an unlocked page.
+ * renders the gate screen instead and never arrives here. That is why no card
+ * takes a `locked` prop: there is no unlocked console that still renders one.
  *
  * The four reads share this boundary. Cookies make this subtree dynamic, so it
  * streams behind the static shell instead of blocking the page's first paint
@@ -311,7 +311,6 @@ async function EmailControlData({
 }) {
   await connection();
   const params = await searchParams;
-  const locked = false;
 
   // The table's filter is resolved here, against the stored producer, rather
   // than in the page shell or a client component: the narrowed query and the
@@ -424,7 +423,6 @@ async function EmailControlData({
       {/* Targets first: one list, every source. The card's own add, pause,
           resume and remove controls are the only target controls on the page. */}
       <TargetsCard
-        locked={locked}
         targets={targets}
         volume={{
           totalClicksPerDay,
@@ -449,7 +447,6 @@ async function EmailControlData({
       {/* Rotation sits with the targets, not inside a source card: one list,
           one way of drawing from it, and every producer reads this setting. */}
       <RotationCard
-        locked={locked}
         mode={rotation}
         chosen={rotationSetting !== null}
         action={saveRotation}
@@ -458,7 +455,6 @@ async function EmailControlData({
           shared by every click, and an operator should see whether the pool can
           serve a click before reading any source that claims to send them. */}
       <ProxyCard
-        locked={locked}
         settings={proxySettings}
         health={proxyHealth}
         action={saveProxy}
@@ -485,7 +481,6 @@ async function EmailControlData({
           }}
         />
         <GithubSourceCard
-          locked={locked}
           config={githubConfig}
           targetCount={activeTargets.length}
           newestByOs={githubNewest}
@@ -503,7 +498,6 @@ async function EmailControlData({
           restart={restartGithubSegment}
         />
         <BurstCard
-          locked={locked}
           action={runBurst}
           defaultZones={US_ZONES.map((zone) => zone.id)}
         />

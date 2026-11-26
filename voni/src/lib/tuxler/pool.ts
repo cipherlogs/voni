@@ -29,6 +29,7 @@ import { bucketReport, type HealthBucket, type HealthPool } from "./health";
 import type { EndpointResolver } from "./transport";
 import { exitTunnelDialer } from "./transport";
 import type { TunnelDialer } from "./socks";
+import { POOL_ACQUIRE_WAIT_MS } from "./timing";
 import type { AsnLookup } from "./validate";
 
 /** Ready exits the pool aims for. */
@@ -38,7 +39,7 @@ export const POOL_REFILL_BELOW = 3;
 /** The pool never owns more than this many exits, leased ones included. */
 export const POOL_MAX = 8;
 /** How long an acquire waits before it fails loudly. */
-export const POOL_ACQUIRE_WAIT_MS = 10_000;
+export { POOL_ACQUIRE_WAIT_MS } from "./timing";
 /** How many child buckets deep the refill tree may grow. */
 export const POOL_DEPTH = 3;
 /** Changes one session sends in a row before a cooldown or a bucket switch. */
@@ -256,6 +257,7 @@ function publishable(reason: ExitFailureReason): PoolUnavailableReason {
     case "not-us":
     case "hosting":
     case "lookup-failed":
+    case "name-lookup-failed":
     case "no-change":
     case "not-available":
     case "overloaded":

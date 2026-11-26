@@ -25,6 +25,7 @@ import {
 import { formatCount, useActionToast } from "@/components/action-feedback";
 import { LoadingButton } from "@/components/loading-button";
 import { describeClickExit } from "@/lib/email/click-exit";
+import type { ClickProxyKind } from "@/lib/email/click-report";
 import {
   SourceCard,
   type SourceCardSummary,
@@ -146,7 +147,7 @@ export type ClickRowView = {
   exitIp?: string | null;
   exitCountry?: string | null;
   exitAsn?: string | null;
-  proxyKind?: string | null;
+  proxyKind?: ClickProxyKind | null;
   /** Why no page was opened, for a click that failed before a browser started. */
   failureReason?: string | null;
 };

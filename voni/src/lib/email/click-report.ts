@@ -69,6 +69,10 @@ export const CLICK_FAILURE_REASONS = [
   "relay-silent",
   "not-ready",
   "exit-unavailable",
+  // The control port answered 200 with something that was not a US loopback
+  // SOCKS lease. It is the runner's own reason, not the pool's, and without it
+  // the intake refuses the report and the failed Click leaves no row at all.
+  "bad-exit",
 ] as const;
 export type ClickFailureReason = (typeof CLICK_FAILURE_REASONS)[number];
 

@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { describeClickExit } from "./click-exit";
+import { describeClickExit, type ClickExitAttribution } from "./click-exit";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const panelSource = readFileSync(
@@ -35,12 +35,13 @@ test("a pooled click names its exit address, country and ASN", () => {
 });
 
 test("a row with no exit reads as no proxy, never as undefined", () => {
-  for (const row of [
+  const rows: ClickExitAttribution[] = [
     {},
     { proxyKind: null },
     { proxyKind: "none" },
     { proxyKind: undefined, exitIp: null },
-  ]) {
+  ];
+  for (const row of rows) {
     assert.equal(describeClickExit(row), "No proxy");
   }
   assert.doesNotMatch(describeClickExit({}), /undefined|null/);
@@ -75,6 +76,11 @@ test("a click that failed before a browser opened names why", () => {
   assert.equal(
     describeClickExit({ failureReason: "quota-spent" }),
     "No proxy · quota spent",
+  );
+  assert.equal(
+    describeClickExit({ proxyKind: "pool", failureReason: "bad-exit" }),
+    "Pool exit (address not recorded) · the client returned an unusable exit",
+    "a lease the runner could not use is named in operator words",
   );
 });
 

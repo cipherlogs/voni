@@ -247,7 +247,14 @@ function readPoolEnabled() {
 function readPool() {
   if (!readPoolEnabled()) return undefined;
   const raw = readEnv("TUXLER_CONTROL_URL");
-  if (raw === undefined) return undefined;
+  if (raw === undefined || raw.trim() === "") {
+    // Flag on and no client address is not "no pool": the segment would click
+    // direct from the runner's own datacenter address, which is the one thing
+    // the pool exists to prevent. Refuse before any Click is planned.
+    stop(
+      "TUXLER_ENABLED is true but TUXLER_CONTROL_URL is unset or empty: a pooled run never clicks direct, so no Click was attempted",
+    );
+  }
   const parsed = parseControlUrl(raw);
   if (!parsed.ok) stop(`TUXLER_CONTROL_URL ${parsed.reason}`);
   return parsed.url;

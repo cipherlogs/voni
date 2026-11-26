@@ -88,6 +88,7 @@ const REJECTION_TEXT: Record<ExitFailureReason, string> = {
   "not-us": "the change reply was not for the US",
   hosting: "the address is in a hosting ASN, not a consumer ISP",
   "lookup-failed": "the address's ASN could not be looked up",
+  "name-lookup-failed": "the AS name did not answer, so the address could not be classified",
   "no-change": "the relay reported it moved nothing",
   limit: "the bucket's change limit is spent",
   "not-available": "no US exit is available right now",

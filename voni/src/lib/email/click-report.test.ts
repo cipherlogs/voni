@@ -321,6 +321,24 @@ test("a stored failure reason is one of the pool's own reasons", () => {
   if (!failed.ok) return;
   assert.equal(failed.value.failureReason, "no-us-exit");
 
+  // Every reason the runner can emit is storable: a reason the intake does not
+  // know is a report it rejects, and a failed Click that leaves no row.
+  for (const failureReason of [
+    "quota-spent",
+    "relay-silent",
+    "not-ready",
+    "exit-unavailable",
+    "bad-exit",
+  ]) {
+    const stored = parseClickReport(
+      { target: "https://voni.cc/landing", proxyKind: "pool", failureReason },
+      NOW,
+    );
+    assert.equal(stored.ok, true, `${failureReason} must be storable`);
+    if (!stored.ok) return;
+    assert.equal(stored.value.failureReason, failureReason);
+  }
+
   for (const failureReason of ["net::ERR_FAILED", "", 42]) {
     const result = parseClickReport(
       { target: "https://voni.cc/landing", failureReason },

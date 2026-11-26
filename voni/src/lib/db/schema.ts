@@ -802,6 +802,9 @@ export const clickFailureReasonEnum = pgEnum("click_failure_reason", [
   "relay-silent",
   "not-ready",
   "exit-unavailable",
+  // The runner's own reason for a lease it could not use (the control port
+  // answered 200 with something that was not a US loopback SOCKS lease).
+  "bad-exit",
 ]);
 
 /**

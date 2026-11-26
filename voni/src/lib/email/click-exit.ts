@@ -11,13 +11,12 @@
  * One function, so the click table and any future attribution surface cannot
  * grow two different answers for the same row.
  */
-import { failureWords } from "./proxy-policy";
-
-/** The three kinds the Click path can record. */
-export type ProxyKind = "pool" | "manual" | "none";
+import type { ClickProxyKind } from "./click-report";
+import { asnLabel, failureWords } from "./proxy-policy";
 
 export interface ClickExitAttribution {
-  proxyKind?: string | null;
+  /** The one closed set the intake stores. Absent is a row from before it. */
+  proxyKind?: ClickProxyKind | null;
   exitIp?: string | null;
   exitCountry?: string | null;
   exitAsn?: string | null;
@@ -29,11 +28,6 @@ function present(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed === "" ? null : trimmed;
-}
-
-function asnLabel(asn: string | null): string | null {
-  if (asn === null) return null;
-  return asn.toUpperCase().startsWith("AS") ? asn.toUpperCase() : `AS${asn}`;
 }
 
 export function describeClickExit(row: ClickExitAttribution): string {
@@ -49,7 +43,14 @@ export function describeClickExit(row: ClickExitAttribution): string {
     const failure = present(row.failureReason);
     return failure === null ? "No proxy" : `No proxy · ${failureWords(failure)}`;
   }
-  if (ip === null) return "Pool exit (address not recorded)";
+  if (ip === null) {
+    // A pooled mission that got no usable lease is still a failed Click: the
+    // address is missing *and* the reason is known, so name both.
+    const failure = present(row.failureReason);
+    return failure === null
+      ? "Pool exit (address not recorded)"
+      : `Pool exit (address not recorded) · ${failureWords(failure)}`;
+  }
 
   // US is the only country the pool serves, so a missing country is not unknown.
   const country = present(row.exitCountry) ?? "US";
