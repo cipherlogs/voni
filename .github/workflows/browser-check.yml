@@ -154,6 +154,27 @@ jobs:
         if: always() && env.TUXLER_ENABLED == 'true'
         run: node --import tsx scripts/browser-pool-gate.mjs --final
 
+      # The client listens on this runner's loopback, so the report dies with
+      # the job. Push it to the app that the console reads: the response status
+      # is the only thing printed, and `--data-binary` keeps the file's bytes.
+      # The secret is a header from the repository secret, never a log line.
+      - name: Send the pool report
+        if: always() && env.TUXLER_ENABLED == 'true'
+        continue-on-error: false
+        env:
+          VONI_APP_URL: ${{ vars.VONI_APP_URL || 'https://voni.cc' }}
+          POOL_REPORT_SECRET: ${{ secrets.EMAIL_CLICK_REPORT_SECRET }}
+          RUNNER_OS: ${{ inputs.os }}
+        run: |
+          status=$(curl -sS -o /dev/null -w "%{http_code}" \
+            -X POST "$VONI_APP_URL/api/email/pool/report" \
+            -H "content-type: application/json" \
+            -H "x-voni-click-secret: $POOL_REPORT_SECRET" \
+            -H "x-voni-runner-os: $RUNNER_OS" \
+            --data-binary @pool-report.json)
+          echo "pool report: HTTP $status"
+          test "$status" = "200"
+
       - name: Stop the exit pool
         if: always() && env.TUXLER_ENABLED == 'true'
         run: |
