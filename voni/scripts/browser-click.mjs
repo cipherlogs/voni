@@ -414,6 +414,17 @@ function reportRetryable(status) {
  * landed, and it must not stop clicking when one row is lost — the loop records
  * this result and carries on.
  */
+/**
+ * The page's own URL after a visit, or `null` when the navigation never became a
+ * page. A failed `goto` leaves `about:blank` or a `chrome-error://` page, and the
+ * intake refuses that as a final URL — which used to reject the whole row, so a
+ * failed click never reached the console at all.
+ */
+export function finalUrlOf(page) {
+  const url = page.url();
+  return /^https?:\/\/\S+$/i.test(url) ? url : null;
+}
+
 export async function postReport(
   report,
   secret,
@@ -598,12 +609,12 @@ async function clickOnce(browser, target, config, passId, exit) {
       // Give deferred page scripts their moment before the final URL is read:
       // a client-side redirect is exactly what a browser proves and fetch cannot.
       await page.waitForTimeout(SETTLE_MS);
-      finalUrl = page.url() || null;
+      finalUrl = finalUrlOf(page);
       if (status === null) failure = "no response";
       else if (status >= 400) failure = `HTTP ${status}`;
     } catch (error) {
       failure = firstLine(error instanceof Error ? error.message : String(error));
-      finalUrl = page.url() || null;
+      finalUrl = finalUrlOf(page);
     }
 
     const ms = Math.min(Date.now() - startedAt, MAX_REPORTED_MS);
