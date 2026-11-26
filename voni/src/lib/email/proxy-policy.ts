@@ -85,14 +85,7 @@ export type ProxyHealthSource = "live" | "report";
 
 /** What the server read, before it becomes a sentence. */
 export type ProxyHealthRead =
-  | {
-      state: "unconfigured";
-      /**
-       * Set only by the report-aware read, to say no Segment has pushed either.
-       * A plain live read leaves it absent and keeps its original sentence.
-       */
-      message?: string;
-    }
+  | { state: "unconfigured" }
   | { state: "unreachable"; message: string }
   | { state: "reported"; source: "live"; health: ProxyHealthData }
   | {
@@ -323,13 +316,14 @@ export function describeProxyHealth(read: ProxyHealthRead, target: number): Prox
   if (read.state === "unconfigured") {
     return {
       status: "client-down",
-      headline: "No pool has been reported yet",
+      headline: "No exit pool yet",
       detail:
-        `A Segment pushes its pool report here when it runs, and this card shows ` +
-        `the newest one. A click without a US exit fails rather than falling back ` +
-        `to a direct connection. Point ${PROXY_HEALTH_URL_ENV} at a long-running ` +
-        `client to read one live instead.` +
-        (read.message === undefined ? "" : ` ${read.message}`),
+        `This card shows the pool of US exits the browser client builds while a ` +
+        `Segment runs, and what that run sent back. It is empty because no ` +
+        `Segment has run since this console started keeping the results. Start ` +
+        `a Segment from the GitHub source card; the pool appears here a couple ` +
+        `of minutes into the run. A click without a US exit fails rather than ` +
+        `falling back to a direct connection.`,
     };
   }
 

@@ -260,7 +260,7 @@ function report(
 test("the card tells client-down, short-of-exits and out-of-quota apart", () => {
   const down = describeProxyHealth({ state: "unconfigured" }, 5);
   assert.equal(down.status, "client-down");
-  assert.match(down.headline, /no pool has been reported/i);
+  assert.match(down.headline, /no exit pool yet/i);
 
   const unreachable = describeProxyHealth(
     { state: "unreachable", message: "The client did not answer." },
@@ -352,26 +352,29 @@ test("a report past the threshold is stale, and an unreadable age is never fresh
   assert.equal(isProxyReportStale("not a date", now), true, "unknown age must not look live");
 });
 
-test("the unconfigured sentence also says no Segment has reported", () => {
-  const read = describeProxyHealth(
-    { state: "unconfigured", message: "No Segment has reported a pool yet." },
-    5,
-  );
-  assert.match(read.detail, /No Segment has reported a pool yet/);
-});
-
-test("with no client and no report the card says no pool has been reported", () => {
+test("with no client and no report the card explains the empty pool in plain words", () => {
   const read = describeProxyHealth({ state: "unconfigured" }, 5);
 
-  // "The client is not connected" implied something was broken and pointed the
-  // operator at an env var that can never reach an ephemeral runner. The pool
-  // arrives as a pushed report instead, so the card names that condition.
-  assert.match(read.headline, /No pool has been reported yet/);
+  assert.match(read.headline, /^No exit pool yet$/);
+  assert.doesNotMatch(read.headline, /report/i, "the headline is a plain state, not a report noun");
+
+  assert.match(read.detail, /pool of US exits/i, "the card says what it shows");
   assert.match(
     read.detail,
-    /Segment pushes its pool report here when it runs/i,
-    "the detail says how a report reaches the app",
+    /browser client builds while a Segment runs/i,
+    "the detail names the run that builds the pool",
   );
+  assert.match(
+    read.detail,
+    /no Segment has run since this console started keeping the results/i,
+    "the detail says why it is empty",
+  );
+  assert.match(
+    read.detail,
+    /Start a Segment from the GitHub source card/i,
+    "the detail tells the operator how to fill it",
+  );
+  assert.match(read.detail, /a couple of minutes into the run/i);
   assert.match(
     read.detail,
     /A click without a US exit fails rather than falling back to a direct connection\./,
@@ -379,6 +382,7 @@ test("with no client and no report the card says no pool has been reported", () 
   );
 
   // The env var is an optional live read, never the fix to be prescribed.
+  assert.doesNotMatch(read.detail, /TUXLER_CONTROL_URL/, "the primary copy never names an env var");
   assert.doesNotMatch(
     read.detail,
     /Set\s+[^.]*TUXLER_CONTROL_URL/,

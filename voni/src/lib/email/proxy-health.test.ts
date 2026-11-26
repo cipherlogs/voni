@@ -330,7 +330,7 @@ test("a live client wins over a stored report and the report is not read", async
   assert.equal(calls.length, 0, "the stored report is only a fallback");
 });
 
-test("no client and no report says plainly that no Segment has reported", async () => {
+test("no client and no report comes back unconfigured, with no message to repeat", async () => {
   const { store } = storeOf(null);
   const { fetcher, calls } = stubFetch(new Error("should not be fetched"));
 
@@ -341,10 +341,11 @@ test("no client and no report says plainly that no Segment has reported", async 
   });
 
   assert.equal(calls.length, 0);
-  assert.equal(read.state, "unconfigured");
-  if (read.state !== "unconfigured") return;
-  assert.equal(read.message, NO_POOL_REPORT_MESSAGE);
-  assert.match(read.message, /No Segment has reported/);
+  assert.deepEqual(
+    read,
+    { state: "unconfigured" },
+    "the card owns the empty-state copy; the read adds nothing to repeat",
+  );
 });
 
 test("an unreachable client with no report keeps its failure and adds the missing report", async () => {
@@ -360,7 +361,7 @@ test("an unreachable client with no report keeps its failure and adds the missin
   assert.equal(read.state, "unreachable");
   if (read.state !== "unreachable") return;
   assert.match(read.message, /could not be reached/i);
-  assert.match(read.message, /No Segment has reported a pool yet/);
+  assert.ok(read.message.includes(NO_POOL_REPORT_MESSAGE));
 });
 
 test("final is preferred over gate when both halves read the pool", () => {

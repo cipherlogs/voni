@@ -371,9 +371,17 @@ The card reads in this order:
    refills, reconnects and the last error. The artifact carries no bucket
    snapshot, so the card says per-bucket limits are unknown instead of
    inventing "0 of 0 changes".
-3. **Neither**, which reads **No Segment has reported a pool yet** — the one
-   sentence that says the console has nothing to show, rather than a fabricated
-   empty pool.
+3. **Neither**, which reads **No exit pool yet** — the card says what it shows
+   (the US exits a Segment's browser client builds), that no Segment has run
+   since the console started keeping results, and that starting a Segment from
+   the GitHub source card fills it a couple of minutes into the run.
+
+The `TUXLER_CONTROL_URL` live read in item 1 is a real option, but only for an
+operator running a persistent client outside a Segment: point it at that
+client's control API and the card shows the pool live. It is not the answer to
+the empty state. Production has no address that reaches a GitHub runner's
+loopback, so setting it cannot fill a card that is empty because no Segment has
+run — dispatch a Segment instead.
 
 A report older than **three hours** is labelled **Stale report**, its age is
 repeated in the header, and its numbers are prefixed "At the last report:".

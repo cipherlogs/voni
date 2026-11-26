@@ -45,7 +45,7 @@ export interface ProxyHealthOrReportOptions extends ProxyHealthReadOptions {
   store?: PoolReportStore;
 }
 
-/** The sentence the card owes an operator when nothing has ever pushed. */
+/** The sentence the unreachable read adds when no stored report exists either. */
 export const NO_POOL_REPORT_MESSAGE = "No Segment has reported a pool yet.";
 
 function asString(value: unknown): string | null {
@@ -313,8 +313,9 @@ export async function readProxyHealth(
  * - a live `/health` answer always wins, because it is the pool right now;
  * - `unconfigured` and `unreachable` fall back to the newest stored report,
  *   mapped into the same shape so every verdict rule is reused;
- * - with neither, the live failure comes back with the one sentence that says
- *   plainly nobody has reported yet.
+ * - with neither, an unconfigured live read stays unconfigured and the
+ *   unreachable one keeps its failure plus the plain note that no Segment has
+ *   reported.
  *
  * The report is read with no OS filter: the card is one console, so the newest
  * push across every runner answers. Staleness is the card's judgement; the read
@@ -338,7 +339,7 @@ export async function readProxyHealthOrReport(
   }
 
   if (live.state === "unconfigured") {
-    return { state: "unconfigured", message: NO_POOL_REPORT_MESSAGE };
+    return { state: "unconfigured" };
   }
   return {
     state: "unreachable",
