@@ -65,6 +65,13 @@ export interface TuxlerClientOptions {
   silenceMs?: number;
   heartbeatSeconds?: number;
   stageTimeoutMs?: number;
+  /**
+   * Where the client's decision log goes. Defaults to `process.stderr`: stdout is
+   * left for the control script's health JSON, and the runner redirects both into
+   * `tuxler-client.log`, the only forensic trail a short pool leaves behind.
+   * Logged by default — a silent client is the bug this exists to end.
+   */
+  log?: (line: string) => void;
 }
 
 export interface TuxlerClient {
@@ -83,6 +90,22 @@ export interface TuxlerClient {
 }
 
 const ACCOUNT_REPORT_GRACE_MS = 2_000;
+/** A short value is a word, not a credential; redacting it would eat the log. */
+const MIN_REDACTED_LENGTH = 4;
+
+/**
+ * One log line with the account scrubbed. The pool never holds a credential, but
+ * the runner's log is kept as an artifact, so the client redacts before it writes
+ * — the same rule the health report and the pool report already follow.
+ */
+export function redactLogLine(line: string, secrets: readonly string[]): string {
+  let out = line;
+  for (const secret of secrets) {
+    if (secret.length < MIN_REDACTED_LENGTH) continue;
+    out = out.split(secret).join("[redacted]");
+  }
+  return out;
+}
 
 async function waitForAccountReport(session: TuxlerSession, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -113,6 +136,15 @@ export async function startTuxlerClient(options: TuxlerClientOptions = {}): Prom
   };
   const email = options.email ?? "";
   const password = options.password ?? "";
+  const log = options.log ?? ((line: string): void => console.error(line));
+  /** Every line is scrubbed and bounded; a logger can never break a pool. */
+  const note = (line: string): void => {
+    try {
+      log(redactLogLine(line, [email, password]));
+    } catch {
+      // A witness, not a participant.
+    }
+  };
 
   const current = (): TuxlerHealth => {
     const snapshot: SessionSnapshot | null = state.session?.snapshot() ?? null;
@@ -201,6 +233,7 @@ export async function startTuxlerClient(options: TuxlerClientOptions = {}): Prom
           silenceMs: options.pool?.silenceMs,
           lookup: options.pool?.lookup,
           dial: options.pool?.dial,
+          log: note,
           // A child is dialled through the exit it is opened over; a silent root is
           // replaced here, so the pool's replacement is the client's session too.
           openSession: async (link) => {

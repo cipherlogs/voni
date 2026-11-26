@@ -9,7 +9,7 @@ import net from "node:net";
 import test from "node:test";
 import { once } from "node:events";
 import { FakeRelay } from "./fake-relay";
-import { startTuxlerClient, type TuxlerHealth } from "./client";
+import { startTuxlerClient, redactLogLine, type TuxlerHealth } from "./client";
 import type { AsnRecord } from "./validate";
 
 const EMAIL = "operator@example.test";
@@ -249,4 +249,54 @@ test("closing the client stops the session, frees the health port and every exit
     socket.destroy();
   }
   await relay.close();
+});
+
+test("the client's log carries every pool decision and never the account", async () => {
+  const relay = await FakeRelay.start({ changes: [{ kind: "limit" }] });
+  const lines: string[] = [];
+  const client = await startTuxlerClient({
+    email: EMAIL,
+    password: PASSWORD,
+    resolveEndpoint: relay.resolve,
+    health: { port: 0 },
+    log: (line) => lines.push(line),
+    pool: { target: 2, retryDelayMs: 50, lookup: async () => CONSUMER },
+  });
+  try {
+    const parked = await waitForHealth(client, (seen) => seen.parked === true, 5_000);
+    assert.equal(parked.ready, false);
+    assert.equal(parked.parkedFor, "quota");
+    assert.ok(parked.lastError !== null, "a parked pool's reason reaches /health");
+
+    const refills = lines.filter((line) => line.startsWith("refill #"));
+    assert.ok(refills.length > 0, "the client logs the refills it spends");
+    assert.equal(refills.length, parked.refills, "one line per refill, no duplicates");
+    assert.ok(
+      lines.some((line) => line.startsWith("parked for=quota")),
+      "the park is in the log with its cause",
+    );
+
+    for (const line of lines) {
+      assert.equal(line.includes("\n"), false, "a log line is one line");
+      assert.equal(line.includes(EMAIL), false, "the log leaked the account");
+      assert.equal(line.includes(PASSWORD), false, "the log leaked the password");
+      assert.ok(!/socks5h?:\/\/[^\s]*\?/.test(line), "the log keeps no query string");
+    }
+  } finally {
+    await client.close();
+    await relay.close();
+  }
+});
+
+test("a log line is scrubbed the way the health report is", () => {
+  const line = `refill #1 message="login ${EMAIL} with ${PASSWORD}" entries=0 ready=0`;
+  const redacted = redactLogLine(line, [EMAIL, PASSWORD]);
+  assert.equal(redacted.includes(EMAIL), false, "the account is scrubbed");
+  assert.equal(redacted.includes(PASSWORD), false, "the password is scrubbed");
+  assert.match(redacted, /^refill #1 message="login \[redacted\] with \[redacted\]"/);
+  assert.equal(
+    redactLogLine("no secret here", ["", "ab"]),
+    "no secret here",
+    "a short value is a word, not a credential",
+  );
 });
