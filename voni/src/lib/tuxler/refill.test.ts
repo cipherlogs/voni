@@ -288,7 +288,12 @@ test("depth is the refill budget: at the configured depth refills fail as quota 
     });
     try {
       pool.start();
-      const filled = await waitFor(pool, (seen) => seen.buckets.length === 3);
+      // The third bucket appears before its first change reaches the relay: wait
+      // for both, or the wire count races the bucket list.
+      const filled = await waitFor(
+        pool,
+        (seen) => seen.buckets.length === 3 && relay.stats().changeRequests === 5,
+      );
       assert.equal(relay.stats().changeRequests, 5, "the tree stopped spending at depth two");
 
       assert.deepEqual(
