@@ -37,7 +37,7 @@ The page renders, in order:
    and remove. Its aggregate line states total clicks per day across every
    enabled source, with **Pause all** beside it.
 2. The page-level **Target rotation** card: one mode shared by every source.
-3. The **Proxy exits** card: provider `tuxler`, the live pool and its cities,
+3. The **Tuxler exits** card: provider `tuxler`, the live pool and its cities,
    changes spent per bucket, and the last failure. Country is US and has no
    picker; a request naming another country is refused server-side and stored
    nowhere. The pool target is 3–8 and is saved on the console's settings row.
@@ -52,6 +52,18 @@ sits outside the collapsible body. Collapsing a card hides its controls, never
 its enabled state, its clicks per day or its worst health. Cards are additive,
 not exclusive: enabling a second source adds to the same targets, which is why
 the aggregate exists.
+
+Every console card starts collapsed, and an operator who opens one keeps it
+open across reloads. The choice is per card in `localStorage` under
+`voni:email-card-open:<cardId>`, keyed by the card's `data-testid`
+(`email-targets-card`, `email-rotation-card`, `email-proxy-card`,
+`email-control-source-grafana`, `email-github-source`, `email-burst-card`), so
+one card's state never opens another. A card that was never opened has no stored
+value and reads as collapsed. `useCardDisclosure`
+(`src/components/card-disclosure.ts`) starts collapsed on every render and reads
+storage only after mount, so the server HTML and the first client render agree
+and there is no hydration mismatch; the volume, status and health facts stay in
+each header, outside `CollapsibleContent`.
 
 **Total volume** adds Grafana's live volume and GitHub's saved schedule. A
 disabled source contributes zero. A Grafana check that could not be read makes
@@ -203,7 +215,7 @@ the input is the wire, and the two sources still cannot disagree about the value
 
 ## Proxy exits
 
-The **Proxy exits** card is the console's view of the exit layer, and its
+The **Tuxler exits** card is the console's view of the exit layer, and its
 settings are the console's, not a producer's: the pool serves whichever click
 path asks for an exit. The switch that actually starts it, every failure reason
 and the emergency bypass are in the [operator runbook](tuxler-exit-pool.md); the
