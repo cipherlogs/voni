@@ -205,8 +205,11 @@ the input is the wire, and the two sources still cannot disagree about the value
 
 The **Proxy exits** card is the console's view of the exit layer, and its
 settings are the console's, not a producer's: the pool serves whichever click
-path asks for an exit. Two facts are stored on the same `email_settings` row as
-the rotation mode — `proxy_country` and `proxy_pool_target`:
+path asks for an exit. The switch that actually starts it, every failure reason
+and the emergency bypass are in the [operator runbook](tuxler-exit-pool.md); the
+measured record is the [baseline](tuxler-exit-baseline.md). Two facts are stored
+on the same `email_settings` row as the rotation mode — `proxy_country` and
+`proxy_pool_target`:
 
 - **Country is US and is not a choice.** The card posts US as a fixed field; the
   server refuses any other value before reading further, so a non-US request is
@@ -216,8 +219,10 @@ the rotation mode — `proxy_country` and `proxy_pool_target`:
 - **Pool target is 3–8.** `parseProxyPoolTarget` accepts a whole number in that
   range and refuses anything else (2, 9, 3.5, empty) with the range in the
   message. A missing or out-of-range stored value reads as the default five. The
-  next client start constructs its pool with this target, so the saved number is
-  the size the pool fills to.
+  value is stored for a future wire, but the browser-check dispatch does not yet
+  carry it to the runner: every Segment currently fills to the client's default
+  of five. This is recorded as an accepted risk in the plan; the card's number is
+  not a live lever until that wire lands.
 
 The **live pool** is read, never steered, by the card: a plain `GET /health` on
 the control address in `TUXLER_CONTROL_URL`, with a two-second bound and no
@@ -500,8 +505,11 @@ the UI.
 
 ### The pool: a click's own exit
 
-When `TUXLER_CONTROL_URL` is set (`http://127.0.0.1:<port>`), the click path
-takes its egress from the Tuxler client instead of from the launch. Each click
+When `TUXLER_ENABLED` is exactly `true` and `TUXLER_CONTROL_URL` is set
+(`http://127.0.0.1:<port>`), the click path takes its egress from the Tuxler
+client instead of from the launch. The workflow starts that client, then gates
+the Segment on three ready US exits within 180 seconds; a failed gate writes no
+click row and uploads `browser-pool-report-<os>` saying why. Each click
 asks `GET /acquire?waitMs=10000`, opens its browser context through the returned
 `socks5://127.0.0.1:<port>`, and sends `POST /release` with `good` or `failed`.
 A `rotate` pass holds one exit for the whole target list; `random` takes the next
@@ -518,6 +526,12 @@ Runner rows carry `exit_ip`, `exit_country`, `exit_asn` and `proxy_kind`
 `failure_reason` (`no-us-exit`, `quota-spent`, `relay-silent`, `not-ready` or
 `exit-unavailable`), so a failed exit is distinguishable from a target that
 answered badly.
+
+The switch is the repository variable `TUXLER_ENABLED`; an unset variable is
+off, and only the exact string `true` starts a client. The account is the two
+Actions secrets `TUXLER_USERNAME` and `TUXLER_PASSWD`. The enable checklist,
+each failure's next action and the manual bypass are in the
+[operator runbook](tuxler-exit-pool.md).
 
 The Grafana k6 path cannot use a proxy: k6 runs on Grafana's synthetic-probe
 network and the script is the check body, not configuration. So an IP-level
@@ -883,4 +897,5 @@ nothing at all — it logs one line saying so.
 Related records: [ADR-0015](../adr/0015-browser-sources-over-one-target-list.md)
 records why sources are independent and targets are shared, and why the
 edge-worker pool was retired. [Load-testing `/email`](load-testing.md) says what
-each source proves and what a load test cannot.
+each source proves and what a load test cannot. The exit layer has its own
+[operator runbook](tuxler-exit-pool.md) and [baseline record](tuxler-exit-baseline.md).
