@@ -93,3 +93,27 @@ test("the page renders the card with its action, and no dead locked prop", () =>
     "the gate renders before the card, so a locked branch would be unreachable",
   );
 });
+
+test("provenance says whether the numbers are live or came from a Segment report", () => {
+  assert.match(card, /Live client/, "a live read is named as one");
+  assert.match(card, /data-testid="email-proxy-provenance"/);
+  assert.match(
+    card,
+    /Last Segment report · \$\{health\.runnerOs\}/,
+    "a report names its runner OS",
+  );
+  assert.match(card, /proxyReportAge\(/, "a report names its age");
+  assert.match(card, /"Stale report"/, "a stale report gets its own badge, not Ready");
+  assert.match(card, /nothing here is live/, "a stale report says it is not live");
+  assert.match(card, /Last report, not a live reading/);
+});
+
+test("a report with no bucket snapshot reads as unknown, never as 0 of 0 changes", () => {
+  assert.match(card, /carries no bucket snapshot/);
+  assert.doesNotMatch(card, /0 of 0 changes/);
+});
+
+test("the page reads the report-aware health and passes the request clock", () => {
+  assert.match(page, /readProxyHealthOrReport\(\)/);
+  assert.match(page, /now=\{now\}/, "one clock decides every age on the card");
+});

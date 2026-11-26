@@ -48,7 +48,7 @@ import {
 import type { ClickProxyKind } from "@/lib/email/click-report";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
 import { readRotationSetting } from "@/lib/email/rotation";
-import { readProxyHealth } from "@/lib/email/proxy-health";
+import { readProxyHealthOrReport } from "@/lib/email/proxy-health";
 import { readProxySettings } from "@/lib/email/proxy-settings";
 import {
   resolveTargetSelection,
@@ -365,11 +365,12 @@ async function EmailControlData({
     // The page-level rotation setting every producer reads. `null` is "nobody
     // has chosen yet", which is what keeps an existing script's mode reported.
     readRotationSetting(),
-    // The proxy card's two facts: what the operator chose, and what the live
-    // client reports. The read is a plain GET /health on the configured
-    // control address; an absent client is a state, not an error.
+    // The proxy card's two facts: what the operator chose, and the pool. The
+    // read prefers a live `GET /health` on the configured control address, then
+    // falls back to the newest report a Segment pushed, then says no Segment
+    // has reported yet; an absent client is a state, not an error.
     readProxySettings(),
-    readProxyHealth(),
+    readProxyHealthOrReport(),
   ]);
 
   // One resolution rule for the whole console: the setting when it exists, else
@@ -457,6 +458,7 @@ async function EmailControlData({
       <ProxyCard
         settings={proxySettings}
         health={proxyHealth}
+        now={now}
         action={saveProxy}
       />
       <section className="grid gap-6" aria-labelledby="email-sources-heading">

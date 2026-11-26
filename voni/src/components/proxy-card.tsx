@@ -34,6 +34,8 @@ import {
   asnLabel,
   describeProxyHealth,
   failureWords,
+  isProxyReportStale,
+  proxyReportAge,
   type ProxyHealthRead,
   type ProxySettings,
   type ProxyStatus,
@@ -65,6 +67,8 @@ import {
 export type ProxyCardProps = {
   settings: ProxySettings;
   health: ProxyHealthRead;
+  /** The request clock, so the report's age is one value per render. */
+  now: Date;
   action: (previous: ControlState, formData: FormData) => Promise<ControlState>;
 };
 
@@ -90,7 +94,7 @@ function bucketName(depth: number | undefined): string {
   return `Child bucket, depth ${depth}`;
 }
 
-export function ProxyCard({ settings, health, action }: ProxyCardProps) {
+export function ProxyCard({ settings, health, now, action }: ProxyCardProps) {
   const [state, formAction, saving] = useActionState(action, INITIAL);
 
   useActionToast(state, "Could not save the proxy settings", {
@@ -99,10 +103,21 @@ export function ProxyCard({ settings, health, action }: ProxyCardProps) {
 
   const verdict = describeProxyHealth(health, settings.poolTarget);
   const reported = health.state === "reported" ? health.health : null;
+  const stored =
+    health.state === "reported" && health.source === "report" ? health : null;
+  const stale = stored !== null && isProxyReportStale(stored.receivedAt, now);
+  const age = stored === null ? null : proxyReportAge(stored.receivedAt, now);
+  const provenance =
+    health.state === "reported"
+      ? health.source === "live"
+        ? "Live client"
+        : `Last Segment report · ${health.runnerOs} · ${proxyReportAge(health.receivedAt, now)}${stale ? " · stale" : ""}`
+      : null;
   const exits = reported?.pool ?? [];
   const buckets = reported?.buckets ?? [];
   const failure = reported?.lastError ?? null;
   const reconnects = reported?.reconnects ?? 0;
+  const refills = reported?.refills ?? 0;
   const { open, onOpenChange } = useCardDisclosure("email-proxy-card");
 
   return (
@@ -126,16 +141,17 @@ export function ProxyCard({ settings, health, action }: ProxyCardProps) {
                 className="text-muted-foreground font-mono text-xs whitespace-nowrap"
                 data-testid="email-proxy-exits"
               >
+                {stale ? "At last report: " : null}
                 <span className="text-foreground font-medium">
                   {exits.length}
                 </span>{" "}
                 of {settings.poolTarget} exits ready
               </span>
               <Badge
-                variant={STATUS_VARIANT[verdict.status]}
+                variant={stale ? "secondary" : STATUS_VARIANT[verdict.status]}
                 data-testid="email-proxy-status"
               >
-                {PROXY_STATUS_LABELS[verdict.status]}
+                {stale ? "Stale report" : PROXY_STATUS_LABELS[verdict.status]}
               </Badge>
             </div>
           </div>
@@ -143,9 +159,25 @@ export function ProxyCard({ settings, health, action }: ProxyCardProps) {
             The residential US exits the GitHub Source clicks through. Provider:{" "}
             {PROXY_PROVIDER}.
           </CardDescription>
+          {provenance === null ? null : (
+            <p
+              className="text-muted-foreground font-mono text-xs"
+              data-testid="email-proxy-provenance"
+            >
+              {provenance}
+            </p>
+          )}
           {/* The verdict stays in the header: a folded card that hid a dead
-              client or a spent bucket would be hiding the failure. */}
-          {verdict.status === "ok" ? null : (
+              client, a spent bucket or a report that is no longer current would
+              be hiding the failure. */}
+          {stale ? (
+            <p
+              className="text-sm font-medium"
+              data-testid="email-proxy-headline"
+            >
+              The last report arrived {age}; nothing here is live.
+            </p>
+          ) : verdict.status === "ok" ? null : (
             <p
               className="text-sm font-medium"
               data-testid="email-proxy-headline"
@@ -157,8 +189,22 @@ export function ProxyCard({ settings, health, action }: ProxyCardProps) {
 
         <CollapsibleContent>
           <CardContent className="grid gap-4">
+            {stale ? (
+              <Alert>
+                <AlertTitle>Last report, not a live reading</AlertTitle>
+                <AlertDescription>
+                  The last Segment reported {age}. The pool may have changed
+                  since, so the counts below describe that run, not the pool
+                  now.
+                </AlertDescription>
+              </Alert>
+            ) : null}
             <Alert variant={ALERT_VARIANT[verdict.status]}>
-              <AlertTitle>{verdict.headline}</AlertTitle>
+              <AlertTitle>
+                {stale
+                  ? `At the last report: ${verdict.headline}`
+                  : verdict.headline}
+              </AlertTitle>
               <AlertDescription>{verdict.detail}</AlertDescription>
             </Alert>
 
@@ -190,8 +236,9 @@ export function ProxyCard({ settings, health, action }: ProxyCardProps) {
               <h3 className="text-sm font-medium">Change budget</h3>
               {buckets.length === 0 ? (
                 <p className="text-muted-foreground text-sm">
-                  No bucket has reported a limit yet. Changes are spent on refills,
-                  never on clicks.
+                  {stored === null
+                    ? "No bucket has reported a limit yet. Changes are spent on refills, never on clicks."
+                    : "The Segment report carries no bucket snapshot, so per-bucket limits and changes are unknown. Its refill count is only an upper bound on changes spent."}
                 </p>
               ) : (
                 <ul className="grid gap-1 text-sm">
@@ -222,6 +269,7 @@ export function ProxyCard({ settings, health, action }: ProxyCardProps) {
               <span className="text-foreground">
                 {failure === null ? "none reported" : failureWords(failure.reason)}
               </span>
+              {refills === 0 ? null : ` · ${refills} refills`}
               {reconnects === 0 ? null : ` · ${reconnects} reconnects since the client started`}
             </p>
 
