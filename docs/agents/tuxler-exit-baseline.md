@@ -92,10 +92,11 @@ If yes, at which `refills` count and what was the root's `remaining` then?
 Click rows in the Segment window:
 
 ```sql
-select failure_reason, count(*)
+select coalesce(failure_reason::text, '(none)') as reason, count(*)
 from affiliate_clicks
 where producer = 'github'
   and runner_os = 'ubuntu'
+  and status is null
   and ran_at between :segment_start and :segment_end
 group by 1
 order by 2 desc;
@@ -108,7 +109,7 @@ order by 2 desc;
 | `relay-silent` | | |
 | `not-ready` | | |
 | `exit-unavailable` | | |
-| `null` with `status: null` | | browser/target failure, not an exit failure |
+| `(none)` | | a page was attempted and failed without an exit reason (target failure) |
 
 Gate refusal, if any: `reason` **\_\_\_**, `detail` **\_\_\_**
 
