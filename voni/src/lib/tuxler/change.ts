@@ -27,9 +27,13 @@ export function encodeChangeRequest(request: ChangeRequest = {}): string {
 }
 
 export interface ExitLocation {
-  /** The display name, e.g. `United States`. Prose; never trusted for the country. */
+  /** The display name, e.g. `United States`. Prose; only a two-letter code is a claim. */
   country: string | null;
-  /** `countryiso`, e.g. `US`. This is the country check's only input. */
+  /**
+   * The reply's own country claim: `<countryiso>` when it is a two-letter code,
+   * else `<country>` when that is one. `null` means the reply made no claim — the
+   * registry then decides. A full country name is never mapped by guesswork.
+   */
   countryIso: string | null;
   region: string | null;
   city: string | null;
@@ -43,6 +47,8 @@ export type ChangeOutcome =
       ip: string;
       port: number;
       location: ExitLocation;
+      /** Element names only, in reply order — never values. */
+      elements: string[];
       /** True for `…_BUT_LIMIT`: usable now, and this bucket has nothing left. */
       lastOfBucket: boolean;
     }
@@ -82,13 +88,31 @@ function readAddress(details: string): string | null {
   return top === null ? null : top[1].trim() || null;
 }
 
+/** `US` in either element is a claim; `United States`, or anything else, is not. */
+function readCountryIso(details: string): string | null {
+  const iso = readElement(details, "countryiso");
+  if (iso !== null && /^[A-Za-z]{2}$/.test(iso)) return iso.toUpperCase();
+  const country = readElement(details, "country");
+  if (country !== null && /^[A-Za-z]{2}$/.test(country)) return country.toUpperCase();
+  return null;
+}
+
 export function readLocation(details: string): ExitLocation {
   return {
     country: readElement(details, "country"),
-    countryIso: readElement(details, "countryiso"),
+    countryIso: readCountryIso(details),
     region: readElement(details, "region"),
     city: readElement(details, "city"),
   };
+}
+
+/** Every element name in the reply, first-seen order. Names only: never values. */
+export function readElementNames(details: string): string[] {
+  const names: string[] = [];
+  for (const match of details.matchAll(/<([A-Za-z][^>\s/]*)[^>]*>/g)) {
+    if (!names.includes(match[1])) names.push(match[1]);
+  }
+  return names;
 }
 
 function readPort(details: string): number | null {
@@ -125,7 +149,7 @@ export function parseChangeReply(frame: Frame): ChangeOutcome {
       if (!statusAllowsPort(details)) {
         return { kind: "incomplete", tag, reason: "the reply's status was not OK", location };
       }
-      return { kind: "changed", tag, ip, port, location, lastOfBucket };
+      return { kind: "changed", tag, ip, port, location, elements: readElementNames(details), lastOfBucket };
     }
     case "IP_CHANGED_SUCCESSFULLY_ALREADY_USING":
       return {

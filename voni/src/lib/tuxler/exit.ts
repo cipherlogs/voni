@@ -129,6 +129,17 @@ export async function openUsExit(options: OpenExitOptions): Promise<TuxlerExit> 
     countryIso: outcome.location.countryIso,
     lookup: options.lookup ?? defaultLookup(),
   });
+
+  // When the relay named no country, the registry is what decided this exit.
+  // Record the reply's element *names* only, so the next run's log shows the
+  // shape the relay actually sent without ever copying its values.
+  if (outcome.location.countryIso === null) {
+    const registry = verdict.accepted ? verdict.asn.country : (verdict.registryCountry ?? null);
+    console.log(
+      `change reply elements=[${outcome.elements.join(",")}] country=registry:${registry ?? "none"}`,
+    );
+  }
+
   if (!verdict.accepted) reject(verdict.reason, verdict.detail);
 
   // The port named here is the exit's own; `dial` only decides how the client
@@ -157,7 +168,7 @@ export async function openUsExit(options: OpenExitOptions): Promise<TuxlerExit> 
     ip: outcome.ip,
     port: outcome.port,
     location: outcome.location,
-    countryIso: outcome.location.countryIso ?? "",
+    countryIso: outcome.location.countryIso ?? verdict.asn.country ?? "",
     city: outcome.location.city,
     asn: verdict.asn,
     lastOfBucket: outcome.lastOfBucket,

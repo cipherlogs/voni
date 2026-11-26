@@ -273,6 +273,61 @@ test("a non-US reply is rejected, and nothing is served", async () => {
   );
 });
 
+test("a reply that names no country is accepted when the registry says US", async () => {
+  await withRelay(
+    { changes: [{ kind: "changed", ip: EXIT_IP, countryIso: "" }] },
+    async (relay) => {
+      const session = await connect(relay);
+      const lines: string[] = [];
+      const original = console.log;
+      console.log = (...args: unknown[]) => {
+        lines.push(args.map(String).join(" "));
+      };
+      try {
+        const exit = await obtain(relay, session);
+        try {
+          assert.equal(exit.countryIso, "US", "the registry's country stands in for the silent reply");
+          assert.equal(exit.asn.country, "US");
+          assert.ok(
+            lines.some((line) =>
+              /^change reply elements=\[[a-z,]+\] country=registry:US$/.test(line),
+            ),
+            `the reply's element names must be logged: ${JSON.stringify(lines)}`,
+          );
+        } finally {
+          await exit.close();
+        }
+      } finally {
+        console.log = original;
+        session.stop();
+      }
+    },
+  );
+});
+
+test("a reply that names no country is rejected when the registry places the exit elsewhere", async () => {
+  await withRelay(
+    { changes: [{ kind: "changed", ip: EXIT_IP, countryIso: "" }] },
+    async (relay) => {
+      const session = await connect(relay);
+      try {
+        await assert.rejects(
+          obtain(relay, session, { lookup: async () => ({ ...CONSUMER, country: "GH" }) }),
+          (error: unknown) => {
+            assert.ok(error instanceof ExitRejectedError);
+            assert.equal(error.reason, "not-us");
+            assert.match(error.message, /registry places 198\.51\.100\.7 in GH/);
+            return true;
+          },
+        );
+        assert.equal(relay.stats().tunnelConnections, 0, "a rejected exit is never dialled");
+      } finally {
+        session.stop();
+      }
+    },
+  );
+});
+
 test("a US address in a hosting ASN is rejected", async () => {
   await withRelay({}, async (relay) => {
     const session = await connect(relay);

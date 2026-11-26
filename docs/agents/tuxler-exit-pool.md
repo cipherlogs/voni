@@ -223,6 +223,21 @@ decides again, so a later system success needs no restart. The fallback changes
 only how the question is asked: if every resolver fails, or answers no TXT
 record, the lookup still rejects and the verdict is still `lookup-failed`.
 
+### What proves an exit is US
+
+The registry is the primary country evidence, and the relay's own reply is
+corroboration. `validateExit` reads the exit address's Team Cymru origin record
+for every candidate; `record.country` must be `US`. A `countryiso` (or a
+two-letter `<country>`) in the change reply must not contradict it: a relay that
+names another country is refused before any lookup, and a US claim whose registry
+entry says otherwise is refused too. When the relay names no country at all — as
+it did on the 2026-11-26 run — the registry decides, and the exit is served on
+`registry: US`. An empty registry country still fails closed
+(`the registry named no country for <ip>`). A full country *name* is never mapped
+by guesswork; an unmappable name is "no claim", which this order covers. When the
+registry decides, the client logs the reply's element names only (never values),
+e.g. `change reply elements=[ip,port,status] country=registry:US`.
+
 ### A rejection that another change cannot fix parks the pool
 
 Thin US supply is a reason to retry; a broken classifier, a listener that will not

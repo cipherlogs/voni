@@ -1,11 +1,14 @@
 /**
  * Is this exit the one we are allowed to use?
  *
- * Two independent answers, both required. The country comes from the change reply's
- * own `countryiso` — never from its prose `country` — and the address class comes
- * from a reverse-DNS ASN lookup. A US address in a hosting ASN is worse than no
- * address at all: it looks like proxying without the residential trust the Source
- * exists to show. So anything we cannot classify is rejected (fail closed), and the
+ * Two independent answers, both required. The country comes from the exit's own
+ * registry entry (Team Cymru's origin TXT), with the change reply's two-letter
+ * claim as corroboration that must agree when it makes one. A relay reply that
+ * names no country is not a rejection by itself — the registry decides — but an
+ * absent registry country still fails closed. The address class comes from the
+ * same reverse-DNS lookup. A US address in a hosting ASN is worse than no address
+ * at all: it looks like proxying without the residential trust the Source exists
+ * to show. So anything we cannot classify is rejected (fail closed), and the
  * lookup is injected so a test never touches DNS.
  *
  * The real lookup is Team Cymru's DNS service: one TXT query for the origin
@@ -35,7 +38,13 @@ export type ExitRejectionReason =
 
 export type ExitVerdict =
   | { accepted: true; asn: AsnRecord }
-  | { accepted: false; reason: ExitRejectionReason; detail: string };
+  | {
+      accepted: false;
+      reason: ExitRejectionReason;
+      detail: string;
+      /** The registry's country, when the lookup answered and the country decided it. */
+      registryCountry?: string | null;
+    };
 
 /** The only country this client serves. Not a default — a constraint. */
 export const REQUIRED_COUNTRY = "US";
@@ -93,18 +102,23 @@ const HOSTING_NAME_HINTS = [
 
 export interface ExitValidationInput {
   ip: string;
-  /** `countryiso` from the change reply. `null` is rejected, never assumed US. */
+  /**
+   * The relay's own two-letter `countryiso`/`country` claim, when it makes one.
+   * `null` is not a rejection by itself: the registry then decides.
+   */
   countryIso: string | null;
   lookup: AsnLookup;
 }
 
 export async function validateExit(input: ExitValidationInput): Promise<ExitVerdict> {
   const countryIso = input.countryIso?.trim().toUpperCase() ?? "";
-  if (countryIso !== REQUIRED_COUNTRY) {
+  // A relay that names a country other than US is refused without spending a
+  // lookup. Silence is different: the registry below is the primary evidence.
+  if (countryIso !== "" && countryIso !== REQUIRED_COUNTRY) {
     return {
       accepted: false,
       reason: "not-us",
-      detail: `the change reply named ${countryIso === "" ? "no country" : countryIso}; only ${REQUIRED_COUNTRY} is served`,
+      detail: `the change reply named ${countryIso}; only ${REQUIRED_COUNTRY} is served`,
     };
   }
 
@@ -124,6 +138,22 @@ export async function validateExit(input: ExitValidationInput): Promise<ExitVerd
       accepted: false,
       reason: "lookup-failed",
       detail: `the ASN lookup for ${input.ip} named no origin`,
+    };
+  }
+
+  // The registry is the authoritative statement of the prefix's country. It must
+  // be US whether the relay named US or said nothing at all; a relay claim can
+  // corroborate but never overrule it, and an empty registry country fails closed.
+  const registryCountry = record.country?.trim().toUpperCase() ?? "";
+  if (registryCountry !== REQUIRED_COUNTRY) {
+    return {
+      accepted: false,
+      reason: "not-us",
+      detail:
+        registryCountry === ""
+          ? `the registry named no country for ${input.ip}; only ${REQUIRED_COUNTRY} is served`
+          : `the registry places ${input.ip} in ${registryCountry}; only ${REQUIRED_COUNTRY} is served`,
+      registryCountry: record.country,
     };
   }
 

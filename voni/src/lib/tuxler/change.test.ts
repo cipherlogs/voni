@@ -42,6 +42,36 @@ test("the change request is the relay's exact literal", () => {
   );
 });
 
+test("a two-letter ISO in either element is a country claim, a name is not", () => {
+  const withIso = reply(
+    "IP_CHANGED_SUCCESSFULLY",
+    `<status>OK</status><ip>198.51.100.7</ip><location><country>Morocco</country>` +
+      `<countryiso>MA</countryiso><city>Casablanca</city></location><port>40123</port>`,
+  );
+  assert.equal(withIso.kind, "changed");
+  if (withIso.kind !== "changed") return;
+  assert.equal(withIso.location.countryIso, "MA");
+
+  const countryAsCode = reply(
+    "IP_CHANGED_SUCCESSFULLY",
+    `<status>OK</status><ip>198.51.100.7</ip><location><country>US</country>` +
+      `<city>Dallas</city></location><port>40123</port>`,
+  );
+  assert.equal(countryAsCode.kind, "changed");
+  if (countryAsCode.kind !== "changed") return;
+  assert.equal(countryAsCode.location.countryIso, "US", "a two-letter <country> is a claim");
+
+  const nameOnly = reply(
+    "IP_CHANGED_SUCCESSFULLY",
+    `<status>OK</status><ip>198.51.100.7</ip><location><country>United States</country>` +
+      `<city>Dallas</city></location><port>40123</port>`,
+  );
+  assert.equal(nameOnly.kind, "changed");
+  if (nameOnly.kind !== "changed") return;
+  assert.equal(nameOnly.location.countryIso, null, "a country name is never guessed into a code");
+  assert.deepEqual(nameOnly.elements, ["status", "ip", "location", "country", "city", "port"]);
+});
+
 test("a successful change carries the address, the location and the relay's own port", () => {
   const outcome = reply(
     "IP_CHANGED_SUCCESSFULLY",

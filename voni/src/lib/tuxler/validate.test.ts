@@ -45,25 +45,76 @@ test("a US address on a consumer ISP is accepted", async () => {
 });
 
 test("a non-US reply is rejected even when the ASN is a consumer ISP", async () => {
+  let lookups = 0;
   const verdict = await validateExit({
     ip: "99.44.12.7",
     countryIso: "DE",
-    lookup: async () => CONSUMER,
+    lookup: async () => {
+      lookups += 1;
+      return CONSUMER;
+    },
   });
   assert.equal(verdict.accepted, false);
   if (verdict.accepted) return;
   assert.equal(verdict.reason, "not-us");
+  assert.equal(lookups, 0, "a relay that names another country is refused without a lookup");
 });
 
-test("a reply with no country at all is rejected rather than assumed US", async () => {
+test("a reply with no country is accepted when the registry places the address in the US", async () => {
   const verdict = await validateExit({
     ip: "99.44.12.7",
     countryIso: null,
     lookup: async () => CONSUMER,
   });
+  assert.equal(verdict.accepted, true);
+  if (!verdict.accepted) return;
+  assert.equal(verdict.asn.country, "US");
+});
+
+test("a reply with no country is rejected when the registry places the address elsewhere", async () => {
+  const verdict = await validateExit({
+    ip: "102.69.220.138",
+    countryIso: null,
+    lookup: async () => ({
+      asn: 328494,
+      prefix: "102.69.220.0/24",
+      country: "GH",
+      name: "SOME-CONSUMER-ISP, GH",
+    }),
+  });
   assert.equal(verdict.accepted, false);
   if (verdict.accepted) return;
   assert.equal(verdict.reason, "not-us");
+  assert.match(verdict.detail, /registry places 102\.69\.220\.138 in GH/);
+});
+
+test("a reply with no country is rejected when the registry names no country either", async () => {
+  const verdict = await validateExit({
+    ip: "99.44.12.7",
+    countryIso: null,
+    lookup: async () => ({ ...CONSUMER, country: null }),
+  });
+  assert.equal(verdict.accepted, false);
+  if (verdict.accepted) return;
+  assert.equal(verdict.reason, "not-us");
+  assert.match(verdict.detail, /registry named no country for 99\.44\.12\.7/);
+});
+
+test("a US reply is rejected when the registry disagrees", async () => {
+  const verdict = await validateExit({
+    ip: "102.69.220.138",
+    countryIso: "US",
+    lookup: async () => ({
+      asn: 328494,
+      prefix: "102.69.220.0/24",
+      country: "GH",
+      name: "SOME-CONSUMER-ISP, GH",
+    }),
+  });
+  assert.equal(verdict.accepted, false);
+  if (verdict.accepted) return;
+  assert.equal(verdict.reason, "not-us");
+  assert.match(verdict.detail, /in GH/);
 });
 
 test("a US address in a hosting ASN is rejected", async () => {
