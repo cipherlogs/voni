@@ -255,3 +255,40 @@ parser refuses a long field and one oversized quote would lose the whole record.
 
 The next run after the reset is the real test: three accepted US exits, a pushed
 report, and a card that says so.
+
+### Run 45912731476: the pool works, the exit tunnel does not
+
+Same dispatch (ubuntu, one non-affiliate target, window 240 s, pool target 3).
+This time the gate **passed**:
+
+```
+browser-pool-gate: 0 ready exit(s) after 4036 ms, 3 refill(s); the segment may click
+```
+
+and the clicks ran against real US residential exits:
+
+```
+pass 6 exit=24.90.211.117  asn=12271 country=US
+pass 7 exit=24.183.169.43  asn=20115 country=US
+```
+
+Every click then failed in ~95 ms with `net::ERR_SOCKS_CONNECTION_FAILED`: the
+exit is acquired and validated, but the local SOCKS listener refuses because its
+tunnel to `relayHost:exitPort` closes before the destination answers. The tunnel
+header (`<h>host<p>port</p></h>`) and the XOR mask have only ever been exercised
+against our fake relay, so this is the first real test of that wire format — and
+the client logged nothing about it.
+
+Two smaller things the same run exposed:
+
+- `exit 24.183.169.43:32516 was not released (HTTP 400 {"error":"bad-release"})`
+  — a lease that cannot be returned leaves the pool a strike behind.
+- `report not stored ... HTTP 400 {"ok":false,"reason":"bad_final_url"}` for
+  `example.com` — the intake refuses the click row because the final URL does not
+  match the target once the rotation query is appended. Worth checking against a
+  real Target before assuming it is only a test-target artefact.
+
+The pool's own gate line reads `0 ready exit(s) ... the segment may click`, which
+is contradictory and should be reconciled: the gate said yes with `ready: 0`
+because it counted three usable leases, while the summary interpolates the
+client's `ready` field.
