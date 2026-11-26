@@ -45,7 +45,7 @@ Two **sizes** reach the client without a secret and without touching the code:
 
 | Where | Name | Meaning |
 | --- | --- | --- |
-| `/email` → Proxy exits → Pool target | `proxy_pool_target` | Exits to fill to, 3–8. The dispatch carries the saved value as the `poolTarget` input, the workflow maps it to `TUXLER_POOL_TARGET`, and the CLI refuses a value outside 3–8 rather than clamping. |
+| `/email` → Tuxler exits → Pool target | `proxy_pool_target` | Exits to fill to, 3–8. The dispatch carries the saved value as the `poolTarget` input, the workflow maps it to `TUXLER_POOL_TARGET`, and the CLI refuses a value outside 3–8 rather than clamping. |
 | GitHub → Variables | `TUXLER_POOL_DEPTH` | How many child buckets deep the refill tree may grow, 0–3, default 3 (`0` = no children). An empty variable is the default three. |
 
 Both are read when the client **starts**: changing the pool target does not
@@ -95,7 +95,7 @@ Two exclusivity rules are enforced before Chrome starts:
 - [ ] `TUXLER_ENABLED` set to `true` as a **variable**.
 - [ ] The three `BROWSER_PROXY_*` secrets empty. A pooled run refuses them.
 - [ ] `/email` unlocked; the GitHub card enabled; at least one active target;
-      the **Proxy exits** card readable.
+      the **Tuxler exits** card readable.
 - [ ] The account has enough changes for **one** pool build: five on the free
       tier, against the bucket line on the card.
 - [ ] One OS only for the first check (Ubuntu). Each OS is a separate runner
@@ -120,7 +120,7 @@ Two exclusivity rules are enforced before Chrome starts:
 
    The values are that run's measurement, not a promise.
 4. A passing run leaves click rows whose **Exit** column names an address, `US`
-   and an ASN, and whose proxy kind is `pool`; the **Proxy exits** card names
+   and an ASN, and whose proxy kind is `pool`; the **Tuxler exits** card names
    the same exits and their buckets. A failing gate leaves no click row at all.
 
 To end a Segment early without starting a replacement, cancel the run in the

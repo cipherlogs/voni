@@ -319,7 +319,7 @@ export type BrowserCheckDeps = {
   readSecret?: (name: string) => Promise<string | undefined>;
   /**
    * The console's saved pool target. Injected so a test can name it without a
-   * database; production reads the same row the Proxy exits card writes.
+   * database; production reads the same row the Tuxler exits card writes.
    */
   readPoolTarget?: () => Promise<number>;
 };

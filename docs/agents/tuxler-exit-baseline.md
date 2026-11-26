@@ -22,7 +22,7 @@ and failures grouped by reason. This is the evidence the headroom arithmetic in
 3. Download the artifact **`browser-pool-report-ubuntu`** (retention 7 days) and
    read `voni/pool-report.json`. The `gate` half is the pool before any Click;
    the `final` half is the pool after the clicks and before the client stops.
-4. Read the **Proxy exits** card while the client is alive for the exact bucket
+4. Read the **Tuxler exits** card while the client is alive for the exact bucket
    figures (`used`, `limit`, `remaining`, `resetAt`). The card is the only place
    those are reported; the artifact carries `refills` (change attempts), not
    bucket debits.

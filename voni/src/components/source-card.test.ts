@@ -47,7 +47,11 @@ test("a source card keeps its header facts outside the collapsible body", () => 
     );
   }
 
-  assert.match(shell, /<CollapsibleTrigger/, "the header carries the toggle");
+  assert.match(
+    shell,
+    /<CollapsibleCardTitle/,
+    "the header carries the toggle",
+  );
   assert.match(shell, /\{name\}/, "the header always names the source");
 });
 

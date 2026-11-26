@@ -1,19 +1,18 @@
 "use client";
 
-import { ChevronDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import {
   Collapsible,
   CollapsibleContent,
-  CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useCardDisclosure } from "@/components/card-disclosure";
+import { CollapsibleCardTitle } from "@/components/collapsible-card-title";
 
 /**
  * One source on the `/email` console: a card whose header always states the
@@ -26,6 +25,10 @@ import {
  * do (spec: "a collapsed card can never hide volume or failure"), so the
  * summary is a sibling of the panel rather than the first row of it, and no
  * future card can put it back inside by accident.
+ *
+ * Sources start collapsed and remember the operator's choice per card, keyed
+ * by `testId`; `useCardDisclosure` reads storage after mount so the server and
+ * the first client render agree.
  *
  * `volume` is a value plus its own unit rather than a clicks-per-day number:
  * Grafana and GitHub command a rate, Burst commands a batch, and the header
@@ -50,12 +53,6 @@ export type SourceCardProps = {
   icon: React.ReactNode;
   description: React.ReactNode;
   summary: SourceCardSummary;
-  /**
-   * Open on first paint unless the page says otherwise. Nothing that was
-   * visible before this card existed starts hidden: collapsing is the
-   * operator's act, not the default.
-   */
-  defaultOpen?: boolean;
   children: React.ReactNode;
 };
 
@@ -65,29 +62,25 @@ export function SourceCard({
   icon,
   description,
   summary,
-  defaultOpen = true,
   children,
 }: SourceCardProps) {
+  const { open, onOpenChange } = useCardDisclosure(testId);
+
   return (
     <Card data-testid={testId}>
-      <Collapsible defaultOpen={defaultOpen} className="grid gap-(--card-spacing)">
+      <Collapsible
+        open={open}
+        onOpenChange={onOpenChange}
+        className="group/card grid gap-(--card-spacing)"
+      >
         <CardHeader className="gap-2">
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-            <CardTitle as="h3" className="flex min-w-0 items-center gap-2">
-              <span className="text-muted-foreground" aria-hidden>
-                {icon}
-              </span>
-              <CollapsibleTrigger
-                className="group/source focus-visible:ring-ring inline-flex cursor-pointer items-center gap-1.5 rounded-sm outline-none focus-visible:ring-2"
-                data-testid={`${testId}-trigger`}
-              >
-                {name}
-                <ChevronDown
-                  aria-hidden
-                  className="size-4 transition-transform group-data-[panel-open]/source:rotate-180"
-                />
-              </CollapsibleTrigger>
-            </CardTitle>
+            <CollapsibleCardTitle
+              icon={icon}
+              testId={`${testId}-trigger`}
+            >
+              {name}
+            </CollapsibleCardTitle>
 
             <div className="flex flex-wrap items-center gap-2">
               <Badge
