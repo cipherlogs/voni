@@ -14,6 +14,12 @@
  */
 import { secret } from "@/lib/env";
 import {
+  readLatestPoolReport,
+  type PoolReportStore,
+  type TuxlerPoolExit,
+  type TuxlerPoolReport,
+} from "./pool-report";
+import {
   PROXY_HEALTH_URL_ENV,
   type ProxyBucketView,
   type ProxyExitView,
@@ -33,6 +39,14 @@ export interface ProxyHealthReadOptions {
   fetcher?: typeof fetch;
   timeoutMs?: number;
 }
+
+export interface ProxyHealthOrReportOptions extends ProxyHealthReadOptions {
+  /** The stored reports; injectable so a test never needs a database. */
+  store?: PoolReportStore;
+}
+
+/** The sentence the card owes an operator when nothing has ever pushed. */
+export const NO_POOL_REPORT_MESSAGE = "No Segment has reported a pool yet.";
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
@@ -123,6 +137,7 @@ export function parseHealthReport(value: unknown): ProxyHealthData | null {
     ready: value.ready === true,
     pool,
     buckets,
+    refills: asNumber(value.refills),
     reconnects: asNumber(value.reconnects) ?? 0,
     lastError: parseFailure(value.lastError),
     account,
@@ -155,6 +170,71 @@ function healthUrl(base: string): string | null {
   url.hash = "";
   url.pathname = `${url.pathname.replace(/\/+$/, "")}/health`;
   return url.toString();
+}
+
+/** One report exit in the card's shape. An exit with no address cannot be shown. */
+function reportExit(exit: TuxlerPoolExit): ProxyExitView | null {
+  if (exit.ip === null) return null;
+  return {
+    ip: exit.ip,
+    // A pooled exit is US by construction; a report that omits the country is
+    // still a US exit, not an unknown one.
+    country: exit.country ?? "US",
+    asn: exit.asn,
+    city: exit.city,
+    state: exit.state,
+  };
+}
+
+/** Refusals that mean the control port or the session was the problem. */
+const CLIENT_DOWN_GATE_REASONS = new Set([
+  "control-unreachable",
+  "bad-control-url",
+  "client-not-ready",
+]);
+
+/**
+ * A stored Segment report, in the shape the card already renders.
+ *
+ * The artifact records `final` after the clicks and `gate` before them, so
+ * `final` is the newer observation: it wins when it actually read `/health`.
+ * `finalSnapshot` writes `ok: false` and null counts when that read failed, and
+ * that half is not an observation — the gate half then answers every field.
+ *
+ * `buckets` stays empty because the artifact carries no per-bucket snapshot.
+ * An empty list is the card's "unknown", never "0 of 0 changes".
+ */
+export function healthFromPoolReport(report: TuxlerPoolReport): ProxyHealthData {
+  const gate = report.gate;
+  const final = report.final !== null && report.final.ok ? report.final : null;
+
+  const ready = final?.ready ?? gate.ready;
+  const exits = final?.exits ?? gate.exits;
+  const refills = final?.refills ?? gate.refills;
+  const reconnects = final?.reconnects ?? gate.reconnects;
+  const failure = final?.lastError ?? gate.lastError;
+
+  // The report carries no session state. A gate refusal that names the control
+  // port is evidence the client was not there; every other refusal is a pool
+  // or quota problem the card should keep telling apart from a dead client.
+  const connected =
+    final !== null ||
+    gate.ok ||
+    !CLIENT_DOWN_GATE_REASONS.has(gate.reason ?? "");
+
+  return {
+    ok: final?.ok === true || gate.ok,
+    ready: ready > 0,
+    pool: exits
+      .map(reportExit)
+      .filter((exit): exit is ProxyExitView => exit !== null),
+    buckets: [],
+    refills,
+    reconnects,
+    lastError: parseFailure(failure),
+    account: null,
+    session: { state: connected ? "connected" : "failed" },
+  };
 }
 
 export async function readProxyHealth(
@@ -220,5 +300,48 @@ export async function readProxyHealth(
     };
   }
 
-  return { state: "reported", health };
+  return { state: "reported", source: "live", health };
+}
+
+/**
+ * The live client when one answers, else the newest Segment report.
+ *
+ * The pool client lives on a GitHub runner's loopback, so production has no
+ * address that can reach it. The workflow pushes each Segment's report instead;
+ * this read is what keeps the card honest about which one it is showing:
+ *
+ * - a live `/health` answer always wins, because it is the pool right now;
+ * - `unconfigured` and `unreachable` fall back to the newest stored report,
+ *   mapped into the same shape so every verdict rule is reused;
+ * - with neither, the live failure comes back with the one sentence that says
+ *   plainly nobody has reported yet.
+ *
+ * The report is read with no OS filter: the card is one console, so the newest
+ * push across every runner answers. Staleness is the card's judgement; the read
+ * never pretends an old report is live.
+ */
+export async function readProxyHealthOrReport(
+  options: ProxyHealthOrReportOptions = {},
+): Promise<ProxyHealthRead> {
+  const live = await readProxyHealth(options);
+  if (live.state === "reported") return live;
+
+  const latest = await readLatestPoolReport(undefined, options.store);
+  if (latest !== null) {
+    return {
+      state: "reported",
+      source: "report",
+      health: healthFromPoolReport(latest.report),
+      receivedAt: latest.receivedAt,
+      runnerOs: latest.runnerOs,
+    };
+  }
+
+  if (live.state === "unconfigured") {
+    return { state: "unconfigured", message: NO_POOL_REPORT_MESSAGE };
+  }
+  return {
+    state: "unreachable",
+    message: `${live.message} ${NO_POOL_REPORT_MESSAGE}`,
+  };
 }

@@ -27,8 +27,10 @@ import {
   PROXY_PROVIDER,
   describeProxyHealth,
   failureWords,
+  isProxyReportStale,
   parseProxyCountry,
   parseProxyPoolTarget,
+  proxyReportAge,
   resolveProxySettings,
   type ProxyExitView,
   type ProxyHealthData,
@@ -225,6 +227,7 @@ function report(
 ): Extract<ProxyHealthRead, { state: "reported" }> {
   return {
     state: "reported",
+    source: "live",
     health: {
       ok: true,
       ready: true,
@@ -331,4 +334,28 @@ test("failures are named in operator words, never as a reason code", () => {
   const unknown = failureWords("some-new-code");
   assert.doesNotMatch(unknown, /some-new-code/, "an unknown reason is not printed as a code");
   assert.match(unknown, /failure/i);
+});
+
+test("a report's age is said in operator words", () => {
+  const now = new Date("2026-11-26T09:02:00.000Z");
+  assert.equal(proxyReportAge(new Date("2026-11-26T09:01:40.000Z"), now), "just now");
+  assert.equal(proxyReportAge(new Date("2026-11-26T09:00:00.000Z"), now), "2 minutes ago");
+  assert.equal(proxyReportAge(new Date("2026-11-26T08:02:00.000Z"), now), "1 hour ago");
+  assert.equal(proxyReportAge(new Date("2026-11-26T05:02:00.000Z"), now), "4 hours ago");
+  assert.equal(proxyReportAge(new Date("2026-11-24T09:02:00.000Z"), now), "2 days ago");
+});
+
+test("a report past the threshold is stale, and an unreadable age is never fresh", () => {
+  const now = new Date("2026-11-26T09:02:00.000Z");
+  assert.equal(isProxyReportStale(new Date("2026-11-26T09:00:00.000Z"), now), false);
+  assert.equal(isProxyReportStale(new Date("2026-11-26T05:00:00.000Z"), now), true);
+  assert.equal(isProxyReportStale("not a date", now), true, "unknown age must not look live");
+});
+
+test("the unconfigured sentence also says no Segment has reported", () => {
+  const read = describeProxyHealth(
+    { state: "unconfigured", message: "No Segment has reported a pool yet." },
+    5,
+  );
+  assert.match(read.detail, /No Segment has reported a pool yet/);
 });

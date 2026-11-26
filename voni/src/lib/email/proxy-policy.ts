@@ -15,6 +15,8 @@
  * to.
  */
 
+import type { RunnerOs } from "./sources";
+
 /** The only provider the runner uses today. */
 export const PROXY_PROVIDER = "tuxler";
 /** The only country the client serves. Not a default — a constraint. */
@@ -66,6 +68,8 @@ export interface ProxyHealthData {
   ready: boolean;
   pool: ProxyExitView[];
   buckets: ProxyBucketView[];
+  /** Change attempts since the client started; a stored report carries it too. */
+  refills?: number | null;
   reconnects: number;
   lastError: ProxyFailureView | null;
   account: { tier: string; premium: boolean | null; clientIp: string | null } | null;
@@ -76,13 +80,81 @@ export interface ProxyHealthData {
   };
 }
 
+/** Where a reported pool came from: the live client, or the last push. */
+export type ProxyHealthSource = "live" | "report";
+
 /** What the server read, before it becomes a sentence. */
 export type ProxyHealthRead =
-  | { state: "unconfigured" }
+  | {
+      state: "unconfigured";
+      /**
+       * Set only by the report-aware read, to say no Segment has pushed either.
+       * A plain live read leaves it absent and keeps its original sentence.
+       */
+      message?: string;
+    }
   | { state: "unreachable"; message: string }
-  | { state: "reported"; health: ProxyHealthData };
+  | { state: "reported"; source: "live"; health: ProxyHealthData }
+  | {
+      state: "reported";
+      source: "report";
+      health: ProxyHealthData;
+      /** When the app accepted the report; the card ages it from this. */
+      receivedAt: Date;
+      runnerOs: RunnerOs;
+    };
 
 export type ProxyStatus = "ok" | "client-down" | "short-of-exits" | "out-of-quota";
+
+/**
+ * A stored report older than this is labelled stale. The runner pushes at the
+ * end of a Segment (bounded at ~5.6 h), so three hours is comfortably inside a
+ * Segment: a report past it cannot be the pool as it is now.
+ */
+export const PROXY_REPORT_STALE_MS = 3 * 60 * 60 * 1_000;
+
+function reportMillis(at: Date | string | number): number {
+  if (at instanceof Date) return at.getTime();
+  if (typeof at === "string") return Date.parse(at);
+  return at;
+}
+
+/**
+ * How long ago a stored report arrived, in operator words.
+ *
+ * Invalid input is not "just now": an age the app cannot read must not make a
+ * report look fresh, so it reads as unknown.
+ */
+export function proxyReportAge(
+  receivedAt: Date | string | number,
+  now: Date | number = Date.now(),
+): string {
+  const received = reportMillis(receivedAt);
+  const at = typeof now === "number" ? now : now.getTime();
+  if (!Number.isFinite(received) || !Number.isFinite(at)) {
+    return "at an unknown time";
+  }
+  const seconds = Math.max(0, Math.floor((at - received) / 1_000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/** A report past the threshold is historical, never a live reading. */
+export function isProxyReportStale(
+  receivedAt: Date | string | number,
+  now: Date | number = Date.now(),
+  staleAfterMs: number = PROXY_REPORT_STALE_MS,
+): boolean {
+  const received = reportMillis(receivedAt);
+  const at = typeof now === "number" ? now : now.getTime();
+  if (!Number.isFinite(received) || !Number.isFinite(at)) return true;
+  return at - received >= staleAfterMs;
+}
 
 /**
  * One ASN, one spelling. The pool reports digits, Team Cymru reports `AS7018`,
@@ -255,7 +327,8 @@ export function describeProxyHealth(read: ProxyHealthRead, target: number): Prox
       detail:
         `No proxy client address is configured, so there is no pool to read. ` +
         `Set ${PROXY_HEALTH_URL_ENV} to the running client's control address. ` +
-        `A click without a US exit fails rather than falling back to a direct connection.`,
+        `A click without a US exit fails rather than falling back to a direct connection.` +
+        (read.message === undefined ? "" : ` ${read.message}`),
     };
   }
 

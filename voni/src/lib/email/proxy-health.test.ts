@@ -14,10 +14,19 @@ import test from "node:test";
 
 import { buildHealth, startHealthServer } from "@/lib/tuxler/health";
 import {
+  NO_POOL_REPORT_MESSAGE,
   PROXY_HEALTH_URL_ENV,
+  healthFromPoolReport,
   parseHealthReport,
   readProxyHealth,
+  readProxyHealthOrReport,
 } from "./proxy-health";
+import { isProxyReportStale, proxyReportAge } from "./proxy-policy";
+import type {
+  LatestPoolReport,
+  PoolReportStore,
+  TuxlerPoolReport,
+} from "./pool-report";
 
 type Call = { url: string; init: RequestInit | undefined };
 
@@ -211,4 +220,221 @@ test("the real client's health JSON is what the console reads", async () => {
   } finally {
     await server.close();
   }
+});
+
+const REPORT_EXITS = [
+  { exitId: "e1", ip: "198.51.100.24", country: "US", asn: "7018", city: "Ashburn", state: "VA" },
+  { exitId: "e2", ip: "198.51.100.25", country: "US", asn: "7922", city: "Austin", state: "TX" },
+  { exitId: "e3", ip: "198.51.100.26", country: "US", asn: "22773", city: "Phoenix", state: "AZ" },
+];
+
+/** `buildPoolReport` followed by `mergeFinalReport`, as the runner writes it. */
+function storedReport(overrides: Partial<TuxlerPoolReport> = {}): TuxlerPoolReport {
+  return {
+    enabled: true,
+    minReady: 3,
+    gate: {
+      ok: true,
+      reason: null,
+      detail: null,
+      attempts: 2,
+      waitedMs: 4_000,
+      checkedAt: "2026-11-26T08:00:00.000Z",
+      ready: 3,
+      exits: REPORT_EXITS,
+      refills: 1,
+      reconnects: 0,
+      lastError: null,
+      clientLog: null,
+    },
+    final: {
+      ok: true,
+      error: null,
+      checkedAt: "2026-11-26T09:00:00.000Z",
+      ready: 3,
+      exits: REPORT_EXITS,
+      refills: 2,
+      reconnects: 1,
+      lastError: null,
+    },
+    ...overrides,
+  };
+}
+
+function storeOf(
+  latest: LatestPoolReport | null,
+): { store: PoolReportStore; calls: number[] } {
+  const calls: number[] = [];
+  return {
+    calls,
+    store: {
+      async upsert() {},
+      async latest() {
+        calls.push(1);
+        return latest;
+      },
+    },
+  };
+}
+
+const NOW = new Date("2026-11-26T09:02:00.000Z");
+
+test("a stored report renders the pool and names its age", async () => {
+  const latest: LatestPoolReport = {
+    runnerOs: "ubuntu",
+    receivedAt: new Date("2026-11-26T09:00:00.000Z"),
+    report: storedReport(),
+  };
+  const { store } = storeOf(latest);
+  const { fetcher, calls } = stubFetch(new Error("should not be fetched"));
+
+  const read = await readProxyHealthOrReport({
+    readEnv: async () => undefined,
+    fetcher,
+    store,
+  });
+
+  assert.equal(calls.length, 0, "an unset address is not a request to nowhere");
+  assert.equal(read.state, "reported");
+  if (read.state !== "reported") return;
+  assert.equal(read.source, "report");
+  assert.equal(read.runnerOs, "ubuntu");
+  assert.equal(read.receivedAt.toISOString(), "2026-11-26T09:00:00.000Z");
+  assert.equal(read.health.pool.length, 3);
+  assert.equal(read.health.pool[0]!.ip, "198.51.100.24");
+  assert.equal(read.health.pool[0]!.asn, "7018");
+  assert.deepEqual(read.health.buckets, [], "the artifact has no bucket snapshot");
+  assert.equal(read.health.refills, 2);
+  assert.equal(read.health.reconnects, 1);
+  assert.equal(read.health.session.state, "connected");
+  assert.equal(proxyReportAge(read.receivedAt, NOW), "2 minutes ago");
+});
+
+test("a live client wins over a stored report and the report is not read", async () => {
+  const { store, calls } = storeOf({
+    runnerOs: "ubuntu",
+    receivedAt: new Date("2026-11-26T09:00:00.000Z"),
+    report: storedReport(),
+  });
+  const { fetcher } = stubFetch(new Response(JSON.stringify(VALID), { status: 200 }));
+
+  const read = await readProxyHealthOrReport({
+    readEnv: async () => "http://127.0.0.1:41000",
+    fetcher,
+    store,
+  });
+
+  assert.equal(read.state, "reported");
+  if (read.state !== "reported") return;
+  assert.equal(read.source, "live", "a live client is the pool right now");
+  assert.equal(calls.length, 0, "the stored report is only a fallback");
+});
+
+test("no client and no report says plainly that no Segment has reported", async () => {
+  const { store } = storeOf(null);
+  const { fetcher, calls } = stubFetch(new Error("should not be fetched"));
+
+  const read = await readProxyHealthOrReport({
+    readEnv: async () => undefined,
+    fetcher,
+    store,
+  });
+
+  assert.equal(calls.length, 0);
+  assert.equal(read.state, "unconfigured");
+  if (read.state !== "unconfigured") return;
+  assert.equal(read.message, NO_POOL_REPORT_MESSAGE);
+  assert.match(read.message, /No Segment has reported/);
+});
+
+test("an unreachable client with no report keeps its failure and adds the missing report", async () => {
+  const { store } = storeOf(null);
+  const { fetcher } = stubFetch(new Error("connect ECONNREFUSED 127.0.0.1:41000"));
+
+  const read = await readProxyHealthOrReport({
+    readEnv: async () => "http://127.0.0.1:41000",
+    fetcher,
+    store,
+  });
+
+  assert.equal(read.state, "unreachable");
+  if (read.state !== "unreachable") return;
+  assert.match(read.message, /could not be reached/i);
+  assert.match(read.message, /No Segment has reported a pool yet/);
+});
+
+test("final is preferred over gate when both halves read the pool", () => {
+  const health = healthFromPoolReport(
+    storedReport({
+      gate: { ...storedReport().gate, ready: 2, exits: REPORT_EXITS.slice(0, 2), refills: 1, reconnects: 0 },
+      final: {
+        ...storedReport().final!,
+        ready: 3,
+        exits: REPORT_EXITS,
+        refills: 7,
+        reconnects: 2,
+      },
+    }),
+  );
+  assert.equal(health.pool.length, 3, "the after-click exits are shown");
+  assert.equal(health.refills, 7);
+  assert.equal(health.reconnects, 2);
+});
+
+test("a final half that never read /health falls back to the gate, field for field", () => {
+  const health = healthFromPoolReport(
+    storedReport({
+      gate: {
+        ...storedReport().gate,
+        lastError: { reason: "quota-spent", message: "the change bucket has nothing left", extra: 1 },
+      },
+      final: {
+        ok: false,
+        error: "no health report was read",
+        checkedAt: "2026-11-26T09:00:00.000Z",
+        ready: null,
+        exits: [],
+        refills: null,
+        reconnects: null,
+        lastError: null,
+      },
+    }),
+  );
+  assert.equal(health.pool.length, 3, "the gate's exits answer when final has none");
+  assert.equal(health.refills, 1);
+  assert.equal(health.reconnects, 0);
+  assert.deepEqual(health.lastError, {
+    reason: "quota-spent",
+    message: "the change bucket has nothing left",
+  });
+});
+
+test("a lastError that is not {reason, message} narrows to null rather than leaking a shape", () => {
+  const health = healthFromPoolReport(
+    storedReport({
+      gate: {
+        ...storedReport().gate,
+        lastError: { reason: 42, message: ["not a string"] },
+      },
+      final: null,
+    }),
+  );
+  assert.equal(health.lastError, null);
+});
+
+test("a stale report is named with its age and never judged live", async () => {
+  const receivedAt = new Date("2026-11-26T00:00:00.000Z");
+  const { store } = storeOf({
+    runnerOs: "ubuntu",
+    receivedAt,
+    report: storedReport(),
+  });
+
+  const read = await readProxyHealthOrReport({ readEnv: async () => undefined, store });
+
+  assert.equal(read.state, "reported");
+  if (read.state !== "reported") return;
+  assert.equal(read.source, "report", "a fallback never claims to be a live client");
+  assert.equal(isProxyReportStale(read.receivedAt, NOW), true);
+  assert.equal(proxyReportAge(read.receivedAt, new Date("2026-11-26T09:00:00.000Z")), "9 hours ago");
 });
