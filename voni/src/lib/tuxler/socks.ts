@@ -33,6 +33,13 @@ export interface SocksServerOptions {
   dial: TunnelDialer;
   /** How long to wait for the destination's first sign of life. Defaults to 150 ms. */
   refusalWindowMs?: number;
+  /** How the exit behind this listener is named in log lines. Defaults to `null`. */
+  exitLabel?: string | null;
+  /**
+   * One line per refused CONNECT, so a relay that closes every tunnel is visible.
+   * Defaults to a no-op; the listener carries no credentials.
+   */
+  log?: (line: string) => void;
 }
 
 export interface SocksServer {
@@ -117,6 +124,16 @@ export async function startSocksServer(options: SocksServerOptions): Promise<Soc
     throw new Error(`the SOCKS listener binds loopback only; refusing to listen on ${host}`);
   }
   const windowMs = options.refusalWindowMs ?? DEFAULT_REFUSAL_WINDOW_MS;
+  const exitLabel = options.exitLabel ?? null;
+  const trace = options.log ?? (() => {});
+  /** A witness, never a participant: a broken logger cannot stop a listener. */
+  const note = (text: string): void => {
+    try {
+      trace(text.replace(/\s+/g, " ").trim().slice(0, 400));
+    } catch {
+      // swallowed on purpose
+    }
+  };
   let requests = 0;
   let refused = 0;
   const sockets = new Set<net.Socket>();
@@ -186,9 +203,14 @@ export async function startSocksServer(options: SocksServerOptions): Promise<Soc
       let tunnel: Duplex;
       try {
         tunnel = await options.dial(target);
-      } catch {
+      } catch (error) {
         stage = "open";
         refused += 1;
+        const detail = error instanceof Error ? error.message : String(error);
+        note(
+          `refused ${target.host}:${target.port}: the exit tunnel could not be opened` +
+            ` exit=${exitLabel ?? "unknown"}: ${detail}`,
+        );
         send(REPLY.refused, true);
         return;
       }
@@ -197,6 +219,10 @@ export async function startSocksServer(options: SocksServerOptions): Promise<Soc
         stage = "open";
         refused += 1;
         tunnel.destroy();
+        note(
+          `refused ${target.host}:${target.port}: the upstream refused before the destination` +
+            ` answered exit=${exitLabel ?? "unknown"}`,
+        );
         send(REPLY.refused, true);
         return;
       }

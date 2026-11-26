@@ -695,3 +695,50 @@ test("a log line never carries a full URL query string", async () => {
     }
   });
 });
+
+test("the pool hands its logger to every exit tunnel it builds", async () => {
+  const changes: FakeChange[] = [
+    { kind: "changed", ip: "198.51.100.10" },
+    { kind: "limit" },
+  ];
+  await withRelay({ changes }, async (relay) => {
+    const session = await connect(relay);
+    const lines: string[] = [];
+    const pool = makePool(relay, session, {
+      target: 2,
+      refillBelow: 2,
+      max: 3,
+      depth: 2,
+      retryDelayMs: 10,
+      paceCooldownMs: 10,
+      log: (line) => lines.push(line),
+      // The parent exit's own tunnel cannot be dialled here; the pool's dialer must
+      // still say so through the logger it was given.
+      dial: async () => {
+        throw new Error("tunnel dial denied");
+      },
+      openSession: async (link) => {
+        assert.ok(link !== null, "a child bucket needs its parent link");
+        await assert.rejects(link.dial({ host: "example.test", port: 443 }), /tunnel dial denied/);
+        throw new Error("the probe stops after observing the dialer");
+      },
+    });
+    try {
+      pool.start();
+      await waitFor(pool, () => lines.some((line) => line.includes("tunnel connecting")));
+
+      const connecting = lines.find((line) => line.includes("tunnel connecting"))!;
+      assert.match(
+        connecting,
+        /^exit 198\.51\.100\.10:\d+ tunnel connecting for example\.test:443$/,
+        "the pool's logger reached the exit tunnel dialer, labelled with the exit",
+      );
+      const failed = lines.find((line) => line.includes("tunnel connect failed"))!;
+      assert.ok(failed.includes("example.test:443"), failed);
+      assert.ok(failed.includes("tunnel dial denied"), failed);
+    } finally {
+      await pool.close();
+      session.stop();
+    }
+  });
+});

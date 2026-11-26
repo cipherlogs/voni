@@ -30,9 +30,20 @@ export function xor73(bytes: Buffer): Buffer {
 
 /** Wraps a socket in the tunnel mask: writes are masked, reads pass through raw. */
 export class XorSocket extends Duplex {
-  constructor(private readonly inner: Duplex) {
+  /**
+   * `onInbound` observes every decrypted chunk as it arrives, before it is offered
+   * to the reader; it never consumes or reorders a byte, so a caller can record
+   * the relay's first words without stealing them from the tunnel.
+   */
+  constructor(
+    private readonly inner: Duplex,
+    private readonly onInbound?: (chunk: Buffer) => void,
+  ) {
     super();
-    inner.on("data", (chunk: Buffer) => this.push(chunk));
+    inner.on("data", (chunk: Buffer) => {
+      this.onInbound?.(chunk);
+      this.push(chunk);
+    });
     inner.on("end", () => this.push(null));
     inner.on("close", () => this.destroy());
     inner.on("error", (error: Error) => this.destroy(error));
@@ -149,6 +160,35 @@ export interface ExitTunnelOptions {
   connectTimeoutMs?: number;
   /** Dial the relay through something else — a parent exit — instead of directly. */
   dial?: (endpoint: RelayEndpoint) => Promise<Duplex>;
+  /**
+   * How the exit is named in log lines, e.g. `24.90.211.117:32516`. Defaults to
+   * `<relayHost>:<exitPort>`, which is all the dialer knows on its own.
+   */
+  label?: string;
+  /**
+   * One line per tunnel event — connecting, connected, the relay's first words,
+   * or an early close. Defaults to a no-op; the tunnel carries no credentials.
+   */
+  log?: (line: string) => void;
+}
+
+/** One line, bounded, and never a multi-line surprise from a relay message. */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+const MAX_LOGGED_BYTES = 120;
+
+/** Printable escape for a relay's first bytes: visible ASCII stays, the rest is `\xNN`. */
+function escapeBytes(bytes: Buffer): string {
+  const slice = bytes.subarray(0, MAX_LOGGED_BYTES);
+  let out = "";
+  for (const byte of slice) {
+    if (byte === 0x5c) out += "\\\\";
+    else if (byte >= 0x20 && byte <= 0x7e) out += String.fromCharCode(byte);
+    else out += `\\x${byte.toString(16).padStart(2, "0")}`;
+  }
+  return out;
 }
 
 /**
@@ -163,9 +203,45 @@ export function exitTunnelDialer(
   const timeoutMs = options.connectTimeoutMs ?? 9_000;
   const connect =
     options.dial ?? ((endpoint: RelayEndpoint) => dial(endpoint, timeoutMs));
+  const log = options.log ?? (() => {});
+  const label = oneLine(options.label ?? `${options.relayHost}:${options.exitPort}`);
+
+  /** A witness, never a participant: a broken logger cannot stop a tunnel. */
+  const note = (text: string): void => {
+    try {
+      log(`exit ${label} ${text}`);
+    } catch {
+      // swallowed on purpose
+    }
+  };
+
   return async (target: RelayEndpoint) => {
-    const raw = await connect(resolve(options.relayHost, options.exitPort));
-    const tunnel = new XorSocket(raw);
+    const destination = `${target.host}:${target.port}`;
+    note(`tunnel connecting for ${destination}`);
+    let raw: Duplex;
+    try {
+      raw = await connect(resolve(options.relayHost, options.exitPort));
+    } catch (error) {
+      const reason = oneLine(error instanceof Error ? error.message : String(error));
+      note(`tunnel connect failed for ${destination}: ${reason}`);
+      throw error;
+    }
+
+    let answered = false;
+    const tunnel = new XorSocket(raw, (chunk) => {
+      if (answered) return;
+      answered = true;
+      const shown = Math.min(chunk.length, MAX_LOGGED_BYTES);
+      note(`relay said ${shown}B: ${escapeBytes(chunk)}`);
+    });
+    const closedEarly = (): void => {
+      if (answered) return;
+      note(`relay closed the tunnel before the destination answered (${destination})`);
+    };
+    tunnel.once("close", closedEarly);
+    // A tunnel that was already gone when it arrived never emits its own close.
+    if (raw.destroyed) closedEarly();
+
     tunnel.write(Buffer.from(`<h>${target.host}<p>${target.port}</p></h>`, "latin1"));
     return tunnel;
   };
