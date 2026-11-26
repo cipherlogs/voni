@@ -82,12 +82,16 @@ export {
   HOSTING_ASNS,
   classifyAsn,
   cymruLookup,
+  dohTxtResolver,
   parseCymruOrigin,
+  systemThenDohTxtResolver,
   validateExit,
   type AsnLookup,
   type AsnRecord,
+  type DohTxtResolverOptions,
   type ExitRejectionReason,
   type ExitVerdict,
+  type TxtResolver,
 } from "./validate";
 export { exitTunnelDialer, tunneledTransport, type ExitTunnelOptions } from "./transport";
 export { type TuxlerAccountState, type TuxlerTier } from "./account";
