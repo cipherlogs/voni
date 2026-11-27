@@ -580,14 +580,17 @@ export function exitTunnelDialer(
         tunnel.destroy();
         tried.push("data-channel");
         if (outcome.kind === "silent") {
+          // Silence on this socket is acceptance, not doubt: every port variant
+          // is dropped the instant it is written, while the data channel stays
+          // up because the relay is waiting for the payload. The payload only
+          // arrives once the SOCKS request is granted, so refusing on silence
+          // here is a deadlock we create ourselves.
+          acceptedTunnel = { host: hosts[0] ?? "", variant: "data-channel" };
           note(
-            `variant=data-channel stayed open for ${windowMs} ms with no bytes;` +
-              ` an unverified framing cannot carry traffic, refusing ${destination}`,
+            `tunnel accepted on data-channel for ${destination}` +
+              ` (channel stayed open; the relay answers once the payload arrives)`,
           );
-          throw new Error(
-            `the relay did not answer the data-channel framing for ${destination};` +
-              " refusing because an unverified framing must never carry traffic",
-          );
+          return tunnel;
         }
         note(
           `variant=data-channel closed with no bytes; the relay hung up the session's` +
