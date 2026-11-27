@@ -34,8 +34,20 @@ import { dirname } from "node:path";
 
 import { parseControlUrl } from "./browser-exit-pool.mjs";
 
-/** The gate the ticket names: a Click may start with three exits in hand. */
+/**
+ * How many ready exits a Click wants in hand. It is a wish, not a requirement:
+ * the relay gives a session exactly one live exit (a newer change kills the older
+ * port — see `docs/agents/tuxler-exit-protocol.md`), so the client reports
+ * `liveExitLimit` and the gate can only require what the protocol can deliver.
+ */
 export const POOL_GATE_MIN_READY = 3;
+
+/** The ready count this health report can actually reach. */
+function requiredReady(record) {
+  const declared = Number(record?.liveExitLimit ?? record?.pool?.liveExitLimit);
+  if (!Number.isFinite(declared) || declared < 1) return POOL_GATE_MIN_READY;
+  return Math.min(POOL_GATE_MIN_READY, Math.floor(declared));
+}
 /** Three minutes: a refill plus a handshake, twice over, and no longer. */
 export const POOL_GATE_TIMEOUT_MS = 180_000;
 /** A poll is cheap; a tight loop against the client is not. */
@@ -235,7 +247,8 @@ export function evaluatePoolGate(health) {
     };
   }
 
-  if (usable.length >= POOL_GATE_MIN_READY) {
+  const required = requiredReady(record);
+  if (usable.length >= required) {
     return { ok: true, reason: null, detail: null, retryable: false, ...seen };
   }
 
@@ -278,7 +291,7 @@ export function evaluatePoolGate(health) {
   return {
     ok: false,
     reason: "short-of-exits",
-    detail: `only ${usable.length} of ${POOL_GATE_MIN_READY} exits are ready`,
+    detail: `only ${usable.length} of ${required} exits are ready`,
     retryable: true,
     ...seen,
   };
