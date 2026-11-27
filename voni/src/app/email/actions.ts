@@ -29,6 +29,8 @@ import {
   MAX_JOB_SECONDS,
   RUNNER_OSES,
   parseInterval,
+  parseRestartSeconds,
+  parseSegmentSeconds,
   parseWindowSeconds,
   parseWindowStartHour,
   windowRemainingSeconds,
@@ -1017,17 +1019,25 @@ export async function saveGithubSchedule(
   const startHour = parseWindowStartHour(formData.get("startHour"));
   if (!startHour.ok) return { ok: false, error: startHour.reason };
 
+  const segment = parseSegmentSeconds(formData.get("segment"));
+  if (!segment.ok) return { ok: false, error: segment.reason };
+
+  const restart = parseRestartSeconds(formData.get("restart"));
+  if (!restart.ok) return { ok: false, error: restart.reason };
+
   await saveSourceSchedule(GITHUB_SOURCE_PRODUCER, {
     intervalSeconds: interval.value,
     windowSeconds: activeWindow.value,
     windowStartHour: startHour.value,
+    segmentSeconds: segment.value,
+    restartSeconds: restart.value,
   });
   revalidatePath("/email");
 
   return {
     ok: true,
     message:
-      "Schedule saved. The new interval, window and start hour apply on the next dispatch.",
+      "Schedule saved. The new pace applies on the next dispatch: one segment of clicking, then a new runner after the restart gap.",
   };
 }
 

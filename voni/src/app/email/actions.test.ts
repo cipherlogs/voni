@@ -1192,7 +1192,7 @@ test("every source action ends in a fixed sentence, and a refusal writes nothing
   const schedule = fnBody("saveGithubSchedule");
   assert.match(
     schedule,
-    /"Schedule saved\. The new interval, window and start hour apply on the next dispatch\."/,
+    /"Schedule saved\. The new pace applies on the next dispatch: one segment of clicking, then a new runner after the restart gap\."/,
   );
 });
 

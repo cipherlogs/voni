@@ -14,6 +14,7 @@ import {
   RUNNER_OSES,
   WINDOW_SECONDS,
   clicksPerDay,
+  clicksPerSegment,
   deadAfterSeconds,
   decideDue,
   insideWindow,
@@ -133,24 +134,32 @@ test("parseWindowStartHour accepts 0..23 in UTC", () => {
   }
 });
 
-test("clicks/day matches the numbers the card states", () => {
-  // 4 targets × 3 OSes every 60 s over 12 h.
-  assert.equal(clicksPerDay(60, 43_200, 4, 3), 8_640);
-  assert.equal(clicksPerDay(15, 43_200, 4, 3), 34_560);
-  assert.equal(clicksPerDay(60, 86_400, 4, 3), 17_280);
+test("clicks/day is segments per day, not passes per day", () => {
+  // A 60 s interval guards the threshold to 120 s, so a 60 s segment and a
+  // 60 s restart gap make a 3-minute cycle: 240 of them in 12 h, four clicks
+  // each (one pass over four targets), from three OSes.
+  assert.equal(clicksPerDay(60, 43_200, 60, 60, 4, 3), 2_880);
+  // The 10k shape: one 15 s pass over five targets plus a 100 s runner startup
+  // is a 115 s cycle, 751 of them in 24 h, capped at seven clicks per runner.
+  assert.equal(clicksPerDay(15, 86_400, 15, 60, 5, 3), 11_265);
+  // A longer segment does not add clicks past the pool budget, and it makes the
+  // cycle longer, so the day holds fewer of them.
+  assert.equal(clicksPerDay(15, 86_400, 300, 60, 5, 3), 4_536);
 });
 
 test("clicks/day is zero for input that cannot describe traffic", () => {
-  for (const [interval, window, targets, oses] of [
-    [0, 43_200, 4, 3],
-    [-60, 43_200, 4, 3],
-    [Number.NaN, 43_200, 4, 3],
-    [60, 0, 4, 3],
-    [60, 43_200, 0, 3],
-    [60, 43_200, 4, 0],
-    [60, 43_200, Number.NaN, 3],
+  for (const [interval, window, segment, restart, targets, oses] of [
+    [0, 43_200, 60, 60, 4, 3],
+    [-60, 43_200, 60, 60, 4, 3],
+    [Number.NaN, 43_200, 60, 60, 4, 3],
+    [60, 0, 60, 60, 4, 3],
+    [60, 43_200, 0, 60, 4, 3],
+    [60, 43_200, 60, 0, 4, 3],
+    [60, 43_200, 60, 60, 0, 3],
+    [60, 43_200, 60, 60, 4, 0],
+    [60, 43_200, 60, 60, Number.NaN, 3],
   ] as const) {
-    assert.equal(clicksPerDay(interval, window, targets, oses), 0);
+    assert.equal(clicksPerDay(interval, window, segment, restart, targets, oses), 0);
   }
 });
 
@@ -247,12 +256,32 @@ test("planSegments refuses a duration that is not a positive whole number", () =
   }
 });
 
-test("deadAfterSeconds is twice the interval with a ten-minute floor", () => {
-  assert.equal(deadAfterSeconds(15), 600);
-  assert.equal(deadAfterSeconds(60), 600);
-  assert.equal(deadAfterSeconds(300), 600);
-  assert.equal(deadAfterSeconds(600), 1_200);
-  assert.equal(deadAfterSeconds(3_600), 7_200);
+test("deadAfterSeconds is the operator's restart gap, guarded against flapping", () => {
+  // The restart gap is the pace the operator asked for...
+  assert.equal(deadAfterSeconds(15, 60), 60);
+  assert.equal(deadAfterSeconds(15, 300), 300);
+  // ...but a slow pass must not make a healthy runner look gone...
+  assert.equal(deadAfterSeconds(600, 60), 1_200);
+  assert.equal(deadAfterSeconds(3_600, 60), 7_200);
+  // ...and a single 45 s click must never do it either.
+  assert.equal(deadAfterSeconds(1, 5), 60);
+});
+
+test("clicksPerSegment is capped by what the exit pool can pay for", () => {
+  // One pass over five targets fits the ten-change bucket with room to spare.
+  assert.equal(clicksPerSegment(15, 15, 5), 5);
+  // Four passes would ask for 20; the bucket pays for about seven.
+  assert.equal(clicksPerSegment(15, 60, 5), 7);
+  assert.equal(clicksPerSegment(15, 60, 1), 4);
+  // Nothing describable clicks nothing.
+  for (const [interval, segment, targets] of [
+    [0, 60, 5],
+    [15, 0, 5],
+    [15, 60, 0],
+    [Number.NaN, 60, 5],
+  ] as const) {
+    assert.equal(clicksPerSegment(interval, segment, targets), 0);
+  }
 });
 
 /** The shared schedule the card and ticker both read: 60 s, 12 h, 07:00 UTC. */
@@ -261,6 +290,9 @@ const schedule = {
   intervalSeconds: 60,
   windowSeconds: 43_200,
   windowStartHour: 7,
+  // One minute of clicking, one minute to replace the runner: a 2-minute cycle.
+  segmentSeconds: 60,
+  restartSeconds: 60,
 } as const;
 
 test("an OS with no recent click is due; a live one is not", () => {
@@ -269,8 +301,8 @@ test("an OS with no recent click is due; a live one is not", () => {
     now: at("2026-03-04T09:00:00Z"),
     lastDispatchedAt: null,
     newestClickByOs: {
-      ubuntu: at("2026-03-04T08:58:00Z"),
-      windows: at("2026-03-04T08:59:00Z"),
+      ubuntu: at("2026-03-04T08:59:30Z"),
+      windows: at("2026-03-04T08:59:45Z"),
       macos: at("2026-03-04T09:00:00Z"),
     },
   });
@@ -282,9 +314,9 @@ test("an OS with no recent click is due; a live one is not", () => {
     now: at("2026-03-04T09:00:00Z"),
     lastDispatchedAt: null,
     newestClickByOs: {
-      ubuntu: at("2026-03-04T08:58:00Z"),
+      ubuntu: at("2026-03-04T08:59:30Z"),
       windows: null,
-      macos: at("2026-03-04T08:51:00Z"),
+      macos: at("2026-03-04T08:59:45Z"),
     },
   });
 
@@ -293,9 +325,11 @@ test("an OS with no recent click is due; a live one is not", () => {
 });
 
 test("an OS is dead once its newest click is a full threshold old", () => {
+  // 60 s interval against a 60 s restart gap: the guard makes the threshold
+  // 120 s, so a click 119 s ago is live and one exactly 120 s ago is not.
   const liveAtBoundary = decideDue({
     ...schedule,
-    now: at("2026-03-04T09:10:00Z"),
+    now: at("2026-03-04T09:02:00Z"),
     lastDispatchedAt: null,
     newestClickByOs: {
       ubuntu: at("2026-03-04T09:00:01Z"),
@@ -307,7 +341,7 @@ test("an OS is dead once its newest click is a full threshold old", () => {
 
   const deadAtBoundary = decideDue({
     ...schedule,
-    now: at("2026-03-04T09:10:00Z"),
+    now: at("2026-03-04T09:02:00Z"),
     lastDispatchedAt: null,
     newestClickByOs: {
       ubuntu: at("2026-03-04T09:00:00Z"),
@@ -362,21 +396,21 @@ test("an out-of-window source is silent even when every OS is dead", () => {
   }
 });
 
-test("a dead OS is not dispatched twice inside the anti-thrash throttle", () => {
+test("a dead OS is not dispatched twice inside the restart gap", () => {
   const throttled = decideDue({
     ...schedule,
     now: at("2026-03-04T09:00:00Z"),
-    lastDispatchedAt: at("2026-03-04T08:55:00Z"),
+    lastDispatchedAt: at("2026-03-04T08:59:30Z"),
     newestClickByOs: {},
   });
 
   assert.equal(throttled.kind, "throttled");
-  if (throttled.kind === "throttled") assert.equal(throttled.resumeInSeconds, 300);
+  if (throttled.kind === "throttled") assert.equal(throttled.resumeInSeconds, 30);
 
   const expired = decideDue({
     ...schedule,
     now: at("2026-03-04T09:00:00Z"),
-    lastDispatchedAt: at("2026-03-04T08:50:00Z"),
+    lastDispatchedAt: at("2026-03-04T08:59:00Z"),
     newestClickByOs: {},
   });
   assert.equal(expired.kind, "due");

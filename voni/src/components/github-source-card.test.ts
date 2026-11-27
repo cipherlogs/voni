@@ -241,7 +241,7 @@ test("each write control owns its pending state and its own changed text", () =>
 test("the preview is computed from the draft, before anything is saved", () => {
   assert.match(
     card,
-    /clicksPerDay\(\s*draftInterval,\s*draftWindow,\s*targetCount,\s*RUNNER_OSES\.length,?\s*\)/,
+    /clicksPerDay\(\s*draftInterval,\s*draftWindow,\s*draftSegment,\s*draftRestart,\s*targetCount,\s*RUNNER_OSES\.length,?\s*\)/,
     "the preview reads the form values, not the saved row",
   );
   assert.match(
@@ -251,7 +251,7 @@ test("the preview is computed from the draft, before anything is saved", () => {
   );
   assert.match(
     card,
-    /data-testid="email-github-preview"[\s\S]*?clicks\/day with this schedule/,
+    /data-testid="email-github-preview"[\s\S]*?clicks\/day with this pace/,
   );
   // The header stays the saved row's number.
   assert.match(card, /perDay === null \? "—" : formatCount\(perDay\)/);

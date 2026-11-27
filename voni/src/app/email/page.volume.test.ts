@@ -59,7 +59,7 @@ test("Grafana's term reads the live check, and a failed read is null", () => {
 test("GitHub's term reads the saved schedule, the shared target count and 3 OSes", () => {
   assert.match(
     controlData,
-    /runnerClicksPerDay\(\s*\n\s*githubConfig\.intervalSeconds,\s*\n\s*githubConfig\.windowSeconds,\s*\n\s*activeTargets\.length,\s*\n\s*RUNNER_OSES\.length,/,
+    /runnerClicksPerDay\(\s*\n\s*githubConfig\.intervalSeconds,\s*\n\s*githubConfig\.windowSeconds,\s*\n\s*githubConfig\.segmentSeconds,\s*\n\s*githubConfig\.restartSeconds,\s*\n\s*activeTargets\.length,\s*\n\s*RUNNER_OSES\.length,/,
   );
   assert.match(
     controlData,
@@ -81,7 +81,7 @@ test("a paused target lowers both the aggregate and the card's denominator", () 
   );
   assert.match(
     controlData,
-    /runnerClicksPerDay\(\s*\n\s*githubConfig\.intervalSeconds,\s*\n\s*githubConfig\.windowSeconds,\s*\n\s*activeTargets\.length,/,
+    /runnerClicksPerDay\(\s*\n\s*githubConfig\.intervalSeconds,\s*\n\s*githubConfig\.windowSeconds,\s*\n\s*githubConfig\.segmentSeconds,\s*\n\s*githubConfig\.restartSeconds,\s*\n\s*activeTargets\.length,/,
     "the aggregate counts enabled targets only",
   );
   assert.match(
@@ -96,10 +96,10 @@ test("a paused target lowers both the aggregate and the card's denominator", () 
   );
 
   // Pausing one of four targets lowers both numbers by exactly a quarter.
-  const all = runnerClicksPerDay(60, 12 * 3_600, 4, RUNNER_OSES.length);
-  const paused = runnerClicksPerDay(60, 12 * 3_600, 3, RUNNER_OSES.length);
-  assert.equal(all, 8_640);
-  assert.equal(paused, 6_480);
+  const all = runnerClicksPerDay(60, 12 * 3_600, 60, 60, 4, RUNNER_OSES.length);
+  const paused = runnerClicksPerDay(60, 12 * 3_600, 60, 60, 3, RUNNER_OSES.length);
+  assert.equal(all, 2_880);
+  assert.equal(paused, 2_160);
 });
 
 test("the page adds no second day arithmetic and Burst adds no daily volume", () => {
@@ -122,12 +122,12 @@ test("the page adds no second day arithmetic and Burst adds no daily volume", ()
 });
 
 test("the imported functions still produce the spec's numbers", () => {
-  // GitHub: 60 s over 12 h, four targets, three OSes.
-  assert.equal(runnerClicksPerDay(60, 12 * 3_600, 4, RUNNER_OSES.length), 8_640);
-  // The 15 s floor over the same window.
-  assert.equal(runnerClicksPerDay(15, 12 * 3_600, 4, RUNNER_OSES.length), 34_560);
-  // A 24 h window at 60 s.
-  assert.equal(runnerClicksPerDay(60, 24 * 3_600, 4, RUNNER_OSES.length), 17_280);
+  // GitHub: a 60 s segment plus a 60 s restart gap over 12 h, four targets,
+  // three OSes: 360 cycles x 3 x 4 clicks.
+  assert.equal(runnerClicksPerDay(60, 12 * 3_600, 60, 60, 4, RUNNER_OSES.length), 2_880);
+  // The 10k shape: one 15 s pass over five targets, a 24 h window, replaced a
+  // minute after it goes silent.
+  assert.equal(runnerClicksPerDay(15, 24 * 3_600, 15, 60, 5, RUNNER_OSES.length), 11_265);
   // Grafana: 5-minute check on four probes at three clicks per run.
   assert.equal(grafanaClicksPerDay(5 * 60_000, 4, 3), 3_456);
 });

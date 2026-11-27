@@ -35,9 +35,12 @@ import {
 import type { GithubClickSummary, GithubOsStats } from "@/lib/email/clicks";
 import {
   INTERVAL_SECONDS,
+  RESTART_SECONDS,
   RUNNER_OSES,
   WINDOW_SECONDS,
+  CLICKS_PER_SEGMENT_BUDGET,
   clicksPerDay,
+  clicksPerSegment,
   deadAfterSeconds,
   insideWindow,
   type RunnerOs,
@@ -74,6 +77,8 @@ export type GithubSourceConfigView = {
   intervalSeconds: number;
   windowSeconds: number;
   windowStartHour: number;
+  segmentSeconds: number;
+  restartSeconds: number;
   lastDispatchedAt: Date | null;
 };
 
@@ -97,7 +102,7 @@ export type GithubSourceCardProps = {
     previous: ControlState,
     formData: FormData,
   ) => Promise<ControlState>;
-  /** Save the schedule; fields `interval`, `window`, `startHour`. */
+  /** Save the schedule; fields `interval`, `window`, `startHour`, `segment`, `restart`. */
   saveSchedule: (
     previous: ControlState,
     formData: FormData,
@@ -165,6 +170,32 @@ const INTERVAL_ITEMS: Record<string, string> = Object.fromEntries(
 
 const START_HOUR_ITEMS: Record<string, string> = Object.fromEntries(
   START_HOURS.map((hour) => [String(hour), formatStartHour(hour)]),
+);
+
+/** How many passes one runner may make: one is the budget-fitting default. */
+const PASSES = [1, 2, 3, 4, 5, 6] as const;
+
+const PASS_ITEMS: Record<string, string> = Object.fromEntries(
+  PASSES.map((passes) => [String(passes), passes === 1 ? "1 pass" : `${passes} passes`]),
+);
+
+/**
+ * The saved segment length expressed as whole passes of the current interval,
+ * clamped to what the select offers. A row saved as 90 s against a 30 s
+ * interval is three passes; a row saved before this control existed still reads
+ * as something the operator can see and change.
+ */
+function passesFromSegment(
+  segmentSeconds: number | undefined,
+  intervalSeconds: number | undefined,
+): number {
+  const segment = segmentSeconds ?? 15;
+  const interval = intervalSeconds ?? 15;
+  const passes = Math.round(segment / Math.max(1, interval));
+  return Math.min(PASSES[PASSES.length - 1]!, Math.max(1, passes));
+}
+const RESTART_ITEMS: Record<string, string> = Object.fromEntries(
+  RESTART_SECONDS.map((seconds) => [String(seconds), formatInterval(seconds)]),
 );
 
 /** The coverage basis the card states beside `targets x/x`. */
@@ -352,11 +383,12 @@ function osStatus(
   newest: Date | undefined,
   now: Date,
   intervalSeconds: number,
+  restartSeconds: number,
   outsideWindow: boolean,
 ): OsStatus {
   if (outsideWindow) return "outside";
   if (!newest) return "never";
-  const thresholdMs = deadAfterSeconds(intervalSeconds) * 1_000;
+  const thresholdMs = deadAfterSeconds(intervalSeconds, restartSeconds) * 1_000;
   return now.getTime() - newest.getTime() >= thresholdMs ? "stale" : "live";
 }
 
@@ -444,6 +476,17 @@ export function GithubSourceCard({
   const [draftStartHour, setDraftStartHour] = useState<number>(
     () => config?.windowStartHour ?? 7,
   );
+  // The pace: how many passes one runner makes, and how soon a silent one is
+  // replaced. Editable because "more clicks" and "fewer clicks" are this pair,
+  // not the window. Passes rather than seconds: the exit pool pays for about
+  // seven clicks, so "one pass over the targets" is the unit that fits a budget.
+  const [draftPasses, setDraftPasses] = useState<number>(() =>
+    passesFromSegment(config?.segmentSeconds, config?.intervalSeconds),
+  );
+  const draftSegment = draftPasses * draftInterval;
+  const [draftRestart, setDraftRestart] = useState<number>(
+    () => config?.restartSeconds ?? RESTART_SECONDS[2],
+  );
 
   const configured = config !== null;
   const enabled = config?.enabled ?? false;
@@ -481,6 +524,8 @@ export function GithubSourceCard({
     ? clicksPerDay(
         config.intervalSeconds,
         config.windowSeconds,
+        config.segmentSeconds,
+        config.restartSeconds,
         targetCount,
         RUNNER_OSES.length,
       )
@@ -489,12 +534,25 @@ export function GithubSourceCard({
   const previewPerDay = clicksPerDay(
     draftInterval,
     draftWindow,
+    draftSegment,
+    draftRestart,
     targetCount,
     RUNNER_OSES.length,
   );
+  const previewPerSegment = clicksPerSegment(
+    draftInterval,
+    draftSegment,
+    targetCount,
+  );
   const statuses = config
     ? RUNNER_OSES.map((os) =>
-        osStatus(newestByOs[os], now, config.intervalSeconds, outsideWindow),
+        osStatus(
+          newestByOs[os],
+          now,
+          config.intervalSeconds,
+          config.restartSeconds,
+          outsideWindow,
+        ),
       )
     : [];
   // Keyed, not searched: the summary always carries one row per OS, and a
@@ -656,18 +714,97 @@ export function GithubSourceCard({
                 </Field>
               </FieldGroup>
 
+              <FieldGroup className="grid gap-4 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor="email-github-segment">
+                    Passes per runner
+                  </FieldLabel>
+                  <input type="hidden" name="segment" value={draftSegment} />
+                  <Select
+                    items={PASS_ITEMS}
+                    value={String(draftPasses)}
+                    onValueChange={(next) => {
+                      if (next) setDraftPasses(Number(next));
+                    }}
+                    disabled={savingSchedule}
+                  >
+                    <SelectTrigger
+                      id="email-github-segment"
+                      className="w-full"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {PASSES.map((passes) => (
+                          <SelectItem key={passes} value={String(passes)}>
+                            {passes === 1 ? "1 pass" : `${passes} passes`}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    One pass clicks every target once. A runner can pay for about{" "}
+                    {CLICKS_PER_SEGMENT_BUDGET} clicks, so one pass over{" "}
+                    {targetCount} target{targetCount === 1 ? "" : "s"} is what
+                    fits; extra passes mostly fail.
+                  </FieldDescription>
+                </Field>
+
+                <Field>
+                  <FieldLabel htmlFor="email-github-restart">
+                    Restart gap
+                  </FieldLabel>
+                  <input type="hidden" name="restart" value={draftRestart} />
+                  <Select
+                    items={RESTART_ITEMS}
+                    value={String(draftRestart)}
+                    onValueChange={(next) => {
+                      if (next) setDraftRestart(Number(next));
+                    }}
+                    disabled={savingSchedule}
+                  >
+                    <SelectTrigger
+                      id="email-github-restart"
+                      className="w-full"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {RESTART_SECONDS.map((seconds) => (
+                          <SelectItem key={seconds} value={String(seconds)}>
+                            {formatInterval(seconds)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    How soon a silent runner is replaced. This pair is the
+                    pace: {previewPerSegment} click
+                    {previewPerSegment === 1 ? "" : "s"}, then a new runner{" "}
+                    {formatInterval(draftRestart)} later.
+                  </FieldDescription>
+                </Field>
+              </FieldGroup>
+
               <p className="text-sm" data-testid="email-github-preview">
                 <span className="font-medium">
                   {formatCount(previewPerDay)}
                 </span>{" "}
-                clicks/day with this schedule
+                clicks/day with this pace
                 <span className="text-muted-foreground">
                   {" "}
-                  — one pass every {formatInterval(draftInterval)} for{" "}
+                  — {draftPasses} pass{draftPasses === 1 ? "" : "es"} of{" "}
+                  {formatInterval(draftInterval)} each, over{" "}
                   {formatWindow(draftWindow)} from{" "}
                   {formatStartHour(draftStartHour)}, clicking {targetCount}{" "}
                   target{targetCount === 1 ? "" : "s"} from{" "}
-                  {RUNNER_OSES.length} OSes.
+                  {RUNNER_OSES.length} OSes, capped at{" "}
+                  {CLICKS_PER_SEGMENT_BUDGET} clicks per runner by the exit
+                  budget.
                 </span>
               </p>
 
@@ -747,6 +884,7 @@ export function GithubSourceCard({
                   newest,
                   now,
                   config.intervalSeconds,
+                  config.restartSeconds,
                   outsideWindow,
                 );
                 const osStats = osStatsFor(os);

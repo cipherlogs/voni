@@ -14,6 +14,7 @@ import {
 import { EmailGateForm } from "@/components/email-gate-form";
 import { BurstCard } from "@/components/burst-card";
 import { GithubSourceCard } from "@/components/github-source-card";
+import { LivePanel } from "@/components/live-panel";
 import { ProxyCard } from "@/components/proxy-card";
 import { RotationCard } from "@/components/rotation-card";
 import { TargetsCard } from "@/components/targets-card";
@@ -48,6 +49,7 @@ import {
 import type { ClickProxyKind } from "@/lib/email/click-report";
 import { PAGE_COOKIE, isPageUnlocked } from "@/lib/email/page-gate";
 import { readRotationSetting } from "@/lib/email/rotation";
+import { readLiveSnapshot } from "@/lib/email/live";
 import { readProxyHealthOrReport } from "@/lib/email/proxy-health";
 import { readProxySettings } from "@/lib/email/proxy-settings";
 import {
@@ -342,6 +344,7 @@ async function EmailControlData({
     rotationSetting,
     proxySettings,
     proxyHealth,
+    live,
   ] = await Promise.all([
     getCheck(id),
     listProbes(),
@@ -371,6 +374,10 @@ async function EmailControlData({
     // has reported yet; an absent client is a state, not an error.
     readProxySettings(),
     readProxyHealthOrReport(),
+    // The live panel's first paint. The same read backs `GET /api/email/live`,
+    // which the panel polls every five seconds after this, so the server render
+    // and a poll are one shape.
+    readLiveSnapshot(),
   ]);
 
   // One resolution rule for the whole console: the setting when it exists, else
@@ -412,6 +419,8 @@ async function EmailControlData({
       ? runnerClicksPerDay(
           githubConfig.intervalSeconds,
           githubConfig.windowSeconds,
+          githubConfig.segmentSeconds,
+          githubConfig.restartSeconds,
           activeTargets.length,
           RUNNER_OSES.length,
         )
@@ -421,7 +430,10 @@ async function EmailControlData({
 
   return (
     <div className="grid gap-6">
-      {/* Targets first: one list, every source. The card's own add, pause,
+      {/* First, because it answers the only question an operator opens this page
+          to ask: is it clicking, right now, and how many. */}
+      <LivePanel initial={live} />
+      {/* Targets next: one list, every source. The card's own add, pause,
           resume and remove controls are the only target controls on the page. */}
       <TargetsCard
         targets={targets}

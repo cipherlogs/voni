@@ -27,6 +27,8 @@ const SOURCE: SourceConfig = {
   intervalSeconds: 60,
   windowSeconds: 43_200,
   windowStartHour: 7,
+  segmentSeconds: 60,
+  restartSeconds: 60,
   lastDispatchedAt: null,
 };
 
@@ -34,6 +36,8 @@ const SOURCE: SourceConfig = {
 const WINDOW_START = new Date("2026-11-23T07:00:00Z");
 /** Inside the window with exactly one hour left. */
 const WINDOW_LAST_HOUR = new Date("2026-11-23T18:00:00Z");
+/** The 07:00–19:00 UTC window's exclusive end. */
+const END_OF_WINDOW = new Date("2026-11-23T19:00:00Z");
 /** After the 12 h window that opened at 07:00 has closed. */
 const AFTER_WINDOW = new Date("2026-11-23T20:00:00Z");
 
@@ -190,12 +194,12 @@ test("only the dead OS is dispatched, with a job-sized segment, and it is record
   const summary = await runSourceTick(deps);
 
   assert.equal(summary.status, "due");
-  assert.equal(summary.segmentSeconds, 20_000);
+  assert.equal(summary.segmentSeconds, 60);
   assert.equal(summary.remainingSeconds, 43_200);
   assert.deepEqual(calls.dispatched, [
     {
       os: "macos",
-      segmentSeconds: 20_000,
+      segmentSeconds: 60,
       intervalSeconds: 60,
       selection: "random",
     },
@@ -212,7 +216,7 @@ test("only the dead OS is dispatched, with a job-sized segment, and it is record
 });
 
 test("anti-thrash suppresses a repeat dispatch and says when it may resume", async () => {
-  const now = new Date(WINDOW_START.getTime() + 60_000);
+  const now = new Date(WINDOW_START.getTime() + 30_000);
   const { deps, calls } = harness(
     { lastDispatchedAt: WINDOW_START },
     { now },
@@ -221,27 +225,41 @@ test("anti-thrash suppresses a repeat dispatch and says when it may resume", asy
   const summary = await runSourceTick(deps);
 
   assert.equal(summary.status, "throttled");
-  assert.equal(summary.resumeInSeconds, 540);
+  assert.equal(summary.resumeInSeconds, 30);
   assert.deepEqual(calls.dispatched, []);
   assert.deepEqual(calls.recorded, []);
   assert.ok(summary.os.every((outcome) => outcome.action === "skipped"));
 });
 
-test("a segment is the remaining window when that is shorter than the job cap", async () => {
+test("a segment is the configured length, clamped so it never outlives the window", async () => {
   const { deps, calls } = harness({}, { now: WINDOW_LAST_HOUR });
 
   const summary = await runSourceTick(deps);
 
   assert.equal(summary.remainingSeconds, 3_600);
-  assert.equal(summary.segmentSeconds, 3_600);
+  assert.equal(summary.segmentSeconds, 60, "the configured segment, not the whole window");
   for (const outcome of summary.os) {
     if (outcome.action !== "dispatched") continue;
-    assert.equal(outcome.segmentSeconds, 3_600);
+    assert.equal(outcome.segmentSeconds, 60);
   }
   assert.equal(calls.dispatched.length, 3);
   assert.ok(
-    calls.dispatched.every((call) => call.segmentSeconds === 3_600),
+    calls.dispatched.every((call) => call.segmentSeconds === 60),
     "no dispatch may outlive the open window",
+  );
+});
+
+test("a segment in the window's last minute is clamped to what is left", async () => {
+  const thirtySecondsBeforeEnd = new Date(END_OF_WINDOW.getTime() - 30_000);
+  const { deps, calls } = harness({}, { now: thirtySecondsBeforeEnd });
+
+  const summary = await runSourceTick(deps);
+
+  assert.equal(summary.remainingSeconds, 30);
+  assert.equal(summary.segmentSeconds, 30);
+  assert.ok(
+    calls.dispatched.every((call) => call.segmentSeconds === 30),
+    "a 60 s segment may not cross the window boundary",
   );
 });
 
@@ -378,7 +396,7 @@ test("a dry run reports the decision per OS and dispatches or records nothing", 
 
   assert.equal(summary.status, "due");
   assert.equal(summary.dryRun, true);
-  assert.equal(summary.segmentSeconds, 20_000);
+  assert.equal(summary.segmentSeconds, 60);
   assert.deepEqual(calls.dispatched, [], "no dispatch in a dry run");
   assert.deepEqual(calls.recorded, [], "no last_dispatched_at write either");
   assert.deepEqual(
@@ -413,7 +431,7 @@ test("the tick route reads the dry-run flag from the request body", () => {
   );
 });
 
-test("a full 12 h window with no clicks is due on cadence and never overruns it", async () => {
+test("a full 12 h window with no clicks is due on the restart cadence and never overruns it", async () => {
   const start = WINDOW_START.getTime();
   const minute = 60_000;
   const windowMs = 43_200_000;
@@ -462,35 +480,33 @@ test("a full 12 h window with no clicks is due on cadence and never overruns it"
     }
   }
 
-  // No clicks means every OS stays dead; the cadence is the anti-thrash floor.
-  assert.equal(dueAt.length, 72, "one due tick every ten minutes for 12 h");
+  // No clicks means every OS stays dead, so the cadence is the operator's
+  // restart gap: one tick a minute for twelve hours.
+  assert.equal(dueAt.length, 720, "one due tick every minute for 12 h");
   for (let index = 1; index < dueAt.length; index += 1) {
     assert.equal(
       dueAt[index]! - dueAt[index - 1]!,
-      600_000,
-      "the next segment starts exactly when the throttle allows it",
+      60_000,
+      "the next segment starts exactly when the restart gap allows it",
     );
   }
 
   assert.equal(dispatches.length, dueAt.length * 3, "three OSes per due tick");
   for (const dispatch of dispatches) {
     assert.ok(
-      dispatch.segment <= 20_000,
-      `segment ${dispatch.segment} must not exceed the one job cap`,
-    );
-    assert.ok(
       dispatch.segment <= dispatch.remaining,
       `segment ${dispatch.segment} must not outlive the open window (${dispatch.remaining} left)`,
     );
     assert.equal(
       dispatch.segment,
-      Math.min(dispatch.remaining, 20_000),
-      "the segment is the smaller of what is left and the cap",
+      Math.min(dispatch.remaining, SOURCE.segmentSeconds),
+      "the segment is the smaller of what is left and the configured length",
     );
   }
 
-  // The last dispatch is clamped by the window, not by the cap.
-  assert.equal(dispatches[dispatches.length - 1]!.segment, 600);
+  // The last dispatch of the window is clamped by what is left, not by the
+  // setting: 43,140 s in, sixty seconds remain.
+  assert.equal(dispatches[dispatches.length - 1]!.segment, 60);
 });
 
 test("the worker ticks the source after the sweep and contains a ticker failure", () => {

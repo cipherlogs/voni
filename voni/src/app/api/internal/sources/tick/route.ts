@@ -33,7 +33,6 @@ import {
   type SourceConfig,
 } from "@/lib/email/source-config";
 import {
-  MAX_JOB_SECONDS,
   RUNNER_OSES,
   decideDue,
   windowRemainingSeconds,
@@ -185,6 +184,7 @@ export async function runSourceTick(
     intervalSeconds: config.intervalSeconds,
     windowSeconds: config.windowSeconds,
     windowStartHour: config.windowStartHour,
+    restartSeconds: config.restartSeconds,
     now,
     lastDispatchedAt: config.lastDispatchedAt,
     newestClickByOs: await readNewest(config.producer),
@@ -219,7 +219,10 @@ export async function runSourceTick(
     status: "due" as const,
     intervalSeconds: config.intervalSeconds,
     remainingSeconds,
-    segmentSeconds: Math.min(remainingSeconds, MAX_JOB_SECONDS),
+    // One dispatched job clicks for the configured segment, clamped so it never
+    // runs past the open window. The window is the day's eligible hours; this
+    // is the job that fills one slice of them.
+    segmentSeconds: Math.min(remainingSeconds, config.segmentSeconds),
     ...(dryRun ? { dryRun: true as const } : {}),
   };
 

@@ -939,6 +939,19 @@ export const emailSources = pgTable("email_sources", {
   intervalSeconds: integer("interval_seconds").notNull().default(60),
   /** How long one window runs, split into chained segments by the ticker. */
   windowSeconds: integer("window_seconds").notNull().default(43_200),
+  /**
+   * How long one dispatched job clicks before it ends and is replaced.
+   *
+   * Separate from `windowSeconds` because the exit pool meters ten changes per
+   * runner: a job can pay for about seven clicks, so a five-hour segment spends
+   * its budget in the first minute. The ticker dispatches this, not the window.
+   */
+  segmentSeconds: integer("segment_seconds").notNull().default(60),
+  /**
+   * How soon a silent runner may be replaced. Together with `segmentSeconds`
+   * this is the pace: one segment, one gap, per OS.
+   */
+  restartSeconds: integer("restart_seconds").notNull().default(60),
   /** UTC hour a window may start at, 0-23. */
   windowStartHour: integer("window_start_hour").notNull().default(7),
   lastDispatchedAt: timestamp("last_dispatched_at", { withTimezone: true }),

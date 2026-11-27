@@ -31,6 +31,10 @@ export type SourceConfig = {
   intervalSeconds: number;
   windowSeconds: number;
   windowStartHour: number;
+  /** How long one dispatched job clicks. */
+  segmentSeconds: number;
+  /** How soon a silent runner may be replaced; also the anti-thrash gap. */
+  restartSeconds: number;
   /** The anti-thrash guard; null when this source never dispatched. */
   lastDispatchedAt: Date | null;
 };
@@ -50,6 +54,8 @@ export async function readSourceConfig(
       intervalSeconds: emailSources.intervalSeconds,
       windowSeconds: emailSources.windowSeconds,
       windowStartHour: emailSources.windowStartHour,
+      segmentSeconds: emailSources.segmentSeconds,
+      restartSeconds: emailSources.restartSeconds,
       lastDispatchedAt: emailSources.lastDispatchedAt,
     })
     .from(emailSources)
@@ -108,6 +114,8 @@ export type SourceSchedule = {
   intervalSeconds: number;
   windowSeconds: number;
   windowStartHour: number;
+  segmentSeconds: number;
+  restartSeconds: number;
 };
 
 /**
@@ -126,9 +134,11 @@ export async function setSourceEnabled(
 }
 
 /**
- * Replace interval, window and start hour in one write, so the ticker can
- * never read a half-applied schedule (a 15 s interval against last week's
- * window).
+ * Replace the whole schedule in one write, so the ticker can never read a
+ * half-applied one (a 15 s interval against last week's window). The segment
+ * length and restart gap belong here for the same reason: together they are the
+ * pace, and a segment from one setting against a gap from another is a rate
+ * nobody chose.
  */
 export async function saveSourceSchedule(
   producer: ClickProducer,
@@ -141,6 +151,8 @@ export async function saveSourceSchedule(
       intervalSeconds: schedule.intervalSeconds,
       windowSeconds: schedule.windowSeconds,
       windowStartHour: schedule.windowStartHour,
+      segmentSeconds: schedule.segmentSeconds,
+      restartSeconds: schedule.restartSeconds,
       updatedAt: now,
     })
     .where(eq(emailSources.producer, producer));
