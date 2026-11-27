@@ -503,3 +503,42 @@ test("a report path the workflow uploads is written, even from a failed gate", (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a silence the pool reconnects from is not a terminal gate", () => {
+  // A real run failed at 44 s on `relay-silent` while the reconnect that cured it
+  // was already under way. The deadline is what bounds a silence, not the verdict.
+  const verdict = evaluatePoolGate(
+    health({
+      ready: 0,
+      pool: [],
+      lastError: { reason: "relay-silent", message: "the relay did not answer the change" },
+      session: { state: "failed", frames: [] },
+    }),
+  );
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.retryable, true, "the pool repairs a silence by reconnecting");
+});
+
+test("a session failure that no reconnect repairs is terminal", () => {
+  const verdict = evaluatePoolGate(
+    health({
+      ready: 0,
+      pool: [],
+      lastError: { reason: "login-rejected", message: "the account was refused" },
+      session: { state: "failed", frames: [] },
+    }),
+  );
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, "login-rejected");
+  assert.equal(verdict.retryable, false, "waiting cannot fix a rejected login");
+});
+
+test("one live exit satisfies the gate when the client reports the protocol limit", () => {
+  // A session owns one live exit: a newer change kills the older port. A run held
+  // one ready US exit and was failed as short-of-exits against a target of three.
+  const verdict = evaluatePoolGate(
+    health({ ready: 1, pool: [EXIT(14)], liveExitLimit: 1 }),
+  );
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.ready, 1);
+});

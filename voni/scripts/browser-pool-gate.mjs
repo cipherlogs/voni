@@ -258,18 +258,24 @@ export function evaluatePoolGate(health) {
   // about to change. `parked` is the pool's own verdict; trust it, and keep
   // polling to the deadline otherwise.
   const failure = seen.lastError;
-  const clientFailed = asRecord(record.session)?.state === "failed";
-  if (failure !== null && (record.parked === true || clientFailed)) {
-    const reason = text(failure.reason) ?? "client-not-ready";
+  const reason = text(failure?.reason) ?? null;
+  // A silence is the one session failure the pool repairs by itself: it closes
+  // the socket, reconnects, and comes back with a fresh port. A run was failed on
+  // `relay-silent` while the reconnect that fixed it was already scheduled, so a
+  // silence is never terminal here — the deadline is what bounds it.
+  const silenceHeals = reason === "relay-silent";
+  const sessionFailed = asRecord(record.session)?.state === "failed";
+  if (failure !== null && (record.parked === true || (sessionFailed && !silenceHeals))) {
+    const named = reason ?? "client-not-ready";
     return {
       ok: false,
-      reason,
-      detail: text(failure.message) ?? `the client reported ${reason}`,
+      reason: named,
+      detail: text(failure.message) ?? `the client reported ${named}`,
       retryable: false,
       ...seen,
     };
   }
-  if (record.session !== undefined && asRecord(record.session)?.state === "failed") {
+  if (sessionFailed && !silenceHeals) {
     return {
       ok: false,
       reason: "client-not-ready",
