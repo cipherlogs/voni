@@ -785,7 +785,7 @@ async function main() {
             // rest of the pass, and it is given back at once: the pass fails
             // loudly instead of substituting another address.
             if (result.failureReason === "exit-unavailable") {
-              const released = await releaseExit(config.poolUrl, passExit.exitId, "failed");
+              const released = await releaseExit(config.poolUrl, passExit.exitId, false);
               if (!released.ok) {
                 console.error(
                   `browser-click: exit ${passExit.exitId} was not released (${released.detail})`,
@@ -813,7 +813,7 @@ async function main() {
             const released = await releaseExit(
               config.poolUrl,
               taken.exit.exitId,
-              result.failure === null ? "good" : "failed",
+              result.failure === null,
             );
             if (!released.ok) {
               console.error(
@@ -846,7 +846,7 @@ async function main() {
         const released = await releaseExit(
           config.poolUrl,
           passExit.exitId,
-          passFailed ? "failed" : "good",
+          !passFailed,
         );
         if (!released.ok) {
           console.error(

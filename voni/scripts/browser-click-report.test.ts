@@ -8,7 +8,10 @@
  * reason to stop clicking. Nothing here reaches the network.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { finalUrlOf, postReport } from "./browser-click.mjs";
 
@@ -118,4 +121,15 @@ test("a failed navigation reports no final URL instead of being refused", () => 
     finalUrlOf({ url: () => "https://www.glizzitrium.com/BCMPW39K/CZ562T2/" }),
     "https://www.glizzitrium.com/BCMPW39K/CZ562T2/",
   );
+});
+
+test("the runner releases a lease with a boolean, the shape the control API enforces", () => {
+  // `ok` is a boolean in the control contract: a string made every release a
+  // `400 bad-release`, so an exit was never handed back and the pool decayed.
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "browser-click.mjs"), "utf8");
+  const calls = [...source.matchAll(/releaseExit\(([\s\S]*?)\);/g)].map((match) => match[1]);
+  assert.ok(calls.length >= 3, "the runner releases every lease it takes");
+  for (const call of calls) {
+    assert.doesNotMatch(call, /["'](good|failed)["']/, `a release passed a string: ${call.slice(0, 80)}`);
+  }
 });
