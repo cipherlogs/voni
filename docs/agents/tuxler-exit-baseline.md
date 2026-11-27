@@ -315,3 +315,34 @@ write to it). The next probe varies both.
 Also proven in this run: the release fix works (no more `bad-release` lines) and
 failed clicks now reach the intake (`1/1 reported`) instead of being discarded as
 `bad_final_url`.
+
+### Run 45920874247: the data channel is the tunnel, and it is one-shot
+
+Accepting silence on the session's second socket produced the first accepted
+tunnel of the whole effort:
+
+```
+tunnel accepted on data-channel for www.google.com:443
+  (channel stayed open; the relay answers once the payload arrives)
+```
+
+The port variants were still dropped instantly (`closed with no bytes`, 12 of
+them), and every other connection that pass hit:
+
+```
+17 × variant=data-channel busy or absent; skipped
+ 1 × variant=data-channel reused but the channel is busy or closed
+```
+
+So the relay's second connection is the exit tunnel, and a session can carry
+**one** tunnel at a time. A page load needs several connections, so the channel
+is spent on Chrome's first probe and everything after it fails.
+
+That leaves two designs, and picking one is a real decision, not a detail:
+- one session — hence one data channel — per exit or per concurrent click;
+- or a tunnel header that names the exit's own proxy (`<h>exitIp<p>port</p></h>`)
+  rather than the destination, with the destination negotiated through it.
+
+Both are guesses about an undocumented protocol, and each costs a run and a
+share of the account's daily changes. Nothing further should be built on one
+until the relay's own behaviour settles it.
