@@ -181,15 +181,17 @@ jobs:
           RUNNER_OS: ${{ inputs.os }}
         run: |
           # Bounded: a hung intake cannot hold the job, and one blip is retried
-          # rather than read as a broken push path. Only the status is printed.
-          status=$(curl -sS -o /dev/null -w "%{http_code}" \
+          # rather than read as a broken push path. The body is the intake's own
+          # reason (`{"ok":false,"reason":"bad_gate"}`), never the payload, so a
+          # refused report names what it disliked instead of failing blind.
+          status=$(curl -sS -o push-reason.json -w "%{http_code}" \
             --max-time 30 --retry 2 --retry-delay 2 \
             -X POST "$VONI_APP_URL/api/email/pool/report" \
             -H "content-type: application/json" \
             -H "x-voni-click-secret: $POOL_REPORT_SECRET" \
             -H "x-voni-runner-os: $RUNNER_OS" \
             --data-binary @pool-report.json)
-          echo "pool report: HTTP $status"
+          echo "pool report: HTTP $status reason=$(head -c 200 push-reason.json 2>/dev/null)"
           test "$status" = "200"
 
       - name: Stop the exit pool
