@@ -292,3 +292,26 @@ The pool's own gate line reads `0 ready exit(s) ... the segment may click`, whic
 is contradictory and should be reconciled: the gate said yes with `ready: 0`
 because it counted three usable leases, while the summary interpolates the
 client's `ready` field.
+
+### Run 45918797868: the header was not the variable
+
+The tunnel probe tried four framings against the live relay, every one closed
+with zero bytes:
+
+```
+exit server119.ipsharkk.com:30160 variant=masked-header closed with no bytes; trying plain-header
+exit server119.ipsharkk.com:30160 variant=plain-header closed with no bytes; trying plain
+exit server119.ipsharkk.com:30160 variant=plain closed with no bytes; trying connect
+exit server119.ipsharkk.com:30160 variant=connect closed with no bytes
+```
+
+A connection that is accepted and dropped before any reply is not a framing
+disagreement — it is the relay refusing the connection itself. Two variables had
+never been varied: **which host** accepts an exit port (we always dial the
+session's redirected host), and **which socket** carries the tunnel (the relay
+makes the client open a second, authenticated connection at login and we never
+write to it). The next probe varies both.
+
+Also proven in this run: the release fix works (no more `bad-release` lines) and
+failed clicks now reach the intake (`1/1 reported`) instead of being discarded as
+`bad_final_url`.
