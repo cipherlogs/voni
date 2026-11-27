@@ -48,7 +48,6 @@
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
 
 import { chromium } from "@playwright/test";
 
@@ -75,6 +74,7 @@ import {
   releaseExit,
 } from "./browser-exit-pool.mjs";
 import { exitContextProxy, launchOptionsFor } from "./browser-egress.mjs";
+import { isEntryPoint } from "./entry-point.mjs";
 import { redactProxyText } from "./browser-proxy-redaction.mjs";
 
 /** The one intake both producers write through. */
@@ -917,8 +917,9 @@ async function main() {
 }
 
 // Only run when this file is the entry point: the retry above is unit-tested
-// by importing it, and importing must not start a segment.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// by importing it, and importing must not start a segment. `isEntryPoint`, so
+// the same guard reads the same way in every runner script (`entry-point.mjs`).
+if (isEntryPoint(process.argv[1], import.meta.url)) {
   main().catch((error) => {
     console.error(
       `browser-click: ${error instanceof Error ? error.message : String(error)}`,

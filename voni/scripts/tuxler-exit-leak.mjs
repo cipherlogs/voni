@@ -38,6 +38,7 @@ import { chromium } from "@playwright/test";
 
 import { exitContextProxy, launchOptionsFor } from "./browser-egress.mjs";
 import { acquireExit, parseControlUrl, releaseExit } from "./browser-exit-pool.mjs";
+import { isEntryPoint } from "./entry-point.mjs";
 import { redactProxyText } from "./browser-proxy-redaction.mjs";
 
 /** The address the fake exit answers from: the exit the page must observe. */
@@ -379,7 +380,11 @@ async function main() {
   process.exit(0);
 }
 
-if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`) {
+// Not the literal comparison of `import.meta.url` with a string-built `file://`
+// URL: that form is never true on Windows, so the check would run nothing there
+// and exit 0 — a leak check that silently passes is worse than none. See
+// `entry-point.mjs`.
+if (isEntryPoint(process.argv[1], import.meta.url)) {
   // No top-level await: the test imports this module through tsx, which would
   // have to emit CommonJS for it and cannot.
   main().catch((error) => {

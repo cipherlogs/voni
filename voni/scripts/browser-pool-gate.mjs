@@ -33,6 +33,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { parseControlUrl } from "./browser-exit-pool.mjs";
+import { isEntryPoint } from "./entry-point.mjs";
 
 /**
  * How many ready exits a Click wants in hand. It is a wish, not a requirement:
@@ -597,7 +598,11 @@ async function main(argv) {
   return 1;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`) {
+// `isEntryPoint`, not the literal comparison of `import.meta.url` with a
+// string-built `file://` URL: that form is never true on Windows, so this gate
+// silently ran nothing there and passed a pool that had not filled — see
+// `entry-point.mjs`.
+if (isEntryPoint(process.argv[1], import.meta.url)) {
   main(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code;

@@ -24,6 +24,8 @@ import tls from "node:tls";
 import { once } from "node:events";
 import { Duplex } from "node:stream";
 
+import { isEntryPoint } from "./entry-point.mjs";
+
 const CONTROL_HOST = process.env.TUXLER_HOST ?? "server1.ipsharkk.com";
 const CONTROL_PORT = Number(process.env.TUXLER_CONTROL_PORT ?? 29990);
 const EMAIL =
@@ -972,7 +974,9 @@ async function main() {
   );
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// The literal comparison of `import.meta.url` with a string-built `file://` URL
+// is never true on Windows; see `entry-point.mjs`.
+if (isEntryPoint(process.argv[1], import.meta.url)) {
   main().catch((error) => {
     console.error(`probe failed: ${error.message}`);
     process.exitCode = 1;

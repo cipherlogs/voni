@@ -85,9 +85,11 @@ With `TUXLER_ENABLED=true`, a dispatched Segment runs these steps in order:
    `min(3, liveExitLimit)` ready US exits — one with the current client. If they do not arrive, the step fails. A failed
    step skips the click step, so the Segment writes **zero click rows** and the
    artifact says why.
-3. **Click every target** — each Click asks `GET /acquire?waitMs=10000` for an
-   exit, opens its browser context through that exit's loopback SOCKS port, and
-   releases it as `good` or `failed`. A Click that gets no exit in ten seconds
+3. **Click every target** — each Click asks `GET /acquire?waitMs=45000` for an
+   exit (`POOL_ACQUIRE_WAIT_MS`; a good release retires the exit and spends a
+   change on its replacement, so an acquire usually waits for a whole rotation),
+   opens its browser context through that exit's loopback SOCKS port, and
+   releases it as `good` or `failed`. A Click that gets no exit in 45 seconds
    is stored with `status: null` and the pool's reason; no browser context is
    opened for it.
 4. **Final pool report** — one read of `/health` after the clicks, merged into
@@ -178,6 +180,19 @@ The artifact records **two samples** (gate and final), not a continuous series.
 A five-hour Segment therefore reports the exits it started and ended with, and
 the refills and reconnects in between. It does not report a per-minute ready
 count. That limitation is recorded in the plan's accepted risks.
+
+**A gate step that printed nothing did not run.** Until 2026-11-27 every Windows
+Segment did exactly that: the step took ~250 ms, uploaded no artifact, and the
+*Send the pool report* step died on `curl: Failed to open pool-report.json`,
+while the Click step started 320 ms after the client did and four of five Clicks
+came back `the pool answered 503 not-ready`. The cause was the entry-point guard
+in `browser-pool-gate.mjs` (and in `tuxler-exit-leak.mjs`, `tuxler-probe.mts`):
+it compared `import.meta.url` with a string-built `file://` URL, which on a
+Windows runner is `file://D:\a\…` against `file:///D:/a/…` and therefore never
+matched. The guard is now `isEntryPoint(process.argv[1], import.meta.url)` from
+`scripts/entry-point.mjs`, and `scripts/entry-point.test.ts` fails on the literal
+form. If a future run's gate is silent again, read that test before reading the
+relay.
 
 Click rows are the other half. The **Exit** column names the pooled exit, the
 manual override, or **No proxy**; a row that never opened a page appends its
