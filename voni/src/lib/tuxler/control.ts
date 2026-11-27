@@ -112,6 +112,11 @@ export interface SessionOptions {
 
 const ECHO_BYTES = 50_000;
 const MAX_REDIRECTS = 5;
+/**
+ * How many servers one login may try. A `CONNECT_LIST` names several and some are
+ * routinely refusing, so the budget is the list, not one hop.
+ */
+const MAX_CONNECT_ATTEMPTS = 8;
 const ECHO_SCAN_BYTES = 2_000;
 const FALLBACK_TIMEVAL_SECONDS = 60;
 const MAX_RECORDED_FRAMES = 64;
@@ -206,8 +211,10 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
   let stage: SessionFailureReason = "redirect-failed";
   const started = Date.now();
 
-  let opened: OpenedControl;
-  let second: Duplex;
+  // Definite-assignment is a promise the happy path keeps: the catch below is the
+  // one place either can still be undefined, and it reads them defensively.
+  let opened!: OpenedControl;
+  let second!: Duplex;
   const handshakeTags: string[] = [];
   try {
     opened = await openControl(options, stageTimeoutMs);
@@ -266,6 +273,24 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
       );
     }
   } catch (error) {
+    // A refused login hands the caller an error and no session, so nothing else
+    // will ever close these: leaving them open leaked a socket per failure and
+    // kept the process alive after `tuxler-proxy --once`.
+    try {
+      opened?.reader.destroy();
+    } catch {
+      // already gone
+    }
+    try {
+      opened?.socket.destroy();
+    } catch {
+      // already gone
+    }
+    try {
+      second?.destroy();
+    } catch {
+      // never dialled
+    }
     throw asSessionError(error, stage);
   }
 
@@ -546,35 +571,55 @@ async function openControl(
   options: SessionOptions,
   stageTimeoutMs: number,
 ): Promise<OpenedControl> {
-  let host = options.host;
   const redirects: string[] = [];
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+  /**
+   * The servers the relay named, in the order it named them. `CONNECT_LIST` is a
+   * list, not an instruction: one run was failed `redirect-failed` because the
+   * single server we took from it refused the connection, while the others in the
+   * same answer were never tried. A dead entry is skipped, never fatal.
+   */
+  const pending: string[] = [];
+  let attempts = 0;
+  let host = options.host;
+
+  while (attempts < MAX_CONNECT_ATTEMPTS) {
+    attempts += 1;
+    const target = pending.shift() ?? host;
+    const isEntry = attempts === 1 && redirects.length === 0;
+    host = target;
+
     const transport: Transport =
-      options.transport?.(host) ??
+      options.transport?.(target) ??
       directTransport({
-        host,
+        host: target,
         port: options.port,
         resolve: options.resolveEndpoint,
       });
-    const socket = await transport.openControl().catch((error: unknown) => {
+    let socket: Duplex;
+    try {
+      socket = await transport.openControl();
+    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new TuxlerSessionError(hop === 0 ? "connect-failed" : "redirect-failed", message);
-    });
+      // Another server the relay named may still be up: try it before giving up.
+      if (pending.length > 0) continue;
+      throw new TuxlerSessionError(isEntry ? "connect-failed" : "redirect-failed", message);
+    }
+
     const reader = new ControlReader(socket, { frameTimeoutMs: stageTimeoutMs });
     try {
       const first = await reader.nextFrame(stageTimeoutMs);
       if (first.tag !== "CONNECT_LIST") {
         reader.unshift(first);
-        return { host, socket, reader, redirects };
+        return { host: target, socket, reader, redirects };
       }
-      if (hop === MAX_REDIRECTS) throw new Error("too many CONNECT_LIST redirects");
+      if (redirects.length >= MAX_REDIRECTS) throw new Error("too many CONNECT_LIST redirects");
       const numbers = first.details
         .split(";")
         .map((value) => value.trim())
         .filter(Boolean);
       if (numbers.length === 0) throw new Error("the relay sent an empty CONNECT_LIST");
       redirects.push(first.tag);
-      host = `server${numbers[0]}.ipsharkk.com`;
+      for (const number of numbers) pending.push(`server${number}.ipsharkk.com`);
       reader.destroy();
       socket.destroy();
     } catch (error) {
@@ -583,5 +628,8 @@ async function openControl(
       throw error;
     }
   }
-  throw new Error("too many CONNECT_LIST redirects");
+
+  throw new Error(
+    `no relay server answered after ${attempts} attempts: ${[...redirects, host].join(" -> ")}`,
+  );
 }
