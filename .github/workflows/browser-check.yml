@@ -178,7 +178,10 @@ jobs:
         env:
           VONI_APP_URL: ${{ vars.VONI_APP_URL || 'https://voni.cc' }}
           POOL_REPORT_SECRET: ${{ secrets.EMAIL_CLICK_REPORT_SECRET }}
-          RUNNER_OS: ${{ inputs.os }}
+          # `RUNNER_OS` is a reserved Actions variable ("Linux"), and a step cannot
+          # override it: the intake saw "Linux" and answered 400 bad_runner_os on
+          # every push. This name is ours, so the value is the input it claims.
+          POOL_REPORT_OS: ${{ inputs.os }}
         run: |
           # Bounded: a hung intake cannot hold the job, and one blip is retried
           # rather than read as a broken push path. The body is the intake's own
@@ -189,7 +192,7 @@ jobs:
             -X POST "$VONI_APP_URL/api/email/pool/report" \
             -H "content-type: application/json" \
             -H "x-voni-click-secret: $POOL_REPORT_SECRET" \
-            -H "x-voni-runner-os: $RUNNER_OS" \
+            -H "x-voni-runner-os: $POOL_REPORT_OS" \
             --data-binary @pool-report.json)
           echo "pool report: HTTP $status reason=$(head -c 200 push-reason.json 2>/dev/null)"
           test "$status" = "200"
