@@ -346,3 +346,52 @@ That leaves two designs, and picking one is a real decision, not a detail:
 Both are guesses about an undocumented protocol, and each costs a run and a
 share of the account's daily changes. Nothing further should be built on one
 until the relay's own behaviour settles it.
+
+### 2026-11-27: the source settled it, and the tunnel carries traffic
+
+The protocol was not guessed this time; it was read out of Tuxler's own client
+(`~/Downloads/tux/____Originals`, Chrome App 1.0.x) and then proved against the
+live relay from one home egress. The full reading is in
+`docs/agents/tuxler-exit-protocol.md`.
+
+**The tunnel works.** Same session, one change, four attempts on the port the
+change reply named:
+
+```
+no-header            port=32620  open-no-bytes in 9001ms
+masked-header-only   port=32620  open-no-bytes in 8172ms
+plain-header-only    port=32620  open-no-bytes in 9008ms
+masked-header+http   port=32620  REPLIED in 1679ms bytes=931
+    HTTP/1.1 200 OK | Server: cloudflare | CF-RAY: a60ff095c967
+masked-header+http   port=32621  open-no-bytes in 8168ms
+```
+
+So: the relay answers only after the payload, the XOR-0x73 mask is required, and
+the change port (not +1) is the tunnel. Our refusal of a silent socket was the
+deadlock — the payload only flows once the SOCKS request is granted, which we
+withheld while waiting for a byte.
+
+**Through the real client's SOCKS listener**, pooled exit `104.49.96.125:30476`:
+
+```
+https://example.com/   → 200 in 1.33s
+https://api.ipify.org  → 104.49.96.125     (the pooled exit's own address)
+```
+
+**A newer change kills the older exit.** Three pooled exits on one session:
+
+```
+...:30272  tunnel open → relay closed, no reply
+...:31196  tunnel open → relay closed, no reply
+...:30476  tunnel open → TLS hello → 200 OK     ← the newest change
+newest 32404 → REPLIED 928 bytes;  older 32436 → ECONNRESET in 277ms
+```
+
+A pool of five is therefore not a pool: four of five are dead on arrival. The
+pool holds one live exit (`POOL_LIVE_EXITS`), and a release retires the exit so
+the next Click spends one change and gets a different address.
+
+**Still unproved:** whether two sessions on one machine may hold two live exits at
+once (which would restore a real pool), and whether a child bucket sees its own
+egress at the relay and therefore its own change allowance. Both need a fresh
+bucket to measure, and the home egress had spent its ten changes by then.
