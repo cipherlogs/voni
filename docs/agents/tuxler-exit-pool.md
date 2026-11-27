@@ -14,6 +14,27 @@ Companion records: [the baseline](tuxler-exit-baseline.md) and
 [the implementation plan](../tuxler-client-plan.md). The `/email` console itself
 is documented in [email-pool.md](email-pool.md).
 
+## Read this first: one session holds one live exit
+
+Measured, not assumed (`docs/agents/tuxler-exit-protocol.md`): a newer
+`CHANGE_IP_COUNTRY_CITY` **kills the older exit's tunnel port**. A session
+therefore serves exactly one live exit, and this repo's pool reports
+`liveExitLimit: 1` and holds one. Wherever the sections below say "five exits",
+"three ready US exits", or "clicking spends 0 changes", the protocol has
+superseded them:
+
+- the gate requires `min(3, liveExitLimit)` ready exits, which is one;
+- a **good release retires** the exit it served, and the refill spends **one
+  change** for its replacement, because that port is already dead;
+- so a Click costs **one change** in the free tier's ten-per-bucket budget, and
+  a Segment of four Clicks costs about five;
+- a Click's acquire waits **45 s**, because it is usually waiting out a whole
+  rotation rather than a refill of an already-full pool.
+
+A pool of parallel exits would need one session per exit. That is not built and
+has never been measured; the depth/child-bucket machinery below is the seam it
+would use.
+
 ## The switch
 
 There is exactly one switch, and it is a repository **variable**, not a secret
@@ -58,10 +79,10 @@ With `TUXLER_ENABLED=true`, a dispatched Segment runs these steps in order:
 1. **Start the exit pool** — `node --import tsx scripts/tuxler-proxy.mts`,
    backgrounded, its PID in `tuxler-client.pid` and its output in
    `tuxler-client.log`. The client logs in from the two secrets and fills a pool
-   of five US exits (one change per exit).
+   of **one** US exit (one change; the relay keeps one live exit per session).
 2. **Wait for the exit pool** — `browser-pool-gate.mjs` polls
    `GET /health` every two seconds for up to **180 seconds** and requires
-   **three ready US exits**. If they do not arrive, the step fails. A failed
+   `min(3, liveExitLimit)` ready US exits — one with the current client. If they do not arrive, the step fails. A failed
    step skips the click step, so the Segment writes **zero click rows** and the
    artifact says why.
 3. **Click every target** — each Click asks `GET /acquire?waitMs=10000` for an
@@ -336,14 +357,14 @@ through a ready exit, which the relay meters against that exit's address.
 | `POOL_PACE_BURST` | 5 | changes one session sends before a cooldown or switch |
 | `POOL_PACE_COOLDOWN_MS` | 20 s | the pause after that burst |
 | `POOL_DEPTH` | 3 | how many child levels the budget may grow |
-| `POOL_ACQUIRE_WAIT_MS` | 10 s | a Click's bounded wait for an exit |
+| `POOL_ACQUIRE_WAIT_MS` | 45 s | a Click's bounded wait, one rotation |
 
 The arithmetic for the current free tier:
 
-- A fresh pool spends **5** changes to build five exits, leaving **5** in the
+- A fresh pool spends **1** change to build its one exit, leaving **9** in the
   root bucket.
-- Clicking spends **0**. A death or a refill spends **1**. With the refill gate
-  at three ready exits, the root's five spare changes absorb five replacements.
+- Each Click spends **1**: the release retires the exit and its replacement costs
+  a change, so a four-Click Segment spends about five of the ten.
 - The sixth needed replacement cannot come from the root. The client opens a
   **child bucket** through a ready exit; the relay sees that exit's address and
   meters a fresh ten. That is the point at which the second bucket is needed,
