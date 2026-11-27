@@ -408,8 +408,8 @@ test("a pooled click reports the exit it used and a failed acquire writes the re
   );
   assert.match(
     RUNNER,
-    /result\.failure === null \? "good" : "failed"/,
-    "a failed click gives its exit a strike",
+    /releaseExit\(\s*config\.poolUrl,\s*taken\.exit\.exitId,\s*result\.failure === null,/,
+    "a failed click gives its exit a strike: a boolean, the shape the control API enforces",
   );
 });
 
