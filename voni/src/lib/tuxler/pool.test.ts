@@ -363,7 +363,10 @@ test("a pool that has not started reports not-ready rather than an empty supply"
         return true;
       });
       assert.equal(relay.stats().changeRequests, 0, "a wait never spends a change");
-      assert.equal(POOL_ACQUIRE_WAIT_MS, 10_000, "the default wait is ten seconds");
+      assert.ok(
+        POOL_ACQUIRE_WAIT_MS >= 20_000,
+        "the default wait covers one change, including a silent one",
+      );
     } finally {
       await pool.close();
       session.stop();

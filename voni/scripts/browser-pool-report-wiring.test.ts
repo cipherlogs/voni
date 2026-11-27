@@ -75,8 +75,13 @@ test("the send step is gated on the pool flag and fails the job when it fails", 
   );
   assert.match(
     send,
-    /curl -sS -o \/dev\/null -w "%\{http_code\}"/,
-    "the status is captured, not the body",
+    /curl -sS -o push-reason\.json -w "%\{http_code\}"/,
+    "the body is the intake's reason when it refuses, so it is kept",
+  );
+  assert.match(
+    send,
+    /reason=\$\(head -c 200 push-reason\.json 2>\/dev\/null\)/,
+    "a refusal names why instead of failing blind",
   );
   assert.match(
     send,
@@ -122,13 +127,17 @@ test("the OS and the secret are headers, and the secret comes only from secrets"
     /POOL_REPORT_SECRET: \$\{\{ secrets\.EMAIL_CLICK_REPORT_SECRET \}\}/,
     "the intake checks the same secret the click reports use",
   );
+  // `RUNNER_OS` is reserved by Actions and a step cannot override it: the intake
+  // saw "Linux" and answered 400 bad_runner_os on every push. The step names the
+  // OS in a variable of its own.
   assert.match(
     send,
-    /RUNNER_OS: \$\{\{ inputs\.os \}\}/,
+    /POOL_REPORT_OS: \$\{\{ inputs\.os \}\}/,
     "the report file carries no OS, so the step names it",
   );
+  assert.doesNotMatch(send, /^\s{10}RUNNER_OS:/m, "a reserved variable cannot carry the input");
   assert.match(script, /-H "x-voni-click-secret: \$POOL_REPORT_SECRET"/);
-  assert.match(script, /-H "x-voni-runner-os: \$RUNNER_OS"/);
+  assert.match(script, /-H "x-voni-runner-os: \$POOL_REPORT_OS"/);
 
   // The script never names the secret source itself: interpolation inside a
   // `run:` block is command text, and this step keeps it in `env:` only.

@@ -18,7 +18,8 @@ import { POOL_ACQUIRE_WAIT_MS } from "../src/lib/tuxler/timing";
 
 test("the wait the runner gives up after is the client's own budget", () => {
   assert.equal(EXIT_ACQUIRE_WAIT_MS, POOL_ACQUIRE_WAIT_MS);
-  assert.equal(POOL_ACQUIRE_WAIT_MS, 10_000);
+  // The number lives in one place; this only proves the runner imports that one.
+  assert.ok(POOL_ACQUIRE_WAIT_MS >= 20_000, "a rotation includes one change timeout");
 });
 
 interface ControlRequest {
