@@ -98,8 +98,8 @@ test("a paused target lowers both the aggregate and the card's denominator", () 
   // Pausing one of four targets lowers both numbers by exactly a quarter.
   const all = runnerClicksPerDay(60, 12 * 3_600, 60, 60, 4, RUNNER_OSES.length);
   const paused = runnerClicksPerDay(60, 12 * 3_600, 60, 60, 3, RUNNER_OSES.length);
-  assert.equal(all, 2_880);
-  assert.equal(paused, 2_160);
+  assert.equal(all, 1_848);
+  assert.equal(paused, 1_386);
 });
 
 test("the page adds no second day arithmetic and Burst adds no daily volume", () => {
@@ -124,10 +124,10 @@ test("the page adds no second day arithmetic and Burst adds no daily volume", ()
 test("the imported functions still produce the spec's numbers", () => {
   // GitHub: a 60 s segment plus a 60 s restart gap over 12 h, four targets,
   // three OSes: 360 cycles x 3 x 4 clicks.
-  assert.equal(runnerClicksPerDay(60, 12 * 3_600, 60, 60, 4, RUNNER_OSES.length), 2_880);
-  // The 10k shape: one 15 s pass over five targets, a 24 h window, replaced a
-  // minute after it goes silent.
-  assert.equal(runnerClicksPerDay(15, 24 * 3_600, 15, 60, 5, RUNNER_OSES.length), 11_265);
+  assert.equal(runnerClicksPerDay(60, 12 * 3_600, 60, 60, 4, RUNNER_OSES.length), 1_848);
+  // Today's measured shape: one 15 s pass over five targets, a 24 h window,
+  // replaced two minutes after it goes silent.
+  assert.equal(runnerClicksPerDay(15, 24 * 3_600, 15, 120, 5, RUNNER_OSES.length), 5_505);
   // Grafana: 5-minute check on four probes at three clicks per run.
   assert.equal(grafanaClicksPerDay(5 * 60_000, 4, 3), 3_456);
 });

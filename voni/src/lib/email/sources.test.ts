@@ -135,16 +135,15 @@ test("parseWindowStartHour accepts 0..23 in UTC", () => {
 });
 
 test("clicks/day is segments per day, not passes per day", () => {
-  // A 60 s interval guards the threshold to 120 s, so a 60 s segment and a
-  // 60 s restart gap make a 3-minute cycle: 240 of them in 12 h, four clicks
-  // each (one pass over four targets), from three OSes.
-  assert.equal(clicksPerDay(60, 43_200, 60, 60, 4, 3), 2_880);
-  // The 10k shape: one 15 s pass over five targets plus a 100 s runner startup
-  // is a 115 s cycle, 751 of them in 24 h, capped at seven clicks per runner.
-  assert.equal(clicksPerDay(15, 86_400, 15, 60, 5, 3), 11_265);
-  // A longer segment does not add clicks past the pool budget, and it makes the
-  // cycle longer, so the day holds fewer of them.
-  assert.equal(clicksPerDay(15, 86_400, 300, 60, 5, 3), 4_536);
+  // 120 s dead threshold + 100 s runner startup + a 60 s segment is a 280 s
+  // cycle: 154 of them in 12 h, four clicks each (one pass over four targets),
+  // from three OSes.
+  assert.equal(clicksPerDay(60, 43_200, 60, 60, 4, 3), 1_848);
+  // The measured shape today: 120 s threshold, 100 s startup, a 15 s pass over
+  // five targets is a 235 s cycle, 367 of them in 24 h.
+  assert.equal(clicksPerDay(15, 86_400, 15, 120, 5, 3), 5_505);
+  // A longer segment adds nothing past the pool budget and lengthens the cycle.
+  assert.equal(clicksPerDay(15, 86_400, 300, 60, 5, 3), 3_927);
 });
 
 test("clicks/day is zero for input that cannot describe traffic", () => {

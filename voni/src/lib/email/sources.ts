@@ -250,10 +250,14 @@ export function clicksPerDay(
   // zero here would mean "restart immediately, forever", which is not a pace.
   if (!Number.isFinite(restartSeconds) || restartSeconds <= 0) return 0;
 
-  const pacedCycle =
-    segmentSeconds + deadAfterSeconds(intervalSeconds, restartSeconds);
-  const realCycle = RUNNER_STARTUP_SECONDS + segmentSeconds;
-  const cycleSeconds = Math.max(pacedCycle, realCycle);
+  // One OS, one runner at a time: after its last click the OS has to be
+  // judged dead (the restart gap), then a fresh runner has to start (checkout,
+  // npm ci, Chrome, the exit pool — measured at 100 s), then it clicks for the
+  // segment. That sum, not the segment and gap alone, is the cycle a day holds.
+  const cycleSeconds =
+    deadAfterSeconds(intervalSeconds, restartSeconds) +
+    RUNNER_STARTUP_SECONDS +
+    segmentSeconds;
   if (!Number.isFinite(cycleSeconds) || cycleSeconds <= 0) return 0;
 
   const perSegment = clicksPerSegment(intervalSeconds, segmentSeconds, targetCount);
