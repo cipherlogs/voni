@@ -168,7 +168,6 @@ export async function openUsExit(options: OpenExitOptions): Promise<TuxlerExit> 
     exitPort: outcome.port,
     resolve: options.resolveEndpoint,
     dial: options.dial,
-    dataChannel: options.session.openDataChannel,
     label,
     log: options.log,
   });
