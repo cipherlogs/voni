@@ -395,3 +395,40 @@ the next Click spends one change and gets a different address.
 once (which would restore a real pool), and whether a child bucket sees its own
 egress at the relay and therefore its own change allowance. Both need a fresh
 bucket to measure, and the home egress had spent its ten changes by then.
+
+### Run 45978070135: green — every Click left through a US exit
+
+The first Segment where the whole chain held at once: transport, pool, gate and
+report.
+
+```
+pass 1 ok 200 2434ms exit=71.48.38.219  asn=209    country=US
+pass 2 ok 200 2549ms exit=172.56.84.126 asn=21928  country=US
+pass 3 ok 200 2383ms exit=96.19.166.118 asn=11492  country=US
+pass 4 ok 200 2235ms exit=71.48.38.219  asn=209    country=US
+browser-click: every dispatched target responded and was stored
+pool report: HTTP 200 reason={"ok":true}
+```
+
+Confirmed in the database, not just the log: `tuxler_pool_reports` holds
+`github / ubuntu / ok=true` with the exit the gate started on.
+
+Four things had to be fixed after the tunnel itself worked, each of which had
+been failing quietly:
+
+1. **The gate demanded three exits** the protocol can never supply, so it failed
+   a run that held one ready US exit for three minutes. It now requires
+   `min(3, liveExitLimit)`.
+2. **The gate treated `session: failed` as terminal**, including the transient
+   failure of a silence the pool repairs by reconnecting; a run died at 44 s on
+   `relay-silent` while the reconnect was already scheduled.
+3. **Every pool report push was rejected `400 bad_runner_os`** and nobody could
+   see why, because the step printed only the status. `RUNNER_OS` is reserved by
+   Actions and a step cannot override it, so the header carried `Linux` while the
+   intake accepts `ubuntu`. The step now sends our own variable and prints the
+   intake's reason.
+4. **A Click gave up after 10 s** while its replacement exit was mid-rotation, so
+   one pass failed `503 no-us-exit`. The wait is now 45 s: one change, including
+   the 20 s silence timeout, plus the registry lookup.
+
+Cost for this Segment: five changes from a fresh runner bucket of ten.
