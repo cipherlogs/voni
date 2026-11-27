@@ -130,6 +130,34 @@ test("peer-assignment counts are read and never served", async () => {
   });
 });
 
+test("the session's second socket is lent to one tunnel at a time and reports its close", async () => {
+  await withRelay({}, async (relay) => {
+    const session = await connect(relay);
+    try {
+      const channel = session.openDataChannel();
+      assert.ok(channel !== null, "a live session has a second socket to lend");
+      assert.equal(
+        session.openDataChannel(),
+        null,
+        "a busy channel is refused, never queued behind the first tunnel",
+      );
+
+      const closed = new Promise<void>((resolve) => {
+        session.onDataChannelClosed(resolve);
+      });
+      channel.destroy();
+      await closed;
+      assert.equal(
+        session.openDataChannel(),
+        null,
+        "a closed channel is never lent again",
+      );
+    } finally {
+      session.stop();
+    }
+  });
+});
+
 test("the heartbeat follows the relay's own TIMEVAL", async () => {
   await withRelay({ timevalSeconds: 11 }, async (relay) => {
     const session = await connect(relay);

@@ -23,8 +23,15 @@
  * The report is read-only by construction: `snapshot()` and `health()` read the
  * sessions' account frames and the pool's maps, and never kick a refill.
  */
+import type { Duplex } from "node:stream";
 import type { TuxlerSession } from "./control";
-import { ExitRejectedError, openUsExit, type ExitFailureReason, type TuxlerExit } from "./exit";
+import {
+  DEFAULT_RELAY_ENTRY_HOST,
+  ExitRejectedError,
+  openUsExit,
+  type ExitFailureReason,
+  type TuxlerExit,
+} from "./exit";
 import { bucketReport, type HealthBucket, type HealthPool } from "./health";
 import type { EndpointResolver } from "./transport";
 import { exitTunnelDialer } from "./transport";
@@ -145,6 +152,8 @@ export interface PoolSnapshot {
 
 export type PoolSession = Pick<TuxlerSession, "requestChange" | "snapshot"> & {
   stop?: () => void;
+  /** The session's authenticated second socket, when it has one free. */
+  openDataChannel?: () => Duplex | null;
 };
 
 /** What a child bucket's session is dialled through: a ready exit of its parent. */
@@ -166,6 +175,12 @@ export interface ExitPoolOptions {
   session: PoolSession;
   /** The relay host the exits live on, e.g. `server3.ipsharkk.com`. */
   relayHost: string;
+  /**
+   * The relay's configured entry host, tried after an exit's own host when the
+   * redirected host closes every fresh connection. Defaults to
+   * `server1.ipsharkk.com`.
+   */
+  entryHost?: string;
   /** The meter key for a session's client address; `null` when it is not known yet. */
   bucketId?: (clientIp: string | null) => string | null;
   target?: number;
@@ -355,6 +370,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
   const resetPollMs = bounded(options.resetPollMs, 5_000, 1);
   const noProgressRefills = bounded(options.noProgressRefills, POOL_NO_PROGRESS_REFILLS, 1);
   const trace = options.log ?? (() => {});
+  const entryHost = options.entryHost ?? DEFAULT_RELAY_ENTRY_HOST;
 
   const entries = new Map<string, Entry>();
   const waiters: Waiter[] = [];
@@ -683,6 +699,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       exit = await openUsExit({
         session: bucket.session,
         relayHost: bucket.relayHost,
+        entryHost,
         lookup: options.lookup,
         resolveEndpoint: options.resolveEndpoint,
         dial: bucket.dialBase,
@@ -730,10 +747,13 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       leased: false,
       strikes: 0,
       dialer: exitTunnelDialer({
-        relayHost: bucket.relayHost,
+        relayHosts: [bucket.relayHost, entryHost],
         exitPort: exit.port,
         resolve: options.resolveEndpoint,
         dial: bucket.dialBase,
+        // No data channel here: this dialer opens a child session's control socket,
+        // which is held for that session's whole life — lending it the one channel
+        // would starve every click behind it.
         label: exit.id,
         log: trace,
       }),

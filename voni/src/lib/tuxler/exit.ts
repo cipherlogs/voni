@@ -14,6 +14,7 @@ import type { ChangeOutcome, ChangeRequest, ExitLocation } from "./change";
 import { TuxlerSessionError, type TuxlerSession } from "./control";
 import { startSocksServer, type SocksServer, type TunnelDialer } from "./socks";
 import { exitTunnelDialer, type EndpointResolver } from "./transport";
+import type { Duplex } from "node:stream";
 import {
   cymruLookup,
   validateExit,
@@ -21,6 +22,9 @@ import {
   type AsnRecord,
   type ExitRejectionReason,
 } from "./validate";
+
+/** The relay's entry point when nothing else configures one (`TUXLER_HOST`). */
+export const DEFAULT_RELAY_ENTRY_HOST = "server1.ipsharkk.com";
 
 /** Why an exit was not served. Each one is distinct on purpose: the pool counts them. */
 export type ExitFailureReason =
@@ -69,9 +73,17 @@ export interface TuxlerExit {
 }
 
 export interface OpenExitOptions {
-  session: Pick<TuxlerSession, "requestChange">;
+  session: Pick<TuxlerSession, "requestChange"> & {
+    /** The session's authenticated second socket, when it has one free. */
+    openDataChannel?: () => Duplex | null;
+  };
   /** The relay host the exit lives on, e.g. `server3.ipsharkk.com`. */
   relayHost: string;
+  /**
+   * The relay's configured entry host, tried after the exit's own host: a host
+   * that closes every fresh connection may not be the one serving exit ports.
+   */
+  entryHost?: string;
   /** The ASN classifier. Defaults to the real Team Cymru lookup; tests inject one. */
   lookup?: AsnLookup;
   /** Where host names resolve. Identity in production; loopback in tests. */
@@ -152,10 +164,11 @@ export async function openUsExit(options: OpenExitOptions): Promise<TuxlerExit> 
   // reaches the relay, so a child exit is nested through the exit it came from.
   const label = `${options.relayHost}:${outcome.port}`;
   const dial = exitTunnelDialer({
-    relayHost: options.relayHost,
+    relayHosts: [options.relayHost, options.entryHost ?? DEFAULT_RELAY_ENTRY_HOST],
     exitPort: outcome.port,
     resolve: options.resolveEndpoint,
     dial: options.dial,
+    dataChannel: options.session.openDataChannel,
     label,
     log: options.log,
   });

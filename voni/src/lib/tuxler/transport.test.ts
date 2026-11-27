@@ -216,7 +216,7 @@ test("inbound tunnel bytes are forwarded raw, never unmasked again", async () =>
 test("an exit tunnel that cannot connect logs the endpoint and the reason, then rejects", async () => {
   const lines: string[] = [];
   const dialer = exitTunnelDialer({
-    relayHost: "server3.ipsharkk.com",
+    relayHosts: ["server3.ipsharkk.com"],
     exitPort: 32516,
     label: "24.90.211.117:32516",
     log: (line) => lines.push(line),
@@ -228,10 +228,13 @@ test("an exit tunnel that cannot connect logs the endpoint and the reason, then 
   await assert.rejects(dialer({ host: "example.com", port: 443 }), /ECONNREFUSED/);
 
   assert.equal(lines.length, 2, "one line for the attempt and one for the failure");
-  assert.match(lines[0]!, /^exit 24\.90\.211\.117:32516 tunnel connecting for example\.com:443$/);
+  assert.match(
+    lines[0]!,
+    /^exit 24\.90\.211\.117:32516 tunnel connecting for example\.com:443 host=server3\.ipsharkk\.com$/,
+  );
   assert.match(
     lines[1]!,
-    /^exit 24\.90\.211\.117:32516 tunnel connect failed for example\.com:443: .*ECONNREFUSED/,
+    /^exit 24\.90\.211\.117:32516 tunnel connect failed for example\.com:443 host=server3\.ipsharkk\.com: .*ECONNREFUSED/,
   );
 });
 
@@ -241,7 +244,7 @@ test("the relay's first bytes are logged escaped, on one line, and never consume
   const fake = new FakeTunnel(answer);
   const lines: string[] = [];
   const dialer = exitTunnelDialer({
-    relayHost: "server3.ipsharkk.com",
+    relayHosts: ["server3.ipsharkk.com"],
     exitPort: 32516,
     probeWindowMs: 100,
     log: (line) => lines.push(line),
@@ -255,7 +258,9 @@ test("the relay's first bytes are logged escaped, on one line, and never consume
 
   const said = lines.find((line) => line.includes("relay said"))!;
   assert.ok(
-    lines.some((line) => line.endsWith("tunnel connected for example.com:443")),
+    lines.some((line) =>
+      line.endsWith("tunnel connected for example.com:443 host=server3.ipsharkk.com"),
+    ),
     "a successful dial is logged before the caller uses the tunnel",
   );
   assert.ok(said.includes("relay said 7B: "), `the byte count is named: ${said}`);
@@ -272,7 +277,7 @@ test("a binary first chunk is capped at 120 bytes in the log line", async () => 
   const fake = new FakeTunnel(Buffer.concat([Buffer.alloc(120, 0x41), Buffer.alloc(80, 0x42)]));
   const lines: string[] = [];
   const dialer = exitTunnelDialer({
-    relayHost: "server3.ipsharkk.com",
+    relayHosts: ["server3.ipsharkk.com"],
     exitPort: 32516,
     probeWindowMs: 100,
     log: (line) => lines.push(line),
@@ -297,7 +302,7 @@ test("a cached tunnel that closes before answering says so", async () => {
   const fakes = [first, second];
   const lines: string[] = [];
   const dialer = exitTunnelDialer({
-    relayHost: "server3.ipsharkk.com",
+    relayHosts: ["server3.ipsharkk.com"],
     exitPort: 32516,
     probeWindowMs: 100,
     log: (line) => lines.push(line),
@@ -321,7 +326,7 @@ test("a framing the relay closes is abandoned for the next one, and the winner c
   const lines: string[] = [];
   const server = await startFramingServer((frame) => (looksPlainHeader(frame) ? "answer" : "close"));
   const dialer = exitTunnelDialer({
-    relayHost: "server110.ipsharkk.com",
+    relayHosts: ["server110.ipsharkk.com"],
     exitPort: 31972,
     resolve: () => ({ host: "127.0.0.1", port: server.port }),
     probeWindowMs: 120,
@@ -333,12 +338,18 @@ test("a framing the relay closes is abandoned for the next one, and the winner c
     const tunnel = await dialer({ host: "example.com", port: 443 });
     assert.ok(
       lines.some((line) =>
-        line.includes("variant=masked-header closed with no bytes; trying plain-header"),
+        line.includes(
+          "host=server110.ipsharkk.com variant=masked-header closed with no bytes; trying next",
+        ),
       ),
       lines.join("\n"),
     );
     assert.ok(
-      lines.some((line) => /variant=plain-header accepted \(first byte in \d+ ms\)/.test(line)),
+      lines.some((line) =>
+        /host=server110\.ipsharkk\.com variant=plain-header accepted \(first byte in \d+ ms\)/.test(
+          line,
+        ),
+      ),
       lines.join("\n"),
     );
     assert.equal(server.firstFrames.length, 2, "one socket per framing, none reused");
@@ -364,7 +375,7 @@ test("a relay that closes every framing is refused once, naming each variant", a
   const lines: string[] = [];
   const server = await startFramingServer(() => "close");
   const dialer = exitTunnelDialer({
-    relayHost: "server110.ipsharkk.com",
+    relayHosts: ["server110.ipsharkk.com"],
     exitPort: 31972,
     resolve: () => ({ host: "127.0.0.1", port: server.port }),
     probeWindowMs: 120,
@@ -374,7 +385,7 @@ test("a relay that closes every framing is refused once, naming each variant", a
   try {
     await assert.rejects(
       dialer({ host: "www.google.com", port: 443 }),
-      /tried masked-header, plain-header, plain, connect/,
+      /tried server110\.ipsharkk\.com\/masked-header, server110\.ipsharkk\.com\/plain-header, server110\.ipsharkk\.com\/plain, server110\.ipsharkk\.com\/connect/,
     );
     await waitFor(() => server.firstFrames.length === 4);
 
@@ -389,7 +400,9 @@ test("a relay that closes every framing is refused once, naming each variant", a
     assert.equal(server.firstFrames.filter(looksConnect).length, 1);    assert.ok(
       lines.some((line) =>
         line.includes(
-          "no variant answered for www.google.com:443; tried masked-header, plain-header, plain, connect",
+          "no candidate answered for www.google.com:443; tried " +
+            "server110.ipsharkk.com/masked-header, server110.ipsharkk.com/plain-header, " +
+            "server110.ipsharkk.com/plain, server110.ipsharkk.com/connect",
         ),
       ),
       lines.join("\n"),
@@ -404,7 +417,7 @@ test("the accepted framing is cached and the second dial goes straight to it", a
   const lines: string[] = [];
   const server = await startFramingServer((frame) => (looksPlainHeader(frame) ? "answer" : "close"));
   const dialer = exitTunnelDialer({
-    relayHost: "server110.ipsharkk.com",
+    relayHosts: ["server110.ipsharkk.com"],
     exitPort: 31972,
     resolve: () => ({ host: "127.0.0.1", port: server.port }),
     probeWindowMs: 120,
@@ -447,7 +460,7 @@ test("a relay that stays open but says nothing is refused: silence is not accept
   const lines: string[] = [];
   const server = await startFramingServer(() => "silent");
   const dialer = exitTunnelDialer({
-    relayHost: "server110.ipsharkk.com",
+    relayHosts: ["server110.ipsharkk.com"],
     exitPort: 31972,
     resolve: () => ({ host: "127.0.0.1", port: server.port }),
     probeWindowMs: 40,
@@ -473,3 +486,253 @@ test("a relay that stays open but says nothing is refused: silence is not accept
     await server.close();
   }
 });
+
+/** Maps a relay host name onto its loopback framing server. */
+function hostMap(servers: Record<string, FramingServer>) {
+  return (host: string) => {
+    const server = servers[host];
+    if (server === undefined) throw new Error(`no loopback server for ${host}`);
+    return { host: "127.0.0.1", port: server.port };
+  };
+}
+
+/** A data channel that hangs up as soon as a tunnel frame is written to it. */
+class RejectingChannel extends Duplex {
+  writes = 0;
+  _read(): void {}
+  _write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.writes += 1;
+    this.destroy();
+    callback();
+  }
+}
+
+test("a host that closes every framing is abandoned for the entry host", async () => {
+  forgetAcceptedTunnelVariant();
+  const lines: string[] = [];
+  const exitHost = await startFramingServer(() => "close");
+  const entryHost = await startFramingServer((frame) => (looksMaskedHeader(frame) ? "answer" : "close"));
+  const dialer = exitTunnelDialer({
+    relayHosts: ["server119.ipsharkk.com", "server1.ipsharkk.com"],
+    exitPort: 30160,
+    resolve: hostMap({
+      "server119.ipsharkk.com": exitHost,
+      "server1.ipsharkk.com": entryHost,
+    }),
+    probeWindowMs: 120,
+    label: "server119:30160",
+    log: (line) => lines.push(line),
+  });
+
+  try {
+    const tunnel = await dialer({ host: "example.com", port: 443 });
+    assert.equal(exitHost.connections, 4, "every framing on the exit host was tried once");
+    assert.equal(entryHost.connections, 1, "the entry host answered the current best guess");
+    assert.ok(
+      lines.some((line) =>
+        line.includes(
+          "host=server119.ipsharkk.com variant=masked-header closed with no bytes; trying next",
+        ),
+      ),
+      lines.join("\n"),
+    );
+    assert.ok(
+      lines.some((line) =>
+        line.includes("host=server1.ipsharkk.com variant=masked-header accepted"),
+      ),
+      lines.join("\n"),
+    );
+
+    const received: Buffer[] = [];
+    tunnel.on("data", (chunk: Buffer) => received.push(chunk));
+    await waitFor(() => received.length > 0);
+    assert.equal(Buffer.concat(received).toString("latin1"), "ACK\r\n");
+    tunnel.destroy();
+  } finally {
+    await exitHost.close();
+    await entryHost.close();
+  }
+});
+
+test("a session's data channel is used after the port framings fail", async () => {
+  forgetAcceptedTunnelVariant();
+  const lines: string[] = [];
+  const channel = new FakeTunnel(Buffer.from("ACK\r\n"));
+  let borrowed = 0;
+  const dialer = exitTunnelDialer({
+    relayHosts: ["server119.ipsharkk.com"],
+    exitPort: 30160,
+    probeWindowMs: 120,
+    label: "server119:30160",
+    log: (line) => lines.push(line),
+    dial: async () => {
+      throw new Error("connect ECONNREFUSED 127.0.0.1:1");
+    },
+    dataChannel: () => {
+      borrowed += 1;
+      return channel;
+    },
+  });
+
+  const tunnel = await dialer({ host: "example.com", port: 443 });
+  const header = xor73(Buffer.from("<h>example.com<p>443</p></h>", "latin1"));
+  assert.equal(borrowed, 1, "the accessor is called once, after the port candidates");
+  assert.deepEqual(channel.written[0], header, "the channel carries the tunnel header");
+  assert.ok(
+    lines.some((line) =>
+      line.includes("tunnel accepted on data-channel for example.com:443"),
+    ),
+    lines.join("\n"),
+  );
+
+  const received: Buffer[] = [];
+  tunnel.on("data", (chunk: Buffer) => received.push(chunk));
+  await waitFor(() => received.length > 0);
+  assert.equal(Buffer.concat(received).toString("latin1"), "ACK\r\n");
+  tunnel.destroy();
+});
+
+test("a data channel that is already in use is skipped, never queued", async () => {
+  forgetAcceptedTunnelVariant();
+  const lines: string[] = [];
+  const server = await startFramingServer(() => "close");
+  let borrowed = 0;
+  const dialer = exitTunnelDialer({
+    relayHosts: ["server119.ipsharkk.com"],
+    exitPort: 30160,
+    resolve: () => ({ host: "127.0.0.1", port: server.port }),
+    probeWindowMs: 120,
+    log: (line) => lines.push(line),
+    dataChannel: () => {
+      borrowed += 1;
+      return null;
+    },
+  });
+
+  try {
+    await assert.rejects(
+      dialer({ host: "example.com", port: 443 }),
+      /closed every tunnel framing/,
+    );
+    assert.equal(borrowed, 1, "a busy channel is asked about once, not queued");
+    assert.equal(
+      lines.filter((line) => line.includes("variant=data-channel busy or absent; skipped")).length,
+      1,
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a data-channel rejection ends the sweep instead of retrying that socket", async () => {
+  forgetAcceptedTunnelVariant();
+  const lines: string[] = [];
+  const channel = new RejectingChannel();
+  let borrowed = 0;
+  const dialer = exitTunnelDialer({
+    relayHosts: ["server119.ipsharkk.com"],
+    exitPort: 30160,
+    probeWindowMs: 120,
+    log: (line) => lines.push(line),
+    dial: async () => {
+      throw new Error("connect ECONNREFUSED 127.0.0.1:1");
+    },
+    dataChannel: () => {
+      borrowed += 1;
+      return channel;
+    },
+  });
+
+  await assert.rejects(
+    dialer({ host: "example.com", port: 443 }),
+    /the relay closed the data-channel framing/,
+  );
+  assert.equal(borrowed, 1, "the channel is borrowed once");
+  assert.equal(channel.writes, 1, "the rejected socket is never written to twice");
+  assert.ok(
+    lines.some((line) =>
+      line.includes("variant=data-channel closed with no bytes; the relay hung up"),
+    ),
+    lines.join("\n"),
+  );
+});
+
+test("two hosts that close everything are each logged once per framing, with no loop", async () => {
+  forgetAcceptedTunnelVariant();
+  const lines: string[] = [];
+  const first = await startFramingServer(() => "close");
+  const second = await startFramingServer(() => "close");
+  const hosts = ["server119.ipsharkk.com", "server1.ipsharkk.com"];
+  const dialer = exitTunnelDialer({
+    relayHosts: hosts,
+    exitPort: 30160,
+    resolve: hostMap({
+      "server119.ipsharkk.com": first,
+      "server1.ipsharkk.com": second,
+    }),
+    probeWindowMs: 120,
+    log: (line) => lines.push(line),
+  });
+
+  try {
+    await assert.rejects(dialer({ host: "example.com", port: 443 }), /tried /);
+    await waitFor(() => first.connections === 4 && second.connections === 4);
+    for (const host of hosts) {
+      for (const name of ["masked-header", "plain-header", "plain", "connect"]) {
+        const attempts = lines.filter((line) =>
+          line.includes(`host=${host} variant=${name} closed with no bytes`),
+        );
+        assert.equal(attempts.length, 1, `${host} ${name} is attempted exactly once`);
+      }
+    }
+    assert.equal(first.connections + second.connections, 8, "one socket per candidate");
+  } finally {
+    await first.close();
+    await second.close();
+  }
+});
+
+test("the winning host and framing are cached, so the next dial goes straight to them", async () => {
+  forgetAcceptedTunnelVariant();
+  const lines: string[] = [];
+  const exitHost = await startFramingServer(() => "close");
+  const entryHost = await startFramingServer((frame) =>
+    looksPlainHeader(frame) ? "answer" : "close",
+  );
+  const dialer = exitTunnelDialer({
+    relayHosts: ["server119.ipsharkk.com", "server1.ipsharkk.com"],
+    exitPort: 30160,
+    resolve: hostMap({
+      "server119.ipsharkk.com": exitHost,
+      "server1.ipsharkk.com": entryHost,
+    }),
+    probeWindowMs: 120,
+    log: (line) => lines.push(line),
+  });
+
+  try {
+    (await dialer({ host: "example.com", port: 443 })).destroy();
+    assert.equal(exitHost.connections, 4, "the exit host was swept first");
+    assert.equal(entryHost.connections, 2, "the entry host answered on its second framing");
+
+    const tunnel = await dialer({ host: "example.com", port: 443 });
+    assert.equal(exitHost.connections, 4, "the cached dial never revisits the exit host");
+    assert.equal(entryHost.connections, 3, "the cached dial opens exactly one socket");
+    await waitFor(() => entryHost.firstFrames.length === 3);
+    assert.ok(
+      looksPlainHeader(entryHost.firstFrames[2]!),
+      "the cached pair is the framing that answered",
+    );
+    assert.ok(
+      lines.some((line) =>
+        line.includes("variant=plain-header reused (accepted earlier in this process)"),
+      ),
+      lines.join("\n"),
+    );
+    tunnel.destroy();
+  } finally {
+    await exitHost.close();
+    await entryHost.close();
+  }
+});
+

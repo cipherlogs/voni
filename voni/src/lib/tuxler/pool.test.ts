@@ -730,8 +730,8 @@ test("the pool hands its logger to every exit tunnel it builds", async () => {
       const connecting = lines.find((line) => line.includes("tunnel connecting"))!;
       assert.match(
         connecting,
-        /^exit 198\.51\.100\.10:\d+ tunnel connecting for example\.test:443$/,
-        "the pool's logger reached the exit tunnel dialer, labelled with the exit",
+        /^exit 198\.51\.100\.10:\d+ tunnel connecting for example\.test:443 host=server\d+\.ipsharkk\.com$/,
+        "the pool's logger reached the exit tunnel dialer, labelled with the exit and the host",
       );
       const failed = lines.find((line) => line.includes("tunnel connect failed"))!;
       assert.ok(failed.includes("example.test:443"), failed);

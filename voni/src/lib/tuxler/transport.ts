@@ -8,9 +8,11 @@
  * the client learning that it is under test.
  *
  * The exit tunnel's framing came from the plan and was only ever proved against
- * our own fake relay; a real relay closed it without a byte. So the dialer now
- * tries the plausible framings in order and keeps the first one the relay
- * answers. Safety outranks progress here: a framing that has not produced a
+ * our own fake relay; a real relay closed it without a byte. So the dialer tries
+ * the plausible framings on each plausible host in order — the session's redirect
+ * host, then the relay's entry host — and keeps the first pair the relay answers.
+ * A session's second socket is a candidate too, last, because it cannot
+ * multiplex. Safety outranks progress here: a candidate that has not produced a
  * response never carries a click (see `exitTunnelDialer`).
  */
 import net from "node:net";
@@ -176,8 +178,13 @@ export function tunneledTransport(
 }
 
 export interface ExitTunnelOptions {
-  /** The relay the exit lives on, e.g. `server3.ipsharkk.com`. */
-  relayHost: string;
+  /**
+   * The hosts that may serve this exit port, in the order to try them: the host
+   * the session was redirected to first, then the relay's configured entry host.
+   * A real run had every port framing closed with no bytes on the redirected host,
+   * so which host is dialled is a variable, not a constant.
+   */
+  relayHosts: readonly string[];
   /** The port the change reply named. Never the handshake's derived port. */
   exitPort: number;
   /** Where host names resolve. Identity in production; loopback in tests. */
@@ -186,13 +193,20 @@ export interface ExitTunnelOptions {
   /** Dial the relay through something else — a parent exit — instead of directly. */
   dial?: (endpoint: RelayEndpoint) => Promise<Duplex>;
   /**
+   * The session's authenticated second socket (the relay's data channel), or `null`
+   * when it is busy or already closed. It is borrowed, never dialled: the accessor
+   * enforces one tunnel at a time, so this variant is skipped rather than queued.
+   * Absent means the dialer never considers it.
+   */
+  dataChannel?: () => Duplex | null;
+  /**
    * How long a framing may stay open without a byte before it is unproven.
    * Defaults to the SOCKS refusal window, 150 ms.
    */
   probeWindowMs?: number;
   /**
    * How the exit is named in log lines, e.g. `24.90.211.117:32516`. Defaults to
-   * `<relayHost>:<exitPort>`, which is all the dialer knows on its own.
+   * `<first relay host>:<exitPort>`, which is all the dialer knows on its own.
    */
   label?: string;
   /**
@@ -225,7 +239,12 @@ function escapeBytes(bytes: Buffer): string {
 const DEFAULT_PROBE_WINDOW_MS = 150;
 
 /** The framings an exit relay might expect. Ordered most likely first. */
-export type TunnelVariantName = "masked-header" | "plain-header" | "plain" | "connect";
+export type TunnelVariantName =
+  | "masked-header"
+  | "plain-header"
+  | "plain"
+  | "connect"
+  | "data-channel";
 
 interface TunnelVariant {
   name: TunnelVariantName;
@@ -270,15 +289,33 @@ function variantNamed(name: TunnelVariantName): TunnelVariant {
 }
 
 /**
- * The framing that produced a response, remembered for the process. A working
- * framing is never re-probed: each probe costs a live exit's time, and the first
- * dial after it wins is enough evidence for every later dial.
+ * The data channel carries the tunnel's best-guess framing — the XOR-0x73 masked
+ * header, with the payload masked the same way — because it is only swept when no
+ * port framing has been accepted yet. It is one variant, one write, one window: a
+ * socket that answers and a socket that does not are the two outcomes that matter.
  */
-let acceptedVariant: TunnelVariantName | null = null;
+const DATA_CHANNEL_VARIANT: TunnelVariant = {
+  name: "data-channel",
+  frame: (target) => xor73(Buffer.from(`<h>${target.host}<p>${target.port}</p></h>`, "latin1")),
+  maskPayload: true,
+};
+
+/** A (host, framing) pair the relay answered, remembered for the process. */
+interface AcceptedTunnel {
+  host: string;
+  variant: TunnelVariantName;
+}
+
+/**
+ * The one candidate that produced a response, remembered for the process. A
+ * working pair is never re-probed: each probe costs a live exit's time, and the
+ * first dial after it wins is enough evidence for every later dial.
+ */
+let acceptedTunnel: AcceptedTunnel | null = null;
 
 /** Tests only: forget what a previous dial learned, so the sweep is observable. */
 export function forgetAcceptedTunnelVariant(): void {
-  acceptedVariant = null;
+  acceptedTunnel = null;
 }
 
 /**
@@ -375,14 +412,21 @@ function probeRelay(
 }
 
 /**
- * One proxied connection: dial the exit's relay port, open a tunnel that names
- * the real destination, and only hand it back once the relay has answered.
+ * One proxied connection: dial an exit relay port, open a tunnel that names the
+ * real destination, and only hand it back once the relay has answered.
  *
- * Safety: a variant may only carry traffic after it produced a response. A
- * socket that merely stayed open is never permission to forward a click's
- * bytes — a mis-framed request could be routed directly and expose the client's
- * address, the plan's single most dangerous failure mode. If only silence is
- * observed the dial is refused, exactly as a closed tunnel is.
+ * Two dimensions are swept, cheapest to rule out first: every framing on the
+ * session's redirected host, then every framing on the relay's configured entry
+ * host, then — only if the session lent it — the authenticated second socket. A
+ * real run had every framing closed with no bytes on the redirected host, so the
+ * host is a candidate too, and an unused second socket that survives a session
+ * which closes fresh connections is the other.
+ *
+ * Safety: a candidate may only carry traffic after it produced a response. A
+ * socket that merely stayed open is never permission to forward a click's bytes —
+ * a mis-framed request could be routed directly and expose the client's address,
+ * the plan's single most dangerous failure mode. If only silence is observed the
+ * dial is refused, exactly as a closed tunnel is.
  */
 export function exitTunnelDialer(
   options: ExitTunnelOptions,
@@ -392,7 +436,10 @@ export function exitTunnelDialer(
   const connect =
     options.dial ?? ((endpoint: RelayEndpoint) => dial(endpoint, timeoutMs));
   const log = options.log ?? (() => {});
-  const label = oneLine(options.label ?? `${options.relayHost}:${options.exitPort}`);
+  const hosts = [
+    ...new Set(options.relayHosts.map((host) => host.trim()).filter((host) => host !== "")),
+  ];
+  const label = oneLine(options.label ?? `${hosts[0] ?? "relay"}:${options.exitPort}`);
   const windowMs = options.probeWindowMs ?? DEFAULT_PROBE_WINDOW_MS;
 
   /** A witness, never a participant: a broken logger cannot stop a tunnel. */
@@ -406,55 +453,177 @@ export function exitTunnelDialer(
 
   return async (target: RelayEndpoint) => {
     const destination = `${target.host}:${target.port}`;
-    const endpoint = resolve(options.relayHost, options.exitPort);
+    if (hosts.length === 0) {
+      throw new Error(`no relay host was configured for exit port ${options.exitPort}`);
+    }
 
-    const openRaw = async (): Promise<Duplex> => {
-      note(`tunnel connecting for ${destination}`);
+    let lastConnectError: unknown = null;
+
+    /** Opens one port candidate; `null` is a connect failure, not a rejection. */
+    const openRaw = async (host: string): Promise<Duplex | null> => {
+      note(`tunnel connecting for ${destination} host=${host}`);
       try {
-        return await connect(endpoint);
+        return await connect(resolve(host, options.exitPort));
       } catch (error) {
+        lastConnectError = error;
         const reason = oneLine(error instanceof Error ? error.message : String(error));
-        note(`tunnel connect failed for ${destination}: ${reason}`);
-        throw error;
+        note(`tunnel connect failed for ${destination} host=${host}: ${reason}`);
+        return null;
       }
     };
 
-    // A framing the relay answered earlier in this process was verified once;
-    // later dials go straight to it and pay no probe.
-    if (acceptedVariant !== null) {
-      const variant = variantNamed(acceptedVariant);
-      const raw = await openRaw();
-      note(`tunnel connected for ${destination}`);
-      const witness = new Witness(note);
-      const tunnel = new TunnelSocket(raw, variant.maskPayload, (chunk) => witness.observe(chunk));
+    const watchEarlyClose = (tunnel: Duplex, witness: Witness): void => {
       const closedEarly = (): void => {
         if (witness.firstByteMs() !== null) return;
         note(`relay closed the tunnel before the destination answered (${destination})`);
       };
       tunnel.once("close", closedEarly);
       // A tunnel that was already gone when it arrived never emits its own close.
-      if (raw.destroyed) closedEarly();
-      note(`variant=${variant.name} reused (accepted earlier in this process)`);
-      witness.markSent();
-      tunnel.writeFrame(variant.frame(target));
-      return tunnel;
+      if (tunnel.destroyed) closedEarly();
+    };
+
+    // A (host, framing) pair the relay answered earlier in this process was
+    // verified once; later dials go straight to it and pay no probe.
+    const accepted = acceptedTunnel;
+    if (
+      accepted !== null &&
+      (accepted.variant === "data-channel" || hosts.includes(accepted.host))
+    ) {
+      if (accepted.variant === "data-channel") {
+        const channel = options.dataChannel?.() ?? null;
+        if (channel !== null) {
+          note(`tunnel connected for ${destination} via the session's data channel`);
+          const witness = new Witness(note);
+          const tunnel = new TunnelSocket(channel, DATA_CHANNEL_VARIANT.maskPayload, (chunk) =>
+            witness.observe(chunk),
+          );
+          watchEarlyClose(tunnel, witness);
+          note("variant=data-channel reused (accepted earlier in this process)");
+          witness.markSent();
+          tunnel.writeFrame(DATA_CHANNEL_VARIANT.frame(target));
+          return tunnel;
+        }
+        // The channel is one tunnel at a time and this session has spent it:
+        // fall through to the port sweep rather than refusing the click, and
+        // forget the pair so later dials do not ask a spent channel again.
+        acceptedTunnel = null;
+        note(
+          "variant=data-channel reused but the channel is busy or closed;" +
+            " sweeping the port variants",
+        );
+      } else {
+        const variant = variantNamed(accepted.variant);
+        const raw = await openRaw(accepted.host);
+        if (raw !== null) {
+          note(`tunnel connected for ${destination} host=${accepted.host}`);
+          const witness = new Witness(note);
+          const tunnel = new TunnelSocket(raw, variant.maskPayload, (chunk) =>
+            witness.observe(chunk),
+          );
+          watchEarlyClose(tunnel, witness);
+          note(`variant=${variant.name} reused (accepted earlier in this process)`);
+          witness.markSent();
+          tunnel.writeFrame(variant.frame(target));
+          return tunnel;
+        }
+        // The cached host could not be re-dialled: sweep from the top instead of
+        // failing a click the other host might serve.
+        note(`variant=${variant.name} could not be re-dialled on ${accepted.host}; sweeping`);
+        acceptedTunnel = null;
+      }
     }
 
-    const tried: TunnelVariantName[] = [];
-    for (const [index, variant] of TUNNEL_VARIANTS.entries()) {
-      const next = TUNNEL_VARIANTS[index + 1];
-      const nextText = next === undefined ? "" : `; trying ${next.name}`;
-      const raw = await openRaw();
-      note(`tunnel connected for ${destination}`);
+    const candidates: Array<
+      { kind: "port"; host: string; variant: TunnelVariant } | { kind: "data-channel" }
+    > = [];
+    for (const host of hosts) {
+      for (const variant of TUNNEL_VARIANTS) candidates.push({ kind: "port", host, variant });
+    }
+    if (options.dataChannel !== undefined) candidates.push({ kind: "data-channel" });
+
+    const tried: string[] = [];
+    const unreachableHosts = new Set<string>();
+    for (const [index, candidate] of candidates.entries()) {
+      const nextText = index + 1 < candidates.length ? "; trying next" : "";
+
+      if (candidate.kind === "data-channel") {
+        // Last, because the channel is one socket and can never multiplex: a busy
+        // channel is skipped, never queued behind another tunnel.
+        const channel = options.dataChannel?.() ?? null;
+        if (channel === null) {
+          tried.push("data-channel");
+          note(`variant=data-channel busy or absent; skipped${nextText}`);
+          continue;
+        }
+        const witness = new Witness(note);
+        const tunnel = new TunnelSocket(channel, DATA_CHANNEL_VARIANT.maskPayload, (chunk) =>
+          witness.observe(chunk),
+        );
+        const outcome = await probeRelay(
+          tunnel,
+          witness,
+          () => tunnel.writeFrame(DATA_CHANNEL_VARIANT.frame(target)),
+          windowMs,
+        );
+
+        if (outcome.kind === "answered") {
+          acceptedTunnel = { host: hosts[0] ?? "", variant: "data-channel" };
+          note(
+            `tunnel accepted on data-channel for ${destination}` +
+              ` (first byte in ${outcome.firstByteMs} ms)`,
+          );
+          return tunnel;
+        }
+
+        // A rejection is the relay hanging up the whole channel, so there is no
+        // socket left to continue the sweep on: end it here.
+        tunnel.destroy();
+        tried.push("data-channel");
+        if (outcome.kind === "silent") {
+          note(
+            `variant=data-channel stayed open for ${windowMs} ms with no bytes;` +
+              ` an unverified framing cannot carry traffic, refusing ${destination}`,
+          );
+          throw new Error(
+            `the relay did not answer the data-channel framing for ${destination};` +
+              " refusing because an unverified framing must never carry traffic",
+          );
+        }
+        note(
+          `variant=data-channel closed with no bytes; the relay hung up the session's` +
+            ` channel, ending the sweep for ${destination}`,
+        );
+        throw new Error(
+          `the relay closed the data-channel framing for ${destination};` +
+            " the session's data channel is gone",
+        );
+      }
+
+      const { host, variant } = candidate;
+      if (unreachableHosts.has(host)) {
+        // A host that refused the TCP connection refuses every framing equally:
+        // one dial is the evidence, not four.
+        tried.push(`${host}/${variant.name}`);
+        continue;
+      }
+      const raw = await openRaw(host);
+      if (raw === null) {
+        unreachableHosts.add(host);
+        tried.push(`${host}/${variant.name}`);
+        continue;
+      }
+      note(`tunnel connected for ${destination} host=${host}`);
 
       if (raw.destroyed) {
-        tried.push(variant.name);
-        note(`variant=${variant.name} closed with no bytes${nextText}`);
+        tried.push(`${host}/${variant.name}`);
+        note(`host=${host} variant=${variant.name} closed with no bytes${nextText}`);
         continue;
       }
 
       const witness = new Witness(note);
-      const tunnel = new TunnelSocket(raw, variant.maskPayload, (chunk) => witness.observe(chunk));
+      const tunnel = new TunnelSocket(raw, variant.maskPayload, (chunk) =>
+        witness.observe(chunk),
+      );
       const outcome = await probeRelay(
         tunnel,
         witness,
@@ -463,8 +632,10 @@ export function exitTunnelDialer(
       );
 
       if (outcome.kind === "answered") {
-        acceptedVariant = variant.name;
-        note(`variant=${variant.name} accepted (first byte in ${outcome.firstByteMs} ms)`);
+        acceptedTunnel = { host, variant: variant.name };
+        note(
+          `host=${host} variant=${variant.name} accepted (first byte in ${outcome.firstByteMs} ms)`,
+        );
         return tunnel;
       }
 
@@ -473,7 +644,7 @@ export function exitTunnelDialer(
         // Silence is not evidence. Cache nothing and carry nothing: an unverified
         // framing must never forward a click, which is how a client address leaks.
         note(
-          `variant=${variant.name} stayed open for ${windowMs} ms with no bytes;` +
+          `host=${host} variant=${variant.name} stayed open for ${windowMs} ms with no bytes;` +
             ` an unverified framing cannot carry traffic, refusing ${destination}`,
         );
         throw new Error(
@@ -482,12 +653,16 @@ export function exitTunnelDialer(
         );
       }
 
-      tried.push(variant.name);
-      note(`variant=${variant.name} closed with no bytes${nextText}`);
+      tried.push(`${host}/${variant.name}`);
+      note(`host=${host} variant=${variant.name} closed with no bytes${nextText}`);
     }
 
+    // A host that could not even be dialled is reported as itself: its own error
+    // is the honest reason, not a summary of framings it never got to answer.
+    if (lastConnectError !== null) throw lastConnectError;
+
     const summary = tried.join(", ");
-    note(`no variant answered for ${destination}; tried ${summary}`);
+    note(`no candidate answered for ${destination}; tried ${summary}`);
     throw new Error(`the relay closed every tunnel framing for ${destination}; tried ${summary}`);
   };
 }

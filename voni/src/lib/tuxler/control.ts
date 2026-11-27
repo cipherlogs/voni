@@ -73,6 +73,17 @@ export interface TuxlerSession {
   requestChange: (request?: ChangeRequest, timeoutMs?: number) => Promise<ChangeOutcome>;
   /** Wait for the next frame the pump delivers that matches. */
   waitForFrame: (predicate: (frame: Frame) => boolean, timeoutMs?: number) => Promise<Frame>;
+  /**
+   * The relay's authenticated second socket, lent to one exit tunnel at a time.
+   * `null` when another tunnel already holds it, or once the relay has closed it —
+   * a busy channel is never queued behind the caller.
+   */
+  openDataChannel: () => Duplex | null;
+  /**
+   * Observe the second socket closing. A listener registered after the close runs
+   * at once. Returns its unsubscribe.
+   */
+  onDataChannelClosed: (listener: () => void) => () => void;
   stop(): void;
 }
 
@@ -273,9 +284,47 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
   const reader = opened.reader;
   const secondSocket = second;
 
-  // Peer assignments arrive here (`<C>n</C>`). Serving them is out of scope by
-  // design: read the bytes, discard them, dial nothing.
+  // Peer assignments arrive here (`<C>n</C>`). They are read and discarded: the
+  // session serves no peer traffic by itself. The socket is also the relay's data
+  // channel, which an exit tunnel may borrow through `openDataChannel` below.
   secondSocket.on("data", () => {});
+  secondSocket.on("error", () => {});
+
+  let dataChannelBusy = false;
+  let dataChannelClosed = false;
+  const dataChannelClosedListeners = new Set<() => void>();
+
+  secondSocket.once("close", () => {
+    dataChannelClosed = true;
+    dataChannelBusy = false;
+    for (const listener of [...dataChannelClosedListeners]) {
+      try {
+        listener();
+      } catch {
+        // A witness, not a participant: a broken listener cannot stop the session.
+      }
+    }
+    dataChannelClosedListeners.clear();
+  });
+
+  /** One tunnel at a time on the single second socket; never a queue. */
+  const openDataChannel = (): Duplex | null => {
+    if (dataChannelClosed || secondSocket.destroyed) return null;
+    if (dataChannelBusy) return null;
+    dataChannelBusy = true;
+    return secondSocket;
+  };
+
+  const onDataChannelClosed = (listener: () => void): (() => void) => {
+    if (dataChannelClosed) {
+      listener();
+      return () => {};
+    }
+    dataChannelClosedListeners.add(listener);
+    return () => {
+      dataChannelClosedListeners.delete(listener);
+    };
+  };
 
   const waiters = new Set<FrameWaiter>();
 
@@ -450,6 +499,8 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
     },
     requestChange,
     waitForFrame,
+    openDataChannel,
+    onDataChannelClosed,
     stop,
   };
 }
