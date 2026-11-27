@@ -98,6 +98,7 @@ test("a pooled client reports its exits and the refills it spent reaching them",
             state: "Texas",
           },
         ],
+        liveExitLimit: 1,
         buckets: [
           {
             clientIpHash: bucketId(EMAIL, CLIENT_IP),
@@ -115,6 +116,7 @@ test("a pooled client reports its exits and the refills it spent reaching them",
   assert.equal(health.refills, 6);
   assert.equal(health.reconnects, 1);
   assert.equal(health.ready, true);
+  assert.equal(health.liveExitLimit, 1, "health carries the pool's live-exit cap");
   assert.equal(health.pool[0].city, "Dallas");
 });
 

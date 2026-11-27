@@ -48,6 +48,12 @@ export interface HealthPool {
   /** Exits a Click can take right now. */
   ready: number;
   exits: HealthExit[];
+  /**
+   * The cap the configured target, maximum and refill threshold were reduced to.
+   * Tuxler keeps one live exit per session, so a console that asked for three must
+   * be able to read why the pool holds one.
+   */
+  liveExitLimit: number;
   /** Every bucket the pool can spend from; the root bucket first. */
   buckets: HealthBucket[];
   /** Change attempts the pool has made since it started. */
@@ -69,6 +75,11 @@ export interface TuxlerHealth {
   ready: boolean;
   /** Exits usable by a Click. Empty until a change reply names a port. */
   pool: HealthExit[];
+  /**
+   * The pool's cap on live exits. `0` when this client has no pool to ask; the
+   * number is the pool's own answer, never a second copy of the constant.
+   */
+  liveExitLimit: number;
   buckets: HealthBucket[];
   /** Change attempts the pool has made. The run artifact's refill count. */
   refills: number;
@@ -153,6 +164,7 @@ export function buildHealth(input: HealthInput): TuxlerHealth {
     // needs at least one validated US exit to take.
     ready: pool === undefined ? ok : ok && pool.ready > 0,
     pool: pool?.exits ?? [],
+    liveExitLimit: pool?.liveExitLimit ?? 0,
     buckets,
     refills: pool?.refills ?? 0,
     reconnects: pool?.reconnects ?? 0,

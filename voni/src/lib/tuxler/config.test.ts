@@ -2,10 +2,10 @@
  * The client's two configured sizes, and the pool they actually build.
  *
  * The default matters as much as the value: a dispatch that carries no target
- * must still fill to five, and a depth of three is the ticket's default. The
+ * must still validate to five, and a depth of three is the ticket's default. The
  * last test drives `createExitPool` with the parsed values, so "the setting
- * reaches the client" is proved on the pool's own snapshot rather than on the
- * parser alone.
+ * reaches the client" is proved on the pool's own snapshot — where the requested
+ * size is capped to the one live exit Tuxler allows and reported as such.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -72,7 +72,7 @@ test("a depth outside zero to three is refused, and zero is allowed", () => {
   }
 });
 
-test("a configured pool really is that size, on the pool's own snapshot", () => {
+test("a configured pool is capped to one live exit, and the cap is reported", () => {
   const config = poolConfigFromEnv({ [POOL_TARGET_ENV]: "7", [POOL_DEPTH_ENV]: "0" });
   const pool = createExitPool({
     session: inertSession(),
@@ -81,6 +81,7 @@ test("a configured pool really is that size, on the pool's own snapshot", () => 
   });
 
   const snapshot = pool.snapshot();
-  assert.equal(snapshot.target, 7, "the pool fills to the configured target");
+  assert.equal(snapshot.target, 1, "the configured seven is capped to the one live exit");
+  assert.equal(snapshot.liveExitLimit, 1, "the cap is reported, not silently obeyed");
   assert.equal(snapshot.depth, 0, "depth zero means no child buckets");
 });

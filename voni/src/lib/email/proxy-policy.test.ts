@@ -8,8 +8,8 @@
  * refusal happens before a write and before the input is trusted.
  *
  * The pool target has to mean something after it is saved, so the last test
- * carries a saved value into the real pool and reads its target back: the
- * number the operator chose is the number the client fills to.
+ * carries a saved value into the real pool and reads its effective target back:
+ * the number is validated, then capped to the one exit Tuxler keeps live.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -119,7 +119,7 @@ test("one ASN spelling, shared by the proxy card and the click table", () => {
   assert.equal(asnLabel(""), null);
 });
 
-test("a saved pool target is the target the pool fills to", () => {
+test("a saved pool target is validated, then capped to the live exit limit", () => {
   const saved = resolveProxySettings({ proxyCountry: "US", proxyPoolTarget: 8 });
   const session = {
     snapshot: () => ({
@@ -131,20 +131,22 @@ test("a saved pool target is the target the pool fills to", () => {
     },
   };
   // The pool is the only thing that fills exits; constructing it with the saved
-  // value is what "the pool converges to it" means on the client side.
+  // value is what "the setting reaches the client" means. Tuxler keeps one live
+  // exit, so the saved eight is capped and the cap is reported.
   const pool = createExitPool({
     session: session as never,
     relayHost: "server1.ipsharkk.com",
     target: saved.poolTarget,
   });
-  assert.equal(pool.snapshot().target, 8);
+  assert.equal(pool.snapshot().liveExitLimit, 1, "the cap is on the report");
+  assert.equal(pool.snapshot().target, 1, "the saved eight is capped to the live exit");
 
   const smaller = createExitPool({
     session: session as never,
     relayHost: "server1.ipsharkk.com",
     target: resolveProxySettings({ proxyPoolTarget: 3 }).poolTarget,
   });
-  assert.equal(smaller.snapshot().target, 3);
+  assert.equal(smaller.snapshot().target, 1);
 });
 
 test("the action gates first, refuses a non-US country and a bad target before writing", () => {

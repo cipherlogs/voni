@@ -84,7 +84,8 @@ export interface TuxlerClient {
   pool: () => ExitPool | null;
   /** Take an exit for one Click, or fail with a reason after the bounded wait. */
   acquire: (options?: { waitMs?: number }) => Promise<ExitLease>;
-  /** Give the exit back: `good` keeps it, `failed` counts a strike. */
+  /** Give the exit back: `good` retires it and spends one change on a replacement;
+   *  `failed` counts a strike, and the second one retires it too. */
   release: (exitId: string, outcome: "good" | "failed") => Promise<void>;
   close: () => Promise<void>;
 }
@@ -215,7 +216,7 @@ export async function startTuxlerClient(options: TuxlerClientOptions = {}): Prom
       await waitForAccountReport(session, ACCOUNT_REPORT_GRACE_MS);
       if (!state.closed && options.pool !== false) {
         // Exits live on the relay this session was redirected to, and the pool
-        // fills itself: nothing has to ask it for the first five.
+        // fills itself: nothing has to ask it for the first (and only live) exit.
         state.pool = startExitPool({
           session,
           relayHost: session.snapshot().host,

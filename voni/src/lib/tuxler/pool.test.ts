@@ -1,12 +1,13 @@
 /**
- * The pool: five ready exits, refilled when fewer than three remain, never above
- * eight, and a lease contract the runner can spend a Click on.
+ * The pool: one live exit, rotated on release, with a lease contract the runner
+ * can spend a Click on.
  *
- * Every test runs the real session, the real change command, the real validator
- * and a real SOCKS listener against the fake relay. The numbers asserted are the
- * ticket's: target five, refill below three, hard maximum eight, a ten-second
- * acquire wait. The change counter is the fake relay's own, so "a refill spends a
- * change and an acquire does not" is measured on the wire, not inferred.
+ * Tuxler kills the previous exit the moment its session asks for another change,
+ * so a pool of ready exits would serve dead ports. Every test runs the real
+ * session, the real change command, the real validator and a real SOCKS listener
+ * against the fake relay. The change counter is the fake relay's own, so "a lease
+ * spends no change and a good release spends exactly one" is measured on the wire,
+ * not inferred.
  */
 import assert from "node:assert/strict";
 import net from "node:net";
@@ -15,10 +16,8 @@ import { FakeRelay, type FakeChange } from "./fake-relay";
 import { startSession, type TuxlerSession } from "./control";
 import {
   POOL_ACQUIRE_WAIT_MS,
-  POOL_MAX,
+  POOL_LIVE_EXITS,
   POOL_NO_PROGRESS_REFILLS,
-  POOL_REFILL_BELOW,
-  POOL_TARGET,
   PoolUnavailableError,
   createExitPool,
   type ExitPool,
@@ -134,20 +133,20 @@ function unreachable(port: number): Promise<boolean> {
   });
 }
 
-test("the pool reaches five ready exits on its own, one change each", async () => {
+test("the pool holds one live exit even when the console asked for five", async () => {
   await withRelay({ changes: distinctChanges() }, async (relay) => {
     const session = await connect(relay);
     const pool = makePool(relay, session);
     try {
       pool.start();
-      const snapshot = await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
+      const snapshot = await waitFor(pool, (seen) => seen.ready === POOL_LIVE_EXITS);
 
-      assert.equal(relay.stats().changeRequests, POOL_TARGET, "five exits, five changes");
-      assert.equal(snapshot.total, POOL_TARGET);
-      assert.equal(new Set(snapshot.exits.map((exit) => exit.exitId)).size, POOL_TARGET);
-      assert.equal(snapshot.target, 5);
-      assert.equal(snapshot.refillBelow, POOL_REFILL_BELOW);
-      assert.equal(snapshot.max, POOL_MAX);
+      assert.equal(relay.stats().changeRequests, 1, "one live exit costs one change");
+      assert.equal(snapshot.total, 1, "the pool never holds a second exit");
+      assert.equal(snapshot.liveExitLimit, 1, "the cap is reported, not silently obeyed");
+      assert.equal(snapshot.target, 1, "the requested five is capped to the live limit");
+      assert.equal(snapshot.max, 1);
+      assert.equal(snapshot.refillBelow, 1);
 
       const exit = snapshot.exits[0];
       assert.equal(exit.country, "US");
@@ -200,98 +199,30 @@ test("a failing ASN lookup parks the pool instead of spending change after chang
   });
 });
 
-test("a good release sends its exit to the back, so consecutive clicks differ", async () => {
+test("a good release retires the exit, and exactly one change replaces it", async () => {
   await withRelay({ changes: distinctChanges() }, async (relay) => {
     const session = await connect(relay);
-    const pool = makePool(relay, session, { target: 3, refillBelow: 1 });
+    // The console's three-to-eight settings still validate; the pool caps them.
+    const pool = makePool(relay, session, { target: 5, refillBelow: 3, max: 8 });
     try {
       pool.start();
-      await waitFor(pool, (seen) => seen.ready === 3);
-      const used: string[] = [];
-      for (let click = 0; click < 3; click += 1) {
-        const lease = await pool.acquire();
-        used.push(lease.exitId);
-        await pool.release(lease.exitId, "good");
-      }
-      assert.equal(
-        new Set(used).size,
-        3,
-        "three clicks that each released good still used three addresses",
-      );
-    } finally {
-      await pool.close();
-      session.stop();
-    }
-  });
-});
-
-test("five acquires hand out five different exits without a change per acquire", async () => {
-  await withRelay({ changes: distinctChanges() }, async (relay) => {
-    const session = await connect(relay);
-    const pool = makePool(relay, session);
-    try {
-      pool.start();
-      await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
-      assert.equal(relay.stats().changeRequests, 5, "the fill spent five");
-
-      const leases = [];
-      for (let index = 0; index < 5; index += 1) leases.push(await pool.acquire());
-      assert.equal(
-        new Set(leases.map((lease) => lease.exitId)).size,
-        5,
-        "five clicks, five different exits",
-      );
-      assert.equal(new Set(leases.map((lease) => lease.ip)).size, 5);
-      for (const lease of leases) {
-        assert.equal(lease.country, "US");
-        assert.equal(lease.server, "server1.ipsharkk.com");
-        assert.match(lease.socksUrl, /^socks5h:\/\/127\.0\.0\.1:\d+$/);
-        assert.ok(lease.localPort > 0);
-        assert.equal(lease.asn, "7018");
-      }
-
-      // The pool refills behind the leases, capped at eight live exits.
-      const filled = await waitFor(pool, (seen) => seen.total === POOL_MAX);
-      assert.equal(filled.ready, 3);
-      assert.equal(relay.stats().changeRequests, 8, "three refills, not one change per acquire");
-      assert.equal(
-        filled.total,
-        relay.stats().changeRequests,
-        "every change made exactly one exit; nothing was spent on an acquire",
-      );
-
-      for (const lease of leases) await pool.release(lease.exitId, "good");
-      const restored = await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
-      assert.equal(restored.total, POOL_TARGET, "surplus drains back to the target");
-      assert.equal(relay.stats().changeRequests, 8, "a release spends nothing");
-    } finally {
-      await pool.close();
-      session.stop();
-    }
-  });
-});
-
-test("a refill starts only below three ready and returns to the target", async () => {
-  await withRelay({ changes: distinctChanges() }, async (relay) => {
-    const session = await connect(relay);
-    const pool = makePool(relay, session);
-    try {
-      pool.start();
-      await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
+      await waitFor(pool, (seen) => seen.ready === 1);
+      assert.equal(relay.stats().changeRequests, 1, "the fill spent one change");
 
       const first = await pool.acquire();
-      const second = await pool.acquire();
-      await pause(150);
-      assert.equal(relay.stats().changeRequests, 5, "three ready is still above the threshold");
-      assert.equal(pool.snapshot().ready, POOL_REFILL_BELOW);
+      assert.equal(relay.stats().changeRequests, 1, "a lease spends no change");
+      assert.equal(pool.snapshot().ready, 0, "the leased exit is not offered to another Click");
 
-      const third = await pool.acquire();
-      const refilled = await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
-      assert.equal(refilled.total, POOL_MAX);
-      assert.equal(relay.stats().changeRequests, 8, "refilled to the target, then stopped");
-
-      for (const lease of [first, second, third]) await pool.release(lease.exitId, "good");
-      await waitFor(pool, (seen) => seen.ready === POOL_TARGET && seen.total === POOL_TARGET);
+      await pool.release(first.exitId, "good");
+      const after = await waitFor(pool, (seen) => seen.ready === 1);
+      assert.equal(relay.stats().changeRequests, 2, "the release spent exactly one change");
+      assert.equal(after.total, 1, "and still holds one exit");
+      assert.notEqual(after.exits[0].exitId, first.exitId, "the replacement is a different exit");
+      assert.equal(
+        await unreachable(first.localPort),
+        true,
+        "the retired exit's listener is closed, not left for a dead port",
+      );
     } finally {
       await pool.close();
       session.stop();
@@ -299,37 +230,92 @@ test("a refill starts only below three ready and returns to the target", async (
   });
 });
 
-test("the hard maximum of eight holds, and a refusal leaves nothing behind", async () => {
+test("two overlapping acquires are serialized, and the second gets a different exit", async () => {
   await withRelay({ changes: distinctChanges() }, async (relay) => {
     const session = await connect(relay);
-    const pool = makePool(relay, session);
+    const pool = makePool(relay, session, { target: 3, acquireWaitMs: 3_000 });
     try {
       pool.start();
-      await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
-      const leases = [];
-      for (let index = 0; index < POOL_TARGET; index += 1) leases.push(await pool.acquire());
-      await waitFor(pool, (seen) => seen.total === POOL_MAX);
-      const atMax = relay.stats().changeRequests;
-      assert.equal(atMax, POOL_MAX);
+      await waitFor(pool, (seen) => seen.ready === 1);
 
-      const held = [];
-      for (let index = 0; index < 3; index += 1) held.push(await pool.acquire());
-      assert.equal(pool.snapshot().ready, 0);
+      const first = await pool.acquire();
+      let settled = false;
+      const secondPromise = pool.acquire().then((lease) => {
+        settled = true;
+        return lease;
+      });
+      await pause(150);
+      assert.equal(settled, false, "the second lease waits while the first is outstanding");
+      assert.equal(relay.stats().changeRequests, 1, "waiting spends no change");
 
-      await assert.rejects(pool.acquire({ waitMs: 200 }), (error: unknown) => {
-        assert.ok(error instanceof PoolUnavailableError);
+      await pool.release(first.exitId, "good");
+      const second = await secondPromise;
+      assert.notEqual(second.exitId, first.exitId, "the second Click never gets the first's port");
+      assert.equal(await unreachable(first.localPort), true);
+      assert.equal(relay.stats().changeRequests, 2, "one change replaced the retired exit");
+    } finally {
+      await pool.close();
+      session.stop();
+    }
+  });
+});
+
+test("a second acquire times out as PoolUnavailableError while the first is held", async () => {
+  await withRelay({ changes: distinctChanges() }, async (relay) => {
+    const session = await connect(relay);
+    const pool = makePool(relay, session, { acquireWaitMs: 150 });
+    try {
+      pool.start();
+      await waitFor(pool, (seen) => seen.ready === 1);
+      const held = await pool.acquire();
+
+      await assert.rejects(pool.acquire(), (error: unknown) => {
+        assert.ok(error instanceof PoolUnavailableError, "the wait fails loudly, never with a lease");
         assert.equal(error.reason, "not-ready");
         return true;
       });
-      const now = pool.snapshot();
-      assert.equal(now.total, POOL_MAX, "never above eight");
-      assert.equal(relay.stats().changeRequests, atMax, "a refusal spends no change");
-      assert.equal(now.exits.length, POOL_MAX, "no leaked or half-open exit");
+      assert.equal(relay.stats().changeRequests, 1, "neither the lease nor the timeout spent a change");
 
-      for (const lease of [...leases, ...held]) await pool.release(lease.exitId, "good");
-      const restored = await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
-      assert.equal(restored.total, POOL_TARGET);
-      assert.equal(relay.stats().changeRequests, atMax);
+      await pool.release(held.exitId, "good");
+    } finally {
+      await pool.close();
+      session.stop();
+    }
+  });
+});
+
+test("a failed release keeps the exit on one strike and retires it on the second", async () => {
+  await withRelay({ changes: distinctChanges() }, async (relay) => {
+    const session = await connect(relay);
+    const pool = makePool(relay, session);
+    try {
+      pool.start();
+      await waitFor(pool, (seen) => seen.ready === 1);
+
+      const lease = await pool.acquire();
+      await pool.release(lease.exitId, "failed");
+      const struck = pool.snapshot();
+      const entry = struck.exits.find((exit) => exit.exitId === lease.exitId);
+      assert.ok(entry, "one strike does not remove the exit");
+      assert.equal(entry.status, "ready");
+      assert.equal(entry.strikes, 1);
+      assert.equal(await unreachable(lease.localPort), false, "its listener stays open");
+      assert.equal(relay.stats().changeRequests, 1, "a strike spends nothing");
+
+      await pool.release(lease.exitId, "failed");
+      const killed = pool.snapshot();
+      assert.equal(
+        killed.exits.some((exit) => exit.exitId === lease.exitId),
+        false,
+        "the second strike retires the exit",
+      );
+      assert.equal(await unreachable(lease.localPort), true, "and closes its listener");
+
+      const replaced = await waitFor(pool, (seen) => seen.ready === 1);
+      assert.equal(replaced.total, 1);
+      assert.equal(relay.stats().changeRequests, 2, "the death triggered one replacement");
+
+      await assert.rejects(pool.release("198.51.100.10:1", "good"));
     } finally {
       await pool.close();
       session.stop();
@@ -385,51 +371,33 @@ test("a pool that has not started reports not-ready rather than an empty supply"
   });
 });
 
-test("a failed release counts a strike, the second kills the exit and its listener", async () => {
+test("a good release clears a strike but still retires the exit it served", async () => {
   await withRelay({ changes: distinctChanges() }, async (relay) => {
     const session = await connect(relay);
     const pool = makePool(relay, session);
     try {
       pool.start();
-      await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
+      await waitFor(pool, (seen) => seen.ready === 1);
 
       const lease = await pool.acquire();
       await pool.release(lease.exitId, "failed");
-      const struck = pool.snapshot();
-      const entry = struck.exits.find((exit) => exit.exitId === lease.exitId);
-      assert.ok(entry, "one strike does not remove the exit");
-      assert.equal(entry.status, "ready");
-      assert.equal(entry.strikes, 1);
-      assert.equal(await unreachable(lease.localPort), false, "its listener stays open");
-      assert.equal(relay.stats().changeRequests, 5, "a strike spends nothing");
-
-      const offered = pool
-        .snapshot()
-        .exits.filter((exit) => exit.status === "ready")
-        .map((exit) => exit.exitId);
-      assert.ok(
-        offered.includes(lease.exitId),
-        "one strike keeps the exit in the pool, behind the others",
-      );
-      await pool.release(lease.exitId, "good");
-      const forgiven = pool.snapshot().exits.find((exit) => exit.exitId === lease.exitId);
-      assert.equal(forgiven?.strikes, 0, "a good release clears the strike");
-
-      await pool.release(lease.exitId, "failed");
-      await pool.release(lease.exitId, "failed");
-      const killed = pool.snapshot();
       assert.equal(
-        killed.exits.some((exit) => exit.exitId === lease.exitId),
-        false,
-        "the second strike kills the exit",
+        pool.snapshot().exits.find((exit) => exit.exitId === lease.exitId)?.strikes,
+        1,
+        "one strike is recorded",
       );
-      assert.equal(await unreachable(lease.localPort), true, "and closes its listener");
 
-      const replaced = await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
-      assert.equal(replaced.total, POOL_TARGET);
-      assert.equal(relay.stats().changeRequests, 6, "the death triggered one replacement");
-
-      await assert.rejects(pool.release("198.51.100.10:1", "good"));
+      // A good release forgives the strike but retires the exit: the replacement
+      // refill's change would kill its port regardless, so it cannot be reused.
+      await pool.release(lease.exitId, "good");
+      assert.equal(
+        pool.snapshot().exits.some((exit) => exit.exitId === lease.exitId),
+        false,
+        "a good release retires the struck exit",
+      );
+      const replaced = await waitFor(pool, (seen) => seen.ready === 1);
+      assert.notEqual(replaced.exits[0].exitId, lease.exitId);
+      assert.equal(relay.stats().changeRequests, 2, "the replacement cost one change");
     } finally {
       await pool.close();
       session.stop();
@@ -451,7 +419,7 @@ test("health reports every exit and every bucket, and reading it changes nothing
       assert.equal(pool.snapshot().ready, 0);
 
       pool.start();
-      const snapshot = await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
+      const snapshot = await waitFor(pool, (seen) => seen.ready === 1);
       const before = relay.stats().changeRequests;
       const ids = snapshot.exits.map((exit) => exit.exitId).sort();
 
@@ -464,6 +432,7 @@ test("health reports every exit and every bucket, and reading it changes nothing
           pool: pool.health(),
         });
         assert.equal(health.ready, true);
+        assert.equal(health.liveExitLimit, 1, "health explains why the pool holds one exit");
         assert.equal(health.pool.length, snapshot.ready);
         assert.equal(health.buckets.length, 1);
         assert.equal(health.buckets[0].used, 3);
@@ -495,20 +464,20 @@ test("restarting the pool closes every listener it owned, so no port is stranded
     const pool = makePool(relay, session);
     try {
       pool.start();
-      const snapshot = await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
+      const snapshot = await waitFor(pool, (seen) => seen.ready === 1);
       const oldPorts = snapshot.exits.map((exit) => exit.localPort);
-      assert.equal(new Set(oldPorts).size, POOL_TARGET);
+      assert.equal(new Set(oldPorts).size, 1);
 
       await pool.restart();
 
-      const restarted = await waitFor(pool, (seen) => seen.ready === POOL_TARGET);
+      const restarted = await waitFor(pool, (seen) => seen.ready === 1);
       const newPorts = new Set(restarted.exits.map((exit) => exit.localPort));
-      assert.equal(restarted.total, POOL_TARGET, "a restart leaves no ghost exits");
+      assert.equal(restarted.total, 1, "a restart leaves no ghost exits");
       for (const port of oldPorts) {
         assert.equal(newPorts.has(port), false, `port ${port} was handed back for reuse`);
         await assertPortFree(port, newPorts);
       }
-      assert.equal(relay.stats().changeRequests, 10, "a restart fills a fresh pool");
+      assert.equal(relay.stats().changeRequests, 2, "a restart fills a fresh pool");
 
       await pool.close();
       for (const port of newPorts) await assertPortFree(port, new Set());
@@ -696,46 +665,40 @@ test("a log line never carries a full URL query string", async () => {
   });
 });
 
-test("the pool hands its logger to every exit tunnel it builds", async () => {
+test("one live exit leaves no parent for a child bucket, even with depth left", async () => {
   const changes: FakeChange[] = [
     { kind: "changed", ip: "198.51.100.10" },
     { kind: "limit" },
   ];
   await withRelay({ changes }, async (relay) => {
     const session = await connect(relay);
-    const lines: string[] = [];
+    let opened = 0;
     const pool = makePool(relay, session, {
-      target: 2,
-      refillBelow: 2,
-      max: 3,
+      target: 3,
+      refillBelow: 3,
+      max: 4,
       depth: 2,
       retryDelayMs: 10,
       paceCooldownMs: 10,
-      log: (line) => lines.push(line),
-      // The parent exit's own tunnel cannot be dialled here; the pool's dialer must
-      // still say so through the logger it was given.
-      dial: async () => {
-        throw new Error("tunnel dial denied");
-      },
-      openSession: async (link) => {
-        assert.ok(link !== null, "a child bucket needs its parent link");
-        await assert.rejects(link.dial({ host: "example.test", port: 443 }), /tunnel dial denied/);
-        throw new Error("the probe stops after observing the dialer");
+      // A child bucket is dialled through a ready parent exit. With one live exit
+      // there is never a spare one, so this must never be called.
+      openSession: async () => {
+        opened += 1;
+        throw new Error("one live exit leaves no parent to carry a child");
       },
     });
     try {
       pool.start();
-      await waitFor(pool, () => lines.some((line) => line.includes("tunnel connecting")));
+      await waitFor(pool, (seen) => seen.ready === 1);
 
-      const connecting = lines.find((line) => line.includes("tunnel connecting"))!;
-      assert.match(
-        connecting,
-        /^exit 198\.51\.100\.10:\d+ tunnel connecting for example\.test:443 host=server\d+\.ipsharkk\.com$/,
-        "the pool's logger reached the exit tunnel dialer, labelled with the exit and the host",
-      );
-      const failed = lines.find((line) => line.includes("tunnel connect failed"))!;
-      assert.ok(failed.includes("example.test:443"), failed);
-      assert.ok(failed.includes("tunnel dial denied"), failed);
+      // The release spends the root's last change; it is refused, so the pool has
+      // no exit and no spare parent. It parks as quota instead of inventing a child.
+      const lease = await pool.acquire();
+      await pool.release(lease.exitId, "good");
+      const parked = await waitFor(pool, (seen) => seen.parked);
+      assert.equal(parked.parkedFor, "quota");
+      assert.equal(opened, 0, "no child bucket was dialled through a dead port");
+      assert.equal(relay.stats().changeRequests, 2);
     } finally {
       await pool.close();
       session.stop();

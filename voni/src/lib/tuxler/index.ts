@@ -6,7 +6,7 @@
  * `control` runs one session, `frames` speaks the wire format, `change` reads what
  * the relay answers a change with, `validate` decides whether the address may be
  * used, `socks` serves one exit on a loopback port, `exit` is the four together,
- * and `pool` keeps five of those exits ready and hands them out one Click at a time.
+ * and `pool` keeps the one exit Tuxler allows live and rotates it on release.
  */
 export {
   startTuxlerClient,
@@ -30,6 +30,7 @@ export {
 export {
   POOL_ACQUIRE_WAIT_MS,
   POOL_DEPTH,
+  POOL_LIVE_EXITS,
   POOL_MAX,
   POOL_PACE_BURST,
   POOL_PACE_COOLDOWN_MS,

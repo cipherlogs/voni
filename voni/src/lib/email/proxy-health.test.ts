@@ -202,6 +202,7 @@ test("the real client's health JSON is what the console reads", async () => {
           exits: [
             { exitId: "198.51.100.10:40001", ip: "198.51.100.10", country: "US", asn: "7018", city: "Austin", state: "TX" },
           ],
+          liveExitLimit: 1,
           buckets: [
             { clientIpHash: "abc", used: 4, limit: 7, remaining: 3, resetAt: "2026-11-26T13:26:00.000Z" },
           ],

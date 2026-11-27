@@ -60,8 +60,9 @@ test("a started client answers health with the account's own figures and no cred
     assert.deepEqual(health.pool, [], "a handshake port is never an exit");
     assert.ok(health.session.frames.includes("TIMEVAL"));
 
-    const live = await waitForHealth(client, (seen) => seen.pool.length === 2);
+    const live = await waitForHealth(client, (seen) => seen.pool.length === 1);
     assert.equal(live.ready, true);
+    assert.equal(live.liveExitLimit, 1, "health explains the one-exit pool");
     assert.equal(live.session.state, "connected");
     assert.equal(live.buckets.length, 1);
     for (const exit of live.pool) {
@@ -80,18 +81,17 @@ test("a started client answers health with the account's own figures and no cred
   }
 });
 
-test("a client hands out a pooled exit and takes it back", async () => {
+test("a client hands out a pooled exit and rotates it on release", async () => {
   const relay = await FakeRelay.start({});
   const client = await startTuxlerClient({
     email: EMAIL,
     password: PASSWORD,
     resolveEndpoint: relay.resolve,
     health: { port: 0 },
-    // A low refill threshold keeps this test about the lease, not about refilling.
     pool: { target: 3, refillBelow: 1, retryDelayMs: 100, lookup: async () => CONSUMER },
   });
   try {
-    await waitForHealth(client, (seen) => seen.pool.length === 3);
+    await waitForHealth(client, (seen) => seen.pool.length === 1);
     const changes = relay.stats().changeRequests;
     const lease = await client.acquire();
     assert.match(lease.exitId, /^198\.51\.100\.\d+:\d+$/);
@@ -99,13 +99,18 @@ test("a client hands out a pooled exit and takes it back", async () => {
     assert.equal(lease.server, "server1.ipsharkk.com");
     assert.equal(relay.stats().changeRequests, changes, "an acquire spends no change");
 
-    const offered = client.health().pool.map((exit) => exit.exitId);
-    assert.equal(offered.length, 2, "a leased exit is not offered to another Click");
-    assert.equal(offered.includes(lease.exitId), false);
+    assert.equal(client.health().pool.length, 0, "a leased exit is not offered to another Click");
+    assert.equal(
+      client.health().pool.some((exit) => exit.exitId === lease.exitId),
+      false,
+    );
 
+    // A good release retires the exit; one change brings a different one, because
+    // the change that replaces it is also the change that would kill its port.
     await client.release(lease.exitId, "good");
-    await waitForHealth(client, (seen) => seen.pool.length === 3);
-    assert.equal(relay.stats().changeRequests, changes, "a good release spends nothing");
+    const next = await waitForHealth(client, (seen) => seen.pool.length === 1);
+    assert.notEqual(next.pool[0].exitId, lease.exitId);
+    assert.equal(relay.stats().changeRequests, changes + 1, "a good release spends one change");
   } finally {
     await client.close();
     await relay.close();
@@ -122,10 +127,10 @@ test("the control port hands out one exit per Click and takes it back", async ()
     pool: { target: 3, refillBelow: 1, retryDelayMs: 100, lookup: async () => CONSUMER },
   });
   try {
-    await waitForHealth(client, (seen) => seen.pool.length === 3);
+    await waitForHealth(client, (seen) => seen.pool.length === 1);
     const seen = new Set<string>();
     for (let click = 0; click < 3; click += 1) {
-      const acquired = await fetch(`${client.url}/acquire?waitMs=1000`);
+      const acquired = await fetch(`${client.url}/acquire?waitMs=2000`);
       assert.equal(acquired.status, 200);
       const exit = (await acquired.json()) as {
         exitId: string;
@@ -231,13 +236,13 @@ test("closing the client stops the session, frees the health port and every exit
   });
   const url = client.url;
   await client.settled();
-  const filled = await waitForHealth(client, (seen) => seen.pool.length === 2);
+  const filled = await waitForHealth(client, (seen) => seen.pool.length === 1);
   const ports = client
     .pool()
     ?.snapshot()
     .exits.map((exit) => exit.localPort);
-  assert.equal(ports?.length, 2);
-  assert.equal(filled.pool.length, 2);
+  assert.equal(ports?.length, 1);
+  assert.equal(filled.pool.length, 1);
 
   await client.close();
   await assert.rejects(fetch(`${url}/health`));

@@ -1,19 +1,15 @@
 /**
- * The refill budget: a bucket tree, paced changes, and silence that reconnects.
+ * The refill budget and pacing, with the one live exit Tuxler allows.
  *
  * Everything runs against the fake relay, so every number asserted is the relay's
- * own count on the wire. The three promises this file keeps are the ticket's:
+ * own count on the wire. The promises this file keeps:
  *
- * - an exhausted root bucket opens a child through a ready exit, and refills
- *   continue with the same acquire/release contract;
- * - depth is a refill *budget*, so reaching it fails as "quota spent" instead of
- *   hanging, and the pool never holds more exits than its target;
+ * - a bucket's changes are metered separately, but with one live exit there is
+ *   never a spare parent to carry a child bucket, so a spent root parks as quota
+ *   instead of growing a tree that cannot be reached;
+ * - depth stays a configured budget and is reported, never silently spent;
  * - silence is a reconnect, never "no US exit", and changes are paced so a
  *   session that has sent five in a row waits before the sixth.
- *
- * Multi-hop tunnels are proved by asking the address-echo service who it sees:
- * a request through a child exit must leave from the child's own address, even
- * though that exit is only reachable through its parent.
  */
 import assert from "node:assert/strict";
 import net from "node:net";
@@ -41,7 +37,6 @@ const PASSWORD = "correct-horse-battery";
 /** The relay's own addresses, distinct so "two buckets" cannot pass on ports alone. */
 const EXIT_A = "198.51.100.10";
 const EXIT_B = "198.51.100.11";
-const EXIT_C = "198.51.100.12";
 
 const CONSUMER: AsnRecord = {
   asn: 7018,
@@ -215,53 +210,44 @@ async function addressSeenBy(localPort: number): Promise<string> {
   return match[1];
 }
 
-test("an exhausted root bucket opens a child through a ready exit, and refills resume", async () => {
+test("an exhausted root parks as quota: one live exit leaves no parent for a child", async () => {
   const changes: FakeChange[] = [
     { kind: "changed", ip: EXIT_A },
     { kind: "limit" },
-    { kind: "changed", ip: EXIT_C },
-    { kind: "changed", ip: EXIT_C },
   ];
   await withRelay({ changes, tunnelHosts: TUNNELS }, async (relay) => {
     const session = await connect(relay);
     const pool = makePool(relay, session, {
-      target: 2,
-      refillBelow: 2,
+      target: 3,
+      refillBelow: 3,
       max: 4,
       depth: POOL_DEPTH,
       openSession: childSessions(relay),
     });
     try {
       pool.start();
-      const filled = await waitFor(pool, (seen) => seen.ready === 2);
+      const filled = await waitFor(pool, (seen) => seen.ready === 1);
 
-      assert.equal(relay.stats().changeRequests, 3, "two changes on the root, one on the child");
-      assert.equal(filled.buckets.length, 2, "the root and the child are both reported");
+      assert.equal(relay.stats().changeRequests, 1, "one live exit, one change");
+      assert.equal(filled.buckets.length, 1, "only the root bucket exists");
+      assert.equal(filled.buckets[0].depth, 0);
+      assert.equal(
+        filled.buckets[0].clientIpHash,
+        bucketId(EMAIL, "203.0.113.9"),
+        "the root is the runner's address",
+      );
+      assert.equal(filled.buckets[0].used, 3, "the root keeps the account's own usage");
+      assert.ok(filled.total <= 1 && filled.ready <= 1, "depth is a budget, not concurrency");
 
-      const [root, child] = filled.buckets;
-      assert.equal(root.depth, 0);
-      assert.equal(child.depth, 1);
-      assert.equal(child.parentId, root.clientIpHash, "the child names the bucket it came through");
-      assert.notEqual(root.clientIpHash, child.clientIpHash, "two addresses, two buckets");
-      assert.equal(root.clientIpHash, bucketId(EMAIL, "203.0.113.9"), "the root is the runner's address");
-      assert.equal(child.clientIpHash, bucketId(EMAIL, EXIT_A), "the child is the parent exit's address");
-      assert.equal(root.used, 3, "the root keeps the account's own usage");
-      assert.equal(child.used, 0, "the child starts with a fresh allowance");
-      assert.equal(root.limit, 10);
-      assert.equal(child.limit, 10);
-      assert.ok(filled.total <= 2 && filled.ready <= 2, "depth is a budget, not concurrency");
-
-      // The acquire contract is unchanged: two leases, then the child refills.
-      const first = await pool.acquire();
-      const second = await pool.acquire();
-      assert.equal(pool.snapshot().ready, 0);
-      const refilled = await waitFor(pool, (seen) => seen.ready === 2);
-      assert.equal(relay.stats().changeRequests, 5, "refills come from the child, not the spent root");
-      assert.equal(refilled.buckets.length, 2, "no second child was needed");
-      assert.ok(refilled.total <= refilled.max);
-
-      await pool.release(first.exitId, "good");
-      await pool.release(second.exitId, "good");
+      // The release retires the one exit and spends the root's next change. It is
+      // refused, and with no spare ready exit there is no parent to open a child
+      // through: the pool must say "quota spent", not invent a bucket.
+      const lease = await pool.acquire();
+      await pool.release(lease.exitId, "good");
+      const parked = await waitFor(pool, (seen) => seen.parked);
+      assert.equal(parked.parkedFor, "quota");
+      assert.equal(parked.buckets.length, 1, "no child bucket was opened through a dead port");
+      assert.equal(relay.stats().changeRequests, 2);
     } finally {
       await pool.close();
       session.stop();
@@ -269,14 +255,8 @@ test("an exhausted root bucket opens a child through a ready exit, and refills r
   });
 });
 
-test("depth is the refill budget: at the configured depth refills fail as quota spent", async () => {
-  const changes: FakeChange[] = [
-    { kind: "changed", ip: EXIT_A },
-    { kind: "limit" },
-    { kind: "changed", ip: EXIT_C },
-    { kind: "limit" },
-    { kind: "limit" },
-  ];
+test("a configured depth is reported but one live exit cannot spend it", async () => {
+  const changes: FakeChange[] = [{ kind: "limit" }];
   await withRelay({ changes, tunnelHosts: TUNNELS }, async (relay) => {
     const session = await connect(relay);
     const pool = makePool(relay, session, {
@@ -288,41 +268,18 @@ test("depth is the refill budget: at the configured depth refills fail as quota 
     });
     try {
       pool.start();
-      // The third bucket appears before its first change reaches the relay: wait
-      // for both, or the wire count races the bucket list.
-      const filled = await waitFor(
-        pool,
-        (seen) => seen.buckets.length === 3 && relay.stats().changeRequests === 5,
-      );
-      assert.equal(relay.stats().changeRequests, 5, "the tree stopped spending at depth two");
+      const parked = await waitFor(pool, (seen) => seen.parked);
+      assert.equal(parked.depth, 2, "the depth budget is still reported");
+      assert.equal(parked.parkedFor, "quota", "a spent root with no child reachable is quota, not silence");
+      assert.deepEqual(parked.buckets.map((bucket) => bucket.depth), [0], "the root alone");
+      assert.equal(relay.stats().changeRequests, 1, "a refusal at the root spends nothing more");
 
-      assert.deepEqual(
-        filled.buckets.map((bucket) => bucket.depth),
-        [0, 1, 2],
-        "the root plus one child per level",
-      );
-      assert.equal(
-        new Set(filled.buckets.map((bucket) => bucket.clientIpHash)).size,
-        3,
-        "every bucket keeps its own address",
-      );
-      assert.deepEqual(
-        filled.buckets.map((bucket) => bucket.used),
-        [3, 0, 0],
-        "each bucket reports its own usage",
-      );
-
-      const leases = [];
-      for (let index = 0; index < 2; index += 1) leases.push(await pool.acquire());
       await assert.rejects(pool.acquire({ waitMs: 300 }), (error: unknown) => {
         assert.ok(error instanceof PoolUnavailableError);
         assert.equal(error.reason, "quota-spent", "depth exhaustion is not a supply failure");
         return true;
       });
-      assert.equal(relay.stats().changeRequests, 5, "a refusal at depth spends nothing");
-      assert.ok(pool.snapshot().total <= 4, "and nothing was opened behind the depth");
-
-      for (const lease of leases) await pool.release(lease.exitId, "good");
+      assert.ok(pool.snapshot().total <= 1, "and nothing was opened behind the depth");
     } finally {
       await pool.close();
       session.stop();
@@ -345,7 +302,14 @@ test("a silent session is reconnected, and health says reconnect rather than no 
     });
     try {
       pool.start();
-      const healed = await waitFor(pool, (seen) => seen.ready === 2);
+      await waitFor(pool, (seen) => seen.ready === 1);
+      assert.equal(relay.stats().changeRequests, 1, "one live exit from the first change");
+
+      // Force the second change: releasing good retires the exit and refills, and
+      // that change is the one the relay answers with silence.
+      const lease = await pool.acquire();
+      await pool.release(lease.exitId, "good");
+      const healed = await waitFor(pool, (seen) => seen.ready === 1 && seen.reconnects === 1);
       const stats = relay.stats();
       assert.equal(stats.controlConnections, 2, "the silent session was closed and replaced");
       assert.equal(stats.loginAttempts, 2);
@@ -353,6 +317,8 @@ test("a silent session is reconnected, and health says reconnect rather than no 
       assert.equal(healed.lastReconnect?.reason, silenceReason);
       assert.equal(healed.lastReconnect?.depth, 0);
       assert.equal(healed.lastError, null, "a reconnect that worked is not an error");
+      assert.equal(relay.stats().changeRequests, 3, "the retry after the reconnect succeeded");
+      assert.equal(healed.exits[0].ip, EXIT_B, "the replacement change named a fresh exit");
 
       const health = buildHealth({
         state: "connected",
@@ -394,7 +360,7 @@ test("a session sends at most five changes in a row, then waits out the cooldown
   assert.equal(POOL_PACE_BURST, 5);
   assert.equal(POOL_SILENCE_MS, 20_000);
 
-  await withRelay({ changes: distinctChanges() }, async (relay) => {
+  await withRelay({ changes: distinctChanges(12) }, async (relay) => {
     const session = await connect(relay);
     const cooldown = 400;
     const pool = makePool(relay, session, {
@@ -406,22 +372,33 @@ test("a session sends at most five changes in a row, then waits out the cooldown
     });
     try {
       pool.start();
-      await waitFor(pool, (seen) => seen.ready === 5);
-      assert.equal(relay.stats().changeRequests, 5, "the fill spends exactly the burst");
+      await waitFor(pool, (seen) => seen.ready === 1);
+      assert.equal(relay.stats().changeRequests, 1, "the fill spends the first change");
 
-      const leases = [];
-      for (let index = 0; index < 5; index += 1) leases.push(await pool.acquire());
+      // Each good release retires the exit and spends one change on its
+      // replacement, so four releases reach the burst's fifth change.
+      for (let index = 0; index < 4; index += 1) {
+        const lease = await pool.acquire();
+        await pool.release(lease.exitId, "good");
+        await waitFor(pool, (seen) => seen.ready === 1);
+      }
+      assert.equal(relay.stats().changeRequests, POOL_PACE_BURST, "five changes in a row");
+
+      const lease = await pool.acquire();
       const startedWaiting = Date.now();
+      await pool.release(lease.exitId, "good");
       await pause(150);
-      assert.equal(relay.stats().changeRequests, 5, "the sixth change waits instead of bursting");
+      assert.equal(
+        relay.stats().changeRequests,
+        5,
+        "the sixth change waits instead of bursting",
+      );
 
-      const refilled = await waitFor(pool, (seen) => seen.total === 8, 6_000);
+      const refilled = await waitFor(pool, (seen) => seen.ready === 1, 6_000);
       const waited = Date.now() - startedWaiting;
-      assert.equal(relay.stats().changeRequests, 8, "three refills, and no more than the maximum");
+      assert.equal(relay.stats().changeRequests, 6, "one replacement after the cooldown");
       assert.ok(waited >= cooldown * 0.75, `the sixth change came after the cooldown (${waited} ms)`);
-      assert.ok(refilled.ready <= refilled.target);
-
-      for (const lease of leases) await pool.release(lease.exitId, "good");
+      assert.equal(refilled.total, 1);
     } finally {
       await pool.close();
       session.stop();
@@ -429,13 +406,8 @@ test("a session sends at most five changes in a row, then waits out the cooldown
   });
 });
 
-test("a child exit carries its payload through its parent, and each hop reports its own address", async () => {
-  const changes: FakeChange[] = [
-    { kind: "changed", ip: EXIT_A },
-    { kind: "changed", ip: EXIT_B },
-    { kind: "limit" },
-    { kind: "changed", ip: EXIT_C },
-  ];
+test("the one live exit carries its payload and the relay reports its own address", async () => {
+  const changes: FakeChange[] = [{ kind: "changed", ip: EXIT_A }];
   await withRelay({ changes, tunnelHosts: TUNNELS }, async (relay) => {
     const session = await connect(relay);
     const pool = makePool(relay, session, {
@@ -447,27 +419,22 @@ test("a child exit carries its payload through its parent, and each hop reports 
     });
     try {
       pool.start();
-      const filled = await waitFor(pool, (seen) => seen.ready === 3);
-      assert.equal(relay.stats().changeRequests, 4);
+      const filled = await waitFor(pool, (seen) => seen.ready === 1);
+      assert.equal(relay.stats().changeRequests, 1);
 
-      const parent = filled.exits.find((exit) => exit.ip === EXIT_A);
-      const child = filled.exits.find((exit) => exit.ip === EXIT_C);
-      assert.ok(parent, "the parent exit is served");
-      assert.ok(child, "the child exit is served");
-
-      assert.equal(await addressSeenBy(parent.localPort), EXIT_A);
-      assert.equal(await addressSeenBy(child.localPort), EXIT_C);
+      const exit = filled.exits[0];
+      assert.ok(exit, "the one live exit is served");
+      assert.equal(await addressSeenBy(exit.localPort), EXIT_A, "the request left from the exit");
 
       const stats = relay.stats();
-      assert.equal(stats.addressEchoRequests, 2);
+      assert.equal(stats.addressEchoRequests, 1);
       assert.ok(
-        stats.tunnelTargets.some((target) => target.port === child.port),
-        "the child's port was reached through its parent",
+        stats.tunnelTargets.some(
+          (target) => target.host === "echo.example.test" && target.port === 80,
+        ),
+        "the request carried its own destination through the exit",
       );
-      assert.ok(
-        stats.tunnelTargets.filter((target) => target.host === "echo.example.test").length === 2,
-        "both requests carried their own destination",
-      );
+      assert.equal(filled.buckets.length, 1, "one live exit means one bucket, no nested hop");
     } finally {
       await pool.close();
       session.stop();

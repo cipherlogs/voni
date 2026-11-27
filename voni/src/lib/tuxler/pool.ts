@@ -1,22 +1,25 @@
 /**
- * The pool: ready exits, kept at five and replaced when they fail.
+ * The pool: one live exit, rotated on release.
  *
- * Three rules decide everything here. Changes are spent on refills only, so an
- * acquire or a release never sends `CHANGE_IP_COUNTRY_CITY`. A refill is paced by
- * need — the pool fills to the target and then waits until fewer than three exits
- * remain, so two spare exits absorb a replacement without a spend. A death is
- * replaced at once (plan §4.3), because an exit that twice failed is gone and the
- * pool below its target serves fewer Clicks. Eight is a hard ceiling: a refusal to
- * exceed it happens before any change is sent or any listener bound.
+ * Tuxler owns exactly one live exit per session: the next `CHANGE_IP_COUNTRY_CITY`
+ * kills the previous exit's tunnel port. A queue of ready exits is therefore
+ * fiction, and `POOL_LIVE_EXITS` records why. A lease spends nothing; a good
+ * release retires the exit that served the Click and spends exactly one change on
+ * its replacement, because that port is already dead the moment the change is
+ * sent. A death is replaced at once (plan §4.3), because an exit that twice failed
+ * is gone and the pool serves no Click at all. The operator's configured target,
+ * maximum and refill threshold are still validated across three to eight, but the
+ * pool's effective sizes are capped and reported as `liveExitLimit` — a setting
+ * that is capped must be visible, never silently obeyed.
  *
  * Ticket 06 adds the refill budget. The relay meters changes per account and client
  * egress IP, so a *bucket* is an address: the root bucket is the runner's own
  * address, and a child bucket is a second relay session dialled through a ready
  * exit, which the relay sees as that exit's address and meters afresh. Depth is how
  * many levels that tree may grow (default three) — a budget for refills, never extra
- * concurrency: the exits still stop at the same target and maximum. Two further
- * rules keep the budget spendable: a session sends at most five changes in a row
- * before it cools down or switches bucket (a burst is what triggers the relay's
+ * concurrency: the exits still stop at the same (one-exit) target and maximum. Two
+ * further rules keep the budget spendable: a session sends at most five changes in a
+ * row before it cools down or switches bucket (a burst is what triggers the relay's
  * silence), and a session that stops answering is closed and reconnected through
  * the same parent rather than being counted as thin US supply.
  *
@@ -39,11 +42,30 @@ import type { TunnelDialer } from "./socks";
 import { POOL_ACQUIRE_WAIT_MS } from "./timing";
 import type { AsnLookup } from "./validate";
 
-/** Ready exits the pool aims for. */
+/**
+ * Live exits one Tuxler session can own. Exactly one, measured end-to-end:
+ *
+ * ```
+ * pool of 3, same session:
+ *   exit ...:30272 tunnel open → relay closed, no reply
+ *   exit ...:31196 tunnel open → relay closed, no reply
+ *   exit ...:30476 tunnel open → TLS hello → HTTP/1.1 200 OK   (the newest change)
+ * two changes back to back:
+ *   newest port=32404 → REPLIED 928 bytes
+ *   older  port=32436 → ECONNRESET in 277ms
+ * ```
+ *
+ * A second `CHANGE_IP_COUNTRY_CITY` kills the previous exit's tunnel port, so any
+ * target above one promises exits that are dead on arrival and fails the click
+ * that draws one. The configured sizes below stay the operator's vocabulary; this
+ * is the ceiling the pool's effective target, maximum and refill threshold obey.
+ */
+export const POOL_LIVE_EXITS = 1;
+/** The operator's requested ready-exit target, capped by `POOL_LIVE_EXITS`. */
 export const POOL_TARGET = 5;
-/** A refill starts when fewer exits than this are ready. */
+/** The requested refill threshold, capped by `POOL_LIVE_EXITS` and then the target. */
 export const POOL_REFILL_BELOW = 3;
-/** The pool never owns more than this many exits, leased ones included. */
+/** The requested hard ceiling, capped by `POOL_LIVE_EXITS`. */
 export const POOL_MAX = 8;
 /** How long an acquire waits before it fails loudly. */
 export { POOL_ACQUIRE_WAIT_MS } from "./timing";
@@ -122,9 +144,17 @@ export interface PoolExitReport {
 }
 
 export interface PoolSnapshot {
+  /** The effective target: the operator's request capped by `POOL_LIVE_EXITS`. */
   target: number;
+  /** The effective threshold, capped like the target. */
   refillBelow: number;
+  /** The effective maximum, capped like the target. */
   max: number;
+  /**
+   * The cap the configured sizes were reduced to. A console that asked for three
+   * exits must be able to read why the pool holds one.
+   */
+  liveExitLimit: number;
   /** The refill budget the pool may grow to. */
   depth: number;
   /** Exits a Click can take right now. */
@@ -229,7 +259,8 @@ export interface ExitPool {
   health: () => HealthPool;
   /** Take one exit, or fail with a reason after `waitMs`. Never spends a change. */
   acquire: (options?: { waitMs?: number }) => Promise<ExitLease>;
-  /** Give an exit back. `failed` counts a strike; the second one kills it. */
+  /** Give an exit back. `good` retires it and spends one change on a replacement;
+   *  `failed` counts a strike, and the second one also retires it. */
   release: (exitId: string, outcome: "good" | "failed") => Promise<void>;
   /** Close every listener the pool owns, then fill a fresh pool. */
   restart: () => Promise<void>;
@@ -357,9 +388,16 @@ function watermarkOf(session: PoolSession): { resetAt: string | null; used: numb
 /** How many silences in a row a bucket may reconnect from before it is left alone. */
 const MAX_RECONNECTS_IN_A_ROW = 3;
 export function createExitPool(options: ExitPoolOptions): ExitPool {
-  const target = bounded(options.target, POOL_TARGET, 1);
-  const max = Math.max(target, bounded(options.max, POOL_MAX, 1));
-  const refillBelow = Math.min(bounded(options.refillBelow, POOL_REFILL_BELOW, 1), target);
+  const requestedTarget = bounded(options.target, POOL_TARGET, 1);
+  const target = Math.min(requestedTarget, POOL_LIVE_EXITS);
+  const max = Math.min(
+    Math.max(requestedTarget, bounded(options.max, POOL_MAX, 1)),
+    POOL_LIVE_EXITS,
+  );
+  const refillBelow = Math.min(
+    Math.min(bounded(options.refillBelow, POOL_REFILL_BELOW, 1), target),
+    POOL_LIVE_EXITS,
+  );
   const acquireWaitMs = bounded(options.acquireWaitMs, POOL_ACQUIRE_WAIT_MS, 0);
   const retryDelayMs = bounded(options.retryDelayMs, 1_000, 0);
   const depth = bounded(options.depth, POOL_DEPTH, 0);
@@ -395,10 +433,9 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
   });
 
   /**
-   * The exit handed out last. The next acquire starts after it, so a Click that
-   * releases good sends its address to the back of the queue instead of being
-   * offered to the very next Click: consecutive Clicks never share an address
-   * while two exits are ready.
+   * The exit handed out last. Kept only for the report and the old round-robin:
+   * with one live exit a release retires it, so the next lease is always the
+   * replacement rather than a queued address.
    */
   let lastLeased: string | null = null;
 
@@ -569,7 +606,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
     }
   }
 
-  /** Close idle exits above the target so a burst of leases drains back to five. */
+  /** Close idle exits above the effective target (one) so a burst drains back. */
   function trim(): void {
     if (entries.size <= target) return;
     // An exit a child bucket was opened through is a parent: closing it would
@@ -968,6 +1005,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       target,
       refillBelow,
       max,
+      liveExitLimit: POOL_LIVE_EXITS,
       depth,
       ready: readyCount(),
       total: entries.size,
@@ -1008,6 +1046,7 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       return {
         ready: readyCount(),
         exits,
+        liveExitLimit: POOL_LIVE_EXITS,
         buckets: reportBuckets(),
         refills,
         reconnects,
@@ -1026,6 +1065,10 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       if (closed) {
         return Promise.reject(new PoolUnavailableError("not-ready", "the pool is closed"));
       }
+      // Leases are serialized by capacity, not by a lock: the pool owns at most
+      // `POOL_LIVE_EXITS` exits, so an outstanding lease leaves no idle entry and
+      // a second caller joins the waiter queue below. Handing out the same port to
+      // two Clicks would mean the next change retires the exit under the first.
       const entry = idle();
       if (entry !== undefined) {
         entry.leased = true;
@@ -1053,15 +1096,21 @@ export function createExitPool(options: ExitPoolOptions): ExitPool {
       }
       entry.leased = false;
       entry.strikes = outcome === "good" ? 0 : entry.strikes + 1;
-      if (entry.strikes < 2) {
+      // One strike keeps the exit: the failure may have been the click, and the
+      // strike rule is the existing death path, not a rotation.
+      if (outcome !== "good" && entry.strikes < 2) {
         trim();
         notify();
         return;
       }
+      // A good release retires the exit. The refill that follows spends one change,
+      // and that change kills this exit's tunnel port, so returning it to the queue
+      // would promise the next Click a port that is already dead. A second strike
+      // retires it for the same reason the strike rule always had (plan §4.3).
       entries.delete(exitId);
       await entry.exit.close();
-      // Plan §4.3: an exit that failed twice is dead and is replaced, at the cost
-      // of one change, rather than leaving the pool a Click short.
+      // The death is replaced at once, at the cost of one change, rather than
+      // leaving the pool a Click short.
       evaluate(true);
     },
 
