@@ -15,6 +15,7 @@ import { EmailGateForm } from "@/components/email-gate-form";
 import { BurstCard } from "@/components/burst-card";
 import { GithubSourceCard } from "@/components/github-source-card";
 import { LivePanel } from "@/components/live-panel";
+import { PaceCard } from "@/components/pace-card";
 import { ProxyCard } from "@/components/proxy-card";
 import { RotationCard } from "@/components/rotation-card";
 import { TargetsCard } from "@/components/targets-card";
@@ -25,6 +26,7 @@ import {
   removeTarget,
   restartGithubSegment,
   runBurst,
+  saveGithubPace,
   saveGithubSchedule,
   saveProxy,
   saveRotation,
@@ -433,6 +435,28 @@ async function EmailControlData({
       {/* First, because it answers the only question an operator opens this page
           to ask: is it clicking, right now, and how many. */}
       <LivePanel initial={live} />
+      {/* The one control an operator reaches for: a rate, not a restart gap.
+          It sits here rather than inside the GitHub card because the card is
+          folded by default, and a folded control is the same as no control. */}
+      <PaceCard
+        settings={
+          githubConfig === null
+            ? null
+            : {
+                enabled: githubConfig.enabled,
+                intervalSeconds: githubConfig.intervalSeconds,
+                windowSeconds: githubConfig.windowSeconds,
+                segmentSeconds: githubConfig.segmentSeconds,
+                restartSeconds: githubConfig.restartSeconds,
+              }
+        }
+        targetCount={activeTargets.length}
+        osCount={RUNNER_OSES.length}
+        measuredLastHour={
+          live.windows.find((window) => window.minutes === 60)?.total ?? null
+        }
+        action={saveGithubPace}
+      />
       {/* Targets next: one list, every source. The card's own add, pause,
           resume and remove controls are the only target controls on the page. */}
       <TargetsCard

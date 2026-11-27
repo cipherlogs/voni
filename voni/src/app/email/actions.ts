@@ -36,6 +36,7 @@ import {
   windowRemainingSeconds,
   type RunnerOs,
 } from "@/lib/email/sources";
+import { describePace, planPace } from "@/lib/email/pace";
 import {
   cancelBrowserCheckRuns,
   dispatchBrowserCheck,
@@ -1038,6 +1039,64 @@ export async function saveGithubSchedule(
     ok: true,
     message:
       "Schedule saved. The new pace applies on the next dispatch: one segment of clicking, then a new runner after the restart gap.",
+  };
+}
+
+/**
+ * Save the pace as a rate, not as settings.
+ *
+ * The operator says "3,000 clicks a day" and this action turns it into the
+ * passes and restart gap the ticker reads — one write, through the same
+ * saveSourceSchedule the schedule form uses, so the two controls can never
+ * disagree about what is saved. A target past the ceiling is still saved (at
+ * the ceiling) and the message says what the ceiling is, because refusing the
+ * write would leave the old pace running while the card claimed otherwise.
+ */
+export async function saveGithubPace(
+  _previous: ControlState,
+  formData: FormData,
+): Promise<ControlState> {
+  void _previous;
+  if (!(await requirePageUnlock())) return locked();
+
+  const raw = formData.get("clicksPerDay");
+  const target = typeof raw === "string" ? Number(raw.trim()) : Number(raw);
+  if (!Number.isFinite(target) || target <= 0) {
+    return { ok: false, error: "Clicks per day must be a number above zero." };
+  }
+
+  const [config, targets] = await Promise.all([
+    readSourceConfig(GITHUB_SOURCE_PRODUCER),
+    activeTargetUrls(),
+  ]);
+  if (config === null) return { ok: false, error: GITHUB_NOT_CONFIGURED_REASON };
+  if (targets.length === 0) return { ok: false, error: GITHUB_NO_TARGETS_REASON };
+
+  const plan = planPace(
+    {
+      intervalSeconds: config.intervalSeconds,
+      windowSeconds: config.windowSeconds,
+      targetCount: targets.length,
+      osCount: RUNNER_OSES.length,
+    },
+    target,
+  );
+
+  await saveSourceSchedule(GITHUB_SOURCE_PRODUCER, {
+    intervalSeconds: config.intervalSeconds,
+    windowSeconds: config.windowSeconds,
+    windowStartHour: config.windowStartHour,
+    segmentSeconds: plan.segmentSeconds,
+    restartSeconds: plan.restartSeconds,
+  });
+  revalidatePath("/email");
+
+  const projected = plan.projectedPerDay.toLocaleString("en-US");
+  return {
+    ok: true,
+    message: plan.note
+      ? `Pace saved at ${projected} clicks/day. ${plan.note}`
+      : `Pace saved: about ${projected} clicks/day — ${describePace(plan, config.intervalSeconds)}.`,
   };
 }
 
