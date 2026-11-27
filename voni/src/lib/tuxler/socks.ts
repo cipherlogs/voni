@@ -299,6 +299,5 @@ function confirmReachable(tunnel: Duplex, windowMs: number): Promise<boolean> {
     tunnel.once("close", onClose);
     tunnel.once("error", onError);
     const timer = setTimeout(() => finish(true), windowMs);
-    (timer as unknown as { unref?: () => void }).unref?.();
   });
 }

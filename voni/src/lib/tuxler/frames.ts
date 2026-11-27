@@ -111,7 +111,10 @@ export class ControlReader {
   destroy(): void {
     this.closed = true;
     this.closeListeners.clear();
-    this.waiters = [];
+    // Release parked readers, don't drop them: a dropped waiter leaves its
+    // timeout registered, and the timer then holds the process open after the
+    // session is gone (`tuxler-proxy --once` hung for exactly this).
+    this.wake();
     this.socket.off("data", this.onDataBound);
     this.socket.off("close", this.onCloseBound);
     this.socket.off("error", this.onErrorBound);
@@ -138,7 +141,6 @@ export class ControlReader {
         this.waiters = this.waiters.filter((entry) => entry !== waiter);
         resolve();
       }, Math.max(1, timeoutMs));
-      (timer as unknown as { unref?: () => void }).unref?.();
       const waiter = () => {
         clearTimeout(timer);
         resolve();

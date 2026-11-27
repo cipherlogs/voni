@@ -113,11 +113,13 @@ async function dial(endpoint: RelayEndpoint, timeoutMs: number): Promise<net.Soc
     await Promise.race([
       once(socket, "connect"),
       new Promise<never>((_resolve, reject) => {
+        // Never `unref` an awaited timeout: the promise it settles would be left
+        // pending if nothing else held the loop, and the dial would hang instead
+        // of failing. Node 22's event loop exposed exactly that.
         const timer = setTimeout(
           () => reject(new Error(`connect to ${endpoint.host}:${endpoint.port} timed out`)),
           timeoutMs,
         );
-        (timer as unknown as { unref?: () => void }).unref?.();
         socket.once("connect", () => clearTimeout(timer));
         socket.once("error", () => clearTimeout(timer));
       }),
@@ -305,8 +307,10 @@ function stillOpen(tunnel: Duplex, graceMs: number): Promise<boolean> {
       resolve(open);
     };
     const onClose = (): void => finish(false);
+    // Same rule as `dial`: this timer settles the promise the caller awaits, so it
+    // must keep the loop alive. Unref'd, an `openGraceMs: 0` dial in a test (and a
+    // last dial in a quiet process) resolved into nothing and hung forever.
     const timer = setTimeout(() => finish(true), Math.max(0, graceMs));
-    (timer as unknown as { unref?: () => void }).unref?.();
     tunnel.once("close", onClose);
     tunnel.once("end", onClose);
     tunnel.once("error", onClose);

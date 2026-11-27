@@ -354,7 +354,9 @@ export async function startSession(options: SessionOptions): Promise<TuxlerSessi
         waiters.delete(waiter);
         reject(new Error(`the relay sent no matching frame within ${timeoutMs} ms`));
       }, Math.max(1, timeoutMs));
-      (timer as unknown as { unref?: () => void }).unref?.();
+    // Never `unref` a timeout that settles an awaited promise: the loop can drain
+    // before it fires and the caller waits forever. Background timers (heartbeat,
+    // reset poll, voice floor) keep their `unref`.
       waiters.add(waiter);
     });
 
